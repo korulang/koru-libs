@@ -1,0 +1,210 @@
+// @korulang/docker - Docker DSL for Koru
+//
+// Declarative image definitions and typed container lifecycle.
+// Phantom obligations ensure containers are properly stopped.
+
+~import "$std/build"
+
+const std = @import("std");
+
+// ============================================================================
+// Types
+// ============================================================================
+
+const Image = struct {
+    tag: []const u8,
+    id: ?[]const u8,
+};
+
+const Container = struct {
+    id: []const u8,
+    image: []const u8,
+};
+
+// ============================================================================
+// Declarative Image Definition (compile-time)
+// ============================================================================
+
+// Declare a Docker image - collected at compile time, generates Dockerfile
+~[comptime|norun]pub event image { source: Source }
+
+~proc image {
+    // Compile-time only - collected by build system
+    _ = &source;
+}
+
+// ============================================================================
+// Build Operations
+// ============================================================================
+
+~pub event build { tag: []const u8, context: []const u8 }
+| built { image: Image }
+| failed { code: i32, msg: []const u8 }
+
+~proc build {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "docker", "build", "-t", tag, context },
+    }) catch |err| {
+        return .{ .failed = .{ .code = -1, .msg = @errorName(err) } };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
+    }
+
+    return .{ .built = .{ .image = Image{ .tag = tag, .id = null } } };
+}
+
+// ============================================================================
+// Container Lifecycle (with phantom obligations)
+// ============================================================================
+
+// Run a container - creates [running!] obligation that must be discharged
+~pub event run { image: []const u8, name: ?[]const u8 }
+| started { container: Container[running!] }
+| failed { code: i32, msg: []const u8 }
+
+~proc run {
+    const allocator = std.heap.page_allocator;
+
+    var argv_list = std.ArrayList([]const u8).init(allocator);
+    defer argv_list.deinit();
+
+    argv_list.appendSlice(&[_][]const u8{ "docker", "run", "-d" }) catch {
+        return .{ .failed = .{ .code = -1, .msg = "out of memory" } };
+    };
+
+    if (name) |n| {
+        argv_list.appendSlice(&[_][]const u8{ "--name", n }) catch {
+            return .{ .failed = .{ .code = -1, .msg = "out of memory" } };
+        };
+    }
+
+    argv_list.append(image) catch {
+        return .{ .failed = .{ .code = -1, .msg = "out of memory" } };
+    };
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv_list.items,
+    }) catch |err| {
+        return .{ .failed = .{ .code = -1, .msg = @errorName(err) } };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
+    }
+
+    // Container ID is in stdout (trimmed)
+    const container_id = std.mem.trim(u8, result.stdout, "\n\r ");
+    const id_copy = allocator.dupe(u8, container_id) catch {
+        return .{ .failed = .{ .code = -1, .msg = "out of memory" } };
+    };
+
+    return .{ .started = .{ .container = Container{ .id = id_copy, .image = image } } };
+}
+
+// Stop a container - discharges [running!] obligation
+~pub event stop { container: Container[!running] }
+| stopped {}
+| failed { code: i32, msg: []const u8 }
+
+~proc stop {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "docker", "stop", container.id },
+    }) catch |err| {
+        return .{ .failed = .{ .code = -1, .msg = @errorName(err) } };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
+    }
+
+    return .{ .stopped = .{} };
+}
+
+// Kill a container (forceful) - also discharges [running!] obligation
+~pub event kill { container: Container[!running] }
+| killed {}
+| failed { code: i32, msg: []const u8 }
+
+~proc kill {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "docker", "kill", container.id },
+    }) catch |err| {
+        return .{ .failed = .{ .code = -1, .msg = @errorName(err) } };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
+    }
+
+    return .{ .killed = .{} };
+}
+
+// ============================================================================
+// Registry Operations
+// ============================================================================
+
+~pub event push { image: []const u8 }
+| pushed {}
+| failed { code: i32, msg: []const u8 }
+
+~proc push {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "docker", "push", image },
+    }) catch |err| {
+        return .{ .failed = .{ .code = -1, .msg = @errorName(err) } };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
+    }
+
+    return .{ .pushed = .{} };
+}
+
+~pub event pull { image: []const u8 }
+| pulled {}
+| failed { code: i32, msg: []const u8 }
+
+~proc pull {
+    const allocator = std.heap.page_allocator;
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "docker", "pull", image },
+    }) catch |err| {
+        return .{ .failed = .{ .code = -1, .msg = @errorName(err) } };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
+    }
+
+    return .{ .pulled = .{} };
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@korulang/docker",
+  "version": "0.0.1",
+  "description": "Docker DSL for Koru - declarative images, typed container lifecycle",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru_libs",
+    "directory": "docker"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "keywords": [
+    "koru",
+    "docker",
+    "containers",
+    "dsl"
+  ],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "koru": {
+    "entry": "index.kz"
+  }
+}
