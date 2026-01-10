@@ -1,10 +1,10 @@
 // Basic SQLite test - open and close
 
-~import "$libs/sqlite"
+~import "$libs/sqlite3"
 ~import "$std/io"
 
-~libs.sqlite:open(path: ":memory:")
-| db d |> libs.sqlite:close(d.conn)
+~libs.sqlite3:open(path: ":memory:")
+| db d |> libs.sqlite3:close(d.conn)
     | closed |> std.io:print.ln("Opened and closed!")
 | err _ |> std.io:print.ln("Error!")
 
