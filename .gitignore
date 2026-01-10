@@ -1,0 +1,35 @@
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Zig
+zig-out/
+.zig-cache/
+a.out
+
+# Koru / Zig temporary outputs
+backend.zig
+backend_output_emitted.zig
+output_emitted.zig
+build_output.zig
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.swp
+*~
+.fleet/
+.helix/
+.zed/

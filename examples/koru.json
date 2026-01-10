@@ -1,0 +1,8 @@
+{
+  "name": "koru-libs-examples",
+  "version": "0.1.0",
+  "entry": "app.kz",
+  "paths": {
+    "koru": ".."
+  }
+}
