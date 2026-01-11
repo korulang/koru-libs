@@ -11,15 +11,15 @@
 }
 
 const std = @import("std");
-const c = @cImport({
+pub const c = @cImport({
     @cInclude("sqlite3.h");
 });
 
-const Connection = struct {
+pub const Connection = struct {
     handle: ?*c.sqlite3,
 };
 
-const Statement = struct {
+pub const Statement = struct {
     handle: ?*c.sqlite3_stmt,
 };
 
@@ -74,13 +74,14 @@ const Statement = struct {
     return .{ .ok = .{ .conn = conn } };
 }
 
-// Prepared statement query - returns rows one at a time
-~pub event query { conn: *Connection[opened!], sql: []const u8 }
+// Literal SQL query - takes a runtime SQL string
+// For compile-time parameterized queries, use ~query { ... } with Source block
+~pub event query.literal { conn: *Connection[opened!], sql: []const u8 }
 | row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
 | empty { conn: *Connection[opened!] }
 | err { conn: *Connection[opened!], code: i32, msg: []const u8 }
 
-~proc query {
+~proc query.literal {
     var stmt: ?*c.sqlite3_stmt = null;
     const rc = c.sqlite3_prepare_v2(conn.handle, sql.ptr, @intCast(sql.len), &stmt, null);
     if (rc != c.SQLITE_OK) {
@@ -100,6 +101,442 @@ const Statement = struct {
         const msg = c.sqlite3_errmsg(conn.handle);
         _ = c.sqlite3_finalize(stmt);
         return .{ .err = .{ .conn = conn, .code = step_rc, .msg = std.mem.span(msg) } };
+    }
+}
+
+// ============================================================================
+// Parameterized Query - Compile-time SQL with type-safe bindings
+// ============================================================================
+// Usage:
+//   ~libs.sqlite3:query(conn: db) {
+//       SELECT * FROM users WHERE id = {{user_id:d}} AND name = {{name:s}}
+//   }
+//   | row r |> ...
+//   | empty |> ...
+//   | err e |> ...
+//
+// Type hints: :d = int64, :s = text, :f = float64
+// Variables are captured from scope - no need to pass them as parameters
+
+~[comptime|transform]pub event query {
+    source: Source,
+    invocation: *const Invocation,  // The specific invocation being transformed
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+}
+| transformed { program: *const Program }
+
+// Runtime impl event for shape-checking (never actually runs - inline code does)
+// conn comes from invocation args, captured in generated code
+~[norun]pub event query.impl { conn: *Connection[opened!] }
+| row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
+| empty { conn: *Connection[opened!] }
+| err { conn: *Connection[opened!], code: i32, msg: []const u8 }
+
+~proc query {
+    const ast = @import("ast");
+    const ast_functional = @import("ast_functional");
+
+    // Get the flow from the item
+    const flow = if (item.* == .flow)
+        &item.flow
+    else if (item.* == .subflow_impl and item.subflow_impl.body == .flow)
+        &item.subflow_impl.body.flow
+    else
+        return .{ .transformed = .{ .program = program } };
+
+    // CRITICAL: Use pointer comparison to identify if this is the top-level query
+    // The `invocation` parameter tells us EXACTLY which query is being transformed
+    const is_top_level = (invocation == &flow.invocation);
+
+    const sql_text = source.text;
+
+    // Get conn variable name from the SPECIFIC invocation's args (not flow.invocation!)
+    var conn_var: []const u8 = "conn";
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "conn")) {
+            conn_var = arg.value;
+            break;
+        }
+    }
+
+    // Parse {{var:type}} patterns and build SQL with ? placeholders
+    var sql_buf = std.ArrayList(u8).initCapacity(allocator, sql_text.len) catch unreachable;
+    var bindings: [64]struct { name: []const u8, type_hint: u8 } = undefined;
+    var binding_count: usize = 0;
+
+    var i: usize = 0;
+    while (i < sql_text.len) {
+        if (i + 1 < sql_text.len and sql_text[i] == '{' and sql_text[i + 1] == '{') {
+            // Found interpolation start - skip whitespace
+            var start = i + 2;
+            while (start < sql_text.len and (sql_text[start] == ' ' or sql_text[start] == '\t')) : (start += 1) {}
+
+            var end = start;
+            while (end < sql_text.len and !(end + 1 < sql_text.len and sql_text[end] == '}' and sql_text[end + 1] == '}')) {
+                end += 1;
+            }
+
+            if (end >= sql_text.len) {
+                // Unclosed {{ - just copy literally
+                sql_buf.append(allocator, sql_text[i]) catch unreachable;
+                i += 1;
+                continue;
+            }
+
+            // Trim trailing whitespace
+            var trim_end = end;
+            while (trim_end > start and (sql_text[trim_end - 1] == ' ' or sql_text[trim_end - 1] == '\t')) : (trim_end -= 1) {}
+
+            // Parse "var:type"
+            const binding_str = sql_text[start..trim_end];
+            var colon_pos: ?usize = null;
+            for (binding_str, 0..) |ch, j| {
+                if (ch == ':') {
+                    colon_pos = j;
+                    break;
+                }
+            }
+
+            if (colon_pos) |cp| {
+                const var_name = binding_str[0..cp];
+                const type_hint = if (cp + 1 < binding_str.len) binding_str[cp + 1] else 's';
+
+                bindings[binding_count] = .{ .name = var_name, .type_hint = type_hint };
+                binding_count += 1;
+
+                // Replace with ?
+                sql_buf.append(allocator, '?') catch unreachable;
+            } else {
+                // No type hint - default to string
+                bindings[binding_count] = .{ .name = binding_str, .type_hint = 's' };
+                binding_count += 1;
+                sql_buf.append(allocator, '?') catch unreachable;
+            }
+
+            i = end + 2; // Skip }}
+        } else {
+            sql_buf.append(allocator, sql_text[i]) catch unreachable;
+            i += 1;
+        }
+    }
+
+    // Build inline Zig code
+    var code_buf = std.ArrayList(u8).initCapacity(allocator, 2048) catch unreachable;
+
+    // Header: declare stmt and prepare
+    // Use labeled block with break :blk for return values (since this runs as an expression)
+    // Use the library's existing c import to avoid type mismatches
+    code_buf.appendSlice(allocator, "blk: {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const c = @import(\"root\").koru_libs.sqlite3.c;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const Result = @import(\"root\").koru_libs.sqlite3.query_impl_event.Output;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ".handle, \"") catch unreachable;
+    // Escape SQL for Zig string
+    for (sql_buf.items) |ch| {
+        switch (ch) {
+            '"' => code_buf.appendSlice(allocator, "\\\"") catch unreachable,
+            '\\' => code_buf.appendSlice(allocator, "\\\\") catch unreachable,
+            '\n' => code_buf.appendSlice(allocator, "\\n") catch unreachable,
+            '\r' => code_buf.appendSlice(allocator, "\\r") catch unreachable,
+            '\t' => code_buf.appendSlice(allocator, "\\t") catch unreachable,
+            else => code_buf.append(allocator, ch) catch unreachable,
+        }
+    }
+    code_buf.appendSlice(allocator, "\", -1, &stmt_handle, null);\n") catch unreachable;
+
+    // Check prepare result
+    code_buf.appendSlice(allocator, "    if (rc != c.SQLITE_OK) {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ", .code = rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
+
+    // Generate bind calls
+    for (bindings[0..binding_count], 0..) |binding, idx| {
+        const bind_idx = idx + 1; // SQLite bindings are 1-indexed
+
+        code_buf.appendSlice(allocator, "    _ = c.sqlite3_bind_") catch unreachable;
+
+        switch (binding.type_hint) {
+            'd' => code_buf.appendSlice(allocator, "int64(stmt_handle, ") catch unreachable,
+            'f' => code_buf.appendSlice(allocator, "double(stmt_handle, ") catch unreachable,
+            else => code_buf.appendSlice(allocator, "text(stmt_handle, ") catch unreachable,
+        }
+
+        // Add index (1-9 for simplicity)
+        code_buf.append(allocator, '0' + @as(u8, @intCast(bind_idx))) catch unreachable;
+        code_buf.appendSlice(allocator, ", ") catch unreachable;
+        code_buf.appendSlice(allocator, binding.name) catch unreachable;
+
+        if (binding.type_hint == 's') {
+            code_buf.appendSlice(allocator, ".ptr, @intCast(") catch unreachable;
+            code_buf.appendSlice(allocator, binding.name) catch unreachable;
+            code_buf.appendSlice(allocator, ".len), c.SQLITE_STATIC);\n") catch unreachable;
+        } else {
+            code_buf.appendSlice(allocator, ");\n") catch unreachable;
+        }
+    }
+
+    // Step and return
+    code_buf.appendSlice(allocator, "    const step_rc = c.sqlite3_step(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    if (step_rc == c.SQLITE_ROW) {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        const s = @import(\"std\").heap.page_allocator.create(@import(\"root\").koru_libs.sqlite3.Statement) catch unreachable;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        s.* = .{ .handle = stmt_handle };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .row = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ", .stmt = s } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    } else if (step_rc == c.SQLITE_DONE) {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .empty = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, " } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    } else {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ", .code = step_rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
+    code_buf.appendSlice(allocator, "}") catch unreachable;
+
+    const inline_code = code_buf.items;
+
+    // Create impl path for shape checking
+    const impl_segments = allocator.alloc([]const u8, 2) catch unreachable;
+    impl_segments[0] = allocator.dupe(u8, "query") catch unreachable;
+    impl_segments[1] = allocator.dupe(u8, "impl") catch unreachable;
+    const impl_path = ast.DottedPath{
+        .module_qualifier = invocation.path.module_qualifier,
+        .segments = impl_segments,
+    };
+
+    // Build new invocation with @pass_ran annotation (use the actual invocation, not flow.invocation!)
+    const new_inv_annotations = allocator.alloc([]const u8, invocation.annotations.len + 1) catch unreachable;
+    for (invocation.annotations, 0..) |ann, idx| {
+        new_inv_annotations[idx] = ann;
+    }
+    new_inv_annotations[invocation.annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
+
+    // Keep only conn arg for the impl event
+    const new_args = allocator.alloc(ast.Arg, 1) catch unreachable;
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "conn")) {
+            new_args[0] = arg;
+            break;
+        }
+    }
+
+    const new_invocation = ast.Invocation{
+        .path = impl_path,
+        .args = new_args,
+        .annotations = new_inv_annotations,
+        .inserted_by_tap = invocation.inserted_by_tap,
+        .from_opaque_tap = invocation.from_opaque_tap,
+    };
+
+    if (is_top_level) {
+        // =====================================================================
+        // TOP-LEVEL CASE: Query is the flow's direct invocation
+        // Create a new flow with query.impl invocation and inline_body
+        // =====================================================================
+        const transformed_flow = ast.Flow{
+            .invocation = new_invocation,
+            .continuations = flow.continuations,
+            .annotations = flow.annotations,
+            .pre_label = flow.pre_label,
+            .post_label = flow.post_label,
+            .super_shape = flow.super_shape,
+            .inline_body = inline_code,
+            .is_pure = flow.is_pure,
+            .is_transitively_pure = flow.is_transitively_pure,
+            .location = flow.location,
+            .module = flow.module,
+        };
+
+        const new_item = if (item.* == .subflow_impl) blk: {
+            var new_subflow = item.subflow_impl;
+            new_subflow.body = .{ .flow = transformed_flow };
+            break :blk ast.Item{ .subflow_impl = new_subflow };
+        } else ast.Item{ .flow = transformed_flow };
+
+        const maybe_new_program = ast_functional.replaceFlowRecursive(allocator, program, flow, new_item) catch unreachable;
+        if (maybe_new_program) |new_program| {
+            const result = allocator.create(ast.Program) catch unreachable;
+            result.* = new_program;
+            return .{ .transformed = .{ .program = result } };
+        }
+        std.debug.print("ERROR: ~query transform (top-level) failed - flow not found\n", .{});
+        @panic("query transform: flow not found");
+    } else {
+        // =====================================================================
+        // NESTED CASE: Query is inside a continuation pipeline
+        // Find the path to the invocation and replace with inline_code node
+        // =====================================================================
+
+        // Helper to find path to this specific invocation
+        const SearchResult = struct {
+            path: []const usize,
+            parent_cont: *const ast.Continuation,
+        };
+
+        const findInvocationRecursive = struct {
+            fn search(
+                alloc: std.mem.Allocator,
+                continuations: []const ast.Continuation,
+                current_path: []const usize,
+                target_inv: *const ast.Invocation,
+            ) ?SearchResult {
+                for (continuations, 0..) |*cont, cont_idx| {
+                    var path = alloc.alloc(usize, current_path.len + 1) catch return null;
+                    @memcpy(path[0..current_path.len], current_path);
+                    path[current_path.len] = cont_idx;
+
+                    // Check if this continuation's node is the target invocation
+                    if (cont.node) |*node| {
+                        if (node.* == .invocation) {
+                            if (&node.invocation == target_inv) {
+                                return SearchResult{
+                                    .path = path,
+                                    .parent_cont = cont,
+                                };
+                            }
+                        }
+                    }
+
+                    // Recurse into nested continuations
+                    if (search(alloc, cont.continuations, path, target_inv)) |result| {
+                        return result;
+                    }
+
+                    alloc.free(path);
+                }
+                return null;
+            }
+        }.search;
+
+        const empty_path = &[_]usize{};
+        const search_result = findInvocationRecursive(allocator, flow.continuations, empty_path, invocation) orelse {
+            std.debug.print("[QUERY TRANSFORM] WARNING: Could not find query invocation in continuations\n", .{});
+            @panic("query transform: nested invocation not found");
+        };
+
+        // Create a switch_result node with NamedBranch entries for each result variant
+        // The user's continuations become the branch bodies
+
+        // Find row/empty/err continuations from the parent
+        var row_cont: ?*const ast.Continuation = null;
+        var empty_cont: ?*const ast.Continuation = null;
+        var err_cont: ?*const ast.Continuation = null;
+
+        for (search_result.parent_cont.continuations) |*cont| {
+            if (std.mem.eql(u8, cont.branch, "row")) {
+                row_cont = cont;
+            } else if (std.mem.eql(u8, cont.branch, "empty")) {
+                empty_cont = cont;
+            } else if (std.mem.eql(u8, cont.branch, "err")) {
+                err_cont = cont;
+            }
+        }
+
+        // Count how many branches we have
+        var branch_count: usize = 0;
+        if (row_cont != null) branch_count += 1;
+        if (empty_cont != null) branch_count += 1;
+        if (err_cont != null) branch_count += 1;
+
+        // Build NamedBranch array
+        const branches = allocator.alloc(ast.NamedBranch, branch_count) catch unreachable;
+        var branch_idx: usize = 0;
+
+        if (row_cont) |rc| {
+            const body = allocator.alloc(ast.Continuation, 1) catch unreachable;
+            body[0] = rc.*;
+            branches[branch_idx] = .{
+                .name = "row",
+                .body = body,
+                .binding = rc.binding,
+            };
+            branch_idx += 1;
+        }
+
+        if (empty_cont) |ec| {
+            const body = allocator.alloc(ast.Continuation, 1) catch unreachable;
+            body[0] = ec.*;
+            branches[branch_idx] = .{
+                .name = "empty",
+                .body = body,
+                .binding = ec.binding,
+            };
+            branch_idx += 1;
+        }
+
+        if (err_cont) |erc| {
+            const body = allocator.alloc(ast.Continuation, 1) catch unreachable;
+            body[0] = erc.*;
+            branches[branch_idx] = .{
+                .name = "err",
+                .body = body,
+                .binding = erc.binding,
+            };
+            branch_idx += 1;
+        }
+
+        // Create switch_result node
+        const switch_node = ast.Node{ .switch_result = .{
+            .expression = inline_code,
+            .branches = branches,
+        } };
+
+        // Replace the invocation node at the path with the switch_result node
+        var modified_flow = ast_functional.replacePipelineStepAtPath(
+            allocator,
+            flow,
+            search_result.path,
+            0, // step_idx
+            switch_node,
+        ) catch unreachable;
+
+        // Filter out the row/empty/err continuations from the parent - they're now inside switch_result
+        const keepNotQueryBranch = struct {
+            fn check(branch: []const u8) bool {
+                return !std.mem.eql(u8, branch, "row") and
+                       !std.mem.eql(u8, branch, "empty") and
+                       !std.mem.eql(u8, branch, "err");
+            }
+        }.check;
+
+        modified_flow = ast_functional.filterNestedContinuationsAtPath(
+            allocator,
+            &modified_flow,
+            search_result.path,
+            &keepNotQueryBranch,
+        ) catch unreachable;
+
+        // Create the new item
+        const new_item = if (item.* == .subflow_impl) blk: {
+            var new_subflow = item.subflow_impl;
+            new_subflow.body = .{ .flow = modified_flow };
+            break :blk ast.Item{ .subflow_impl = new_subflow };
+        } else ast.Item{ .flow = modified_flow };
+
+        // Replace in program
+        const maybe_new_program = ast_functional.replaceFlowRecursive(allocator, program, flow, new_item) catch unreachable;
+        if (maybe_new_program) |new_program| {
+            const result = allocator.create(ast.Program) catch unreachable;
+            result.* = new_program;
+            return .{ .transformed = .{ .program = result } };
+        }
+        std.debug.print("ERROR: ~query transform (nested) failed - flow not found in program\n", .{});
+        @panic("query transform: flow not found");
     }
 }
 
