@@ -1,0 +1,8 @@
+.{
+    .name = "koru-gzip",
+    .version = "0.0.1",
+    .paths = .{
+        "index.kz",
+        "build.zon",
+    },
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@korulang/gzip",
+  "version": "0.0.1",
+  "description": "Gzip compression for Koru - compile-time or runtime",
+  "keywords": ["koru", "korulang", "gzip", "compression", "deflate", "zig"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "gzip"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}

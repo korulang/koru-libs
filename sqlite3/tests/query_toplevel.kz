@@ -1,0 +1,14 @@
+// Test: Top-level query with Source block syntax
+// This tests the simpler case where query IS the flow's invocation
+
+~import "$libs/sqlite3"
+~import "$std/io"
+
+// First open and setup the database, storing conn for later
+~libs.sqlite3:open(path: ":memory:")
+| db d |> libs.sqlite3:exec(d.conn, "CREATE TABLE users (id INTEGER, name TEXT)")
+    | ok |> libs.sqlite3:exec(d.conn, "INSERT INTO users VALUES (42, 'Alice')")
+        | ok |> std.io:print.ln("Database setup complete")
+        | err _ |> std.io:print.ln("Insert error")
+    | err _ |> std.io:print.ln("Create error")
+| err _ |> std.io:print.ln("Open error")

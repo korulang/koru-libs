@@ -1,0 +1,30 @@
+// Example: Testing @korulang/gzip
+//
+// Run from ~/src/koru-libs/examples with: koruc gzip_test.kz
+
+~import "$std/io"
+~import "$koru/gzip"
+
+const std = @import("std");
+
+const test_data = "Hello, World! This is a test of gzip compression. " ++
+    "Repeated text compresses well. Repeated text compresses well. " ++
+    "Repeated text compresses well. Repeated text compresses well.";
+
+// Test compression
+~koru.gzip:compress_bytes(data: test_data, allocator: std.heap.page_allocator)
+| ok c |>
+    std.io:print.ln("Compression successful!")
+    |> report_stats(compressed: c.data)
+| error |>
+    std.io:print.ln("Compression failed")
+
+// Report compression stats
+~event report_stats { compressed: []const u8 }
+
+~proc report_stats {
+    std.debug.print("Original: {} bytes\n", .{test_data.len});
+    std.debug.print("Compressed: {} bytes\n", .{compressed.len});
+    const ratio = @as(f64, @floatFromInt(compressed.len)) / @as(f64, @floatFromInt(test_data.len)) * 100.0;
+    std.debug.print("Ratio: {d:.1}%\n", .{ratio});
+}
