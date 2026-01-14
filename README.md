@@ -8,7 +8,7 @@ Official ecosystem packages for the [Koru programming language](https://github.c
 |---------|-----|-------------|
 | [sqlite3](./sqlite3) | `@korulang/sqlite3` | SQLite bindings with phantom obligations |
 | docker | `@korulang/docker` | Docker DSL for images and containers (planned) |
-| orisha | `@korulang/orisha` | Web framework (planned) |
+| [gzip](./gzip) | `@korulang/gzip` | Gzip compression for Koru - compile-time or runtime |
 
 ## Development
 
@@ -27,7 +27,7 @@ Then import:
 ```koru
 ~import "$koru/sqlite3"
 ~import "$koru/docker"
-~import "$koru/orisha"
+~import "$koru/gzip"
 ```
 
 ## Publishing
