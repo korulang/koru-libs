@@ -1,0 +1,17 @@
+// Example 3: Error handling
+//
+// Show different ways to handle HTTP errors
+
+~import "$koru/curl"
+~import "$std/io"
+
+~koru.curl:get(url: "https://api.example.com/does-not-exist", allocator: std.heap.page_allocator)
+| response r =>
+    ~std.io:print.ln("Success! Got response")
+    ~std.io:print.ln("Status: {d}", args: [r.response.status])
+    ~koru.curl:close(resp: r)
+    | closed _ =>
+        ~std.io:print.ln("Closed")
+| error e =>
+    ~std.io:print.ln("HTTP Error: {s}", args: [e.data.msg])
+    ~std.io:print.ln("Error code: {d}", args: [e.data.code])

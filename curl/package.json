@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/curl",
+  "version": "0.0.1",
+  "description": "Type-safe libcurl wrapper with phantom obligation types",
+  "keywords": ["koru", "korulang", "curl", "libcurl", "http", "rest", "api"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/curl"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["curl"]
+    }
+  }
+}

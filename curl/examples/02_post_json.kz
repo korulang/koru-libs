@@ -1,0 +1,21 @@
+// Example 2: POST request with JSON
+//
+// Send JSON data to an API endpoint
+
+~import "$koru/curl"
+~import "$std/io"
+
+const data = "{ \"name\": \"Koru\", \"stars\": 5 }"
+
+~koru.curl:post(url: "https://api.example.com/comments", body: data, headers: [ .{
+    .key = "Content-Type",
+    .val = "application/json",
+} ], allocator: std.heap.page_allocator)
+| response r =>
+    ~std.io:print.ln("Posted! Status: {d}", args: [r.response.status])
+    ~std.io:print.ln("Response: {s}", args: [r.response.body])
+    ~koru.curl:close(resp: r)
+    | closed _ =>
+        ~std.io:print.ln("Done")
+| error e =>
+    ~std.io:print.ln("POST failed: {s}", args: [e.data.msg])

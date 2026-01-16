@@ -1,0 +1,13 @@
+// Example 1: Simple GET request
+// Auto-discharge handles cleanup - no explicit close needed!
+
+~import "$koru/curl"
+~import "$std/io"
+
+const std = @import("std");
+
+~koru.curl:get(url: "https://httpbin.org/get", allocator: std.heap.page_allocator)
+| ok r |>
+    std.io:print.ln("Status: {{ r.resp.status }}")
+    |> std.io:print.ln("Body: {{ r.resp.body:s }}")
+| err e |> std.io:print.ln("Error: {{ e.msg:s }}")
