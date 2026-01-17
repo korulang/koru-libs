@@ -56,11 +56,14 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 // GET Request
 // ============================================================================
 
-~pub event get { url: []const u8, allocator: std.mem.Allocator }
-| ok { resp: *Response[open!] }
+~pub event get { url: []const u8, allocator: ?std.mem.Allocator }
+| ok *Response[open!]
 | err Error
 
 ~proc get {
+    // Use provided allocator or default to page_allocator
+    const alloc = allocator orelse std.heap.page_allocator;
+
     const handle = c.curl_easy_init();
     if (handle == null) {
         return .{ .err = .{ .code = @intCast(c.CURLE_FAILED_INIT), .msg = "Failed to initialize curl" } };
@@ -74,7 +77,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     // Response buffer with allocator context
     var write_ctx = WriteContext{
         .buffer = std.ArrayListUnmanaged(u8){},
-        .allocator = allocator,
+        .allocator = alloc,
     };
 
     _ = c.curl_easy_setopt(handle, c.CURLOPT_WRITEFUNCTION, writeCallback);
@@ -83,8 +86,8 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     // Perform request
     const result = c.curl_easy_perform(handle);
     if (result != c.CURLE_OK) {
-        write_ctx.buffer.deinit(allocator);
-        return .{ .err = curlError(result, allocator) };
+        write_ctx.buffer.deinit(alloc);
+        return .{ .err = curlError(result, alloc) };
     }
 
     // Get HTTP status code
@@ -92,30 +95,33 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     _ = c.curl_easy_getinfo(handle, c.CURLINFO_RESPONSE_CODE, &http_code);
 
     // Create response
-    const resp = allocator.create(Response) catch {
-        write_ctx.buffer.deinit(allocator);
+    const resp = alloc.create(Response) catch {
+        write_ctx.buffer.deinit(alloc);
         _ = c.curl_easy_cleanup(handle);
         return .{ .err = .{ .code = -1, .msg = "allocation failed" } };
     };
     resp.* = .{
         .handle = handle,
-        .allocator = allocator,
+        .allocator = alloc,
         .status = @intCast(http_code),
-        .body = write_ctx.buffer.toOwnedSlice(allocator) catch &[_]u8{},
+        .body = write_ctx.buffer.toOwnedSlice(alloc) catch &[_]u8{},
     };
 
-    return .{ .ok = .{ .resp = resp } };
+    return .{ .ok = resp };
 }
 
 // ============================================================================
 // POST Request
 // ============================================================================
 
-~pub event post { url: []const u8, body: []const u8, allocator: std.mem.Allocator }
-| ok { resp: *Response[open!] }
+~pub event post { url: []const u8, body: []const u8, allocator: ?std.mem.Allocator }
+| ok *Response[open!]
 | err Error
 
 ~proc post {
+    // Use provided allocator or default to page_allocator
+    const alloc = allocator orelse std.heap.page_allocator;
+
     const handle = c.curl_easy_init();
     if (handle == null) {
         return .{ .err = .{ .code = @intCast(c.CURLE_FAILED_INIT), .msg = "Failed to initialize curl" } };
@@ -131,7 +137,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     // Response buffer with allocator context
     var write_ctx = WriteContext{
         .buffer = std.ArrayListUnmanaged(u8){},
-        .allocator = allocator,
+        .allocator = alloc,
     };
 
     _ = c.curl_easy_setopt(handle, c.CURLOPT_WRITEFUNCTION, writeCallback);
@@ -140,8 +146,8 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     // Perform request
     const result = c.curl_easy_perform(handle);
     if (result != c.CURLE_OK) {
-        write_ctx.buffer.deinit(allocator);
-        return .{ .err = curlError(result, allocator) };
+        write_ctx.buffer.deinit(alloc);
+        return .{ .err = curlError(result, alloc) };
     }
 
     // Get HTTP status code
@@ -149,19 +155,19 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     _ = c.curl_easy_getinfo(handle, c.CURLINFO_RESPONSE_CODE, &http_code);
 
     // Create response
-    const resp = allocator.create(Response) catch {
-        write_ctx.buffer.deinit(allocator);
+    const resp = alloc.create(Response) catch {
+        write_ctx.buffer.deinit(alloc);
         _ = c.curl_easy_cleanup(handle);
         return .{ .err = .{ .code = -1, .msg = "allocation failed" } };
     };
     resp.* = .{
         .handle = handle,
-        .allocator = allocator,
+        .allocator = alloc,
         .status = @intCast(http_code),
-        .body = write_ctx.buffer.toOwnedSlice(allocator) catch &[_]u8{},
+        .body = write_ctx.buffer.toOwnedSlice(alloc) catch &[_]u8{},
     };
 
-    return .{ .ok = .{ .resp = resp } };
+    return .{ .ok = resp };
 }
 
 // ============================================================================

@@ -1,20 +1,21 @@
 // Example 1: Simple GET request
 //
+// 100% PURE KORU - No Zig imports needed!
+//
 // Demonstrates:
 // - HTTP GET with koru.curl
 // - Phantom obligation [open!] enforces cleanup
 // - Auto-discharge inserts close() automatically
 // - print.blk for multi-line formatted output
+// - Optional allocator parameter (defaults to page_allocator)
 
 ~import "$koru/curl"
 ~import "$std/io"
 
-const std = @import("std");
-
-~koru.curl:get(url: "https://httpbin.org/get", allocator: std.heap.page_allocator)
+~koru.curl:get(url: "https://httpbin.org/get")
 | ok r |> std.io:print.blk {
     === HTTP Response ===
-    Status: {{ r.resp.status }}
-    Body length: {{ r.resp.body.len }}
+    Status: {{ r.status }}
+    Body length: {{ r.body.len }}
     }
 | err e |> std.io:print.ln("Error: {{ e.msg:s }}")
