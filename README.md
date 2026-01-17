@@ -1,5 +1,11 @@
 # Koru Libraries
 
+**WARNING: This is a work in progress and is not yet ready for production use.**
+
+**KORU IS CURRENTLY A TODDLER AND IS NOT READY FOR PRODUCTION USE.**
+
+Implementation Status: [Koru Status](https://www.korulang.org/status).
+
 Official ecosystem packages for the [Koru programming language](https://github.com/korulang/koru).
 
 ## Packages
