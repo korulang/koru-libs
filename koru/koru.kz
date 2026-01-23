@@ -164,8 +164,8 @@ fn run(source: []const u8, source_name: []const u8, allocator: std.mem.Allocator
         .allocator = arena_alloc,
         .dispatcher = &main_module.dispatch_koru,
         .cost_fn = &main_module.get_event_cost_koru,
-        .creates_obligation_fn = &main_module.get_creates_obligation_koru,
-        .discharges_obligation_fn = &main_module.get_discharges_obligation_koru,
+        .creates_obligations_fn = &main_module.get_creates_obligations_koru,
+        .discharges_obligations_fn = &main_module.get_discharges_obligations_koru,
         .discharge_event_fn = &main_module.get_discharge_event_koru,
         .budget = null,  // No budget limit for now
         .handle_pool = null,  // No handle tracking for now
