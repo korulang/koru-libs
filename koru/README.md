@@ -138,3 +138,104 @@ Send ONE flow:
 ```
 
 ONE request, ONE response. The continuation semantics mean the client describes the WHOLE computation.
+
+## Budgeted Execution
+
+Events have costs. Execution has limits. Like Ethereum gas, but for your API.
+
+### Scope Registration with Costs
+
+```koru
+~std.runtime:register(scope: "api") {
+    fs:open(10) -> opened    // costs 10, creates "opened" obligation
+    fs:read(5)               // costs 5, no obligations
+    fs:close(1) <- opened    // costs 1, discharges "opened"
+    db:query(50)             // costs 50
+}
+```
+
+### Running with a Budget
+
+```koru
+~std.interpreter:run(
+    source: user_code,
+    dispatcher: d,
+    cost_fn: get_event_cost_api,
+    budget: 100
+)
+| result r   |> // completed: r.value, r.used (budget consumed)
+| exhausted e |> // ran out: e.used, e.last_event
+```
+
+### What This Enables
+
+- **Rate limiting**: Map budget to token bucket per user
+- **Cost transparency**: Users see exactly what operations cost
+- **Resource protection**: Prevent runaway scripts from exhausting resources
+- **Tier differentiation**: Free users get 1000 budget, premium gets 50000
+
+## Handle Pool & Obligations
+
+Resources that need cleanup (files, connections, locks) are tracked automatically.
+
+### Obligation Syntax
+
+```koru
+event(cost) -> state     // Creates obligation (e.g., file opened)
+event(cost) <- state     // Discharges obligation (e.g., file closed)
+```
+
+### Auto-Discharge
+
+At request end, any undischarged handles are reported:
+
+```
+[AUTO-DISCHARGE] Handle 'h1' with obligation 'opened'
+```
+
+The integration layer (Orisha, shell) can then call the appropriate cleanup events.
+
+## Bridges: Persistent Sessions
+
+For multi-turn interactions (REPL, chat, long-running sessions), use the Bridge library.
+
+### What Bridges Provide
+
+| Feature | Description |
+|---------|-------------|
+| **Session persistence** | Handle pool survives across requests |
+| **Token bucket** | Budget refills over time based on user tier |
+| **User tiers** | free (1k/10s), basic (5k/50s), premium (50k/1000s), unlimited |
+
+### Bridge Usage Pattern
+
+```zig
+const bridge_lib = @import("bridge");
+var manager = bridge_lib.BridgeManager.init(allocator);
+
+// Get/create session
+var bridge = try manager.getOrCreate("session-123", .premium);
+bridge.refillBudget();  // Token bucket refill
+
+// Run with bridge's persistent handle pool
+const result = interpreter.run(
+    source, dispatcher, cost_fn, ...,
+    bridge.availableBudget(),
+    &bridge.handle_pool,  // Handles persist!
+);
+
+// Update bridge state
+bridge.consumeBudget(result.used);
+
+// End session - get handles for cleanup
+if (manager.end("session-123")) |handles| {
+    for (handles) |h| { /* call discharge event */ }
+}
+```
+
+### Use Cases
+
+- **Orisha**: Web server with per-user sessions and rate limiting
+- **Shell/REPL**: Interactive sessions with persistent state
+- **CLI tools**: Long-running daemons with stateful bridges
+- **LLM tool calling**: Track resources across multi-turn conversations
