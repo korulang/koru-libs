@@ -26,19 +26,15 @@ const std = @import("std");
 // Removing events = removing capabilities. Simple.
 
 ~pub event print { text: []const u8 }
-| done {}
 
 ~proc print {
     std.debug.print("{s}", .{text});
-    return .{ .done = .{} };
 }
 
 ~pub event println { text: []const u8 }
-| done {}
 
 ~proc println {
     std.debug.print("{s}\n", .{text});
-    return .{ .done = .{} };
 }
 
 // ============================================================================
@@ -169,10 +165,49 @@ fn run(source: []const u8, source_name: []const u8, allocator: std.mem.Allocator
         .dispatcher = &main_module.dispatch_koru,
     };
 
-    _ = interpreter_mod.executeFlow(flow_to_run.?, &ctx) catch |err| {
+    const result = interpreter_mod.executeFlow(flow_to_run.?, &ctx) catch |err| {
         printError("Execution error: {s}", .{@errorName(err)});
         return;
     };
+
+    // Output result as JSON if there are fields
+    if (result.fields.len > 0) {
+        printResultJson(result);
+    }
+}
+
+fn printResultJson(result: @import("root").koru_std.interpreter.Value) void {
+    // Build JSON string manually and use debug.print (avoids Zig 0.15 writer() API issues)
+    std.debug.print("{{\"branch\":\"{s}\",\"fields\":{{", .{result.branch});
+
+    for (result.fields, 0..) |field, i| {
+        if (i > 0) std.debug.print(",", .{});
+
+        std.debug.print("\"{s}\":", .{field.name});
+
+        switch (field.value) {
+            .string_val => |s| {
+                // Simple JSON string output (basic escaping)
+                std.debug.print("\"", .{});
+                for (s) |c| {
+                    switch (c) {
+                        '"' => std.debug.print("\\\"", .{}),
+                        '\\' => std.debug.print("\\\\", .{}),
+                        '\n' => std.debug.print("\\n", .{}),
+                        '\r' => std.debug.print("\\r", .{}),
+                        '\t' => std.debug.print("\\t", .{}),
+                        else => std.debug.print("{c}", .{c}),
+                    }
+                }
+                std.debug.print("\"", .{});
+            },
+            .int_val => |n| std.debug.print("{d}", .{n}),
+            .float_val => |f| std.debug.print("{d}", .{f}),
+            .bool_val => |b| std.debug.print("{}", .{b}),
+        }
+    }
+
+    std.debug.print("}}}}\n", .{});
 }
 
 fn printUsage() void {

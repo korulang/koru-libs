@@ -1,0 +1,4 @@
+// Test: While loop with state updates (void chaining)
+~while(x < 3 in { x: 0 })
+| continue c |> println(text: c.x) |> continued { x: c.x + 1 }
+| done c |> println(text: "PASS: while loop works")

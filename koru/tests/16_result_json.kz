@@ -1,0 +1,4 @@
+// Test: Final result returned as JSON (void chaining)
+~while(n < 3 in { n: 0 })
+| continue c |> continued { n: c.n + 1 }
+| done c |> println(text: "PASS: result JSON works") |> result { total: c.n }

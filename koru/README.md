@@ -45,6 +45,43 @@ The default `koru` interpreter provides:
 | `print` | Print text (no newline) |
 | `println` | Print text with newline |
 
+## Control Flow
+
+The interpreter handles control flow constructs specially:
+
+### Conditionals
+
+```koru
+~if(x > 5)
+| then |> println(text: "big")
+| else |> println(text: "small")
+```
+
+### For Loops
+
+```koru
+~for(0..5)
+| each i |> println(text: i)
+| done |> println(text: "finished")
+```
+
+### While Loops (with state)
+
+```koru
+~while(x < 5 in { x: 0 })
+| continue c |>
+    println(text: c.x)
+    | done |> continued { x: c.x + 1 }
+| done c |>
+    println(text: "finished")
+```
+
+The while loop:
+- Takes an initial state `{ x: 0 }`
+- Binds current state to `c` in the `| continue |` branch
+- Updates state via `continued { x: c.x + 1 }` branch constructor
+- Exits to `| done |` when condition becomes false
+
 ## Creating Custom Interpreters
 
 The power of Koru's interpreter model is that you can create **bespoke interpreters** with different capability levels:

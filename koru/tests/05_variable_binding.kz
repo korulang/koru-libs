@@ -1,3 +1,2 @@
-// Test: Variable binding in branches
-~println(text: "hello")
-| done d |> println(text: "PASS: variable binding works")
+// Test: Multiple void event chain
+~println(text: "hello") |> println(text: "world") |> println(text: "PASS: multiple chain works")

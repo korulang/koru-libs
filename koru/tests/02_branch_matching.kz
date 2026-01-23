@@ -1,3 +1,2 @@
-// Test: Branch matching
-~println(text: "testing")
-| done |> println(text: "PASS: branch matching works")
+// Test: Void event chaining
+~println(text: "testing") |> println(text: "PASS: void chaining works")
