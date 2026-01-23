@@ -163,7 +163,10 @@ fn run(source: []const u8, source_name: []const u8, allocator: std.mem.Allocator
         .expr_bindings = &expr_bindings,
         .allocator = arena_alloc,
         .dispatcher = &main_module.dispatch_koru,
-        .cost_fn = &main_module.get_event_cost_koru,  // Use scope's cost lookup
+        .cost_fn = &main_module.get_event_cost_koru,
+        .creates_obligation_fn = &main_module.get_creates_obligation_koru,
+        .discharges_obligation_fn = &main_module.get_discharges_obligation_koru,
+        .discharge_event_fn = &main_module.get_discharge_event_koru,
         .budget = null,  // No budget limit for now
         .handle_pool = null,  // No handle tracking for now
     };
