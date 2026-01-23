@@ -1,18 +1,19 @@
 # @koru/bridge
 
-Persistent session management for metered Koru execution.
+Persistent session management for Koru execution.
 
 ## Overview
 
 A **bridge** holds state across interpreter invocations:
 
+- **Session ID** - Unique identifier for the session
 - **Handle pool** - Tracks undischarged resources (open files, connections, etc.)
-- **Budget tracking** - Token bucket with automatic refill
-- **Configurable limits** - You define capacity and refill rates
+
+Budget/rate limiting is the **host application's concern**, not the bridge's job.
 
 ## Use Cases
 
-- **Multi-tenant services** (Orisha) - Isolate sessions, enforce quotas
+- **Multi-tenant services** (Orisha) - Isolate sessions per user
 - **Interactive shells/REPLs** - Maintain state across commands
 - **LLM tool-calling** - Persistent context for AI agents
 - **Any long-running process** - Session isolation with resource tracking
@@ -32,49 +33,29 @@ const bridge = @import("bridge");
 var manager = bridge.BridgeManager.init(allocator);
 defer manager.deinit();
 
-// Define your own budget config
-const config = bridge.BudgetConfig{
-    .capacity = 10000,     // max tokens
-    .refill_rate = 100,    // tokens per second
-};
-// Or use unlimited: bridge.BudgetConfig.unlimited
-
 // Get or create a session
-var session = try manager.getOrCreate("user-123", config);
-
-// Apply token bucket refill (call before each request)
-session.refillBudget();
-
-// Get available budget
-const budget = session.availableBudget();  // null = unlimited
+var session = try manager.getOrCreate("user-123");
 
 // Run interpreter with session's handle pool
 var ctx = interpreter.InterpreterContext{
     // ... other fields ...
-    .budget = budget,
     .handle_pool = &session.handle_pool,
 };
 
 const result = try interpreter.executeFlow(flow, &ctx);
-
-// Update session state
-session.consumeBudget(result.budget_used);
 ```
 
 ## Session Lifecycle
 
 ```
-1. getOrCreate("session-id", tier)  → Creates or retrieves session
-2. refillBudget()                   → Apply token bucket refill
-3. availableBudget()                → Get tokens available
-4. [run interpreter]               → Pass session.handle_pool
-5. consumeBudget(used)              → Record consumption
-6. end("session-id")                → Cleanup, returns undischarged handles
+1. getOrCreate("session-id")  → Creates or retrieves session
+2. [run interpreter]          → Pass session.handle_pool
+3. end("session-id")          → Cleanup, returns undischarged handles
 ```
 
 ## Automatic Resource Cleanup
 
-When a session ends (logout, timeout, budget exhaustion), the bridge returns all undischarged handles so the host can call cleanup events:
+When a session ends, the bridge returns all undischarged handles so the host can call cleanup events:
 
 ```zig
 // End session - get handles that need cleanup
@@ -119,7 +100,6 @@ For convenience, the bridge module re-exports commonly used interpreter types:
                         ▼
 ┌─────────────────────────────────────────────────┐
 │              Koru Interpreter                   │
-│  - Budget enforcement                           │
 │  - Handle tracking                              │
 │  - Obligation discharge                         │
 └─────────────────────────────────────────────────┘

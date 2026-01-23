@@ -1,11 +1,13 @@
-// @koru/bridge - Persistent Sessions for Metered Execution
+// @koru/bridge - Persistent Sessions for Koru Execution
 //
 // A bridge holds state across interpreter invocations:
+// - Session ID (for identification)
 // - Handle pool (undischarged resources/obligations)
-// - Budget tracking (with token bucket refill)
-// - User tier (determines refill rate)
 //
-// This is INFRASTRUCTURE for hosting the Koru interpreter in:
+// Budget/rate limiting is the HOST APPLICATION'S concern, not the bridge's.
+// The bridge just holds session state.
+//
+// Use cases:
 // - Multi-tenant services (Orisha)
 // - Interactive shells and REPLs
 // - LLM tool-calling environments
@@ -16,10 +18,8 @@
 //
 //   // In your host application's Zig code:
 //   var manager = bridge.BridgeManager.init(allocator);
-//   var session = try manager.getOrCreate("user-123", .premium);
-//   session.refillBudget();
+//   var session = try manager.getOrCreate("user-123");
 //   // ... run interpreter with session.handle_pool ...
-//   session.consumeBudget(result.used);
 
 ~[runtime]
 
@@ -30,22 +30,8 @@ const std = @import("std");
 // Re-export interpreter types for convenience
 pub const HandlePool = @import("root").koru_std.interpreter.HandlePool;
 pub const Handle = @import("root").koru_std.interpreter.Handle;
-pub const BudgetState = @import("root").koru_std.interpreter.BudgetState;
 pub const Value = @import("root").koru_std.interpreter.Value;
 pub const InterpreterContext = @import("root").koru_std.interpreter.InterpreterContext;
-
-// ============================================================================
-// BUDGET CONFIG - Caller provides their own limits
-// ============================================================================
-
-pub const BudgetConfig = struct {
-    /// Maximum tokens (null = unlimited)
-    capacity: ?u64,
-    /// Tokens restored per second
-    refill_rate: u64,
-
-    pub const unlimited = BudgetConfig{ .capacity = null, .refill_rate = 0 };
-};
 
 // ============================================================================
 // BRIDGE - A single persistent session
@@ -56,61 +42,19 @@ pub const Bridge = struct {
     id: []const u8,
     /// Resource handles with obligations (persists across calls)
     handle_pool: HandlePool,
-    /// Budget consumed so far (token bucket tracks this)
-    budget_used: u64,
-    /// Budget configuration (capacity + refill rate)
-    config: BudgetConfig,
-    /// Timestamps for refill calculation
-    created_at: i64,
-    last_activity: i64,
     /// Allocator for internal allocations
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, id: []const u8, config: BudgetConfig) Bridge {
-        const now = std.time.timestamp();
+    pub fn init(allocator: std.mem.Allocator, id: []const u8) Bridge {
         return .{
             .id = allocator.dupe(u8, id) catch id,
             .handle_pool = HandlePool.init(allocator),
-            .budget_used = 0,
-            .config = config,
-            .created_at = now,
-            .last_activity = now,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Bridge) void {
         self.handle_pool.deinit();
-    }
-
-    /// Apply token bucket refill based on elapsed time
-    pub fn refillBudget(self: *Bridge) void {
-        if (self.config.capacity == null) return;  // unlimited
-
-        const now = std.time.timestamp();
-        const elapsed_secs: u64 = @intCast(@max(0, now - self.last_activity));
-        const refill_amount = elapsed_secs * self.config.refill_rate;
-
-        // Reduce used budget by refill (can't go below 0)
-        if (refill_amount >= self.budget_used) {
-            self.budget_used = 0;
-        } else {
-            self.budget_used -= refill_amount;
-        }
-
-        self.last_activity = now;
-    }
-
-    /// Get available budget (capacity - used)
-    pub fn availableBudget(self: *const Bridge) ?u64 {
-        const capacity = self.config.capacity orelse return null;
-        return capacity - @min(self.budget_used, capacity);
-    }
-
-    /// Record budget consumption after execution
-    pub fn consumeBudget(self: *Bridge, amount: u64) void {
-        self.budget_used += amount;
-        self.last_activity = std.time.timestamp();
     }
 
     /// Get handle count
@@ -148,14 +92,14 @@ pub const BridgeManager = struct {
     }
 
     /// Get or create a bridge for a session
-    pub fn getOrCreate(self: *BridgeManager, session_id: []const u8, config: BudgetConfig) !*Bridge {
+    pub fn getOrCreate(self: *BridgeManager, session_id: []const u8) !*Bridge {
         if (self.bridges.getPtr(session_id)) |bridge| {
             return bridge;
         }
 
         // Create new bridge
         const id_copy = try self.allocator.dupe(u8, session_id);
-        const bridge = Bridge.init(self.allocator, id_copy, config);
+        const bridge = Bridge.init(self.allocator, id_copy);
         try self.bridges.put(id_copy, bridge);
         return self.bridges.getPtr(id_copy).?;
     }
