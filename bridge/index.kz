@@ -35,32 +35,16 @@ pub const Value = @import("root").koru_std.interpreter.Value;
 pub const InterpreterContext = @import("root").koru_std.interpreter.InterpreterContext;
 
 // ============================================================================
-// USER TIERS - Determines budget capacity and refill rate
+// BUDGET CONFIG - Caller provides their own limits
 // ============================================================================
 
-pub const UserTier = enum {
-    free,       // 1000 capacity, 10/sec refill
-    basic,      // 5000 capacity, 50/sec refill
-    premium,    // 50000 capacity, 1000/sec refill
-    unlimited,  // No limits
+pub const BudgetConfig = struct {
+    /// Maximum tokens (null = unlimited)
+    capacity: ?u64,
+    /// Tokens restored per second
+    refill_rate: u64,
 
-    pub fn getCapacity(self: UserTier) ?u64 {
-        return switch (self) {
-            .free => 1000,
-            .basic => 5000,
-            .premium => 50000,
-            .unlimited => null,
-        };
-    }
-
-    pub fn getRefillRate(self: UserTier) u64 {
-        return switch (self) {
-            .free => 10,      // 10 tokens per second
-            .basic => 50,     // 50 tokens per second
-            .premium => 1000, // 1000 tokens per second
-            .unlimited => 0,  // N/A
-        };
-    }
+    pub const unlimited = BudgetConfig{ .capacity = null, .refill_rate = 0 };
 };
 
 // ============================================================================
@@ -74,21 +58,21 @@ pub const Bridge = struct {
     handle_pool: HandlePool,
     /// Budget consumed so far (token bucket tracks this)
     budget_used: u64,
-    /// User tier determines capacity and refill rate
-    tier: UserTier,
+    /// Budget configuration (capacity + refill rate)
+    config: BudgetConfig,
     /// Timestamps for refill calculation
     created_at: i64,
     last_activity: i64,
     /// Allocator for internal allocations
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, id: []const u8, tier: UserTier) Bridge {
+    pub fn init(allocator: std.mem.Allocator, id: []const u8, config: BudgetConfig) Bridge {
         const now = std.time.timestamp();
         return .{
             .id = allocator.dupe(u8, id) catch id,
             .handle_pool = HandlePool.init(allocator),
             .budget_used = 0,
-            .tier = tier,
+            .config = config,
             .created_at = now,
             .last_activity = now,
             .allocator = allocator,
@@ -101,11 +85,11 @@ pub const Bridge = struct {
 
     /// Apply token bucket refill based on elapsed time
     pub fn refillBudget(self: *Bridge) void {
-        if (self.tier == .unlimited) return;
+        if (self.config.capacity == null) return;  // unlimited
 
         const now = std.time.timestamp();
         const elapsed_secs: u64 = @intCast(@max(0, now - self.last_activity));
-        const refill_amount = elapsed_secs * self.tier.getRefillRate();
+        const refill_amount = elapsed_secs * self.config.refill_rate;
 
         // Reduce used budget by refill (can't go below 0)
         if (refill_amount >= self.budget_used) {
@@ -119,7 +103,7 @@ pub const Bridge = struct {
 
     /// Get available budget (capacity - used)
     pub fn availableBudget(self: *const Bridge) ?u64 {
-        const capacity = self.tier.getCapacity() orelse return null;
+        const capacity = self.config.capacity orelse return null;
         return capacity - @min(self.budget_used, capacity);
     }
 
@@ -164,14 +148,14 @@ pub const BridgeManager = struct {
     }
 
     /// Get or create a bridge for a session
-    pub fn getOrCreate(self: *BridgeManager, session_id: []const u8, tier: UserTier) !*Bridge {
+    pub fn getOrCreate(self: *BridgeManager, session_id: []const u8, config: BudgetConfig) !*Bridge {
         if (self.bridges.getPtr(session_id)) |bridge| {
             return bridge;
         }
 
         // Create new bridge
         const id_copy = try self.allocator.dupe(u8, session_id);
-        const bridge = Bridge.init(self.allocator, id_copy, tier);
+        const bridge = Bridge.init(self.allocator, id_copy, config);
         try self.bridges.put(id_copy, bridge);
         return self.bridges.getPtr(id_copy).?;
     }

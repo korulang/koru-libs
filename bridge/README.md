@@ -8,7 +8,7 @@ A **bridge** holds state across interpreter invocations:
 
 - **Handle pool** - Tracks undischarged resources (open files, connections, etc.)
 - **Budget tracking** - Token bucket with automatic refill
-- **User tier** - Determines capacity and refill rate
+- **Configurable limits** - You define capacity and refill rates
 
 ## Use Cases
 
@@ -16,15 +16,6 @@ A **bridge** holds state across interpreter invocations:
 - **Interactive shells/REPLs** - Maintain state across commands
 - **LLM tool-calling** - Persistent context for AI agents
 - **Any long-running process** - Session isolation with resource tracking
-
-## User Tiers
-
-| Tier      | Capacity | Refill Rate |
-|-----------|----------|-------------|
-| free      | 1,000    | 10/sec      |
-| basic     | 5,000    | 50/sec      |
-| premium   | 50,000   | 1,000/sec   |
-| unlimited | -        | -           |
 
 ## Usage
 
@@ -41,8 +32,15 @@ const bridge = @import("bridge");
 var manager = bridge.BridgeManager.init(allocator);
 defer manager.deinit();
 
+// Define your own budget config
+const config = bridge.BudgetConfig{
+    .capacity = 10000,     // max tokens
+    .refill_rate = 100,    // tokens per second
+};
+// Or use unlimited: bridge.BudgetConfig.unlimited
+
 // Get or create a session
-var session = try manager.getOrCreate("user-123", .premium);
+var session = try manager.getOrCreate("user-123", config);
 
 // Apply token bucket refill (call before each request)
 session.refillBudget();
