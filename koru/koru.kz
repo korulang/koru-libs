@@ -1,0 +1,199 @@
+// koru - The Koru Interpreter
+//
+// A sandboxed interpreter for Koru scripts. Scripts can ONLY call
+// events registered in the scope - capability-based security enforced
+// at compile time.
+//
+// Usage:
+//   koru script.kz
+//   echo '~println(text: "Hello!")' | koru
+//
+// Build:
+//   koruc koru.kz && cd output && zig build
+//   cp zig-out/bin/output /usr/local/bin/koru
+
+~[runtime]
+
+~import "$std/runtime"
+~import "$std/interpreter"
+
+const std = @import("std");
+
+// ============================================================================
+// EVENTS - What scripts can call
+// ============================================================================
+// This is the SECURITY BOUNDARY. Add events here to expand capabilities.
+// Removing events = removing capabilities. Simple.
+
+~pub event print { text: []const u8 }
+| done {}
+
+~proc print {
+    std.debug.print("{s}", .{text});
+    return .{ .done = .{} };
+}
+
+~pub event println { text: []const u8 }
+| done {}
+
+~proc println {
+    std.debug.print("{s}\n", .{text});
+    return .{ .done = .{} };
+}
+
+// ============================================================================
+// SCOPE REGISTRATION
+// ============================================================================
+
+~std.runtime:register(scope: "koru") {
+    print
+    println
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
+pub fn main() void {
+    const allocator = std.heap.page_allocator;
+
+    // Parse args
+    var args_iter = std.process.args();
+    _ = args_iter.skip(); // Skip program name
+
+    var source: []const u8 = undefined;
+    var source_name: []const u8 = "stdin";
+
+    // File or stdin?
+    if (args_iter.next()) |filename| {
+        // Check for --help or --version
+        if (std.mem.eql(u8, filename, "--help") or std.mem.eql(u8, filename, "-h")) {
+            printUsage();
+            return;
+        }
+        if (std.mem.eql(u8, filename, "--version") or std.mem.eql(u8, filename, "-v")) {
+            std.debug.print("koru 0.1.0\n", .{});
+            return;
+        }
+
+        source_name = filename;
+        const file = std.fs.cwd().openFile(filename, .{}) catch |err| {
+            printError("Cannot open '{s}': {}", .{ filename, err });
+            return;
+        };
+        defer file.close();
+
+        source = file.readToEndAlloc(allocator, 1024 * 1024 * 10) catch |err| {
+            printError("Cannot read '{s}': {}", .{ filename, err });
+            return;
+        };
+    } else {
+        // Read from stdin
+        const stdin = std.fs.File.stdin();
+        source = stdin.readToEndAlloc(allocator, 1024 * 1024 * 10) catch |err| {
+            printError("Cannot read stdin: {}", .{err});
+            return;
+        };
+
+        if (source.len == 0) {
+            printUsage();
+            return;
+        }
+    }
+
+    // Parse and execute
+    run(source, source_name, allocator);
+}
+
+fn run(source: []const u8, source_name: []const u8, allocator: std.mem.Allocator) void {
+    const koru_parser = @import("koru_parser");
+    const interpreter_mod = @import("root").koru_std.interpreter;
+
+    // Parse
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var parser = koru_parser.Parser.init(
+        arena_alloc,
+        source,
+        source_name,
+        &[_][]const u8{},
+        null
+    ) catch {
+        printError("Failed to initialize parser", .{});
+        return;
+    };
+    defer parser.deinit();
+
+    const parse_result = parser.parse() catch {
+        if (parser.reporter.hasErrors()) {
+            const err = parser.reporter.errors.items[0];
+            printError("{s}:{d}:{d}: {s}", .{
+                source_name,
+                err.location.line,
+                err.location.column,
+                err.message,
+            });
+        } else {
+            printError("Parse error", .{});
+        }
+        return;
+    };
+
+    // Find first flow
+    var flow_to_run: ?*const @import("koru_ast").Flow = null;
+    for (parse_result.source_file.items) |*item| {
+        if (item.* == .flow) {
+            flow_to_run = &item.flow;
+            break;
+        }
+    }
+
+    if (flow_to_run == null) {
+        printError("No flow found in {s}", .{source_name});
+        return;
+    }
+
+    // Execute
+    var env = interpreter_mod.Environment.init(arena_alloc);
+    defer env.deinit();
+
+    var expr_bindings = interpreter_mod.ExprBindings.init(arena_alloc);
+    defer expr_bindings.deinit();
+
+    var ctx = interpreter_mod.InterpreterContext{
+        .env = &env,
+        .expr_bindings = &expr_bindings,
+        .allocator = arena_alloc,
+        .dispatcher = &main_module.dispatch_koru,
+    };
+
+    _ = interpreter_mod.executeFlow(flow_to_run.?, &ctx) catch |err| {
+        printError("Execution error: {s}", .{@errorName(err)});
+        return;
+    };
+}
+
+fn printUsage() void {
+    std.debug.print(
+        \\koru - The Koru Interpreter
+        \\
+        \\Usage:
+        \\  koru <script.kz>              Run a Koru script
+        \\  echo '~println(...)' | koru   Run from stdin
+        \\
+        \\Options:
+        \\  -h, --help      Show this help
+        \\  -v, --version   Show version
+        \\
+        \\Examples:
+        \\  koru hello.kz
+        \\  echo '~println(text: "Hello!")' | koru
+        \\
+    , .{});
+}
+
+fn printError(comptime fmt: []const u8, args: anytype) void {
+    std.debug.print("error: " ++ fmt ++ "\n", args);
+}

@@ -1,0 +1,6 @@
+// Test: Chained events
+~print(text: "PA")
+| done |>
+    print(text: "SS")
+    | done |>
+        println(text: ": chained events work")

@@ -1,0 +1,4 @@
+// Test: For loop with variable access
+~for(1..4)
+| each i |> println(text: "counting")
+| done |> println(text: "PASS: for with variable works")

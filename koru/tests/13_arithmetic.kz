@@ -1,0 +1,4 @@
+// Test: Arithmetic in conditions
+~if(2 + 2 == 4)
+| then |> println(text: "PASS: arithmetic works")
+| else |> println(text: "FAIL")

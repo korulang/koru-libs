@@ -1,0 +1,4 @@
+// Test: For loop
+~for(0..3)
+| each i |> print(text: ".")
+| done |> println(text: " PASS: for loop works")

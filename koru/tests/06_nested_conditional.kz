@@ -1,0 +1,7 @@
+// Test: Nested conditionals
+~if(true)
+| then |>
+    if(true)
+    | then |> println(text: "PASS: nested conditional works")
+    | else |> println(text: "FAIL: inner else")
+| else |> println(text: "FAIL: outer else")

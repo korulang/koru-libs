@@ -1,0 +1,3 @@
+// Test: Branch matching
+~println(text: "testing")
+| done |> println(text: "PASS: branch matching works")

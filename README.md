@@ -8,6 +8,12 @@ Implementation Status: [Koru Status](https://www.korulang.org/status).
 
 Official ecosystem packages for the [Koru programming language](https://github.com/korulang/koru).
 
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| [koru](./koru) | Sandboxed interpreter with capability-based security |
+
 ## Packages
 
 | Package | npm | Description |

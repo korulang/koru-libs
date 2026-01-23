@@ -1,0 +1,7 @@
+// Test: Greater than comparison
+~for(0..5)
+| each i |>
+    if(i > 3)
+    | then |> println(text: "PASS: greater than works")
+    | else |> print(text: "")
+| done |>

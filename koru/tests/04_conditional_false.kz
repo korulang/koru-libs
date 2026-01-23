@@ -1,0 +1,4 @@
+// Test: Conditional false branch
+~if(false)
+| then |> println(text: "FAIL: took then branch")
+| else |> println(text: "PASS: conditional false works")

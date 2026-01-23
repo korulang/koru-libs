@@ -1,0 +1,3 @@
+// Test: Variable binding in branches
+~println(text: "hello")
+| done d |> println(text: "PASS: variable binding works")

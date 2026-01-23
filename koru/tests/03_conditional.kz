@@ -1,0 +1,4 @@
+// Test: Conditional (if)
+~if(true)
+| then |> println(text: "PASS: conditional works")
+| else |> println(text: "FAIL: took else branch")

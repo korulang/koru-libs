@@ -1,0 +1,7 @@
+// Test: Comparison in conditional
+~for(0..3)
+| each i |>
+    if(i == 1)
+    | then |> println(text: "PASS: comparison works")
+    | else |> print(text: "")
+| done |>
