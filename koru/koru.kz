@@ -42,8 +42,8 @@ const std = @import("std");
 // ============================================================================
 
 ~std.runtime:register(scope: "koru") {
-    print
-    println
+    print(1)    // costs 1 token
+    println(1)  // costs 1 token
 }
 
 // ============================================================================
@@ -163,6 +163,7 @@ fn run(source: []const u8, source_name: []const u8, allocator: std.mem.Allocator
         .expr_bindings = &expr_bindings,
         .allocator = arena_alloc,
         .dispatcher = &main_module.dispatch_koru,
+        .cost_fn = &main_module.get_event_cost_koru,  // Use scope's cost lookup
         .budget = null,  // No budget limit for now
         .handle_pool = null,  // No handle tracking for now
     };
