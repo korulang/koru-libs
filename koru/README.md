@@ -147,10 +147,10 @@ Events have costs. Execution has limits. Like Ethereum gas, but for your API.
 
 ```koru
 ~std.runtime:register(scope: "api") {
-    fs:open(10) -> opened    // costs 10, creates "opened" obligation
-    fs:read(5)               // costs 5, no obligations
-    fs:close(1) <- opened    // costs 1, discharges "opened"
-    db:query(50)             // costs 50
+    fs:open(10)      // costs 10
+    fs:read(5)       // costs 5
+    fs:close(1)      // costs 1
+    db:query(50)     // costs 50
 }
 ```
 
@@ -176,24 +176,25 @@ Events have costs. Execution has limits. Like Ethereum gas, but for your API.
 
 ## Handle Pool & Obligations
 
-Resources that need cleanup (files, connections, locks) are tracked automatically.
+Resources that need cleanup (files, connections, locks) are tracked via phantom types.
 
-### Obligation Syntax
+### Obligation Syntax (in Event Signatures)
 
 ```koru
-event(cost) -> state     // Creates obligation (e.g., file opened)
-event(cost) <- state     // Discharges obligation (e.g., file closed)
+// Creates obligation - the [allocated!] phantom type
+~pub event open { path: []const u8 }
+| ok { file: File[opened!] }
+
+// Discharges obligation - the [!allocated] phantom type
+~pub event close { file: File[!opened] }
+| ok |>
 ```
+
+Obligations are NOT specified in scope registration - they come from the event signatures themselves.
 
 ### Auto-Discharge
 
-At request end, any undischarged handles are reported:
-
-```
-[AUTO-DISCHARGE] Handle 'h1' with obligation 'opened'
-```
-
-The integration layer (Orisha, shell) can then call the appropriate cleanup events.
+At scope exit, undischarged obligations trigger automatic cleanup. See `tests/regression/400_RUNTIME_FEATURES/400_061_phantom_autodispose/` for examples.
 
 ## Bridges: Persistent Sessions
 
