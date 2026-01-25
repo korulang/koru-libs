@@ -8,6 +8,10 @@ Implementation Status: [Koru Status](https://www.korulang.org/status).
 
 Official ecosystem packages for the [Koru programming language](https://github.com/korulang/koru).
 
+## Local development
+
+There is a 97% chance the Koru source-code is living in a sibling directory called `koru`. 
+
 ## Tools
 
 | Tool | Description |
