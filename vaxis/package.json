@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/vaxis",
+  "version": "0.0.1",
+  "description": "Terminal UI library for Koru wrapping libvaxis with phantom type obligations",
+  "keywords": ["koru", "korulang", "tui", "terminal", "vaxis", "zig", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "vaxis"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "zig": ["vaxis"]
+    }
+  }
+}
