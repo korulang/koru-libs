@@ -1,0 +1,25 @@
+// Example 1: Simple text generation with Anthropic
+//
+// Demonstrates basic usage of the AI SDK.
+// Requires ANTHROPIC_API_KEY to be passed or configured.
+
+~import "$koru/ai"
+~import "$std/io"
+
+~koru.ai:generate(
+    provider: .anthropic,
+    model: "claude-sonnet-4-20250514",
+    prompt: "What is a phantom type? Explain in one sentence.",
+    api_key: env("ANTHROPIC_API_KEY"),
+    system: null,
+    max_tokens: 256,
+    allocator: null
+)
+| ok result |> std.io:print.blk {
+    === AI Response ===
+    Model: {{ result.model }}
+    Text: {{ result.text }}
+    Tokens: {{ result.usage.input_tokens }} in / {{ result.usage.output_tokens }} out
+    Stop reason: {{ result.stop_reason }}
+    }
+| err e |> std.io:print.ln("Error ({{ e.provider }}): {{ e.msg }}")

@@ -33,3 +33,11 @@ yarn-error.log*
 .fleet/
 .helix/
 .zed/
+
+# Prose local data
+.claude/prose/
+# Prose skill (auto-generated)
+.claude/skills/flash/
+-e 
+# Koru Studio sessions
+.koru-studio/

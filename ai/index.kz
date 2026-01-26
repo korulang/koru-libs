@@ -1,0 +1,481 @@
+// @koru/ai - AI SDK for Koru
+//
+// Unified interface for LLM providers (Anthropic, OpenAI, etc.)
+// Built on @koru/curl - dogfooding our HTTP client.
+//
+// Non-streaming first. Streaming later.
+
+~import "$koru/curl"
+~import "$std/json"
+~import "$std/env"
+
+const std = @import("std");
+const curl = @import("root").koru_libs.curl;
+
+// ============================================================================
+// Types
+// ============================================================================
+
+pub const Message = struct {
+    role: []const u8,     // "user", "assistant", "system"
+    content: []const u8,
+};
+
+pub const Usage = struct {
+    input_tokens: i64,
+    output_tokens: i64,
+};
+
+pub const GenerateResult = struct {
+    text: []const u8,
+    usage: Usage,
+    model: []const u8,
+    stop_reason: []const u8,
+    allocator: std.mem.Allocator,
+};
+
+pub const Error = struct {
+    code: i32,
+    msg: []const u8,
+    provider: []const u8,
+};
+
+pub const Provider = enum {
+    anthropic,
+    openai,
+};
+
+// ============================================================================
+// Generate Text (non-streaming)
+// ============================================================================
+
+~pub event generate {
+    provider: Provider,
+    model: []const u8,
+    prompt: []const u8,
+    api_key: []const u8,
+    system: ?[]const u8,
+    max_tokens: ?i32,
+    allocator: ?std.mem.Allocator
+}
+| ok GenerateResult
+| err Error
+
+~proc generate {
+    const alloc = allocator orelse std.heap.page_allocator;
+
+    // Build request based on provider
+    switch (provider) {
+        .anthropic => {
+            return anthropicGenerate(model, prompt, api_key, system, max_tokens orelse 1024, alloc);
+        },
+        .openai => {
+            return openaiGenerate(model, prompt, api_key, system, max_tokens orelse 1024, alloc);
+        },
+    }
+}
+
+// ============================================================================
+// Anthropic Implementation
+// ============================================================================
+
+fn anthropicGenerate(
+    model: []const u8,
+    prompt: []const u8,
+    api_key: []const u8,
+    system: ?[]const u8,
+    max_tokens: i32,
+    alloc: std.mem.Allocator
+) @TypeOf(generate).Output {
+    // Build JSON request body
+    var json_buf = std.ArrayList(u8).init(alloc);
+    defer json_buf.deinit();
+
+    const writer = json_buf.writer();
+
+    // Start object
+    writer.writeAll("{") catch return jsonError(alloc);
+
+    // Model
+    writer.print("\"model\":\"{s}\",", .{model}) catch return jsonError(alloc);
+
+    // Max tokens
+    writer.print("\"max_tokens\":{d},", .{max_tokens}) catch return jsonError(alloc);
+
+    // System prompt (optional)
+    if (system) |sys| {
+        writer.writeAll("\"system\":\"") catch return jsonError(alloc);
+        writeJsonEscaped(writer, sys) catch return jsonError(alloc);
+        writer.writeAll("\",") catch return jsonError(alloc);
+    }
+
+    // Messages array with single user message
+    writer.writeAll("\"messages\":[{\"role\":\"user\",\"content\":\"") catch return jsonError(alloc);
+    writeJsonEscaped(writer, prompt) catch return jsonError(alloc);
+    writer.writeAll("\"}]") catch return jsonError(alloc);
+
+    // Close object
+    writer.writeAll("}") catch return jsonError(alloc);
+
+    // Build headers
+    const headers = [_]curl.Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+        .{ .name = "x-api-key", .value = api_key },
+        .{ .name = "anthropic-version", .value = "2023-06-01" },
+    };
+
+    // Make the request using curl
+    const post_result = curl.post_with_headers_event.call(.{
+        .url = "https://api.anthropic.com/v1/messages",
+        .body = json_buf.items,
+        .headers = &headers,
+        .allocator = alloc,
+    });
+
+    switch (post_result) {
+        .ok => |resp| {
+            defer curl.close_event.call(.{ .resp = resp });
+
+            // Check HTTP status
+            if (resp.status != 200) {
+                return .{ .err = .{
+                    .code = resp.status,
+                    .msg = alloc.dupe(u8, resp.body) catch "API error",
+                    .provider = "anthropic",
+                }};
+            }
+
+            // Parse JSON response
+            return parseAnthropicResponse(resp.body, alloc);
+        },
+        .err => |e| {
+            return .{ .err = .{
+                .code = e.code,
+                .msg = e.msg,
+                .provider = "anthropic",
+            }};
+        },
+    }
+}
+
+fn parseAnthropicResponse(body: []const u8, alloc: std.mem.Allocator) @TypeOf(generate).Output {
+    // Simple JSON parsing - find the text content
+    // Response format:
+    // {"content":[{"type":"text","text":"..."}],"model":"...","stop_reason":"...","usage":{"input_tokens":N,"output_tokens":N}}
+
+    // Find "text":"
+    const text_key = "\"text\":\"";
+    const text_start = std.mem.indexOf(u8, body, text_key) orelse {
+        return .{ .err = .{ .code = -1, .msg = "Failed to parse response: no text field", .provider = "anthropic" }};
+    };
+
+    const content_start = text_start + text_key.len;
+
+    // Find end of text (unescaped quote)
+    var content_end = content_start;
+    var in_escape = false;
+    while (content_end < body.len) : (content_end += 1) {
+        if (in_escape) {
+            in_escape = false;
+            continue;
+        }
+        if (body[content_end] == '\\') {
+            in_escape = true;
+            continue;
+        }
+        if (body[content_end] == '"') {
+            break;
+        }
+    }
+
+    // Unescape the text
+    const raw_text = body[content_start..content_end];
+    const text = unescapeJson(raw_text, alloc) catch {
+        return .{ .err = .{ .code = -1, .msg = "Failed to unescape text", .provider = "anthropic" }};
+    };
+
+    // Parse usage
+    var input_tokens: i64 = 0;
+    var output_tokens: i64 = 0;
+
+    if (std.mem.indexOf(u8, body, "\"input_tokens\":")) |pos| {
+        const num_start = pos + 15;
+        var num_end = num_start;
+        while (num_end < body.len and (body[num_end] >= '0' and body[num_end] <= '9')) : (num_end += 1) {}
+        input_tokens = std.fmt.parseInt(i64, body[num_start..num_end], 10) catch 0;
+    }
+
+    if (std.mem.indexOf(u8, body, "\"output_tokens\":")) |pos| {
+        const num_start = pos + 16;
+        var num_end = num_start;
+        while (num_end < body.len and (body[num_end] >= '0' and body[num_end] <= '9')) : (num_end += 1) {}
+        output_tokens = std.fmt.parseInt(i64, body[num_start..num_end], 10) catch 0;
+    }
+
+    // Parse stop_reason
+    var stop_reason: []const u8 = "unknown";
+    if (std.mem.indexOf(u8, body, "\"stop_reason\":\"")) |pos| {
+        const sr_start = pos + 15;
+        if (std.mem.indexOfPos(u8, body, sr_start, "\"")) |sr_end| {
+            stop_reason = alloc.dupe(u8, body[sr_start..sr_end]) catch "unknown";
+        }
+    }
+
+    // Parse model from response
+    var resp_model: []const u8 = "unknown";
+    if (std.mem.indexOf(u8, body, "\"model\":\"")) |pos| {
+        const m_start = pos + 9;
+        if (std.mem.indexOfPos(u8, body, m_start, "\"")) |m_end| {
+            resp_model = alloc.dupe(u8, body[m_start..m_end]) catch "unknown";
+        }
+    }
+
+    return .{ .ok = .{
+        .text = text,
+        .usage = .{
+            .input_tokens = input_tokens,
+            .output_tokens = output_tokens,
+        },
+        .model = resp_model,
+        .stop_reason = stop_reason,
+        .allocator = alloc,
+    }};
+}
+
+fn writeJsonEscaped(writer: anytype, s: []const u8) !void {
+    for (s) |ch| {
+        switch (ch) {
+            '"' => try writer.writeAll("\\\""),
+            '\\' => try writer.writeAll("\\\\"),
+            '\n' => try writer.writeAll("\\n"),
+            '\r' => try writer.writeAll("\\r"),
+            '\t' => try writer.writeAll("\\t"),
+            else => {
+                if (ch < 0x20) {
+                    try writer.print("\\u{x:0>4}", .{ch});
+                } else {
+                    try writer.writeByte(ch);
+                }
+            },
+        }
+    }
+}
+
+fn unescapeJson(s: []const u8, alloc: std.mem.Allocator) ![]const u8 {
+    var result = std.ArrayList(u8).init(alloc);
+    errdefer result.deinit();
+
+    var i: usize = 0;
+    while (i < s.len) {
+        if (s[i] == '\\' and i + 1 < s.len) {
+            switch (s[i + 1]) {
+                '"' => try result.append('"'),
+                '\\' => try result.append('\\'),
+                'n' => try result.append('\n'),
+                'r' => try result.append('\r'),
+                't' => try result.append('\t'),
+                else => {
+                    try result.append(s[i]);
+                    try result.append(s[i + 1]);
+                },
+            }
+            i += 2;
+        } else {
+            try result.append(s[i]);
+            i += 1;
+        }
+    }
+
+    return result.toOwnedSlice();
+}
+
+fn jsonError(alloc: std.mem.Allocator) @TypeOf(generate).Output {
+    _ = alloc;
+    return .{ .err = .{
+        .code = -1,
+        .msg = "JSON encoding failed",
+        .provider = "anthropic",
+    }};
+}
+
+// ============================================================================
+// OpenAI Implementation
+// ============================================================================
+
+fn openaiGenerate(
+    model: []const u8,
+    prompt: []const u8,
+    api_key: []const u8,
+    system: ?[]const u8,
+    max_tokens: i32,
+    alloc: std.mem.Allocator
+) @TypeOf(generate).Output {
+    // Build JSON request body
+    var json_buf = std.ArrayList(u8).init(alloc);
+    defer json_buf.deinit();
+
+    const writer = json_buf.writer();
+
+    // Start object
+    writer.writeAll("{") catch return jsonErrorOpenAI(alloc);
+
+    // Model
+    writer.print("\"model\":\"{s}\",", .{model}) catch return jsonErrorOpenAI(alloc);
+
+    // Max tokens
+    writer.print("\"max_tokens\":{d},", .{max_tokens}) catch return jsonErrorOpenAI(alloc);
+
+    // Messages array
+    writer.writeAll("\"messages\":[") catch return jsonErrorOpenAI(alloc);
+
+    // System message (optional)
+    if (system) |sys| {
+        writer.writeAll("{\"role\":\"system\",\"content\":\"") catch return jsonErrorOpenAI(alloc);
+        writeJsonEscaped(writer, sys) catch return jsonErrorOpenAI(alloc);
+        writer.writeAll("\"},") catch return jsonErrorOpenAI(alloc);
+    }
+
+    // User message
+    writer.writeAll("{\"role\":\"user\",\"content\":\"") catch return jsonErrorOpenAI(alloc);
+    writeJsonEscaped(writer, prompt) catch return jsonErrorOpenAI(alloc);
+    writer.writeAll("\"}]") catch return jsonErrorOpenAI(alloc);
+
+    // Close object
+    writer.writeAll("}") catch return jsonErrorOpenAI(alloc);
+
+    // Build authorization header
+    var auth_buf: [256]u8 = undefined;
+    const auth_value = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{api_key}) catch {
+        return jsonErrorOpenAI(alloc);
+    };
+
+    // Build headers
+    const headers = [_]curl.Header{
+        .{ .name = "Content-Type", .value = "application/json" },
+        .{ .name = "Authorization", .value = auth_value },
+    };
+
+    // Make the request using curl
+    const post_result = curl.post_with_headers_event.call(.{
+        .url = "https://api.openai.com/v1/chat/completions",
+        .body = json_buf.items,
+        .headers = &headers,
+        .allocator = alloc,
+    });
+
+    switch (post_result) {
+        .ok => |resp| {
+            defer curl.close_event.call(.{ .resp = resp });
+
+            // Check HTTP status
+            if (resp.status != 200) {
+                return .{ .err = .{
+                    .code = resp.status,
+                    .msg = alloc.dupe(u8, resp.body) catch "API error",
+                    .provider = "openai",
+                }};
+            }
+
+            // Parse JSON response
+            return parseOpenAIResponse(resp.body, alloc);
+        },
+        .err => |e| {
+            return .{ .err = .{
+                .code = e.code,
+                .msg = e.msg,
+                .provider = "openai",
+            }};
+        },
+    }
+}
+
+fn parseOpenAIResponse(body: []const u8, alloc: std.mem.Allocator) @TypeOf(generate).Output {
+    // Response format:
+    // {"choices":[{"message":{"content":"..."},"finish_reason":"stop"}],"usage":{"prompt_tokens":N,"completion_tokens":N},"model":"..."}
+
+    // Find content
+    const content_key = "\"content\":\"";
+    const content_start_idx = std.mem.indexOf(u8, body, content_key) orelse {
+        return .{ .err = .{ .code = -1, .msg = "Failed to parse response: no content field", .provider = "openai" }};
+    };
+
+    const content_start = content_start_idx + content_key.len;
+
+    // Find end of content
+    var content_end = content_start;
+    var in_escape = false;
+    while (content_end < body.len) : (content_end += 1) {
+        if (in_escape) {
+            in_escape = false;
+            continue;
+        }
+        if (body[content_end] == '\\') {
+            in_escape = true;
+            continue;
+        }
+        if (body[content_end] == '"') {
+            break;
+        }
+    }
+
+    const raw_text = body[content_start..content_end];
+    const text = unescapeJson(raw_text, alloc) catch {
+        return .{ .err = .{ .code = -1, .msg = "Failed to unescape text", .provider = "openai" }};
+    };
+
+    // Parse usage
+    var input_tokens: i64 = 0;
+    var output_tokens: i64 = 0;
+
+    if (std.mem.indexOf(u8, body, "\"prompt_tokens\":")) |pos| {
+        const num_start = pos + 16;
+        var num_end = num_start;
+        while (num_end < body.len and (body[num_end] >= '0' and body[num_end] <= '9')) : (num_end += 1) {}
+        input_tokens = std.fmt.parseInt(i64, body[num_start..num_end], 10) catch 0;
+    }
+
+    if (std.mem.indexOf(u8, body, "\"completion_tokens\":")) |pos| {
+        const num_start = pos + 20;
+        var num_end = num_start;
+        while (num_end < body.len and (body[num_end] >= '0' and body[num_end] <= '9')) : (num_end += 1) {}
+        output_tokens = std.fmt.parseInt(i64, body[num_start..num_end], 10) catch 0;
+    }
+
+    // Parse finish_reason
+    var stop_reason: []const u8 = "unknown";
+    if (std.mem.indexOf(u8, body, "\"finish_reason\":\"")) |pos| {
+        const sr_start = pos + 17;
+        if (std.mem.indexOfPos(u8, body, sr_start, "\"")) |sr_end| {
+            stop_reason = alloc.dupe(u8, body[sr_start..sr_end]) catch "unknown";
+        }
+    }
+
+    // Parse model
+    var resp_model: []const u8 = "unknown";
+    if (std.mem.indexOf(u8, body, "\"model\":\"")) |pos| {
+        const m_start = pos + 9;
+        if (std.mem.indexOfPos(u8, body, m_start, "\"")) |m_end| {
+            resp_model = alloc.dupe(u8, body[m_start..m_end]) catch "unknown";
+        }
+    }
+
+    return .{ .ok = .{
+        .text = text,
+        .usage = .{
+            .input_tokens = input_tokens,
+            .output_tokens = output_tokens,
+        },
+        .model = resp_model,
+        .stop_reason = stop_reason,
+        .allocator = alloc,
+    }};
+}
+
+fn jsonErrorOpenAI(alloc: std.mem.Allocator) @TypeOf(generate).Output {
+    _ = alloc;
+    return .{ .err = .{
+        .code = -1,
+        .msg = "JSON encoding failed",
+        .provider = "openai",
+    }};
+}
