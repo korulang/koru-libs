@@ -4,7 +4,20 @@
 // to enforce connection cleanup at compile-time.
 
 ~import "$std/build"
+~import "$std/deps"
 
+// System dependency: libcurl must be installed
+~std.deps:requires.system {
+    "name": "curl",
+    "check": "curl-config --version",
+    "brew": "curl",
+    "apt": "libcurl4-openssl-dev",
+    "dnf": "libcurl-devel",
+    "pacman": "curl",
+    "apk": "curl-dev"
+}
+
+// Build requirements: link against libcurl
 ~std.build:requires {
     exe.linkSystemLibrary("curl");
     exe.linkLibC();
@@ -135,6 +148,92 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
     _ = c.curl_easy_setopt(handle, c.CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
 
     // Response buffer with allocator context
+    var write_ctx = WriteContext{
+        .buffer = std.ArrayListUnmanaged(u8){},
+        .allocator = alloc,
+    };
+
+    _ = c.curl_easy_setopt(handle, c.CURLOPT_WRITEFUNCTION, writeCallback);
+    _ = c.curl_easy_setopt(handle, c.CURLOPT_WRITEDATA, &write_ctx);
+
+    // Perform request
+    const result = c.curl_easy_perform(handle);
+    if (result != c.CURLE_OK) {
+        write_ctx.buffer.deinit(alloc);
+        return .{ .err = curlError(result, alloc) };
+    }
+
+    // Get HTTP status code
+    var http_code: c_long = 0;
+    _ = c.curl_easy_getinfo(handle, c.CURLINFO_RESPONSE_CODE, &http_code);
+
+    // Create response
+    const resp = alloc.create(Response) catch {
+        write_ctx.buffer.deinit(alloc);
+        _ = c.curl_easy_cleanup(handle);
+        return .{ .err = .{ .code = -1, .msg = "allocation failed" } };
+    };
+    resp.* = .{
+        .handle = handle,
+        .allocator = alloc,
+        .status = @intCast(http_code),
+        .body = write_ctx.buffer.toOwnedSlice(alloc) catch &[_]u8{},
+    };
+
+    return .{ .ok = resp };
+}
+
+// ============================================================================
+// POST with Headers (for APIs)
+// ============================================================================
+
+pub const Header = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+~pub event post.with_headers {
+    url: []const u8,
+    body: []const u8,
+    headers: []const Header,
+    allocator: ?std.mem.Allocator
+}
+| ok *Response[open!]
+| err Error
+
+~proc post.with_headers {
+    const alloc = allocator orelse std.heap.page_allocator;
+
+    const handle = c.curl_easy_init();
+    if (handle == null) {
+        return .{ .err = .{ .code = @intCast(c.CURLE_FAILED_INIT), .msg = "Failed to initialize curl" } };
+    }
+    errdefer _ = c.curl_easy_cleanup(handle);
+
+    // Set URL and POST
+    _ = c.curl_easy_setopt(handle, c.CURLOPT_URL, url.ptr);
+    _ = c.curl_easy_setopt(handle, c.CURLOPT_POST, @as(c_long, 1));
+    _ = c.curl_easy_setopt(handle, c.CURLOPT_POSTFIELDS, body.ptr);
+    _ = c.curl_easy_setopt(handle, c.CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
+
+    // Build header list
+    var header_list: ?*c.curl_slist = null;
+    for (headers) |h| {
+        // Format: "Name: Value"
+        const header_str = std.fmt.allocPrintZ(alloc, "{s}: {s}", .{ h.name, h.value }) catch {
+            if (header_list) |list| c.curl_slist_free_all(list);
+            return .{ .err = .{ .code = -1, .msg = "header allocation failed" } };
+        };
+        header_list = c.curl_slist_append(header_list, header_str.ptr);
+        alloc.free(header_str);
+    }
+
+    if (header_list) |list| {
+        _ = c.curl_easy_setopt(handle, c.CURLOPT_HTTPHEADER, list);
+    }
+    defer if (header_list) |list| c.curl_slist_free_all(list);
+
+    // Response buffer
     var write_ctx = WriteContext{
         .buffer = std.ArrayListUnmanaged(u8){},
         .allocator = alloc,
