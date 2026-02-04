@@ -2,9 +2,22 @@
 //
 // Declarative image definitions and typed container lifecycle.
 // Phantom obligations ensure containers are properly stopped.
+//
+// DECLARATIVE IMAGES:
+//   ~koru.docker:image(tag: "myapp:latest") {
+//       FROM node:18-alpine
+//       WORKDIR /app
+//       COPY . .
+//       RUN npm install
+//       CMD ["node", "server.js"]
+//   }
+//
+// Then run: koruc main.kz docker build
+// This generates Dockerfiles and builds all declared images.
 
 ~import "$std/build"
 ~import "$std/deps"
+~import "$std/compiler"
 
 // System dependency: Docker CLI must be installed
 ~std.deps:requires.system {
@@ -17,18 +30,155 @@
     "apk": "docker"
 }
 
+// ============================================================================
+// DOCKER BUILD COMMAND - Build all declared images
+// ============================================================================
+
+~std.compiler:command.declare {
+    "name": "docker",
+    "description": "Build Docker images from inline Dockerfile declarations"
+}
+
+~[comptime|command]pub event docker {
+    program: *const Program,
+    allocator: __koru_std.mem.Allocator,
+    argv: []const []const u8,
+}
+
+~proc docker {
+    const std = @import("std");
+
+    // Parse subcommand
+    var subcommand: []const u8 = "build";  // default
+    if (argv.len > 0) {
+        subcommand = argv[0];
+    }
+
+    if (!std.mem.eql(u8, subcommand, "build")) {
+        std.debug.print("Usage: koruc <file>.kz docker build\n", .{});
+        std.debug.print("       koruc <file>.kz docker list\n", .{});
+        return;
+    }
+
+    // Collect all image declarations from AST
+    const ImageDecl = struct {
+        tag: []const u8,
+        dockerfile: []const u8,
+    };
+
+    var images = std.ArrayListUnmanaged(ImageDecl){};
+    defer images.deinit(allocator);
+
+    for (program.items) |item| {
+        if (item == .flow) {
+            const flow = item.flow;
+            if (flow.invocation.path.module_qualifier) |mq| {
+                // Check for koru.docker:image
+                if ((std.mem.eql(u8, mq, "koru.docker") or std.mem.eql(u8, mq, "docker")) and
+                    flow.invocation.path.segments.len == 1 and
+                    std.mem.eql(u8, flow.invocation.path.segments[0], "image"))
+                {
+                    var tag: []const u8 = "latest";
+                    var dockerfile: []const u8 = "";
+
+                    for (flow.invocation.args) |arg| {
+                        if (std.mem.eql(u8, arg.name, "tag")) {
+                            tag = arg.value;
+                        } else if (std.mem.eql(u8, arg.name, "source")) {
+                            dockerfile = arg.value;
+                        }
+                    }
+
+                    if (dockerfile.len > 0) {
+                        images.append(allocator, .{ .tag = tag, .dockerfile = dockerfile }) catch {
+                            std.debug.print("Out of memory\n", .{});
+                            return;
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    if (images.items.len == 0) {
+        std.debug.print("No Docker images declared.\n", .{});
+        std.debug.print("Use: ~koru.docker:image(tag: \"myapp:latest\") {{ FROM alpine... }}\n", .{});
+        return;
+    }
+
+    std.debug.print("\nBuilding {d} Docker image(s)...\n\n", .{images.items.len});
+
+    // Create .koru-docker directory for generated Dockerfiles
+    std.fs.cwd().makeDir(".koru-docker") catch |err| {
+        if (err != error.PathAlreadyExists) {
+            std.debug.print("Failed to create .koru-docker directory: {}\n", .{err});
+            return;
+        }
+    };
+
+    for (images.items, 0..) |img, idx| {
+        std.debug.print("  [{d}/{d}] Building {s}...\n", .{ idx + 1, images.items.len, img.tag });
+
+        // Generate Dockerfile
+        const dockerfile_name = std.fmt.allocPrint(allocator, ".koru-docker/Dockerfile.{d}", .{idx}) catch {
+            std.debug.print("    \x1b[31m✗\x1b[0m allocation failed\n", .{});
+            continue;
+        };
+        defer allocator.free(dockerfile_name);
+
+        const file = std.fs.cwd().createFile(dockerfile_name, .{}) catch |err| {
+            std.debug.print("    \x1b[31m✗\x1b[0m failed to create {s}: {}\n", .{ dockerfile_name, err });
+            continue;
+        };
+        file.writeAll(img.dockerfile) catch |err| {
+            std.debug.print("    \x1b[31m✗\x1b[0m failed to write Dockerfile: {}\n", .{err});
+            file.close();
+            continue;
+        };
+        file.close();
+
+        // Run docker build
+        const result = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &[_][]const u8{ "docker", "build", "-t", img.tag, "-f", dockerfile_name, "." },
+        }) catch |err| {
+            std.debug.print("    \x1b[31m✗\x1b[0m docker build failed: {}\n", .{err});
+            continue;
+        };
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        if (result.term.Exited == 0) {
+            std.debug.print("    \x1b[32m✓\x1b[0m built {s}\n", .{img.tag});
+        } else {
+            std.debug.print("    \x1b[31m✗\x1b[0m build failed (exit {d})\n", .{result.term.Exited});
+            if (result.stderr.len > 0) {
+                // Show last few lines of error
+                var lines: usize = 0;
+                var i = result.stderr.len;
+                while (i > 0 and lines < 5) : (i -= 1) {
+                    if (result.stderr[i - 1] == '\n') lines += 1;
+                }
+                std.debug.print("      {s}\n", .{result.stderr[i..]});
+            }
+        }
+    }
+
+    std.debug.print("\n", .{});
+}
+
 const std = @import("std");
 
 // ============================================================================
 // Types
 // ============================================================================
 
-const Image = struct {
+pub const Image = struct {
     tag: []const u8,
     id: ?[]const u8,
 };
 
-const Container = struct {
+pub const Container = struct {
     id: []const u8,
     image: []const u8,
 };
@@ -38,11 +188,17 @@ const Container = struct {
 // ============================================================================
 
 // Declare a Docker image - collected at compile time, generates Dockerfile
-~[comptime|norun]pub event image { source: Source }
+// Usage:
+//   ~koru.docker:image(tag: "myapp:latest") {
+//       FROM node:18-alpine
+//       WORKDIR /app
+//       COPY . .
+//       CMD ["node", "index.js"]
+//   }
+~[comptime|norun]pub event image { tag: []const u8, source: Source }
 
 ~proc image {
-    // Compile-time only - collected by build system
-    _ = &source;
+    // Void event - collected during AST walking by docker command
 }
 
 // ============================================================================
