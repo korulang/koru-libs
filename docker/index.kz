@@ -4,6 +4,18 @@
 // Phantom obligations ensure containers are properly stopped.
 
 ~import "$std/build"
+~import "$std/deps"
+
+// System dependency: Docker CLI must be installed
+~std.deps:requires.system {
+    "name": "docker",
+    "check": "docker --version",
+    "brew": "docker",
+    "apt": "docker.io",
+    "dnf": "docker",
+    "pacman": "docker",
+    "apk": "docker"
+}
 
 const std = @import("std");
 

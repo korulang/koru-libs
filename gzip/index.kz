@@ -15,8 +15,20 @@
 //   | error e |> ...
 
 ~import "$std/build"
+~import "$std/deps"
 
-// Link against system zlib
+// System dependency: zlib must be installed
+~std.deps:requires.system {
+    "name": "zlib",
+    "check": "pkg-config --modversion zlib",
+    "brew": "zlib",
+    "apt": "zlib1g-dev",
+    "dnf": "zlib-devel",
+    "pacman": "zlib",
+    "apk": "zlib-dev"
+}
+
+// Build requirements: link against zlib
 ~std.build:requires {
     exe.linkSystemLibrary("z");
     exe.linkLibC();

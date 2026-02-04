@@ -4,7 +4,20 @@
 // Demonstrates: phantom obligations, auto-dispose, ~std.build:requires
 
 ~import "$std/build"
+~import "$std/deps"
 
+// System dependency: libsqlite3 must be installed
+~std.deps:requires.system {
+    "name": "sqlite3",
+    "check": "pkg-config --modversion sqlite3",
+    "brew": "sqlite3",
+    "apt": "libsqlite3-dev",
+    "dnf": "sqlite-devel",
+    "pacman": "sqlite",
+    "apk": "sqlite-dev"
+}
+
+// Build requirements: link against libsqlite3
 ~std.build:requires {
     exe.linkSystemLibrary("sqlite3");
     exe.linkLibC();
