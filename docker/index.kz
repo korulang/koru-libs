@@ -5,15 +5,27 @@
 //
 // DECLARATIVE IMAGES:
 //   ~koru.docker:image(tag: "myapp:latest") {
-//       FROM node:18-alpine
-//       WORKDIR /app
-//       COPY . .
-//       RUN npm install
-//       CMD ["node", "server.js"]
+//       FROM alpine:3.18
+//       COPY zig-out/bin/main /usr/local/bin/myapp
+//       CMD ["myapp"]
 //   }
 //
-// Then run: koruc main.kz docker build
-// This generates Dockerfiles and builds all declared images.
+// CONDITIONAL IMAGES (build flags):
+//   ~[build("prod")]koru.docker:image(tag: "myapp:latest") {
+//       FROM alpine:3.18
+//       COPY zig-out/bin/main /usr/local/bin/myapp
+//       CMD ["myapp"]
+//   }
+//
+//   ~[build("dev")]koru.docker:image(tag: "myapp:latest") {
+//       FROM alpine:3.18
+//       RUN apk add --no-cache gdb strace
+//       COPY zig-out/bin/main /usr/local/bin/myapp
+//       CMD ["myapp", "--debug"]
+//   }
+//
+// Then run: koruc main.kz --build=prod docker build
+// This generates Dockerfiles and builds all declared images matching the flag.
 
 ~import "$std/build"
 ~import "$std/deps"
@@ -69,6 +81,32 @@
     var images = std.ArrayListUnmanaged(ImageDecl){};
     defer images.deinit(allocator);
 
+    // Helper to check build flags - inline to avoid cross-module import issues
+    const ann_parser = @import("annotation_parser");
+    const RootEnv = @import("root").CompilerEnv;
+    const matchesBuildFlags = struct {
+        fn check(annotations: []const []const u8) bool {
+            for (annotations) |ann| {
+                const maybe_call = ann_parser.parseCall(std.heap.page_allocator, ann) catch continue;
+                if (maybe_call) |call| {
+                    defer {
+                        var mc = call;
+                        mc.deinit(std.heap.page_allocator);
+                    }
+                    if (std.mem.eql(u8, call.name, "build")) {
+                        for (call.args) |arg| {
+                            var buf: [64]u8 = undefined;
+                            const flag = std.fmt.bufPrint(&buf, "build={s}", .{arg}) catch continue;
+                            if (RootEnv.hasFlagRuntime(flag)) return true;
+                        }
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }.check;
+
     for (program.items) |item| {
         if (item == .flow) {
             const flow = item.flow;
@@ -78,6 +116,8 @@
                     flow.invocation.path.segments.len == 1 and
                     std.mem.eql(u8, flow.invocation.path.segments[0], "image"))
                 {
+                    // Respect build flags: ~[build("prod")], ~[build("dev")], etc.
+                    if (!matchesBuildFlags(flow.invocation.annotations)) continue;
                     var tag: []const u8 = "latest";
                     var dockerfile: []const u8 = "";
 
