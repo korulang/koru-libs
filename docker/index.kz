@@ -58,8 +58,6 @@
 }
 
 ~proc docker {
-    const std = @import("std");
-
     // Parse subcommand
     var subcommand: []const u8 = "build";  // default
     if (argv.len > 0) {
@@ -123,7 +121,12 @@
 
                     for (flow.invocation.args) |arg| {
                         if (std.mem.eql(u8, arg.name, "tag")) {
-                            tag = arg.value;
+                            // Strip surrounding quotes from AST value
+                            if (arg.value.len >= 2 and arg.value[0] == '"' and arg.value[arg.value.len - 1] == '"') {
+                                tag = arg.value[1 .. arg.value.len - 1];
+                            } else {
+                                tag = arg.value;
+                            }
                         } else if (std.mem.eql(u8, arg.name, "source")) {
                             dockerfile = arg.value;
                         }

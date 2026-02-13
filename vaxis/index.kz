@@ -22,6 +22,14 @@
 
 // Build system dependency - libvaxis from Zig package manager
 ~import "$std/build"
+~import "$std/deps"
+
+// Zig package dependency - URL+hash for build.zig.zon generation
+~std.deps:requires.zig {
+    "name": "vaxis",
+    "url": "git+https://github.com/rockorager/libvaxis.git#75035b169e91a51c233f3742161f8eb8eafca659",
+    "hash": "vaxis-0.5.1-BWNV_IE-CQBYmSf_boEKUyv6den0Gmj5LksxvdCx2pBL"
+}
 
 // For BACKEND compilation (so it can validate the generated code)
 ~std.compiler:requires {

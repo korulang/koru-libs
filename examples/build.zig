@@ -19,11 +19,18 @@ pub fn build(__koru_b: *std.Build) void {
             _ = &b; _ = &exe; _ = &target; _ = &optimize; // Suppress unused warnings
 // Calculate relative path from test directory to repo root
 // This will be baked into the generated build.zig
-const REL_TO_ROOT = "/usr/local/lib/koru";
+const REL_TO_ROOT = "/Users/larsde/src/koru";
 
 // Errors module - error reporting
 const errors_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/errors.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+
+// Log module - logging utilities
+const log_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/log.zig" },
     .target = target,
     .optimize = optimize,
 });
@@ -57,6 +64,7 @@ const type_registry_module = b.createModule(.{
     .optimize = optimize,
 });
 type_registry_module.addImport("ast", ast_module);
+type_registry_module.addImport("log", log_module);
 
 // Expression parser
 const expression_parser_module = b.createModule(.{
@@ -75,6 +83,23 @@ const union_collector_module = b.createModule(.{
 });
 union_collector_module.addImport("ast", ast_module);
 
+// Config module - project configuration
+const config_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/config.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+config_module.addImport("log", log_module);
+
+// Module resolver - resolves import paths
+const module_resolver_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/module_resolver.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+module_resolver_module.addImport("config", config_module);
+module_resolver_module.addImport("log", log_module);
+
 // Parser module - source parsing
 const parser_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/parser.zig" },
@@ -84,9 +109,11 @@ const parser_module = b.createModule(.{
 parser_module.addImport("ast", ast_module);
 parser_module.addImport("lexer", lexer_module);
 parser_module.addImport("errors", errors_module);
+parser_module.addImport("log", log_module);
 parser_module.addImport("type_registry", type_registry_module);
 parser_module.addImport("expression_parser", expression_parser_module);
 parser_module.addImport("union_collector", union_collector_module);
+parser_module.addImport("module_resolver", module_resolver_module);
 
 // Phantom parser
 const phantom_parser_module = b.createModule(.{
@@ -119,6 +146,7 @@ const shape_checker_module = b.createModule(.{
 });
 shape_checker_module.addImport("ast", ast_module);
 shape_checker_module.addImport("errors", errors_module);
+shape_checker_module.addImport("log", log_module);
 shape_checker_module.addImport("phantom_parser", phantom_parser_module);
 shape_checker_module.addImport("type_inference", type_inference_module);
 shape_checker_module.addImport("branch_checker", branch_checker_module);
@@ -131,6 +159,7 @@ const flow_checker_module = b.createModule(.{
 });
 flow_checker_module.addImport("ast", ast_module);
 flow_checker_module.addImport("errors", errors_module);
+flow_checker_module.addImport("log", log_module);
 flow_checker_module.addImport("branch_checker", branch_checker_module);
 flow_checker_module.addImport("annotation_parser", annotation_parser_module);
 
@@ -142,6 +171,7 @@ const phantom_semantic_checker_module = b.createModule(.{
 });
 phantom_semantic_checker_module.addImport("ast", ast_module);
 phantom_semantic_checker_module.addImport("errors", errors_module);
+phantom_semantic_checker_module.addImport("log", log_module);
 phantom_semantic_checker_module.addImport("phantom_parser", phantom_parser_module);
 
 // Purity analyzer - tracks [pure] annotations
@@ -160,16 +190,17 @@ const ast_functional_module = b.createModule(.{
 });
 ast_functional_module.addImport("ast", ast_module);
 
-// Auto-dispose inserter - inserts disposal calls before terminators
-const auto_dispose_inserter_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/auto_dispose_inserter.zig" },
+// Auto-discharge inserter - inserts disposal calls before terminators
+const auto_discharge_inserter_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/auto_discharge_inserter.zig" },
     .target = target,
     .optimize = optimize,
 });
-auto_dispose_inserter_module.addImport("ast", ast_module);
-auto_dispose_inserter_module.addImport("ast_functional", ast_functional_module);
-auto_dispose_inserter_module.addImport("errors", errors_module);
-auto_dispose_inserter_module.addImport("phantom_parser", phantom_parser_module);
+auto_discharge_inserter_module.addImport("ast", ast_module);
+auto_discharge_inserter_module.addImport("ast_functional", ast_functional_module);
+auto_discharge_inserter_module.addImport("errors", errors_module);
+auto_discharge_inserter_module.addImport("log", log_module);
+auto_discharge_inserter_module.addImport("phantom_parser", phantom_parser_module);
 
 // Codegen utilities - keyword escaping, identifier helpers
 const codegen_utils_module = b.createModule(.{
@@ -216,13 +247,15 @@ const emitter_helpers_module = b.createModule(.{
     .optimize = optimize,
 });
 emitter_helpers_module.addImport("ast", ast_module);
+emitter_helpers_module.addImport("errors", errors_module);
+emitter_helpers_module.addImport("log", log_module);
 emitter_helpers_module.addImport("compiler_config", compiler_config_module);
 emitter_helpers_module.addImport("type_registry", type_registry_module);
 emitter_helpers_module.addImport("codegen_utils", codegen_utils_module);
 
 // Tap pattern matcher
-const tap_pattern_matcher_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/tap_pattern_matcher.zig" },
+const glob_pattern_matcher_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/glob_pattern_matcher.zig" },
     .target = target,
     .optimize = optimize,
 });
@@ -235,7 +268,8 @@ const tap_registry_module = b.createModule(.{
 });
 tap_registry_module.addImport("ast", ast_module);
 tap_registry_module.addImport("errors", errors_module);
-tap_registry_module.addImport("tap_pattern_matcher", tap_pattern_matcher_module);
+tap_registry_module.addImport("log", log_module);
+tap_registry_module.addImport("glob_pattern_matcher", glob_pattern_matcher_module);
 
 // Runtime registry - runtime scope collection
 const runtime_registry_module = b.createModule(.{
@@ -251,6 +285,7 @@ const tap_transformer_module = b.createModule(.{
     .optimize = optimize,
 });
 tap_transformer_module.addImport("ast", ast_module);
+tap_transformer_module.addImport("log", log_module);
 tap_transformer_module.addImport("tap_registry", tap_registry_module);
 tap_transformer_module.addImport("emitter_helpers", emitter_helpers_module);
 
@@ -273,6 +308,7 @@ const visitor_emitter_module = b.createModule(.{
     .optimize = optimize,
 });
 visitor_emitter_module.addImport("ast", ast_module);
+visitor_emitter_module.addImport("log", log_module);
 visitor_emitter_module.addImport("emitter_helpers", emitter_helpers_module);
 visitor_emitter_module.addImport("tap_registry", tap_registry_module);
 visitor_emitter_module.addImport("type_registry", type_registry_module);
@@ -319,6 +355,7 @@ const transform_pass_runner_module = b.createModule(.{
     .optimize = optimize,
 });
 transform_pass_runner_module.addImport("ast", ast_module);
+transform_pass_runner_module.addImport("log", log_module);
 transform_pass_runner_module.addImport("annotation_parser", annotation_parser_module);
 transform_pass_runner_module.addImport("template_utils", template_utils_module);
 transform_pass_runner_module.addImport("ast_functional", ast_functional_module);
@@ -328,6 +365,7 @@ transform_pass_runner_module.addImport("liquid", liquid_module);
 exe.root_module.addImport("ast", ast_module);
 exe.root_module.addImport("ast_functional", ast_functional_module);
 exe.root_module.addImport("ast_serializer", ast_serializer_module);
+exe.root_module.addImport("log", log_module);
 exe.root_module.addImport("emitter_helpers", emitter_helpers_module);
 exe.root_module.addImport("tap_registry", tap_registry_module);
 exe.root_module.addImport("runtime_registry", runtime_registry_module);
@@ -339,7 +377,7 @@ exe.root_module.addImport("emit_build_zig", emit_build_zig_module);
 exe.root_module.addImport("shape_checker", shape_checker_module);
 exe.root_module.addImport("flow_checker", flow_checker_module);
 exe.root_module.addImport("phantom_semantic_checker", phantom_semantic_checker_module);
-exe.root_module.addImport("auto_dispose_inserter", auto_dispose_inserter_module);
+exe.root_module.addImport("auto_discharge_inserter", auto_discharge_inserter_module);
 exe.root_module.addImport("purity_analyzer", purity_analyzer_module);
 exe.root_module.addImport("errors", errors_module);
 exe.root_module.addImport("type_registry", type_registry_module);
@@ -353,6 +391,20 @@ exe.root_module.addImport("liquid", liquid_module);
         }
     }.call;
 compiler_build_0(__koru_b, __koru_exe, __koru_target, __koru_optimize);
+
+    // Module: compiler
+    const compiler_build_1 = struct {
+        fn call(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+            _ = &b; _ = &exe; _ = &target; _ = &optimize; // Suppress unused warnings
+const vaxis_dep = b.dependency("vaxis", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("vaxis", vaxis_dep.module("vaxis"));
+
+        }
+    }.call;
+compiler_build_1(__koru_b, __koru_exe, __koru_target, __koru_optimize);
 
     __koru_b.installArtifact(__koru_exe);
 }
