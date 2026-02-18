@@ -72,7 +72,7 @@ pub const Statement = struct {
 // Query Execution
 // ============================================================================
 
-~pub event exec { conn: *Connection[opened!], sql: []const u8 }
+~pub event exec { conn: *Connection[!opened], sql: []const u8 }
 | ok { conn: *Connection[opened!] }
 | err { conn: *Connection[opened!], code: i32, msg: []const u8 }
 
@@ -89,7 +89,7 @@ pub const Statement = struct {
 
 // Literal SQL query - takes a runtime SQL string
 // For compile-time parameterized queries, use ~query { ... } with Source block
-~pub event query.literal { conn: *Connection[opened!], sql: []const u8 }
+~pub event query.literal { conn: *Connection[!opened], sql: []const u8 }
 | row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
 | empty { conn: *Connection[opened!] }
 | err { conn: *Connection[opened!], code: i32, msg: []const u8 }
@@ -142,7 +142,7 @@ pub const Statement = struct {
 
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
-~[norun]pub event query.impl { conn: *Connection[opened!] }
+~[norun]pub event query.impl { conn: *Connection[!opened] }
 | row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
 | empty { conn: *Connection[opened!] }
 | err { conn: *Connection[opened!], code: i32, msg: []const u8 }
@@ -154,8 +154,6 @@ pub const Statement = struct {
     // Get the flow from the item
     const flow = if (item.* == .flow)
         &item.flow
-    else if (item.* == .subflow_impl and item.subflow_impl.body == .flow)
-        &item.subflow_impl.body.flow
     else
         return .{ .transformed = .{ .program = program } };
 
@@ -243,7 +241,8 @@ pub const Statement = struct {
     // Use the library's existing c import to avoid type mismatches
     code_buf.appendSlice(allocator, "blk: {\n") catch unreachable;
     code_buf.appendSlice(allocator, "    const c = @import(\"root\").koru_libs.sqlite3.c;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const Result = @import(\"root\").koru_libs.sqlite3.query_impl_event.Output;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").koru_libs.sqlite3;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: struct { conn: *__sqlite3.Connection, stmt: *__sqlite3.Statement }, empty: struct { conn: *__sqlite3.Connection }, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
     code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
     code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
@@ -375,11 +374,7 @@ pub const Statement = struct {
             .module = flow.module,
         };
 
-        const new_item = if (item.* == .subflow_impl) blk: {
-            var new_subflow = item.subflow_impl;
-            new_subflow.body = .{ .flow = transformed_flow };
-            break :blk ast.Item{ .subflow_impl = new_subflow };
-        } else ast.Item{ .flow = transformed_flow };
+        const new_item = ast.Item{ .flow = transformed_flow };
 
         const maybe_new_program = ast_functional.replaceFlowRecursive(allocator, program, flow, new_item) catch unreachable;
         if (maybe_new_program) |new_program| {
@@ -535,11 +530,7 @@ pub const Statement = struct {
         ) catch unreachable;
 
         // Create the new item
-        const new_item = if (item.* == .subflow_impl) blk: {
-            var new_subflow = item.subflow_impl;
-            new_subflow.body = .{ .flow = modified_flow };
-            break :blk ast.Item{ .subflow_impl = new_subflow };
-        } else ast.Item{ .flow = modified_flow };
+        const new_item = ast.Item{ .flow = modified_flow };
 
         // Replace in program
         const maybe_new_program = ast_functional.replaceFlowRecursive(allocator, program, flow, new_item) catch unreachable;
@@ -554,7 +545,7 @@ pub const Statement = struct {
 }
 
 // Get next row from statement
-~pub event next { conn: *Connection[opened!], stmt: *Statement[prepared!] }
+~pub event next { conn: *Connection[!opened], stmt: *Statement[!prepared] }
 | row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
 | done { conn: *Connection[opened!] }
 | err { conn: *Connection[opened!], code: i32, msg: []const u8 }
@@ -597,7 +588,7 @@ pub const Statement = struct {
 // Column Access (within row context)
 // ============================================================================
 
-~pub event col.int { stmt: *Statement[prepared!], index: i32 }
+~pub event col.int { stmt: *Statement[!prepared], index: i32 }
 | value { stmt: *Statement[prepared!], val: i64 }
 
 ~proc col.int {
@@ -605,7 +596,7 @@ pub const Statement = struct {
     return .{ .value = .{ .stmt = stmt, .val = val } };
 }
 
-~pub event col.text { stmt: *Statement[prepared!], index: i32 }
+~pub event col.text { stmt: *Statement[!prepared], index: i32 }
 | value { stmt: *Statement[prepared!], text: []const u8[text!] }
 
 ~proc col.text {
@@ -615,7 +606,7 @@ pub const Statement = struct {
     return .{ .value = .{ .stmt = stmt, .text = text } };
 }
 
-~pub event col.real { stmt: *Statement[prepared!], index: i32 }
+~pub event col.real { stmt: *Statement[!prepared], index: i32 }
 | value { stmt: *Statement[prepared!], val: f64 }
 
 ~proc col.real {

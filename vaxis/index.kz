@@ -15,7 +15,6 @@
 //
 //   ~tap(vaxis:poll -> *)
 //   | key k when(k.char == 'q') |> vaxis:quit()
-//       | done |> _
 //
 //   ~vaxis:run(title: "My App")
 //   | ready |> @loop()
@@ -106,21 +105,16 @@ const VaxisEvent = union(enum) {
 | quit {}
 
 ~proc poll {
-    std.debug.print("poll: should_quit={}, is_initialized={}\n", .{should_quit, is_initialized});
     if (should_quit or !is_initialized) {
-        std.debug.print("poll: returning quit (early exit)\n", .{});
         return .{ .quit = .{} };
     }
 
-    // Loop until we get a "real" event (skip terminal response keys)
     while (true) {
         const event = event_loop.nextEvent();
 
         switch (event) {
             .key_press => |k| {
-                std.debug.print("poll: key_press codepoint={}\n", .{k.codepoint});
-                // Skip terminal response "keys" - they have high codepoints (e.g. 57366 = 0xE006)
-                // Normal printable chars are < 0x3000. Skip anything above that.
+                // Skip terminal response keys (high codepoints from capability queries)
                 if (k.codepoint > 0x3000 or k.codepoint == 0) continue;
 
                 return .{ .key = .{
@@ -157,7 +151,6 @@ const VaxisEvent = union(enum) {
 | err { message: []const u8 }
 
 ~proc run {
-    std.debug.print("run: starting\n", .{});
     alloc = std.heap.page_allocator;
 
     // Initialize TTY
@@ -197,107 +190,62 @@ const VaxisEvent = union(enum) {
     }
 
     is_initialized = true;
-    std.debug.print("run: returning ready, is_initialized={}\n", .{is_initialized});
     return .{ .ready = .{ .tty = .{} } };
 }
 
 // Request quit
 ~pub event quit {}
-| done {}
 
 ~proc quit {
     should_quit = true;
-    return .{ .done = .{} };
 }
 
 // Clean up - consumes tty_initialized obligation
 ~pub event cleanup { handle: TtyHandle[!tty_initialized] }
-| done {}
 
 ~proc cleanup {
-    // handle is a phantom - actual cleanup uses global state
     if (is_initialized) {
         vx.deinit(alloc, tty.writer());
         tty.deinit();
         is_initialized = false;
     }
-    return .{ .done = .{} };
 }
 
 // Render to screen
 ~pub event render {}
-| done {}
 
 ~proc render {
     if (is_initialized) {
         vx.render(tty.writer()) catch {};
     }
-    return .{ .done = .{} };
 }
 
 // Clear screen
 ~pub event clear {}
-| done {}
 
 ~proc clear {
     if (is_initialized) {
         const win = vx.window();
         win.clear();
     }
-    return .{ .done = .{} };
 }
 
-// Write text at position (same pattern as libvaxis main.zig example)
+// Write text at position
 ~pub event write_at { x: u16, y: u16, text: []const u8 }
-| done {}
 
 // Display key info at position (formatted for demos)
 ~pub event show_key { x: u16, y: u16, k: KeyData }
-| done {}
-
-// Debug file for write_at
-var debug_file: ?std.fs.File = null;
-
-fn debugLog(msg: []const u8) void {
-    if (debug_file == null) {
-        debug_file = std.fs.cwd().createFile("vaxis_debug.log", .{}) catch null;
-    }
-    if (debug_file) |f| {
-        f.writeAll(msg) catch {};
-    }
-}
 
 ~proc write_at {
-    debugLog("write_at called\n");
-
     if (is_initialized) {
-        debugLog("  is_initialized=true\n");
         const win = vx.window();
-
-        // Log window dimensions
-        var buf: [100]u8 = undefined;
-        const dim_msg = std.fmt.bufPrint(&buf, "  window: {}x{}\n", .{win.width, win.height}) catch "?";
-        debugLog(dim_msg);
-
-        const pos_msg = std.fmt.bufPrint(&buf, "  pos: x={}, y={}\n", .{x, y}) catch "?";
-        debugLog(pos_msg);
-
-        const len_msg = std.fmt.bufPrint(&buf, "  text len: {}\n", .{text.len}) catch "?";
-        debugLog(len_msg);
-
-        // Create child window at position (like libvaxis examples)
         const child = win.child(.{ .x_off = x, .y_off = y });
-        // Write each character as a cell
         for (text, 0..) |_, i| {
             child.writeCell(@intCast(i), 0, .{
                 .char = .{ .grapheme = text[i .. i + 1] },
             });
         }
-        debugLog("  cells written\n");
-    } else {
-        debugLog("  is_initialized=false!\n");
     }
-    return .{ .done = .{} };
 }
 
 ~proc show_key {
@@ -305,7 +253,6 @@ fn debugLog(msg: []const u8) void {
         const win = vx.window();
         const child = win.child(.{ .x_off = x, .y_off = y });
 
-        // Format: "Key: X  Code: 12345  Mods: [ctrl][alt]"
         var buf: [64]u8 = undefined;
         var mods_buf: [32]u8 = undefined;
         var mods_len: usize = 0;
@@ -342,5 +289,4 @@ fn debugLog(msg: []const u8) void {
             });
         }
     }
-    return .{ .done = .{} };
 }

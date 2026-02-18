@@ -5,10 +5,12 @@
 ~import "$std/io"
 
 ~libs.sqlite3:open(path: ":memory:")
-| db d |> libs.sqlite3:exec(d.conn, "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok d2 |> std.io:print.ln("Table created") |> libs.sqlite3:exec(d2.conn, "INSERT INTO users VALUES (1, 'Alice')")
-        | ok d3 |> std.io:print.ln("Row inserted") |> libs.sqlite3:close(d3.conn)
+| db d |> libs.sqlite3:exec(conn: d.conn, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
+    | ok d2 |> std.io:print.ln("Table created") |> libs.sqlite3:exec(conn: d2.conn, sql: "INSERT INTO users VALUES (1, 'Alice')")
+        | ok d3 |> std.io:print.ln("Row inserted") |> libs.sqlite3:close(conn: d3.conn)
             | closed |> std.io:print.ln("Done!")
-        | err _ |> std.io:print.ln("Insert error")
-    | err _ |> std.io:print.ln("Create error")
+        | err e3 |> libs.sqlite3:close(conn: e3.conn)
+            | closed |> std.io:print.ln("Insert error")
+    | err e2 |> libs.sqlite3:close(conn: e2.conn)
+        | closed |> std.io:print.ln("Create error")
 | err _ |> std.io:print.ln("Open error")

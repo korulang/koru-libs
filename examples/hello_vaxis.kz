@@ -7,6 +7,5 @@
 ~koru.vaxis:run(title: "Hello")
 | ready _ |>
     koru.vaxis:write_at(x: 2, y: 2, text: "Hello! Press q to quit.")
-    | done |> koru.vaxis:render()
-        | done |> std.io:print.ln("rendered")
+    koru.vaxis:render()
 | err e |> std.io:print.ln("Failed to start")
