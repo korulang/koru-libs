@@ -1,7 +1,12 @@
 .{
-    .name = .examples,
-    .version = "0.15.1",
-    .dependencies = .{},
+    .name = .hello_vaxis,
+    .version = "0.0.0",
+    .fingerprint = 0xd9b20446b9cf0a34,
+    .dependencies = .{
+        .vaxis = .{
+            .url = "git+https://github.com/rockorager/libvaxis.git#75035b169e91a51c233f3742161f8eb8eafca659",
+            .hash = "vaxis-0.5.1-BWNV_IE-CQBYmSf_boEKUyv6den0Gmj5LksxvdCx2pBL",
+        },
+    },
     .paths = .{""},
-    .fingerprint = 0x7bd0ad45694e6e39,
 }

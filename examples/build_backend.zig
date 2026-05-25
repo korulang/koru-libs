@@ -43,6 +43,24 @@ const ast_module = b.createModule(.{
 });
 ast_module.addImport("errors", errors_module);
 
+// Program AST module - per-user PROGRAM_AST constant, emitted alongside backend.zig.
+// Split out so backend.zig itself stays byte-identical across user programs and
+// Zig's content-addressed cache hits.
+const program_ast_module = b.createModule(.{
+    .root_source_file = b.path("program_ast.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+program_ast_module.addImport("ast", ast_module);
+
+// Compiler env module - per-user CompilerEnv struct (flags + env vars).
+// Also split out for the same byte-identical-backend.zig reason.
+const compiler_env_module = b.createModule(.{
+    .root_source_file = b.path("compiler_env.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+
 // Lexer module - tokenization
 const lexer_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/lexer.zig" },
@@ -91,6 +109,13 @@ const config_module = b.createModule(.{
 });
 config_module.addImport("log", log_module);
 
+// File types module - canonical Koru extension list + helpers
+const file_types_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/file_types.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+
 // Module resolver - resolves import paths
 const module_resolver_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/module_resolver.zig" },
@@ -99,6 +124,7 @@ const module_resolver_module = b.createModule(.{
 });
 module_resolver_module.addImport("config", config_module);
 module_resolver_module.addImport("log", log_module);
+module_resolver_module.addImport("file_types", file_types_module);
 
 // Parser module - source parsing
 const parser_module = b.createModule(.{
@@ -114,6 +140,7 @@ parser_module.addImport("type_registry", type_registry_module);
 parser_module.addImport("expression_parser", expression_parser_module);
 parser_module.addImport("union_collector", union_collector_module);
 parser_module.addImport("module_resolver", module_resolver_module);
+parser_module.addImport("file_types", file_types_module);
 
 // Phantom parser
 const phantom_parser_module = b.createModule(.{
@@ -202,6 +229,15 @@ auto_discharge_inserter_module.addImport("errors", errors_module);
 auto_discharge_inserter_module.addImport("log", log_module);
 auto_discharge_inserter_module.addImport("phantom_parser", phantom_parser_module);
 
+// Dead strip pass - removes unreachable events/procs from AST
+const dead_strip_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/dead_strip.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+dead_strip_module.addImport("ast", ast_module);
+dead_strip_module.addImport("log", log_module);
+
 // Codegen utilities - keyword escaping, identifier helpers
 const codegen_utils_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/codegen_utils.zig" },
@@ -289,6 +325,17 @@ tap_transformer_module.addImport("log", log_module);
 tap_transformer_module.addImport("tap_registry", tap_registry_module);
 tap_transformer_module.addImport("emitter_helpers", emitter_helpers_module);
 
+// Template processor - renders proc bodies tagged `|template|...`
+// through Liquid, then strips the `template` tag from the variant chain.
+const template_processor_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/template_processor.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+template_processor_module.addImport("ast", ast_module);
+template_processor_module.addImport("liquid", liquid_module);
+template_processor_module.addImport("log", log_module);
+
 // Purity helpers
 const purity_helpers_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/compiler_passes/purity_helpers.zig" },
@@ -314,23 +361,6 @@ visitor_emitter_module.addImport("tap_registry", tap_registry_module);
 visitor_emitter_module.addImport("type_registry", type_registry_module);
 visitor_emitter_module.addImport("annotation_parser", annotation_parser_module);
 visitor_emitter_module.addImport("codegen_utils", codegen_utils_module);
-
-// Fusion detector and optimizer
-const fusion_detector_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/fusion_detector.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-fusion_detector_module.addImport("ast", ast_module);
-
-const fusion_optimizer_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/fusion_optimizer.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-fusion_optimizer_module.addImport("ast", ast_module);
-fusion_optimizer_module.addImport("ast_functional", ast_functional_module);
-fusion_optimizer_module.addImport("fusion_detector.zig", fusion_detector_module);
 
 // Build.zig emission
 const emit_build_zig_module = b.createModule(.{
@@ -362,7 +392,52 @@ transform_pass_runner_module.addImport("ast_functional", ast_functional_module);
 transform_pass_runner_module.addImport("liquid", liquid_module);
 
 // Add all imports to the backend executable
+// Backend_output_emitted as its own compilation unit, linked via addObject.
+// This is the slice-B move: backend.zig no longer @import-s this file, so
+// it doesn't get fused into backend.zig's compilation unit.
+const backend_output_module = b.createModule(.{
+    .root_source_file = b.path("backend_output_emitted.zig"),
+    .target = target,
+    .optimize = optimize,
+});
+backend_output_module.addImport("ast", ast_module);
+backend_output_module.addImport("log", log_module);
+backend_output_module.addImport("emitter_helpers", emitter_helpers_module);
+backend_output_module.addImport("compiler_env", compiler_env_module);
+backend_output_module.addImport("tap_registry", tap_registry_module);
+backend_output_module.addImport("annotation_parser", annotation_parser_module);
+backend_output_module.addImport("type_registry", type_registry_module);
+backend_output_module.addImport("codegen_utils", codegen_utils_module);
+backend_output_module.addImport("transform_pass_runner", transform_pass_runner_module);
+backend_output_module.addImport("parser", parser_module);
+backend_output_module.addImport("ast_functional", ast_functional_module);
+backend_output_module.addImport("flow_checker", flow_checker_module);
+backend_output_module.addImport("shape_checker", shape_checker_module);
+backend_output_module.addImport("phantom_semantic_checker", phantom_semantic_checker_module);
+backend_output_module.addImport("auto_discharge_inserter", auto_discharge_inserter_module);
+backend_output_module.addImport("dead_strip", dead_strip_module);
+backend_output_module.addImport("purity_analyzer", purity_analyzer_module);
+backend_output_module.addImport("visitor_emitter", visitor_emitter_module);
+backend_output_module.addImport("emit_build_zig", emit_build_zig_module);
+backend_output_module.addImport("ast_serializer", ast_serializer_module);
+backend_output_module.addImport("runtime_registry", runtime_registry_module);
+backend_output_module.addImport("tap_transformer", tap_transformer_module);
+backend_output_module.addImport("template_processor", template_processor_module);
+backend_output_module.addImport("expression_parser", expression_parser_module);
+backend_output_module.addImport("errors", errors_module);
+backend_output_module.addImport("continuation_codegen", continuation_codegen_module);
+backend_output_module.addImport("template_utils", template_utils_module);
+backend_output_module.addImport("liquid", liquid_module);
+
+const backend_output_obj = b.addObject(.{
+    .name = "backend_output",
+    .root_module = backend_output_module,
+});
+exe.addObject(backend_output_obj);
+
 exe.root_module.addImport("ast", ast_module);
+exe.root_module.addImport("program_ast", program_ast_module);
+exe.root_module.addImport("compiler_env", compiler_env_module);
 exe.root_module.addImport("ast_functional", ast_functional_module);
 exe.root_module.addImport("ast_serializer", ast_serializer_module);
 exe.root_module.addImport("log", log_module);
@@ -370,14 +445,16 @@ exe.root_module.addImport("emitter_helpers", emitter_helpers_module);
 exe.root_module.addImport("tap_registry", tap_registry_module);
 exe.root_module.addImport("runtime_registry", runtime_registry_module);
 exe.root_module.addImport("tap_transformer", tap_transformer_module);
+exe.root_module.addImport("template_processor", template_processor_module);
 exe.root_module.addImport("visitor_emitter", visitor_emitter_module);
 exe.root_module.addImport("parser", parser_module);
-exe.root_module.addImport("fusion_optimizer", fusion_optimizer_module);
+exe.root_module.addImport("expression_parser", expression_parser_module);
 exe.root_module.addImport("emit_build_zig", emit_build_zig_module);
 exe.root_module.addImport("shape_checker", shape_checker_module);
 exe.root_module.addImport("flow_checker", flow_checker_module);
 exe.root_module.addImport("phantom_semantic_checker", phantom_semantic_checker_module);
 exe.root_module.addImport("auto_discharge_inserter", auto_discharge_inserter_module);
+exe.root_module.addImport("dead_strip", dead_strip_module);
 exe.root_module.addImport("purity_analyzer", purity_analyzer_module);
 exe.root_module.addImport("errors", errors_module);
 exe.root_module.addImport("type_registry", type_registry_module);
