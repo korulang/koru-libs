@@ -1,13 +1,13 @@
 // @koru/sqlite - SQLite bindings for Koru
 //
 // First official Koru library package.
-// Demonstrates: phantom obligations, auto-dispose, ~std.build:requires
+// Demonstrates: phantom obligations, auto-dispose, ~std/build:requires
 
-~import "$std/build"
-~import "$std/deps"
+~import std/build
+~import std/deps
 
 // System dependency: libsqlite3 must be installed
-~std.deps:requires.system {
+~std/deps:requires.system {
     "name": "sqlite3",
     "check": "pkg-config --modversion sqlite3",
     "brew": "sqlite3",
@@ -18,7 +18,7 @@
 }
 
 // Build requirements: link against libsqlite3
-~std.build:requires {
+~std/build:requires {
     exe.linkSystemLibrary("sqlite3");
     exe.linkLibC();
 }
@@ -41,7 +41,7 @@ pub const Statement = struct {
 // ============================================================================
 
 ~pub event open { path: []const u8 }
-| db { conn: *Connection[opened!] }
+| db *Connection<opened!>
 | err { code: i32, msg: []const u8 }
 
 ~proc open {
@@ -54,27 +54,24 @@ pub const Statement = struct {
     }
     const conn = std.heap.page_allocator.create(Connection) catch unreachable;
     conn.* = Connection{ .handle = db };
-    return .{ .db = .{ .conn = conn } };
+    return .{ .db = conn };
 }
 
-~pub event close { conn: *Connection[!opened] }
-| closed {}
-
+~pub event close { conn: *Connection<!opened> }
 ~proc close {
     if (conn.handle) |h| {
         _ = c.sqlite3_close(h);
     }
     std.heap.page_allocator.destroy(conn);
-    return .{ .closed = .{} };
 }
 
 // ============================================================================
 // Query Execution
 // ============================================================================
 
-~pub event exec { conn: *Connection[!opened], sql: []const u8 }
-| ok { conn: *Connection[opened!] }
-| err { conn: *Connection[opened!], code: i32, msg: []const u8 }
+~pub event exec { conn: *Connection<!opened>, sql: []const u8 }
+| ok *Connection<opened!>
+| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
 ~proc exec {
     var errmsg: [*c]u8 = null;
@@ -84,15 +81,15 @@ pub const Statement = struct {
         if (errmsg) |e| c.sqlite3_free(e);
         return .{ .err = .{ .conn = conn, .code = rc, .msg = msg } };
     }
-    return .{ .ok = .{ .conn = conn } };
+    return .{ .ok = conn };
 }
 
 // Literal SQL query - takes a runtime SQL string
 // For compile-time parameterized queries, use ~query { ... } with Source block
-~pub event query.literal { conn: *Connection[!opened], sql: []const u8 }
-| row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
-| empty { conn: *Connection[opened!] }
-| err { conn: *Connection[opened!], code: i32, msg: []const u8 }
+~pub event query.literal { conn: *Connection<!opened>, sql: []const u8 }
+| row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
+| empty *Connection<opened!>
+| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
 ~proc query.literal {
     var stmt: ?*c.sqlite3_stmt = null;
@@ -109,7 +106,7 @@ pub const Statement = struct {
         return .{ .row = .{ .conn = conn, .stmt = s } };
     } else if (step_rc == c.SQLITE_DONE) {
         _ = c.sqlite3_finalize(stmt);
-        return .{ .empty = .{ .conn = conn } };
+        return .{ .empty = conn };
     } else {
         const msg = c.sqlite3_errmsg(conn.handle);
         _ = c.sqlite3_finalize(stmt);
@@ -121,7 +118,7 @@ pub const Statement = struct {
 // Parameterized Query - Compile-time SQL with type-safe bindings
 // ============================================================================
 // Usage:
-//   ~libs.sqlite3:query(conn: db) {
+//   ~libs/sqlite3:query(conn: db) {
 //       SELECT * FROM users WHERE id = {{user_id:d}} AND name = {{name:s}}
 //   }
 //   | row r |> ...
@@ -138,14 +135,14 @@ pub const Statement = struct {
     program: *const Program,
     allocator: std.mem.Allocator
 }
-| transformed { program: *const Program }
+| transformed *const Program
 
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
-~[norun]pub event query.impl { conn: *Connection[!opened] }
-| row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
-| empty { conn: *Connection[opened!] }
-| err { conn: *Connection[opened!], code: i32, msg: []const u8 }
+~[norun]pub event query.impl { conn: *Connection<!opened> }
+| row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
+| empty *Connection<opened!>
+| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
 ~proc query {
     const ast = @import("ast");
@@ -155,7 +152,7 @@ pub const Statement = struct {
     const flow = if (item.* == .flow)
         &item.flow
     else
-        return .{ .transformed = .{ .program = program } };
+        return .{ .transformed = program };
 
     // CRITICAL: Use pointer comparison to identify if this is the top-level query
     // The `invocation` parameter tells us EXACTLY which query is being transformed
@@ -380,7 +377,7 @@ pub const Statement = struct {
         if (maybe_new_program) |new_program| {
             const result = allocator.create(ast.Program) catch unreachable;
             result.* = new_program;
-            return .{ .transformed = .{ .program = result } };
+            return .{ .transformed = result };
         }
         std.debug.print("ERROR: ~query transform (top-level) failed - flow not found\n", .{});
         @panic("query transform: flow not found");
@@ -537,7 +534,7 @@ pub const Statement = struct {
         if (maybe_new_program) |new_program| {
             const result = allocator.create(ast.Program) catch unreachable;
             result.* = new_program;
-            return .{ .transformed = .{ .program = result } };
+            return .{ .transformed = result };
         }
         std.debug.print("ERROR: ~query transform (nested) failed - flow not found in program\n", .{});
         @panic("query transform: flow not found");
@@ -545,10 +542,10 @@ pub const Statement = struct {
 }
 
 // Get next row from statement
-~pub event next { conn: *Connection[!opened], stmt: *Statement[!prepared] }
-| row { conn: *Connection[opened!], stmt: *Statement[prepared!] }
-| done { conn: *Connection[opened!] }
-| err { conn: *Connection[opened!], code: i32, msg: []const u8 }
+~pub event next { conn: *Connection<!opened>, stmt: *Statement<!prepared> }
+| row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
+| done *Connection<opened!>
+| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
 ~proc next {
     const rc = c.sqlite3_step(stmt.handle);
@@ -557,7 +554,7 @@ pub const Statement = struct {
     } else if (rc == c.SQLITE_DONE) {
         _ = c.sqlite3_finalize(stmt.handle);
         std.heap.page_allocator.destroy(stmt);
-        return .{ .done = .{ .conn = conn } };
+        return .{ .done = conn };
     } else {
         const msg = c.sqlite3_errmsg(conn.handle);
         _ = c.sqlite3_finalize(stmt.handle);
@@ -568,14 +565,14 @@ pub const Statement = struct {
 
 // Finalize text - acknowledges we're done with borrowed text pointer
 // Must be called BEFORE finalize.stmt (text becomes invalid after stmt finalize)
-~pub event finalize.text { text: []const u8[!text] }
+~pub event finalize.text { text: []const u8<!text> }
 
 ~proc finalize.text {
     _ = &text;
 }
 
 // Finalize statement - releases the prepared statement
-~pub event finalize.stmt { stmt: *Statement[!prepared] }
+~pub event finalize.stmt { stmt: *Statement<!prepared> }
 
 ~proc finalize.stmt {
     if (stmt.handle) |h| {
@@ -588,16 +585,16 @@ pub const Statement = struct {
 // Column Access (within row context)
 // ============================================================================
 
-~pub event col.int { stmt: *Statement[!prepared], index: i32 }
-| value { stmt: *Statement[prepared!], val: i64 }
+~pub event col.int { stmt: *Statement<!prepared>, index: i32 }
+| value { stmt: *Statement<prepared!>, val: i64 }
 
 ~proc col.int {
     const val = c.sqlite3_column_int64(stmt.handle, index);
     return .{ .value = .{ .stmt = stmt, .val = val } };
 }
 
-~pub event col.text { stmt: *Statement[!prepared], index: i32 }
-| value { stmt: *Statement[prepared!], text: []const u8[text!] }
+~pub event col.text { stmt: *Statement<!prepared>, index: i32 }
+| value { stmt: *Statement<prepared!>, text: []const u8<text!> }
 
 ~proc col.text {
     const ptr = c.sqlite3_column_text(stmt.handle, index);
@@ -606,8 +603,8 @@ pub const Statement = struct {
     return .{ .value = .{ .stmt = stmt, .text = text } };
 }
 
-~pub event col.real { stmt: *Statement[!prepared], index: i32 }
-| value { stmt: *Statement[prepared!], val: f64 }
+~pub event col.real { stmt: *Statement<!prepared>, index: i32 }
+| value { stmt: *Statement<prepared!>, val: f64 }
 
 ~proc col.real {
     const val = c.sqlite3_column_double(stmt.handle, index);

@@ -14,8 +14,8 @@
 
 ~[runtime]
 
-~import "$std/runtime"
-~import "$std/interpreter"
+~import std/runtime
+~import std/interpreter
 
 const std = @import("std");
 
@@ -41,7 +41,7 @@ const std = @import("std");
 // SCOPE REGISTRATION
 // ============================================================================
 
-~std.runtime:register(scope: "koru") {
+~std/runtime:register(scope: "koru") {
     print(1)    // costs 1 token
     println(1)  // costs 1 token
 }

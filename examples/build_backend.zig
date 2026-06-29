@@ -126,6 +126,14 @@ module_resolver_module.addImport("config", config_module);
 module_resolver_module.addImport("log", log_module);
 module_resolver_module.addImport("file_types", file_types_module);
 
+// Parse-time name normalizer (kebab -> snake). Shares ast_module for type identity.
+const ast_mangle_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/ast_mangle.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+ast_mangle_module.addImport("ast", ast_module);
+
 // Parser module - source parsing
 const parser_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/parser.zig" },
@@ -133,6 +141,7 @@ const parser_module = b.createModule(.{
     .optimize = optimize,
 });
 parser_module.addImport("ast", ast_module);
+parser_module.addImport("ast_mangle", ast_mangle_module);
 parser_module.addImport("lexer", lexer_module);
 parser_module.addImport("errors", errors_module);
 parser_module.addImport("log", log_module);
@@ -269,6 +278,16 @@ const liquid_module = b.createModule(.{
     .optimize = optimize,
 });
 
+// Struct-literal projector - parses Koru `{ name: expr }` into ordered field
+// pairs / a liquid record. Used by the ~capture transform to interpret the
+// opaque `captured({...})` payload (docs/PARSER_PALETTE.md).
+const struct_literal_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/struct_literal.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+struct_literal_module.addImport("liquid", liquid_module);
+
 // Compiler config
 const compiler_config_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/compiler_config.zig" },
@@ -335,6 +354,8 @@ const template_processor_module = b.createModule(.{
 template_processor_module.addImport("ast", ast_module);
 template_processor_module.addImport("liquid", liquid_module);
 template_processor_module.addImport("log", log_module);
+template_processor_module.addImport("errors", errors_module);
+template_processor_module.addImport("annotation_parser", annotation_parser_module);
 
 // Purity helpers
 const purity_helpers_module = b.createModule(.{
@@ -361,6 +382,19 @@ visitor_emitter_module.addImport("tap_registry", tap_registry_module);
 visitor_emitter_module.addImport("type_registry", type_registry_module);
 visitor_emitter_module.addImport("annotation_parser", annotation_parser_module);
 visitor_emitter_module.addImport("codegen_utils", codegen_utils_module);
+visitor_emitter_module.addImport("file_types", file_types_module);
+
+// JS-target emitter (spike): minimal AST→JS for pump.kz. Gated behind
+// --lang=js in emit-zig; the default Zig path never references it.
+const js_emitter_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/js_emitter.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+js_emitter_module.addImport("ast", ast_module);
+js_emitter_module.addImport("log", log_module);
+js_emitter_module.addImport("file_types", file_types_module);
+js_emitter_module.addImport("annotation_parser", annotation_parser_module);
 
 // Build.zig emission
 const emit_build_zig_module = b.createModule(.{
@@ -418,6 +452,7 @@ backend_output_module.addImport("auto_discharge_inserter", auto_discharge_insert
 backend_output_module.addImport("dead_strip", dead_strip_module);
 backend_output_module.addImport("purity_analyzer", purity_analyzer_module);
 backend_output_module.addImport("visitor_emitter", visitor_emitter_module);
+backend_output_module.addImport("js_emitter", js_emitter_module);
 backend_output_module.addImport("emit_build_zig", emit_build_zig_module);
 backend_output_module.addImport("ast_serializer", ast_serializer_module);
 backend_output_module.addImport("runtime_registry", runtime_registry_module);
@@ -428,6 +463,7 @@ backend_output_module.addImport("errors", errors_module);
 backend_output_module.addImport("continuation_codegen", continuation_codegen_module);
 backend_output_module.addImport("template_utils", template_utils_module);
 backend_output_module.addImport("liquid", liquid_module);
+backend_output_module.addImport("struct_literal", struct_literal_module);
 
 const backend_output_obj = b.addObject(.{
     .name = "backend_output",
@@ -464,6 +500,7 @@ exe.root_module.addImport("codegen_utils", codegen_utils_module);
 exe.root_module.addImport("continuation_codegen", continuation_codegen_module);
 exe.root_module.addImport("template_utils", template_utils_module);
 exe.root_module.addImport("liquid", liquid_module);
+exe.root_module.addImport("struct_literal", struct_literal_module);
 
         }
     }.call;

@@ -3,23 +3,23 @@
 // This tests the ~query { SQL } syntax which goes through the transform,
 // unlike query.literal which is a runtime event.
 
-~import "$libs/sqlite3"
-~import "$std/io"
+~import libs/sqlite3
+~import std/io
 
-~libs.sqlite3:open(path: ":memory:")
-| db d |> libs.sqlite3:exec(conn: d.conn, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok d2 |> libs.sqlite3:exec(conn: d2.conn, sql: "INSERT INTO users VALUES (42, 'Alice')")
-        | ok d3 |> libs.sqlite3:query(conn: d3.conn) [SQL]{
+~libs/sqlite3:open(path: ":memory:")
+| db d |> libs/sqlite3:exec(conn: d.conn, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
+    | ok d2 |> libs/sqlite3:exec(conn: d2.conn, sql: "INSERT INTO users VALUES (42, 'Alice')")
+        | ok d3 |> libs/sqlite3:query(conn: d3.conn) [SQL]{
                 SELECT * FROM users
             }
-            | row r |> libs.sqlite3:finalize.stmt(stmt: r.stmt) |> libs.sqlite3:close(conn: r.conn)
-                | closed |> std.io:print.ln("Found row via transform!")
-            | empty e |> libs.sqlite3:close(conn: e.conn)
-                | closed |> std.io:print.ln("No rows")
-            | err e |> libs.sqlite3:close(conn: e.conn)
-                | closed |> std.io:print.ln("Query error")
-        | err e3 |> libs.sqlite3:close(conn: e3.conn)
-            | closed |> std.io:print.ln("Insert error")
-    | err e2 |> libs.sqlite3:close(conn: e2.conn)
-        | closed |> std.io:print.ln("Create error")
-| err _ |> std.io:print.ln("Open error")
+            | row r |> libs/sqlite3:finalize.stmt(stmt: r.stmt) |> libs/sqlite3:close(conn: r.conn)
+                | closed |> std/io:print.ln("Found row via transform!")
+            | empty e |> libs/sqlite3:close(conn: e.conn)
+                | closed |> std/io:print.ln("No rows")
+            | err e |> libs/sqlite3:close(conn: e.conn)
+                | closed |> std/io:print.ln("Query error")
+        | err e3 |> libs/sqlite3:close(conn: e3.conn)
+            | closed |> std/io:print.ln("Insert error")
+    | err e2 |> libs/sqlite3:close(conn: e2.conn)
+        | closed |> std/io:print.ln("Create error")
+| err _ |> std/io:print.ln("Open error")

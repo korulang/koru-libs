@@ -506,5 +506,26 @@ exe.root_module.addImport("struct_literal", struct_literal_module);
     }.call;
 compiler_build_0(__koru_b, __koru_exe, __koru_target, __koru_optimize);
 
+    // Module: compiler
+    const compiler_build_1 = struct {
+        fn call(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+            _ = &b; _ = &exe; _ = &target; _ = &optimize; // Suppress unused warnings
+const builtin = @import("builtin");
+if (builtin.os.tag == .macos) {
+    // libpq is keg-only on homebrew — not symlinked to default paths
+    const homebrew_prefix: []const u8 = if (builtin.cpu.arch == .aarch64)
+        "/opt/homebrew/opt/libpq"
+    else
+        "/usr/local/opt/libpq";
+    exe.addIncludePath(.{ .cwd_relative = homebrew_prefix ++ "/include" });
+    exe.addLibraryPath(.{ .cwd_relative = homebrew_prefix ++ "/lib" });
+}
+exe.linkSystemLibrary("pq");
+exe.linkLibC();
+
+        }
+    }.call;
+compiler_build_1(__koru_b, __koru_exe, __koru_target, __koru_optimize);
+
     __koru_b.installArtifact(__koru_exe);
 }

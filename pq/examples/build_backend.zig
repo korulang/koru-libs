@@ -43,24 +43,6 @@ const ast_module = b.createModule(.{
 });
 ast_module.addImport("errors", errors_module);
 
-// Program AST module - per-user PROGRAM_AST constant, emitted alongside backend.zig.
-// Split out so backend.zig itself stays byte-identical across user programs and
-// Zig's content-addressed cache hits.
-const program_ast_module = b.createModule(.{
-    .root_source_file = b.path("program_ast.zig"),
-    .target = target,
-    .optimize = optimize,
-});
-program_ast_module.addImport("ast", ast_module);
-
-// Compiler env module - per-user CompilerEnv struct (flags + env vars).
-// Also split out for the same byte-identical-backend.zig reason.
-const compiler_env_module = b.createModule(.{
-    .root_source_file = b.path("compiler_env.zig"),
-    .target = target,
-    .optimize = optimize,
-});
-
 // Lexer module - tokenization
 const lexer_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/lexer.zig" },
@@ -109,13 +91,6 @@ const config_module = b.createModule(.{
 });
 config_module.addImport("log", log_module);
 
-// File types module - canonical Koru extension list + helpers
-const file_types_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/file_types.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-
 // Module resolver - resolves import paths
 const module_resolver_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/module_resolver.zig" },
@@ -124,15 +99,6 @@ const module_resolver_module = b.createModule(.{
 });
 module_resolver_module.addImport("config", config_module);
 module_resolver_module.addImport("log", log_module);
-module_resolver_module.addImport("file_types", file_types_module);
-
-// Parse-time name normalizer (kebab -> snake). Shares ast_module for type identity.
-const ast_mangle_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/ast_mangle.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-ast_mangle_module.addImport("ast", ast_module);
 
 // Parser module - source parsing
 const parser_module = b.createModule(.{
@@ -141,7 +107,6 @@ const parser_module = b.createModule(.{
     .optimize = optimize,
 });
 parser_module.addImport("ast", ast_module);
-parser_module.addImport("ast_mangle", ast_mangle_module);
 parser_module.addImport("lexer", lexer_module);
 parser_module.addImport("errors", errors_module);
 parser_module.addImport("log", log_module);
@@ -149,7 +114,6 @@ parser_module.addImport("type_registry", type_registry_module);
 parser_module.addImport("expression_parser", expression_parser_module);
 parser_module.addImport("union_collector", union_collector_module);
 parser_module.addImport("module_resolver", module_resolver_module);
-parser_module.addImport("file_types", file_types_module);
 
 // Phantom parser
 const phantom_parser_module = b.createModule(.{
@@ -245,7 +209,6 @@ const dead_strip_module = b.createModule(.{
     .optimize = optimize,
 });
 dead_strip_module.addImport("ast", ast_module);
-dead_strip_module.addImport("log", log_module);
 
 // Codegen utilities - keyword escaping, identifier helpers
 const codegen_utils_module = b.createModule(.{
@@ -277,16 +240,6 @@ const liquid_module = b.createModule(.{
     .target = target,
     .optimize = optimize,
 });
-
-// Struct-literal projector - parses Koru `{ name: expr }` into ordered field
-// pairs / a liquid record. Used by the ~capture transform to interpret the
-// opaque `captured({...})` payload (docs/PARSER_PALETTE.md).
-const struct_literal_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/struct_literal.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-struct_literal_module.addImport("liquid", liquid_module);
 
 // Compiler config
 const compiler_config_module = b.createModule(.{
@@ -344,19 +297,6 @@ tap_transformer_module.addImport("log", log_module);
 tap_transformer_module.addImport("tap_registry", tap_registry_module);
 tap_transformer_module.addImport("emitter_helpers", emitter_helpers_module);
 
-// Template processor - renders proc bodies tagged `|template|...`
-// through Liquid, then strips the `template` tag from the variant chain.
-const template_processor_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/template_processor.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-template_processor_module.addImport("ast", ast_module);
-template_processor_module.addImport("liquid", liquid_module);
-template_processor_module.addImport("log", log_module);
-template_processor_module.addImport("errors", errors_module);
-template_processor_module.addImport("annotation_parser", annotation_parser_module);
-
 // Purity helpers
 const purity_helpers_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/compiler_passes/purity_helpers.zig" },
@@ -382,19 +322,6 @@ visitor_emitter_module.addImport("tap_registry", tap_registry_module);
 visitor_emitter_module.addImport("type_registry", type_registry_module);
 visitor_emitter_module.addImport("annotation_parser", annotation_parser_module);
 visitor_emitter_module.addImport("codegen_utils", codegen_utils_module);
-visitor_emitter_module.addImport("file_types", file_types_module);
-
-// JS-target emitter (spike): minimal AST→JS for pump.kz. Gated behind
-// --lang=js in emit-zig; the default Zig path never references it.
-const js_emitter_module = b.createModule(.{
-    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/js_emitter.zig" },
-    .target = target,
-    .optimize = optimize,
-});
-js_emitter_module.addImport("ast", ast_module);
-js_emitter_module.addImport("log", log_module);
-js_emitter_module.addImport("file_types", file_types_module);
-js_emitter_module.addImport("annotation_parser", annotation_parser_module);
 
 // Build.zig emission
 const emit_build_zig_module = b.createModule(.{
@@ -426,54 +353,7 @@ transform_pass_runner_module.addImport("ast_functional", ast_functional_module);
 transform_pass_runner_module.addImport("liquid", liquid_module);
 
 // Add all imports to the backend executable
-// Backend_output_emitted as its own compilation unit, linked via addObject.
-// This is the slice-B move: backend.zig no longer @import-s this file, so
-// it doesn't get fused into backend.zig's compilation unit.
-const backend_output_module = b.createModule(.{
-    .root_source_file = b.path("backend_output_emitted.zig"),
-    .target = target,
-    .optimize = optimize,
-});
-backend_output_module.addImport("ast", ast_module);
-backend_output_module.addImport("log", log_module);
-backend_output_module.addImport("emitter_helpers", emitter_helpers_module);
-backend_output_module.addImport("compiler_env", compiler_env_module);
-backend_output_module.addImport("tap_registry", tap_registry_module);
-backend_output_module.addImport("annotation_parser", annotation_parser_module);
-backend_output_module.addImport("type_registry", type_registry_module);
-backend_output_module.addImport("codegen_utils", codegen_utils_module);
-backend_output_module.addImport("transform_pass_runner", transform_pass_runner_module);
-backend_output_module.addImport("parser", parser_module);
-backend_output_module.addImport("ast_functional", ast_functional_module);
-backend_output_module.addImport("flow_checker", flow_checker_module);
-backend_output_module.addImport("shape_checker", shape_checker_module);
-backend_output_module.addImport("phantom_semantic_checker", phantom_semantic_checker_module);
-backend_output_module.addImport("auto_discharge_inserter", auto_discharge_inserter_module);
-backend_output_module.addImport("dead_strip", dead_strip_module);
-backend_output_module.addImport("purity_analyzer", purity_analyzer_module);
-backend_output_module.addImport("visitor_emitter", visitor_emitter_module);
-backend_output_module.addImport("js_emitter", js_emitter_module);
-backend_output_module.addImport("emit_build_zig", emit_build_zig_module);
-backend_output_module.addImport("ast_serializer", ast_serializer_module);
-backend_output_module.addImport("runtime_registry", runtime_registry_module);
-backend_output_module.addImport("tap_transformer", tap_transformer_module);
-backend_output_module.addImport("template_processor", template_processor_module);
-backend_output_module.addImport("expression_parser", expression_parser_module);
-backend_output_module.addImport("errors", errors_module);
-backend_output_module.addImport("continuation_codegen", continuation_codegen_module);
-backend_output_module.addImport("template_utils", template_utils_module);
-backend_output_module.addImport("liquid", liquid_module);
-backend_output_module.addImport("struct_literal", struct_literal_module);
-
-const backend_output_obj = b.addObject(.{
-    .name = "backend_output",
-    .root_module = backend_output_module,
-});
-exe.addObject(backend_output_obj);
-
 exe.root_module.addImport("ast", ast_module);
-exe.root_module.addImport("program_ast", program_ast_module);
-exe.root_module.addImport("compiler_env", compiler_env_module);
 exe.root_module.addImport("ast_functional", ast_functional_module);
 exe.root_module.addImport("ast_serializer", ast_serializer_module);
 exe.root_module.addImport("log", log_module);
@@ -481,10 +361,8 @@ exe.root_module.addImport("emitter_helpers", emitter_helpers_module);
 exe.root_module.addImport("tap_registry", tap_registry_module);
 exe.root_module.addImport("runtime_registry", runtime_registry_module);
 exe.root_module.addImport("tap_transformer", tap_transformer_module);
-exe.root_module.addImport("template_processor", template_processor_module);
 exe.root_module.addImport("visitor_emitter", visitor_emitter_module);
 exe.root_module.addImport("parser", parser_module);
-exe.root_module.addImport("expression_parser", expression_parser_module);
 exe.root_module.addImport("emit_build_zig", emit_build_zig_module);
 exe.root_module.addImport("shape_checker", shape_checker_module);
 exe.root_module.addImport("flow_checker", flow_checker_module);
@@ -500,11 +378,31 @@ exe.root_module.addImport("codegen_utils", codegen_utils_module);
 exe.root_module.addImport("continuation_codegen", continuation_codegen_module);
 exe.root_module.addImport("template_utils", template_utils_module);
 exe.root_module.addImport("liquid", liquid_module);
-exe.root_module.addImport("struct_literal", struct_literal_module);
 
         }
     }.call;
 compiler_build_0(__koru_b, __koru_exe, __koru_target, __koru_optimize);
+
+    // Module: compiler
+    const compiler_build_1 = struct {
+        fn call(b: *std.Build, exe: *std.Build.Step.Compile, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) void {
+            _ = &b; _ = &exe; _ = &target; _ = &optimize; // Suppress unused warnings
+const builtin = @import("builtin");
+if (builtin.os.tag == .macos) {
+    // libpq is keg-only on homebrew — not symlinked to default paths
+    const homebrew_prefix: []const u8 = if (builtin.cpu.arch == .aarch64)
+        "/opt/homebrew/opt/libpq"
+    else
+        "/usr/local/opt/libpq";
+    exe.addIncludePath(.{ .cwd_relative = homebrew_prefix ++ "/include" });
+    exe.addLibraryPath(.{ .cwd_relative = homebrew_prefix ++ "/lib" });
+}
+exe.linkSystemLibrary("pq");
+exe.linkLibC();
+
+        }
+    }.call;
+compiler_build_1(__koru_b, __koru_exe, __koru_target, __koru_optimize);
 
     __koru_b.installArtifact(__koru_exe);
 }

@@ -1,0 +1,36 @@
+// Example 02: exec, query, row access
+//
+// Full round-trip: create a table, insert rows, select them back, read columns.
+//
+// Run: docker compose up -d (from koru-libs/pq/)
+//      koruc examples/02_exec.kz && ./a.out
+
+~import koru/pq
+~import std/io
+~import std/control
+
+~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+| err e |> std/io:print.ln("connect failed: {{ e:s }}")
+| ok conn |>
+    koru/pq:exec(conn, sql: "DROP TABLE IF EXISTS people")
+    | err e |> std/io:print.ln("drop failed: {{ e:s }}")
+    | ok |>
+        koru/pq:exec(conn, sql: "CREATE TABLE people (id SERIAL PRIMARY KEY, name TEXT NOT NULL, age INT NOT NULL)")
+        | err e |> std/io:print.ln("create failed: {{ e:s }}")
+        | ok |>
+            koru/pq:exec(conn, sql: "INSERT INTO people (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Charlie', 35)")
+            | err e |> std/io:print.ln("insert failed: {{ e:s }}")
+            | ok |>
+                koru/pq:query(conn, sql: "SELECT id, name, age FROM people ORDER BY id")
+                | err e |> std/io:print.ln("query failed: {{ e:s }}")
+                | empty |> std/io:print.ln("no rows")
+                | rows result |>
+                    koru/pq:result.nrows(result)
+                    | ok n |>
+                        std/control:for(0..n)
+                        | each i |>
+                            koru/pq:result.col(result, row: i, col: "name")
+                            | no_such_col |> std/io:print.ln("no name column")
+                            | is_null |> std/io:print.ln("row {{ i }}: NULL")
+                            | some name |> std/io:print.ln("row {{ i }}: {{ name:s }}")
+                        | done |> _

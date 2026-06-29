@@ -6,30 +6,30 @@
 // terminal events as effect branches; they don't write an outer loop.
 //
 // USAGE:
-//   ~import "$koru/vaxis"
+//   ~import koru/vaxis
 //
-//   ~koru.vaxis:run(title: "Hello")
+//   ~koru/vaxis:run(title: "Hello")
 //   ! ready |>
-//       koru.vaxis:write_at(x: 2, y: 2, text: "Hello! Press q to quit.")
-//       koru.vaxis:render()
-//   ! key k when k.ch == 'q' |> koru.vaxis:quit()
+//       koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
+//       koru/vaxis:render()
+//   ! key k when k.ch == 'q' |> koru/vaxis:quit()
 //   ! key _ |> _
-//   ! resize _ |> koru.vaxis:render()
+//   ! resize _ |> koru/vaxis:render()
 //   | done _ |> _
 //   | err e |> _
 
-~import "$std/build"
-~import "$std/deps"
+~import std/build
+~import std/deps
 
 // Zig package dependency — libvaxis from Zig package manager
-~std.deps:requires.zig {
+~std/deps:requires.zig {
     "name": "vaxis",
     "url": "git+https://github.com/rockorager/libvaxis.git#75035b169e91a51c233f3742161f8eb8eafca659",
     "hash": "vaxis-0.5.1-BWNV_IE-CQBYmSf_boEKUyv6den0Gmj5LksxvdCx2pBL"
 }
 
 // For BACKEND compilation (so it can validate the generated code)
-~std.compiler:requires {
+~std/compiler:requires {
     const vaxis_dep = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
@@ -38,7 +38,7 @@
 }
 
 // For OUTPUT binary (the final executable)
-~std.build:requires {
+~std/build:requires {
     const vaxis_dep = b.dependency("vaxis", .{
         .target = target,
         .optimize = optimize,
@@ -98,8 +98,8 @@ const VaxisEvent = union(enum) {
 //   ! ready          — fires once after init, before the event loop starts
 //   ! key KeyData    — every key press
 //   ! resize SizeData — every terminal resize (including initial)
-//   ! ?focus_in      — terminal got focus (optional)
-//   ! ?focus_out     — terminal lost focus (optional)
+//   ! ?focus-in      — terminal got focus (optional)
+//   ! ?focus-out     — terminal lost focus (optional)
 //
 // Terminals:
 //   | done usize     — clean exit; payload is total event count
@@ -109,8 +109,8 @@ const VaxisEvent = union(enum) {
 ! ?ready
 ! ?key koru.vaxis:KeyData
 ! ?resize koru.vaxis:SizeData
-! ?focus_in
-! ?focus_out
+! ?focus-in
+! ?focus-out
 | ?done
 | err []const u8
 
@@ -203,8 +203,8 @@ const VaxisEvent = union(enum) {
                     vx.render(tty.writer()) catch {};
                 }
             },
-            .focus_in => focus_in(),
-            .focus_out => focus_out(),
+            .focus_in => focus-in(),
+            .focus_out => focus-out(),
         }
     }
 
@@ -247,9 +247,9 @@ const VaxisEvent = union(enum) {
 }
 
 // Write text at position.
-~pub event write_at { x: u16, y: u16, text: []const u8 }
+~pub event write-at { x: u16, y: u16, text: []const u8 }
 
-~proc write_at|zig {
+~proc write-at|zig {
     if (is_initialized) {
         const win = vx.window();
         const child = win.child(.{ .x_off = x, .y_off = y });

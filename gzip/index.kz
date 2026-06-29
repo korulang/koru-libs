@@ -4,21 +4,21 @@
 // Works at both compile-time and runtime.
 //
 // USAGE:
-//   ~import "$koru/gzip"
+//   ~import koru/gzip
 //
-//   ~koru.gzip:compress(data: my_bytes, allocator: alloc)
+//   ~koru/gzip:compress(data: my_bytes, allocator: alloc)
 //   | compressed c |> // c.data is gzipped, c.original_size for stats
 //   | error e |> // e.msg describes the error
 //
-//   ~koru.gzip:decompress(data: gzipped, allocator: alloc)
+//   ~koru/gzip:decompress(data: gzipped, allocator: alloc)
 //   | decompressed d |> // d.data is original content
 //   | error e |> ...
 
-~import "$std/build"
-~import "$std/deps"
+~import std/build
+~import std/deps
 
 // System dependency: zlib must be installed
-~std.deps:requires.system {
+~std/deps:requires.system {
     "name": "zlib",
     "check": "pkg-config --modversion zlib",
     "brew": "zlib",
@@ -29,7 +29,7 @@
 }
 
 // Build requirements: link against zlib
-~std.build:requires {
+~std/build:requires {
     exe.linkSystemLibrary("z");
     exe.linkLibC();
 }
@@ -67,13 +67,13 @@ fn levelToZlib(level: ?Level) c_int {
     allocator: std.mem.Allocator
 }
 | compressed { data: []const u8, original_size: usize }
-| error { msg: []const u8 }
+| error []const u8
 
 ~proc compress {
     // Allocate output buffer - worst case is slightly larger than input
     const max_output = c.compressBound(@intCast(data.len));
     const output_buffer = allocator.alloc(u8, max_output) catch {
-        return .{ .error = .{ .msg = "Failed to allocate output buffer" } };
+        return .{ .error = "Failed to allocate output buffer" };
     };
     errdefer allocator.free(output_buffer);
 
@@ -96,7 +96,7 @@ fn levelToZlib(level: ?Level) c_int {
 
     if (init_result != c.Z_OK) {
         allocator.free(output_buffer);
-        return .{ .error = .{ .msg = "zlib init failed" } };
+        return .{ .error = "zlib init failed" };
     }
 
     // Compress in one shot
@@ -106,7 +106,7 @@ fn levelToZlib(level: ?Level) c_int {
 
     if (deflate_result != c.Z_STREAM_END) {
         allocator.free(output_buffer);
-        return .{ .error = .{ .msg = "Compression failed" } };
+        return .{ .error = "Compression failed" };
     }
 
     // Shrink to actual size
@@ -122,17 +122,17 @@ fn levelToZlib(level: ?Level) c_int {
 // COMPRESS_BYTES - Simpler variant for comptime usage
 // ============================================================================
 
-~pub event compress_bytes {
+~pub event compress-bytes {
     data: []const u8,
     allocator: std.mem.Allocator
 }
-| ok { data: []const u8 }
-| error { msg: []const u8 }
+| ok []const u8
+| error []const u8
 
-~proc compress_bytes {
+~proc compress-bytes {
     const max_output = c.compressBound(@intCast(data.len));
     const output_buffer = allocator.alloc(u8, max_output) catch {
-        return .{ .error = .{ .msg = "Failed to allocate output buffer" } };
+        return .{ .error = "Failed to allocate output buffer" };
     };
     errdefer allocator.free(output_buffer);
 
@@ -153,7 +153,7 @@ fn levelToZlib(level: ?Level) c_int {
 
     if (init_result != c.Z_OK) {
         allocator.free(output_buffer);
-        return .{ .error = .{ .msg = "zlib init failed" } };
+        return .{ .error = "zlib init failed" };
     }
 
     const deflate_result = c.deflate(&strm, c.Z_FINISH);
@@ -162,12 +162,12 @@ fn levelToZlib(level: ?Level) c_int {
 
     if (deflate_result != c.Z_STREAM_END) {
         allocator.free(output_buffer);
-        return .{ .error = .{ .msg = "Compression failed" } };
+        return .{ .error = "Compression failed" };
     }
 
     const result = allocator.realloc(output_buffer, compressed_size) catch output_buffer[0..compressed_size];
 
-    return .{ .ok = .{ .data = result } };
+    return .{ .ok = result };
 }
 
 // ============================================================================
@@ -178,8 +178,8 @@ fn levelToZlib(level: ?Level) c_int {
     data: []const u8,
     allocator: std.mem.Allocator
 }
-| decompressed { data: []const u8 }
-| error { msg: []const u8 }
+| decompressed []const u8
+| error []const u8
 
 ~proc decompress {
     // Start with 4x input size, grow if needed
@@ -187,7 +187,7 @@ fn levelToZlib(level: ?Level) c_int {
     if (output_size < 1024) output_size = 1024;
 
     var output_buffer = allocator.alloc(u8, output_size) catch {
-        return .{ .error = .{ .msg = "Failed to allocate output buffer" } };
+        return .{ .error = "Failed to allocate output buffer" };
     };
     errdefer allocator.free(output_buffer);
 
@@ -202,7 +202,7 @@ fn levelToZlib(level: ?Level) c_int {
 
     if (init_result != c.Z_OK) {
         allocator.free(output_buffer);
-        return .{ .error = .{ .msg = "zlib init failed" } };
+        return .{ .error = "zlib init failed" };
     }
 
     // Decompress - may need multiple passes if output buffer too small
@@ -215,7 +215,7 @@ fn levelToZlib(level: ?Level) c_int {
             _ = c.inflateEnd(&strm);
 
             const result = allocator.realloc(output_buffer, decompressed_size) catch output_buffer[0..decompressed_size];
-            return .{ .decompressed = .{ .data = result } };
+            return .{ .decompressed = result };
         }
 
         if (inflate_result == c.Z_BUF_ERROR and strm.avail_out == 0) {
@@ -224,7 +224,7 @@ fn levelToZlib(level: ?Level) c_int {
             output_size *= 2;
             output_buffer = allocator.realloc(output_buffer, output_size) catch {
                 _ = c.inflateEnd(&strm);
-                return .{ .error = .{ .msg = "Failed to grow output buffer" } };
+                return .{ .error = "Failed to grow output buffer" };
             };
             strm.next_out = output_buffer.ptr + used;
             strm.avail_out = @intCast(output_buffer.len - used);
@@ -234,6 +234,6 @@ fn levelToZlib(level: ?Level) c_int {
         // Error
         _ = c.inflateEnd(&strm);
         allocator.free(output_buffer);
-        return .{ .error = .{ .msg = "Decompression failed" } };
+        return .{ .error = "Decompression failed" };
     }
 }

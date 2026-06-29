@@ -1,0 +1,20 @@
+// Example 02: Comptime SQL
+//
+// ~koru/pq:sql runs during backend execution — zero runtime footprint.
+// The table is created at compile time. The SELECT runs at runtime.
+//
+// Run: docker compose up -d (from koru-libs/pq/)
+//      koruc examples/02_sql.kz && ./a.out
+
+~import koru/pq
+~import std/io
+
+~[comptime]koru/pq:sql(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru") {
+    CREATE TABLE IF NOT EXISTS greetings (
+        id   SERIAL PRIMARY KEY,
+        msg  TEXT NOT NULL
+    );
+    INSERT INTO greetings (msg) VALUES ('hello from compile time');
+}
+| ok |> std/io:print.ln("Schema ready.")
+| err e |> std/io:print.ln("Comptime SQL failed: {{ e:s }}")

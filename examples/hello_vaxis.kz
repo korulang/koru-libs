@@ -1,10 +1,10 @@
 // Simplest possible vaxis app, effect-branch shape.
 // Show "Hello! Press q to quit." and quit on 'q'.
 
-~import "$std/io"
-~import "$koru/vaxis"
+~import std/io
+~import koru/vaxis
 
-~koru.vaxis:run(title: "Hello")
-! ready |> koru.vaxis:write_at(x: 2, y: 2, text: "Hello! Press q to quit.")
-! key k when k.ch == 'q' |> koru.vaxis:quit()
-| err _ |> std.io:print.ln("Failed to start vaxis")
+~koru/vaxis:run(title: "Hello")
+! ready |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
+! key k when k.ch == 'q' |> koru/vaxis:quit()
+| err _ |> std/io:print.ln("Failed to start vaxis")

@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: koru
+      POSTGRES_PASSWORD: koru
+      POSTGRES_DB: korutest
+    ports:
+      - "5432:5432"

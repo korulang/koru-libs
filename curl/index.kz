@@ -3,11 +3,11 @@
 // Wraps industry-standard libcurl with phantom obligation types
 // to enforce connection cleanup at compile-time.
 
-~import "$std/build"
-~import "$std/deps"
+~import std/build
+~import std/deps
 
 // System dependency: libcurl must be installed
-~std.deps:requires.system {
+~std/deps:requires.system {
     "name": "curl",
     "check": "curl-config --version",
     "brew": "curl",
@@ -18,7 +18,7 @@
 }
 
 // Build requirements: link against libcurl
-~std.build:requires {
+~std/build:requires {
     exe.linkSystemLibrary("curl");
     exe.linkLibC();
 }
@@ -70,7 +70,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 // ============================================================================
 
 ~pub event get { url: []const u8, allocator: ?std.mem.Allocator }
-| ok *Response[open!]
+| ok *Response<open!>
 | err Error
 
 ~proc get {
@@ -128,7 +128,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 // ============================================================================
 
 ~pub event post { url: []const u8, body: []const u8, allocator: ?std.mem.Allocator }
-| ok *Response[open!]
+| ok *Response<open!>
 | err Error
 
 ~proc post {
@@ -192,16 +192,16 @@ pub const Header = struct {
     value: []const u8,
 };
 
-~pub event post.with_headers {
+~pub event post.with-headers {
     url: []const u8,
     body: []const u8,
     headers: []const Header,
     allocator: ?std.mem.Allocator
 }
-| ok *Response[open!]
+| ok *Response<open!>
 | err Error
 
-~proc post.with_headers {
+~proc post.with-headers {
     const alloc = allocator orelse std.heap.page_allocator;
 
     const handle = c.curl_easy_init();
@@ -273,7 +273,7 @@ pub const Header = struct {
 // Close (discharges obligation)
 // ============================================================================
 
-~pub event close { resp: *Response[!open] }
+~pub event close { resp: *Response<!open> }
 
 ~proc close {
     // Clean up curl handle

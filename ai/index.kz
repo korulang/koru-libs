@@ -5,9 +5,9 @@
 //
 // Non-streaming first. Streaming later.
 
-~import "$koru/curl"
-~import "$std/json"
-~import "$std/env"
+~import koru/curl
+~import std/json
+~import std/env
 
 const std = @import("std");
 const curl = @import("root").koru_libs.curl;

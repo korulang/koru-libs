@@ -1,0 +1,15 @@
+// Example 01: Connect and disconnect (explicit)
+//
+// Explicit disconnect — for those who want to see every resource operation
+// written out. See 01_connect_auto.kz for the idiomatic version.
+//
+// Run: docker compose up -d (from koru-libs/pq/)
+//      koruc examples/01_connect.kz && ./a.out
+
+~import koru/pq
+~import std/io
+
+~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+| ok conn |> std/io:print.ln("Connected to PostgreSQL!")
+    |> koru/pq:disconnect(conn: conn)
+| err msg |> std/io:print.ln("Connection failed: {{ msg:s }}")

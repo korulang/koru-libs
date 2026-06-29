@@ -1,0 +1,15 @@
+// Example 01: Connect and disconnect (auto-discharge)
+//
+// The idiomatic version. The <connected!> obligation on conn is discharged
+// automatically at scope exit — the compiler inserts the disconnect call.
+// No boilerplate. Functionally identical to 01_connect.kz.
+//
+// Run: docker compose up -d (from koru-libs/pq/)
+//      koruc examples/01_connect_auto.kz && ./a.out
+
+~import koru/pq
+~import std/io
+
+~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+| ok conn |> std/io:print.ln("Connected to PostgreSQL!")
+| err msg |> std/io:print.ln("Connection failed: {{ msg:s }}")

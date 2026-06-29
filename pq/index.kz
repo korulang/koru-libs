@@ -1,0 +1,202 @@
+// @korulang/postgres - PostgreSQL client for Koru
+//
+// A semantic redesign of libpq using phantom obligations to make
+// an entire class of database bugs impossible at compile time.
+
+~import std/build
+~import std/deps
+
+// System dependency: libpq must be installed
+~std/deps:requires.system {
+    "name": "libpq",
+    "check": "pg_config --version",
+    "brew": "libpq",
+    "apt": "libpq-dev",
+    "dnf": "postgresql-devel",
+    "pacman": "postgresql-libs",
+    "apk": "postgresql-dev"
+}
+
+const std = @import("std");
+pub const c = @cImport({
+    @cInclude("libpq-fe.h");
+});
+
+pub const Conn = struct {
+    handle: ?*c.PGconn,
+};
+
+pub const Result = struct {
+    handle: ?*c.PGresult,
+};
+
+// ============================================================================
+// Connection Lifecycle
+// ============================================================================
+
+~pub event connect { conninfo: []const u8 }
+| ok *Conn<connected!>
+| err []const u8
+
+~proc connect {
+    const handle = c.PQconnectdb(conninfo.ptr);
+    if (handle == null or c.PQstatus(handle) != c.CONNECTION_OK) {
+        const msg = c.PQerrorMessage(handle);
+        if (handle) |h| c.PQfinish(h);
+        return .{ .err = std.mem.span(msg) };
+    }
+    const conn = std.heap.page_allocator.create(Conn) catch unreachable;
+    conn.* = Conn{ .handle = handle };
+    return .{ .ok = conn };
+}
+
+~pub event disconnect { conn: *Conn<!connected> }
+
+~proc disconnect {
+    if (conn.handle) |h| {
+        c.PQfinish(h);
+    }
+    std.heap.page_allocator.destroy(conn);
+}
+
+// ============================================================================
+// Query Execution
+// ============================================================================
+
+// Fire-and-forget: DDL, INSERT/UPDATE/DELETE where you don't need rows back.
+// Error message is connection-owned — valid until the next operation on conn.
+~pub event exec { conn: *Conn<connected>, sql: []const u8 }
+| ok
+| err []const u8
+
+~proc exec {
+    const res = c.PQexec(conn.handle, sql.ptr);
+    if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    c.PQclear(res);
+    return .{ .ok = .{} };
+}
+
+// Query returning rows. Result carries a <result!> obligation — must be cleared.
+~pub event query { conn: *Conn<connected>, sql: []const u8 }
+| rows *Result<result!>
+| empty
+| err []const u8
+
+~proc query {
+    const res = c.PQexec(conn.handle, sql.ptr);
+    if (c.PQresultStatus(res) == c.PGRES_FATAL_ERROR) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    if (c.PQntuples(res) == 0) {
+        c.PQclear(res);
+        return .{ .empty = .{} };
+    }
+    const result = std.heap.page_allocator.create(Result) catch unreachable;
+    result.* = Result{ .handle = res };
+    return .{ .rows = result };
+}
+
+// Number of rows in a result.
+~pub event result.nrows { result: *Result<result> }
+| ok usize
+
+~proc result.nrows {
+    const n = c.PQntuples(result.handle);
+    return .{ .ok = @intCast(n) };
+}
+
+// Get a column value by name. Returns the text representation (libpq's native form).
+// Branches: some = value present, null = SQL NULL, no-such-col = column name not found.
+~pub event result.col { result: *Result<result>, row: usize, col: []const u8 }
+| some []const u8
+| is-null
+| no-such-col
+
+~proc result.col {
+    const field_num = c.PQfnumber(result.handle, col.ptr);
+    if (field_num < 0) return .{ .no-such-col = .{} };
+    if (c.PQgetisnull(result.handle, @intCast(row), field_num) == 1) return .{ .is-null = .{} };
+    const val = c.PQgetvalue(result.handle, @intCast(row), field_num);
+    return .{ .some = std.mem.span(val) };
+}
+
+// Discharge the result obligation — must be called when done with a result.
+~pub event result.clear { result: *Result<!result> }
+
+~proc result.clear {
+    if (result.handle) |h| {
+        c.PQclear(h);
+    }
+    std.heap.page_allocator.destroy(result);
+}
+
+// ============================================================================
+// Comptime SQL
+// ============================================================================
+
+// Run SQL at compile time (during backend execution). Zero runtime footprint.
+// Gate behind a flag for conditional execution:
+//   ~[seed]koru/pq:sql(conninfo: "...") { INSERT INTO ... }
+//   ~[migrate]koru/pq:sql(conninfo: "...") { ALTER TABLE ... }
+//
+// Future: replace conninfo string with ~koru/pq:config abstract event.
+~[comptime]pub event sql { conninfo: []const u8, source: Source }
+| ok
+| err []const u8
+
+~proc sql {
+    const handle = c.PQconnectdb(conninfo.ptr);
+    defer if (handle) |h| c.PQfinish(h);
+    if (handle == null or c.PQstatus(handle) != c.CONNECTION_OK) {
+        const msg = c.PQerrorMessage(handle);
+        return .{ .err = std.mem.span(msg) };
+    }
+    const res = c.PQexec(handle, source.text.ptr);
+    defer c.PQclear(res);
+    if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK and
+        c.PQresultStatus(res) != c.PGRES_TUPLES_OK)
+    {
+        const msg = std.mem.span(c.PQerrorMessage(handle));
+        return .{ .err = msg };
+    }
+    return .{ .ok = {} };
+}
+
+// Backend compilation requirements: the backend embeds pq module code (including
+// @cImport) so it needs libpq headers and library just like the output binary.
+~std/compiler:requires {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .macos) {
+        // libpq is keg-only on homebrew — not symlinked to default paths
+        const homebrew_prefix: []const u8 = if (builtin.cpu.arch == .aarch64)
+            "/opt/homebrew/opt/libpq"
+        else
+            "/usr/local/opt/libpq";
+        exe.addIncludePath(.{ .cwd_relative = homebrew_prefix ++ "/include" });
+        exe.addLibraryPath(.{ .cwd_relative = homebrew_prefix ++ "/lib" });
+    }
+    exe.linkSystemLibrary("pq");
+    exe.linkLibC();
+}
+
+// Output binary requirements: link against libpq (keg-only on homebrew)
+~std/build:requires {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .macos) {
+        // libpq is keg-only on homebrew — not symlinked to default paths
+        const homebrew_prefix: []const u8 = if (builtin.cpu.arch == .aarch64)
+            "/opt/homebrew/opt/libpq"
+        else
+            "/usr/local/opt/libpq";
+        exe.addIncludePath(.{ .cwd_relative = homebrew_prefix ++ "/include" });
+        exe.addLibraryPath(.{ .cwd_relative = homebrew_prefix ++ "/lib" });
+    }
+    exe.linkSystemLibrary("pq");
+    exe.linkLibC();
+}

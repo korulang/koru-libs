@@ -4,20 +4,20 @@
 // Phantom obligations ensure containers are properly stopped.
 //
 // DECLARATIVE IMAGES:
-//   ~koru.docker:image(tag: "myapp:latest") {
+//   ~koru/docker:image(tag: "myapp:latest") {
 //       FROM alpine:3.18
 //       COPY zig-out/bin/main /usr/local/bin/myapp
 //       CMD ["myapp"]
 //   }
 //
 // CONDITIONAL IMAGES (build flags):
-//   ~[build("prod")]koru.docker:image(tag: "myapp:latest") {
+//   ~[build("prod")]koru/docker:image(tag: "myapp:latest") {
 //       FROM alpine:3.18
 //       COPY zig-out/bin/main /usr/local/bin/myapp
 //       CMD ["myapp"]
 //   }
 //
-//   ~[build("dev")]koru.docker:image(tag: "myapp:latest") {
+//   ~[build("dev")]koru/docker:image(tag: "myapp:latest") {
 //       FROM alpine:3.18
 //       RUN apk add --no-cache gdb strace
 //       COPY zig-out/bin/main /usr/local/bin/myapp
@@ -27,12 +27,12 @@
 // Then run: koruc main.kz --build=prod docker build
 // This generates Dockerfiles and builds all declared images matching the flag.
 
-~import "$std/build"
-~import "$std/deps"
-~import "$std/compiler"
+~import std/build
+~import std/deps
+~import std/compiler
 
 // System dependency: Docker CLI must be installed
-~std.deps:requires.system {
+~std/deps:requires.system {
     "name": "docker",
     "check": "docker --version",
     "brew": "docker",
@@ -46,7 +46,7 @@
 // DOCKER BUILD COMMAND - Build all declared images
 // ============================================================================
 
-~std.compiler:command.declare {
+~std/compiler:command.declare {
     "name": "docker",
     "description": "Build Docker images from inline Dockerfile declarations"
 }
@@ -109,7 +109,7 @@
         if (item == .flow) {
             const flow = item.flow;
             if (flow.invocation.path.module_qualifier) |mq| {
-                // Check for koru.docker:image
+                // Check for koru/docker:image
                 if ((std.mem.eql(u8, mq, "koru.docker") or std.mem.eql(u8, mq, "docker")) and
                     flow.invocation.path.segments.len == 1 and
                     std.mem.eql(u8, flow.invocation.path.segments[0], "image"))
@@ -145,7 +145,7 @@
 
     if (images.items.len == 0) {
         std.debug.print("No Docker images declared.\n", .{});
-        std.debug.print("Use: ~koru.docker:image(tag: \"myapp:latest\") {{ FROM alpine... }}\n", .{});
+        std.debug.print("Use: ~koru/docker:image(tag: \"myapp:latest\") {{ FROM alpine... }}\n", .{});
         return;
     }
 
@@ -232,7 +232,7 @@ pub const Container = struct {
 
 // Declare a Docker image - collected at compile time, generates Dockerfile
 // Usage:
-//   ~koru.docker:image(tag: "myapp:latest") {
+//   ~koru/docker:image(tag: "myapp:latest") {
 //       FROM node:18-alpine
 //       WORKDIR /app
 //       COPY . .
@@ -249,7 +249,7 @@ pub const Container = struct {
 // ============================================================================
 
 ~pub event build { tag: []const u8, context: []const u8 }
-| built { image: Image }
+| built Image
 | failed { code: i32, msg: []const u8 }
 
 ~proc build {
@@ -268,16 +268,16 @@ pub const Container = struct {
         return .{ .failed = .{ .code = @intCast(result.term.Exited), .msg = result.stderr } };
     }
 
-    return .{ .built = .{ .image = Image{ .tag = tag, .id = null } } };
+    return .{ .built = Image{ .tag = tag, .id = null } };
 }
 
 // ============================================================================
 // Container Lifecycle (with phantom obligations)
 // ============================================================================
 
-// Run a container - creates [running!] obligation that must be discharged
+// Run a container - creates <running!> obligation that must be discharged
 ~pub event run { image: []const u8, name: ?[]const u8 }
-| started { container: Container[running!] }
+| started Container<running!>
 | failed { code: i32, msg: []const u8 }
 
 ~proc run {
@@ -319,12 +319,12 @@ pub const Container = struct {
         return .{ .failed = .{ .code = -1, .msg = "out of memory" } };
     };
 
-    return .{ .started = .{ .container = Container{ .id = id_copy, .image = image } } };
+    return .{ .started = Container{ .id = id_copy, .image = image } };
 }
 
-// Stop a container - discharges [running!] obligation
-~pub event stop { container: Container[!running] }
-| stopped {}
+// Stop a container - discharges <running!> obligation
+~pub event stop { container: Container<!running> }
+| stopped
 | failed { code: i32, msg: []const u8 }
 
 ~proc stop {
@@ -346,9 +346,9 @@ pub const Container = struct {
     return .{ .stopped = .{} };
 }
 
-// Kill a container (forceful) - also discharges [running!] obligation
-~pub event kill { container: Container[!running] }
-| killed {}
+// Kill a container (forceful) - also discharges <running!> obligation
+~pub event kill { container: Container<!running> }
+| killed
 | failed { code: i32, msg: []const u8 }
 
 ~proc kill {
@@ -375,7 +375,7 @@ pub const Container = struct {
 // ============================================================================
 
 ~pub event push { image: []const u8 }
-| pushed {}
+| pushed
 | failed { code: i32, msg: []const u8 }
 
 ~proc push {
@@ -398,7 +398,7 @@ pub const Container = struct {
 }
 
 ~pub event pull { image: []const u8 }
-| pulled {}
+| pulled
 | failed { code: i32, msg: []const u8 }
 
 ~proc pull {
