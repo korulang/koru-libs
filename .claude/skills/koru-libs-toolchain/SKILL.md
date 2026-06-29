@@ -88,10 +88,12 @@ Seeded skills (project-owned, will diverge — garden them in-repo): `arbiters`
 git-log memory corpus the walk tends). `flash` is the pre-existing project-memory
 skill. `SCENE.md` is **not yet planted** — author it on the first real walk.
 
-**Membrane corpus = ONE shared family store** (decided 2026-06-29). The OKF
-`concepts/` + `commit-msg` hook live in a single dedicated store (a `koru-membrane`
-repo, or a corpus dir in `koru` proper — home not yet fixed); `koru-libs`, `koru`,
-and `korulang_org` all point their membrane `<store>` at it. As of now the store
-does **not exist** and nothing is wired — operationalize on the first walk. Open
-sub-gap: the membrane skill doesn't yet define how a project *locates* its
-`<store>`; settle that pointer mechanism when wiring.
+**Membrane corpus = ONE shared family store** (decided 2026-06-29; wired same day).
+The store is the **`koru-membrane`** sibling repo (github.com/korulang/koru-membrane)
+— `concepts/` OKF files + the `commit-msg` enforcement hook live there. This repo
+points at it via **`.claude/membrane.json`** → `{ "store": "../koru-membrane" }`;
+so do `koru` and `korulang_org`. The pointer convention is documented in the
+`membrane` skill (§"Where the store lives"). The hook lives only in the store repo,
+not here. To tend memory: write `concepts/frag-<id>.md` in `koru-membrane` and
+commit there with the lineage trailers. (koru/korulang_org carry the pointer but
+need the `membrane` skill installed to actually tend it.)

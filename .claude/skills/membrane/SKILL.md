@@ -36,6 +36,23 @@ approximation; the correction is itself fallible. Three consequences, load-beari
 - The **working tree** is the live corpus (current beliefs). **git history** is
   everything that's been occluded or repudiated — reachable, never gone.
 
+### Where the store lives — the `<store>` pointer
+
+`<store>` is the path to the store repo. A project declares it in
+**`.claude/membrane.json`** at the repo root:
+
+    { "store": "../koru-membrane" }
+
+- Resolved relative to the repo root — siblings under one parent are `../<name>`.
+- **No `membrane.json`** → the store is **in-repo**: `concepts/` in the project
+  itself, hook in the project's own `.git/hooks`. The simple single-project default.
+- **Pointed** → a **shared** store: many repos name the same external store, so one
+  corpus serves a whole family. The koru family uses this — koru, koru-libs,
+  korulang_org all point at the `koru-membrane` sibling repo.
+
+The `commit-msg` hook lives in the **store** repo's hooks (it enforces *corpus*
+commits, which land in the store, not in the consumers). Install it once, there.
+
 ## The five-verb lineage discipline
 
 Every commit to the corpus carries a trailer block. The verb is the judgment.
