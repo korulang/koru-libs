@@ -1,21 +1,16 @@
-// Example 2: POST request with JSON
+// Example 2: POST request with JSON headers
 //
-// Send JSON data to an API endpoint
+// Send JSON data to an API endpoint with a Content-Type header
 
 ~import koru/curl
 ~import std/io
 
-const data = "{ \"name\": \"Koru\", \"stars\": 5 }"
+const data = "{ \"name\": \"Koru\", \"stars\": 5 }";
 
-~koru/curl:post(url: "https://api.example.com/comments", body: data, headers: [ .{
-    .key = "Content-Type",
-    .val = "application/json",
-} ], allocator: std.heap.page_allocator)
-| response r =>
-    ~std/io:print.ln("Posted! Status: {d}", args: [r.response.status])
-    ~std/io:print.ln("Response: {s}", args: [r.response.body])
-    ~koru/curl:close(resp: r)
-    | closed _ =>
-        ~std/io:print.ln("Done")
-| error e =>
-    ~std/io:print.ln("POST failed: {s}", args: [e.data.msg])
+~koru/curl:post.with-headers(url: "https://httpbin.org/post", body: data, headers: &.{ .{ .name = "Content-Type", .value = "application/json" } })
+| ok r |> std/io:print.blk {
+    === POST Response ===
+    Status: {{ r.status:d }}
+    Body length: {{ r.body.len:d }}
+    } |> koru/curl:close(resp: r)
+| err e |> std/io:print.ln("POST failed: {{ e.msg:s }}")

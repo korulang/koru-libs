@@ -1,5 +1,5 @@
 {
   "paths": {
-    "koru": "/Users/larsde/src/koru-libs"
+    "koru": ".."
   }
 }
