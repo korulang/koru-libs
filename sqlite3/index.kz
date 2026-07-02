@@ -44,7 +44,7 @@ pub const Statement = struct {
 | db *Connection<opened!>
 | err { code: i32, msg: []const u8 }
 
-~proc open {
+~proc open|zig {
     var db: ?*c.sqlite3 = null;
     const rc = c.sqlite3_open(path.ptr, &db);
     if (rc != c.SQLITE_OK) {
@@ -58,7 +58,7 @@ pub const Statement = struct {
 }
 
 ~pub event close { conn: *Connection<!opened> }
-~proc close {
+~proc close|zig {
     if (conn.handle) |h| {
         _ = c.sqlite3_close(h);
     }
@@ -73,7 +73,7 @@ pub const Statement = struct {
 | ok *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
-~proc exec {
+~proc exec|zig {
     var errmsg: [*c]u8 = null;
     const rc = c.sqlite3_exec(conn.handle, sql.ptr, null, null, &errmsg);
     if (rc != c.SQLITE_OK) {
@@ -87,11 +87,15 @@ pub const Statement = struct {
 // Literal SQL query - takes a runtime SQL string
 // For compile-time parameterized queries, use ~query { ... } with Source block
 ~pub event query.literal { conn: *Connection<!opened>, sql: []const u8 }
-| row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
-| empty *Connection<opened!>
+! row *Statement<row!>
+| done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
-~proc query.literal {
+~proc query.literal|zig {
+    // This is an effect-branch event, so its body inlines into the consumer's
+    // frame where the module-level `c` cimport isn't in scope — reach it via
+    // the lib's root path.
+    const c = @import("root").koru_libs.sqlite3.c;
     var stmt: ?*c.sqlite3_stmt = null;
     const rc = c.sqlite3_prepare_v2(conn.handle, sql.ptr, @intCast(sql.len), &stmt, null);
     if (rc != c.SQLITE_OK) {
@@ -99,20 +103,30 @@ pub const Statement = struct {
         return .{ .err = .{ .conn = conn, .code = rc, .msg = std.mem.span(msg) } };
     }
 
-    const step_rc = c.sqlite3_step(stmt);
-    if (step_rc == c.SQLITE_ROW) {
-        const s = std.heap.page_allocator.create(Statement) catch unreachable;
-        s.* = Statement{ .handle = stmt };
-        return .{ .row = .{ .conn = conn, .stmt = s } };
-    } else if (step_rc == c.SQLITE_DONE) {
-        _ = c.sqlite3_finalize(stmt);
-        return .{ .empty = conn };
-    } else {
-        const msg = c.sqlite3_errmsg(conn.handle);
-        _ = c.sqlite3_finalize(stmt);
-        return .{ .err = .{ .conn = conn, .code = step_rc, .msg = std.mem.span(msg) } };
+    // Per-row iteration: the `! row` effect branch fires once per row, its body
+    // inlined here. The row handle is a BORROW (<row!>) auto-released at each
+    // row-body boundary; the statement is finalized exactly ONCE, below, by the
+    // engine — so the user never finalizes and cannot leak it (safe by
+    // construction, enforced by the phantom checker at compile time).
+    var __row = Statement{ .handle = stmt };
+    var __rc = c.sqlite3_step(stmt);
+    while (__rc == c.SQLITE_ROW) : (__rc = c.sqlite3_step(stmt)) {
+        row(&__row);
     }
+    _ = c.sqlite3_finalize(stmt);
+    if (__rc != c.SQLITE_DONE) {
+        const msg = c.sqlite3_errmsg(conn.handle);
+        return .{ .err = .{ .conn = conn, .code = __rc, .msg = std.mem.span(msg) } };
+    }
+    return .{ .done = conn };
 }
+
+// No-op consumer of the per-row borrow. The compiler auto-inserts this to
+// release `<row!>` at each row-body boundary; the user never calls it. Its
+// existence is what lets the phantom checker prove the row borrow is scoped —
+// escape it (capture past the row body) and the build fails with KORU030.
+~pub event release.row { stmt: *Statement<!row> }
+~proc release.row|zig { _ = &stmt; }
 
 // ============================================================================
 // Parameterized Query - Compile-time SQL with type-safe bindings
@@ -135,7 +149,7 @@ pub const Statement = struct {
     program: *const Program,
     allocator: std.mem.Allocator
 }
-| transformed *const Program
+| transformed SiteResult
 
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
@@ -144,7 +158,7 @@ pub const Statement = struct {
 | empty *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
-~proc query {
+~proc query|zig {
     const ast = @import("ast");
     const ast_functional = @import("ast_functional");
 
@@ -152,11 +166,11 @@ pub const Statement = struct {
     const flow = if (item.* == .flow)
         &item.flow
     else
-        return .{ .transformed = program };
+        return .{ .transformed = .{} };
 
     // CRITICAL: Use pointer comparison to identify if this is the top-level query
     // The `invocation` parameter tells us EXACTLY which query is being transformed
-    const is_top_level = (invocation == &flow.invocation);
+    const is_top_level = (invocation == flow.inv());
 
     const sql_text = source.text;
 
@@ -358,11 +372,9 @@ pub const Statement = struct {
         // Create a new flow with query.impl invocation and inline_body
         // =====================================================================
         const transformed_flow = ast.Flow{
-            .invocation = new_invocation,
-            .continuations = flow.continuations,
+            .body = ast.rootSite(new_invocation, flow.body.continuations, flow.location),
             .annotations = flow.annotations,
             .pre_label = flow.pre_label,
-            .post_label = flow.post_label,
             .super_shape = flow.super_shape,
             .inline_body = inline_code,
             .is_pure = flow.is_pure,
@@ -377,7 +389,7 @@ pub const Statement = struct {
         if (maybe_new_program) |new_program| {
             const result = allocator.create(ast.Program) catch unreachable;
             result.* = new_program;
-            return .{ .transformed = result };
+            return .{ .transformed = .{ .whole_program = result } };
         }
         std.debug.print("ERROR: ~query transform (top-level) failed - flow not found\n", .{});
         @panic("query transform: flow not found");
@@ -429,7 +441,7 @@ pub const Statement = struct {
         }.search;
 
         const empty_path = &[_]usize{};
-        const search_result = findInvocationRecursive(allocator, flow.continuations, empty_path, invocation) orelse {
+        const search_result = findInvocationRecursive(allocator, flow.body.continuations, empty_path, invocation) orelse {
             std.debug.print("[QUERY TRANSFORM] WARNING: Could not find query invocation in continuations\n", .{});
             @panic("query transform: nested invocation not found");
         };
@@ -534,7 +546,7 @@ pub const Statement = struct {
         if (maybe_new_program) |new_program| {
             const result = allocator.create(ast.Program) catch unreachable;
             result.* = new_program;
-            return .{ .transformed = result };
+            return .{ .transformed = .{ .whole_program = result } };
         }
         std.debug.print("ERROR: ~query transform (nested) failed - flow not found in program\n", .{});
         @panic("query transform: flow not found");
@@ -547,7 +559,7 @@ pub const Statement = struct {
 | done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
-~proc next {
+~proc next|zig {
     const rc = c.sqlite3_step(stmt.handle);
     if (rc == c.SQLITE_ROW) {
         return .{ .row = .{ .conn = conn, .stmt = stmt } };
@@ -567,14 +579,14 @@ pub const Statement = struct {
 // Must be called BEFORE finalize.stmt (text becomes invalid after stmt finalize)
 ~pub event finalize.text { text: []const u8<!text> }
 
-~proc finalize.text {
+~proc finalize.text|zig {
     _ = &text;
 }
 
 // Finalize statement - releases the prepared statement
 ~pub event finalize.stmt { stmt: *Statement<!prepared> }
 
-~proc finalize.stmt {
+~proc finalize.stmt|zig {
     if (stmt.handle) |h| {
         _ = c.sqlite3_finalize(h);
     }
@@ -585,28 +597,22 @@ pub const Statement = struct {
 // Column Access (within row context)
 // ============================================================================
 
-~pub event col.int { stmt: *Statement<!prepared>, index: i32 }
-| value { stmt: *Statement<prepared!>, val: i64 }
-
-~proc col.int {
-    const val = c.sqlite3_column_int64(stmt.handle, index);
-    return .{ .value = .{ .stmt = stmt, .val = val } };
+~pub event col.int { stmt: *Statement<row>, index: i32 } -> i64
+~proc col.int|zig {
+    return c.sqlite3_column_int64(stmt.handle, index);
 }
 
-~pub event col.text { stmt: *Statement<!prepared>, index: i32 }
-| value { stmt: *Statement<prepared!>, text: []const u8<text!> }
-
-~proc col.text {
+// NOTE: text is a ROW-SCOPED borrow (valid only within the `! row` body, like
+// std/fs:read-lines' `! line`). Pristine-later: hand back an owned copy so it's
+// safe to capture across rows. For now it matches the stdlib borrow idiom.
+~pub event col.text { stmt: *Statement<row>, index: i32 } -> []const u8
+~proc col.text|zig {
     const ptr = c.sqlite3_column_text(stmt.handle, index);
     const len = c.sqlite3_column_bytes(stmt.handle, index);
-    const text = if (ptr) |p| p[0..@intCast(len)] else "";
-    return .{ .value = .{ .stmt = stmt, .text = text } };
+    return if (ptr) |p| p[0..@intCast(len)] else "";
 }
 
-~pub event col.real { stmt: *Statement<!prepared>, index: i32 }
-| value { stmt: *Statement<prepared!>, val: f64 }
-
-~proc col.real {
-    const val = c.sqlite3_column_double(stmt.handle, index);
-    return .{ .value = .{ .stmt = stmt, .val = val } };
+~pub event col.real { stmt: *Statement<row>, index: i32 } -> f64
+~proc col.real|zig {
+    return c.sqlite3_column_double(stmt.handle, index);
 }

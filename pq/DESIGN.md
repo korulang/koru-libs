@@ -57,7 +57,7 @@ Auto-discharge ensures disconnect is called even if the flow exits early.
 
 ## Result Lifecycle
 
-Every query returns a `*Result[result!]` obligation. It **must** be cleared —
+Every query returns a `*Result<result!>` obligation. It **must** be cleared —
 either explicitly or via auto-discharge. The result is accessed by name, not by
 column index.
 
@@ -72,7 +72,7 @@ branch with a clear error at runtime otherwise.
 Large objects require a transaction to be active. The handle has its own
 lifecycle nested inside the transaction:
 
-- `lo_open` takes `[in_tx]`, returns `(*Conn[in_tx], *Lo[lo_open!])`
+- `lo_open` takes `[in_tx]`, returns `(*Conn[in_tx], *Lo<lo_open!>)`
 - Both obligations must be discharged: the LO handle before committing
 
 ---
@@ -81,7 +81,7 @@ lifecycle nested inside the transaction:
 
 The cancel object has its own lifecycle independent of the connection:
 
-- `cancel_create` creates a `*Cancel[cancel!]` obligation
+- `cancel_create` creates a `*Cancel<cancel!>` obligation
 - `cancel_finish` discharges it
 - This separation allows cancellation from a different thread or context
 
@@ -230,7 +230,7 @@ belongs here, and it is actually a **better** demonstration of phantom
 obligations than single-connection lifecycle management.
 
 The reason: a pool makes the obligations structural at scale. When you check out
-a connection from the pool, you receive a `*Conn[checked_out!]` where the
+a connection from the pool, you receive a `*Conn<checked_out!>` where the
 discharge target is the pool itself, not a close operation. The obligation means
 "return me to where I came from." Auto-discharge handles the forgotten-return
 case automatically. And because each checked-out connection is a distinct

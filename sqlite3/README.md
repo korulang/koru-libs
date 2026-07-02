@@ -55,27 +55,27 @@ In your `app.kz`:
 
 ### Connection Management
 
-- `open { path: []const u8 }` - Open database, returns `| db { conn[opened!] }` or `| err`
-- `close { conn[!opened] }` - Close connection, returns `| closed`
+- `open { path: []const u8 }` - Open database, returns `| db { conn<opened!> }` or `| err`
+- `close { conn<!opened> }` - Close connection, returns `| closed`
 
 ### Query Execution
 
-- `exec { conn[opened!], sql }` - Execute SQL without results, returns `| ok { conn }` or `| err`
-- `query { conn[opened!], sql }` - Prepare and step, returns `| row { conn, stmt[prepared!] }`, `| empty`, or `| err`
-- `next { conn[opened!], stmt[prepared!] }` - Get next row, returns `| row`, `| done`, or `| err`
+- `exec { conn<opened!>, sql }` - Execute SQL without results, returns `| ok { conn }` or `| err`
+- `query { conn<opened!>, sql }` - Prepare and step, returns `| row { conn, stmt<prepared!> }`, `| empty`, or `| err`
+- `next { conn<opened!>, stmt<prepared!> }` - Get next row, returns `| row`, `| done`, or `| err`
 
 ### Column Access
 
-- `col.int { stmt[prepared!], index }` - Get integer column
-- `col.text { stmt[prepared!], index }` - Get text column (borrowed pointer, valid until next step)
-- `col.real { stmt[prepared!], index }` - Get float column
+- `col.int { stmt<prepared!>, index }` - Get integer column
+- `col.text { stmt<prepared!>, index }` - Get text column (borrowed pointer, valid until next step)
+- `col.real { stmt<prepared!>, index }` - Get float column
 
 ## Phantom Types
 
 This library uses Koru's phantom type system for compile-time safety:
 
-- `Connection[opened!]` - Connection is open, must be closed
-- `Statement[prepared!]` - Statement is prepared, will be auto-finalized
+- `Connection<opened!>` - Connection is open, must be closed
+- `Statement<prepared!>` - Statement is prepared, will be auto-finalized
 
 The compiler ensures you can't use a closed connection or forget to close an open one.
 

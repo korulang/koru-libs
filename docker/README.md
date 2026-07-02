@@ -30,7 +30,7 @@ Then: `koruc app.kz i`
 
 ```koru
 ~docker:run(image: "myapp:latest", name: "myapp")
-| started c |>   // c.container has [running!] obligation
+| started c |>   // c.container has <running!> obligation
     do_work()
     |> docker:stop(container: c.container)
         | stopped |> done()
@@ -38,7 +38,7 @@ Then: `koruc app.kz i`
 | failed e |> handle_error(e.msg)
 ```
 
-The `[running!]` obligation ensures you can't forget to stop the container. The compiler will reject code paths that don't discharge the obligation.
+The `<running!>` obligation ensures you can't forget to stop the container. The compiler will reject code paths that don't discharge the obligation.
 
 ### Build and Push
 
@@ -56,9 +56,9 @@ The `[running!]` obligation ensures you can't forget to stop the container. The 
 |-------|------------|-------------|
 | `image` | - | Compile-time image declaration |
 | `build` | - | Build image from context |
-| `run` | `[running!]` | Start container (must stop) |
-| `stop` | `[!running]` | Stop container gracefully |
-| `kill` | `[!running]` | Stop container forcefully |
+| `run` | `<running!>` | Start container (must stop) |
+| `stop` | `<!running>` | Stop container gracefully |
+| `kill` | `<!running>` | Stop container forcefully |
 | `push` | - | Push image to registry |
 | `pull` | - | Pull image from registry |
 

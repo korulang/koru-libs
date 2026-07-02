@@ -181,12 +181,12 @@ Resources that need cleanup (files, connections, locks) are tracked via phantom 
 ### Obligation Syntax (in Event Signatures)
 
 ```koru
-// Creates obligation - the [allocated!] phantom type
+// Creates obligation - the <allocated!> phantom type
 ~pub event open { path: []const u8 }
-| ok { file: File[opened!] }
+| ok { file: File<opened!> }
 
-// Discharges obligation - the [!allocated] phantom type
-~pub event close { file: File[!opened] }
+// Discharges obligation - the <!allocated> phantom type
+~pub event close { file: File<!opened> }
 | ok |>
 ```
 

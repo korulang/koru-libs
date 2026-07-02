@@ -542,12 +542,12 @@ This document outlines foundational infrastructure packages needed to make Koru 
 
 // Simple GET request
 ~koru.curl:get(url: "https://api.example.com", allocator: alloc)
-| response r |> // r is Response[!not_closed] - MUST close!
+| response r |> // r is Response<!not_closed> - MUST close!
 | error e |> ...
 
 // POST with headers
 ~koru.curl:post(url: "https://api.example.com", body: data, headers: headers, allocator: alloc)
-| response r |> // r: Response[!not_closed]
+| response r |> // r: Response<!not_closed>
 | error e |> ...
 
 // You MUST fulfill the obligation
@@ -569,7 +569,7 @@ This document outlines foundational infrastructure packages needed to make Koru 
 
 **Phantom type state machine:**
 1. `Request[not_sent]` - Initial state
-2. `Response[!not_closed]` - After send, obligation to close
+2. `Response<!not_closed>` - After send, obligation to close
 3. `closed` - Final state, obligation fulfilled
 
 **The compiler enforces cleanup!**

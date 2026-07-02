@@ -102,7 +102,7 @@ const Response = struct {
 };
 
 // User must free before close()
-~koru.curl:close { resp: Response[!opened] }
+~koru.curl:close { resp: Response<!opened> }
 | closed {}
 
 ~proc close {
@@ -124,7 +124,7 @@ const Response = struct {
     url: []const u8,
     allocator: std.mem.Allocator
 }
-| response Response[opened!]
+| response Response<opened!>
 | error Error
 
 // Response uses this allocator for body

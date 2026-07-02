@@ -67,7 +67,7 @@ The compiler ensures you never forget to close connections:
 ### State Machine
 
 1. **Request[not_sent]** - Initial request state
-2. **Response[opened!]** - After request succeeds, obligation to close
+2. **Response<opened!>** - After request succeeds, obligation to close
 3. **closed** - Final state, obligation fulfilled
 
 ### Example: Compiler Prevents Leaks
@@ -77,7 +77,7 @@ The compiler ensures you never forget to close connections:
 ~koru.curl:get(url: "https://api.example.com", allocator: alloc)
 | response r |>
     std.io:print.ln("Body: {s}", args: [r.body])
-    // ERROR: r is Response[!not_closed] - MUST close first!
+    // ERROR: r is Response<!not_closed> - MUST close first!
 ```
 
 ```koru
@@ -102,7 +102,7 @@ The compiler ensures you never forget to close connections:
 
 ```koru
 ~koru.curl:get(url: []const u8, allocator: std.mem.Allocator)
-| response Response[!not_closed]
+| response Response<!not_closed>
 | error Error
 ```
 
@@ -119,14 +119,14 @@ The compiler ensures you never forget to close connections:
     headers: []const Header,
     allocator: std.mem.Allocator
 )
-| response Response[!not_closed]
+| response Response<!not_closed>
 | error Error
 ```
 
 ### Close Connection
 
 ```koru
-~koru.curl:close(resp: Response[!not_closed])
+~koru.curl:close(resp: Response<!not_closed>)
 | closed {}
 ```
 

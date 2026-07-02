@@ -50,7 +50,7 @@ const Response = struct {
 - ✅ Return Response with all fields
 
 **close() method:**
-- ✅ Accepts `Response[!opened]` (has obligation)
+- ✅ Accepts `Response<!opened>` (has obligation)
 - ✅ Frees body using Response's allocator
 - ✅ Cleans up libcurl handle
 - ✅ Returns `closed` (identity branch, obligation discharged)
@@ -58,15 +58,15 @@ const Response = struct {
 ### 4. Phantom Type Obligation System
 
 **Correct implementation:**
-- ✅ `get()` / `post()` return `Response[opened!]` (creates obligation)
-- ✅ `close()` accepts `Response[!opened]` (has obligation to discharge)
+- ✅ `get()` / `post()` return `Response<opened!>` (creates obligation)
+- ✅ `close()` accepts `Response<!opened>` (has obligation to discharge)
 - ✅ `close()` returns `closed` (identity branch, no phantom tag)
 
 **State machine:**
 ```
-1. Response[opened!] - has obligation to close
+1. Response<opened!> - has obligation to close
 2. User reads r.status, r.body
-3. close(Response[!opened]) → closed
+3. close(Response<!opened>) → closed
 4. Obligation discharged!
 ```
 
@@ -76,7 +76,7 @@ const Response = struct {
 
 **Old:**
 ```zig
-~pub event close { resp: Response[!opened] }
+~pub event close { resp: Response<!opened> }
 | closed {}
 
 ~proc close {
@@ -86,7 +86,7 @@ const Response = struct {
 
 **New (identity branch):**
 ```zig
-~pub event close { resp: Response[!opened] }
+~pub event close { resp: Response<!opened> }
 | closed
 
 ~proc close {
