@@ -1,0 +1,11 @@
+// Registry read: pull an image. No obligation on this event (a pull doesn't
+// hand back a resource that needs discharging) — this test is the harmless
+// read-only end-to-end call the lift challenge asks for when a daemon is
+// reachable.
+
+~import libs/docker
+~import std/io
+
+~libs/docker:pull(image: "hello-world:latest")
+| pulled |> std/io:print.ln("pulled hello-world:latest")
+| failed e |> std/io:print.ln(e.msg)

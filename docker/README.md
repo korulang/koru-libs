@@ -18,11 +18,12 @@ Then: `koruc app.kz i`
 ```koru
 ~import "$koru/docker"
 
-// Declare image at compile time
-~docker:image {
-    FROM: "scratch",
-    COPY: ["./zig-out/bin/server", "/server"],
-    ENTRYPOINT: ["/server"]
+// Declare image at compile time — the block is a raw Dockerfile Source,
+// collected during AST walking by `koruc <file>.kz docker build`.
+~koru/docker:image(tag: "myapp:latest") {
+    FROM scratch
+    COPY ./zig-out/bin/server /server
+    ENTRYPOINT ["/server"]
 }
 ```
 
@@ -30,9 +31,9 @@ Then: `koruc app.kz i`
 
 ```koru
 ~docker:run(image: "myapp:latest", name: "myapp")
-| started c |>   // c.container has <running!> obligation
+| started c |>   // c carries the <running!> obligation
     do_work()
-    |> docker:stop(container: c.container)
+    |> docker:stop(container: c)
         | stopped |> done()
         | failed e |> handle_error(e.msg)
 | failed e |> handle_error(e.msg)
@@ -44,7 +45,7 @@ The `<running!>` obligation ensures you can't forget to stop the container. The 
 
 ```koru
 ~docker:build(tag: "myapp:latest", context: ".")
-| built img |> docker:push(image: img.image.tag)
+| built img |> docker:push(image: img.tag)
     | pushed |> success()
     | failed e |> handle_error(e.msg)
 | failed e |> handle_error(e.msg)
@@ -61,6 +62,18 @@ The `<running!>` obligation ensures you can't forget to stop the container. The 
 | `kill` | `<!running>` | Stop container forcefully |
 | `push` | - | Push image to registry |
 | `pull` | - | Pull image from registry |
+
+## Tests
+
+`docker/tests/` — compiles via `koruc --check`, exercised as real call sites:
+
+- `build_run_stop.kz` — full lifecycle: build → run → stop, discharging `running!`.
+- `pull_image.kz` — registry read, no obligation.
+- `forgot_stop.kz` — negative test: starts a container and never stops it;
+  MUST fail to compile (`KORU030`, obligation not discharged).
+
+See `LIFT_NOTES.md` for the quality-pass writeup: what was migrated, the
+quadrifecta self-audit, and a toolchain bug pinned along the way.
 
 ## Philosophy
 
