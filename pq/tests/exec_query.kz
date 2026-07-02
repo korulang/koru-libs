@@ -1,0 +1,34 @@
+// Test: exec / query / result surface (DDL, DML, row iteration, column access).
+//
+// Exercises: connect, exec (fire-and-forget), query (rows), result.nrows,
+// result.col (some / is-null / no-such-col branches), result.clear, ~for.
+//
+// No live PostgreSQL server is reachable in this environment — the connect
+// call honestly fails and the flow takes the "connect failed" branch. This
+// still proves the whole surface compiles and links against real libpq
+// end-to-end; run against `docker compose up -d` for the full row-reading
+// path.
+//
+// Run: koruc run tests/exec_query.kz
+
+~import koru/pq
+~import std/io
+
+~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+| err e |> std/io:print.ln("connect failed (expected without a live server): {{ e:s }}")
+| ok conn |> koru/pq:exec(conn, sql: "DROP TABLE IF EXISTS pq_test_people")
+    | err e |> std/io:print.ln("drop failed: {{ e:s }}")
+    | ok |> koru/pq:exec(conn, sql: "CREATE TABLE pq_test_people (id SERIAL PRIMARY KEY, name TEXT NOT NULL)")
+        | err e |> std/io:print.ln("create failed: {{ e:s }}")
+        | ok |> koru/pq:exec(conn, sql: "INSERT INTO pq_test_people (name) VALUES ('Ada'), ('Grace')")
+            | err e |> std/io:print.ln("insert failed: {{ e:s }}")
+            | ok |> koru/pq:query(conn, sql: "SELECT id, name FROM pq_test_people ORDER BY id")
+                | err e |> std/io:print.ln("query failed: {{ e:s }}")
+                | empty |> std/io:print.ln("no rows")
+                | rows result |> koru/pq:result.nrows(result)
+                    | ok n |> for(0..n)
+                        ! each i |> koru/pq:result.col(result, row: i, col: "name")
+                            | no-such-col |> std/io:print.ln("no name column")
+                            | is-null |> std/io:print.ln("row {{ i:d }}: NULL")
+                            | some name |> std/io:print.ln("row {{ i:d }}: {{ name:s }}")
+                        | done |> koru/pq:result.clear(result)

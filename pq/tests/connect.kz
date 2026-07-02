@@ -1,0 +1,21 @@
+// Test: connect / disconnect round-trip (auto-discharge).
+//
+// Positive compile-level test exercising the core connection lifecycle:
+// connect returns a *Conn<connected!> obligation; letting the binding fall
+// out of scope lets the compiler auto-insert the disconnect() discharge.
+//
+// This environment has no live PostgreSQL server reachable (no pg_isready,
+// no docker daemon) — the connect call therefore honestly fails with a real
+// libpq "Connection refused" message. That failure IS the real, deterministic
+// behavior of the library (see LIFT_NOTES.md for the use-after-free bug this
+// caught and fixed in koru/pq:connect), not a stub. Run against a real
+// Postgres (docker compose up -d) to see the "ok" branch.
+//
+// Run: koruc run tests/connect.kz
+
+~import koru/pq
+~import std/io
+
+~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+| ok conn |> std/io:print.ln("connected") |> koru/pq:disconnect(conn)
+| err msg |> std/io:print.ln("connect failed (expected without a live server): {{ msg:s }}")

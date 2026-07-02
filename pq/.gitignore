@@ -1,0 +1,15 @@
+# koruc build/compiler output — regenerated on every `koruc build`/`run`/
+# `--check`, never hand-edited, never committed. See LIFT_CHALLENGE.md's
+# generated-artifacts non-negotiable.
+backend.zig
+backend_output_emitted.zig
+build.zig
+build_backend.zig
+build_output.zig
+compiler_env.zig
+output_emitted.zig
+program_ast.zig
+program.ast.json
+a.out
+zig-out/
+.zig-cache/
