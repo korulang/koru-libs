@@ -1,0 +1,45 @@
+// PROBE 1 — DEFAULTS LEG
+// ----------------------------------------------------------------------------
+// An event `fetch` declares an OPTIONAL effect-branch `! ?configure *Config`.
+// The caller OMITS the handler entirely. Per the optional-effect contract
+// (grounded: tests 400_077, 400_078 — unhandled optional `!` branch lowers to
+// a no-op), the proc's `configure(&cfg)` call becomes nothing, so `cfg` keeps
+// its default values and the main work runs on defaults with zero ceremony.
+//
+// Grounding for the shapes used here:
+//   - `! ?name Payload` optional effect branch decl: 210_076, 400_077.
+//   - pointer payload on an effect branch (`! frame *Frame<ready>`): 400_080.
+//   - decorative phantom state on a payload pointer (`<ready>`): 400_080.
+//   - proc regains control synchronously after firing (frame(f); destroy(f);):
+//     400_080 — so &cfg (a stack local) is valid across the firing.
+//
+// The NOVEL combination being probed: optional (`?`) + pointer (`*`) payload
+// on the SAME effect branch. No single passing test shows this combination;
+// this probe is exactly what tells us whether it is expressible today.
+
+~import std/io
+
+const std = @import("std");
+
+// Sane defaults live in the Zig struct itself.
+const Config = struct {
+    timeout_ms: usize = 30,
+    retries: usize = 0,
+};
+
+~pub event fetch { url: []const u8 }
+! ?configure *Config<ready>
+| done usize
+
+~proc fetch|zig {
+    var cfg = Config{};              // defaults: timeout_ms=30, retries=0
+    configure(&cfg);                 // optional branch — unhandled here => no-op
+    std.debug.print("fetch {s} timeout={} retries={}\n", .{ url, cfg.timeout_ms, cfg.retries });
+    return .{ .done = cfg.timeout_ms };
+}
+
+// Caller omits `! configure` entirely — only the terminal is handled.
+~fetch(url: "http://example.com")
+| done n |> std/io:print.blk {
+    done {{ n:d }}
+}

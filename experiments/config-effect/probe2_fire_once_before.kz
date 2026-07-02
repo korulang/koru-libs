@@ -1,0 +1,51 @@
+// PROBE 2 — FIRE-ONCE-BEFORE-WORK LEG
+// ----------------------------------------------------------------------------
+// The caller NOW handles `! configure`. We verify by printed ordering that the
+// branch fires exactly ONCE and BEFORE the proc's main work. All markers go
+// through std.debug.print (a single stream) so ordering is deterministic: the
+// handler routes its marker through a `mark` event (a |zig proc) rather than a
+// different output stream.
+//
+// Grounding:
+//   - handler body invoking another event (`! make r |> destroy(r)`): 400_105.
+//   - synchronous callback ordering (handler interleaves with proc between the
+//     firing call and the following statement): 400_080, 400_108.
+//
+// Expected order:
+//   1: proc begin
+//   2: configure handler fired      <- fires here, once, before work
+//   3: main work
+//   done 1
+
+~import std/io
+
+const std = @import("std");
+
+const Config = struct {
+    timeout_ms: usize = 30,
+};
+
+~event mark { cfg: *Config<ready> }
+~proc mark|zig {
+    _ = cfg;
+    std.debug.print("2: configure handler fired\n", .{});
+}
+
+~pub event fetch { url: []const u8 }
+! ?configure *Config<ready>
+| done usize
+
+~proc fetch|zig {
+    _ = url;
+    std.debug.print("1: proc begin\n", .{});
+    var cfg = Config{};
+    configure(&cfg);                    // handler fires here — exactly once
+    std.debug.print("3: main work\n", .{});
+    return .{ .done = 1 };
+}
+
+~fetch(url: "http://example.com")
+! configure c |> mark(cfg: c)
+| done n |> std/io:print.blk {
+    done {{ n:d }}
+}
