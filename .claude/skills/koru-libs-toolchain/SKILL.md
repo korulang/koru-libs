@@ -43,10 +43,12 @@ A package = `index.kz` (the public API entry) + `tests/*.kz` + `package.json`
   to Zig, then `zig build`. The per-lib `build.zig`, `build_backend.zig`,
   `compiler_env.zig`, `program_ast.zig` are **generated artifacts** — see the
   untracked-files note below.
-- `koru` is **not on PATH** in this environment — build it from
-  `/Users/larsde/src/koru` first. **The exact `koru` invocation to build/test a lib
-  is NOT yet verified in this skill** — confirm it in the `koru` repo (its CLI /
-  `run_tests.sh` / regression harness) before quoting a command. Don't guess it.
+- **The verified invocation** (confirmed 2026-07-02 against sqlite3): the compiler
+  binary is `/Users/larsde/src/koru/zig-out/bin/koruc` (not on PATH). Fast frontend
+  gate: `koruc --check <file.kz>` (→ `✓ Shape checking passed`). Full pipeline:
+  `koruc run <lib>/tests/<test>.kz` — compiles .kz → Zig → executable and runs it
+  (e.g. `koruc run sqlite3/tests/basic.kz` → `Opened and closed!`). `koruc build`
+  compiles without running. Run from the koru-libs repo root.
 - `npm publish --access public` from inside a package dir ships it (`files:` is just
   `index.kz` + `README.md`).
 
@@ -69,6 +71,12 @@ Every Scout / Contestant must read #1 and #2 before judging a seam's premise.
 
 ## Things that will bite you
 
+- **Bare `~proc` (no `|variant` tag) is a hard compile error at any call site**
+  (KORU110, mandatory since koru 2026-05-22, `MULTI_VARIANT_PLAN.md` Phase 1;
+  proven by `koru/tests/regression/300_ADVANCED_FEATURES/370_VARIANTS/8211_*`).
+  Grep `^~proc` in a lib's `index.kz` for missing `|zig` tags before trusting it
+  compiles. As of 2026-07-02: curl/pq/gzip/docker/ai were entirely in the bare
+  pre-KORU110 form (SHOWN on curl + pq); only sqlite3/vaxis were current.
 - **Untracked `*.zig` build files are generated, not abandoned.** `build.zig`,
   `build_backend.zig`, `compiler_env.zig`, `program_ast.zig`, `output_emitted`
   showing as `??` in `git status` are compiler output. Do **not** "clean them up"
