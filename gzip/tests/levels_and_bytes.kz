@@ -1,0 +1,49 @@
+// gzip levels + compress-bytes coverage: exercises the `level` parameter
+// (fast / default / best) on `compress`, and the `compress-bytes`
+// convenience event used by the compile-time ("Orisha") pattern in the
+// README. Every path round-trips through `decompress` and is checked
+// byte-identical, loudly.
+
+~import libs/gzip
+~import std/io
+
+const std = @import("std");
+
+const original: []const u8 =
+    "Repeated text compresses well. Repeated text compresses well. " ++
+    "Repeated text compresses well. Repeated text compresses well.";
+
+~libs/gzip:compress(original, level: .fast, allocator: std.heap.page_allocator)
+| compressed c |> libs/gzip:decompress(c.data, allocator: std.heap.page_allocator)
+    | decompressed d |> check(label: "fast", roundtripped: d)
+    | error e |> fail(msg: e)
+| error e |> fail(msg: e)
+
+~libs/gzip:compress(original, level: .best, allocator: std.heap.page_allocator)
+| compressed c |> libs/gzip:decompress(c.data, allocator: std.heap.page_allocator)
+    | decompressed d |> check(label: "best", roundtripped: d)
+    | error e |> fail(msg: e)
+| error e |> fail(msg: e)
+
+~libs/gzip:compress-bytes(original, allocator: std.heap.page_allocator)
+| ok bytes |> libs/gzip:decompress(bytes, allocator: std.heap.page_allocator)
+    | decompressed d |> check(label: "compress-bytes", roundtripped: d)
+    | error e |> fail(msg: e)
+| error e |> fail(msg: e)
+
+~event check { label: []const u8, roundtripped: []const u8 }
+
+~proc check|zig {
+    if (!std.mem.eql(u8, original, roundtripped)) {
+        std.debug.print("MISMATCH [{s}]: got {} bytes, expected {} bytes\n", .{ label, roundtripped.len, original.len });
+        @panic("gzip round-trip produced different bytes than the input");
+    }
+    std.debug.print("[{s}] round-trip OK: {} bytes, byte-identical\n", .{ label, roundtripped.len });
+}
+
+~event fail { msg: []const u8 }
+
+~proc fail|zig {
+    std.debug.print("gzip operation failed: {s}\n", .{msg});
+    @panic("gzip levels/bytes test failed");
+}

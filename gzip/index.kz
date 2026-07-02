@@ -8,10 +8,10 @@
 //
 //   ~koru/gzip:compress(data: my_bytes, allocator: alloc)
 //   | compressed c |> // c.data is gzipped, c.original_size for stats
-//   | error e |> // e.msg describes the error
+//   | error e |> // e is the []const u8 error message directly
 //
 //   ~koru/gzip:decompress(data: gzipped, allocator: alloc)
-//   | decompressed d |> // d.data is original content
+//   | decompressed d |> // d is the []const u8 original content directly
 //   | error e |> ...
 
 ~import std/build
@@ -69,9 +69,18 @@ fn levelToZlib(level: ?Level) c_int {
 | compressed { data: []const u8, original_size: usize }
 | error []const u8
 
-~proc compress {
-    // Allocate output buffer - worst case is slightly larger than input
-    const max_output = c.compressBound(@intCast(data.len));
+~proc compress|zig {
+    // Allocate output buffer - worst case is slightly larger than input.
+    // BUG FIX (found via first-ever round-trip test on short input):
+    // compressBound() bounds the raw deflate stream only; it does NOT
+    // include the 10-byte gzip header + 8-byte trailer that deflateInit2
+    // adds for the gzip wrapper (windowBits = 15+16). For small inputs
+    // that extra ~18 bytes isn't covered by compressBound's slack, so
+    // deflate() returns Z_OK (buffer full, not finished) instead of
+    // Z_STREAM_END and compression silently reports failure. Confirmed
+    // with a standalone zlib repro: compressBound(5) == 18, but "hello"
+    // needs 19+ bytes once the gzip wrapper is included.
+    const max_output = c.compressBound(@intCast(data.len)) + 18;
     const output_buffer = allocator.alloc(u8, max_output) catch {
         return .{ .error = "Failed to allocate output buffer" };
     };
@@ -129,8 +138,9 @@ fn levelToZlib(level: ?Level) c_int {
 | ok []const u8
 | error []const u8
 
-~proc compress-bytes {
-    const max_output = c.compressBound(@intCast(data.len));
+~proc compress-bytes|zig {
+    // Same gzip-wrapper-overhead fix as compress|zig above.
+    const max_output = c.compressBound(@intCast(data.len)) + 18;
     const output_buffer = allocator.alloc(u8, max_output) catch {
         return .{ .error = "Failed to allocate output buffer" };
     };
@@ -181,7 +191,7 @@ fn levelToZlib(level: ?Level) c_int {
 | decompressed []const u8
 | error []const u8
 
-~proc decompress {
+~proc decompress|zig {
     // Start with 4x input size, grow if needed
     var output_size: usize = data.len * 4;
     if (output_size < 1024) output_size = 1024;

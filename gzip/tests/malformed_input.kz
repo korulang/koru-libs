@@ -1,0 +1,30 @@
+// gzip error-path coverage: decompressing bytes that are not valid gzip
+// must take the `error` branch loudly - never a silent empty/garbage
+// success. This is the "no silent fallbacks" gate: a wrong answer here
+// would be worse than a crash.
+
+~import libs/gzip
+~import std/io
+
+const std = @import("std");
+
+const garbage: []const u8 = "this is definitely not gzip data, just plain text bytes";
+
+~libs/gzip:decompress(garbage, allocator: std.heap.page_allocator)
+| decompressed _ |> unexpected-success()
+| error e |> expected-error(msg: e)
+
+~event unexpected-success {}
+
+~proc unexpected-success|zig {
+    @panic("decompress() must reject non-gzip input via the error branch, but it reported success");
+}
+
+~event expected-error { msg: []const u8 }
+
+~proc expected-error|zig {
+    if (msg.len == 0) {
+        @panic("error branch reached but msg was empty - error path must carry a real message");
+    }
+    std.debug.print("Correctly rejected non-gzip input via error branch: \"{s}\"\n", .{msg});
+}

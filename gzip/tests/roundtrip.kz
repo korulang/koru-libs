@@ -1,0 +1,43 @@
+// gzip round-trip test: compress then decompress and assert the bytes
+// come back byte-identical. This is the first real exercise of
+// @korulang/gzip anywhere in the repo (index.kz previously had zero
+// callers).
+
+~import libs/gzip
+~import std/io
+
+const std = @import("std");
+
+const original: []const u8 =
+    "Hello, Koru! This round trip must preserve every byte exactly. " ++
+    "Repeated text compresses well. Repeated text compresses well. " ++
+    "Repeated text compresses well. Repeated text compresses well.";
+
+~libs/gzip:compress(data: original, allocator: std.heap.page_allocator)
+| compressed c |> libs/gzip:decompress(c.data, allocator: std.heap.page_allocator)
+    | decompressed d |> verify(original, roundtripped: d, compressed_len: c.data.len)
+    | error e |> fail(msg: e)
+| error e |> fail(msg: e)
+
+~event verify { original: []const u8, roundtripped: []const u8, compressed_len: usize }
+
+~proc verify|zig {
+    if (!std.mem.eql(u8, original, roundtripped)) {
+        std.debug.print(
+            "MISMATCH: original.len={} roundtripped.len={}\n",
+            .{ original.len, roundtripped.len },
+        );
+        @panic("gzip round-trip produced different bytes than the input");
+    }
+    std.debug.print(
+        "Round-trip OK: {} bytes -> {} bytes compressed -> {} bytes restored, byte-identical\n",
+        .{ original.len, compressed_len, roundtripped.len },
+    );
+}
+
+~event fail { msg: []const u8 }
+
+~proc fail|zig {
+    std.debug.print("gzip operation failed: {s}\n", .{msg});
+    @panic("gzip round-trip test failed");
+}

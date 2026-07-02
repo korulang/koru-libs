@@ -22,20 +22,20 @@ Requires zlib installed on your system (available by default on macOS/Linux).
 ### Compression
 
 ```koru
-~import "$koru/gzip"
+~import koru/gzip
 
-~koru.gzip:compress(data: my_content, allocator: allocator)
+~koru/gzip:compress(data: my_content, allocator: allocator)
 | compressed c |>
     // c.data contains gzipped bytes
     // c.original_size for compression ratio stats
 | error e |>
-    // e.msg describes what went wrong
+    // e is the []const u8 error message directly (not e.msg)
 ```
 
 ### With Compression Level
 
 ```koru
-~koru.gzip:compress(data: content, level: .best, allocator: allocator)
+~koru/gzip:compress(data: content, level: .best, allocator: allocator)
 | compressed c |> ...
 ```
 
@@ -47,20 +47,20 @@ Levels:
 ### Decompression
 
 ```koru
-~koru.gzip:decompress(data: gzipped_bytes, allocator: allocator)
+~koru/gzip:decompress(data: gzipped_bytes, allocator: allocator)
 | decompressed d |>
-    // d.data is the original content
+    // d is the []const u8 original content directly (not d.data)
 | error e |>
-    // Invalid gzip, corrupted, etc.
+    // Invalid gzip, corrupted, etc. - e is the []const u8 message directly
 ```
 
 ### Compile-Time Compression (Orisha pattern)
 
 ```koru
 // In your route collector or build script
-~koru.gzip:compress_bytes(data: file_content, allocator: allocator)
+~koru/gzip:compress-bytes(data: file_content, allocator: allocator)
 | ok c |>
-    // c.data is now gzipped, embed into binary
+    // c is now gzipped bytes ([]const u8), embed into binary
     // Add Content-Encoding: gzip header
 | error |>
     // Fall back to uncompressed
@@ -70,9 +70,9 @@ Levels:
 
 | Event | Input | Output |
 |-------|-------|--------|
-| `compress` | `data`, `level?`, `allocator` | `compressed { data, original_size }` or `error { msg }` |
-| `compress_bytes` | `data`, `allocator` | `ok { data }` or `error { msg }` |
-| `decompress` | `data`, `allocator` | `decompressed { data }` or `error { msg }` |
+| `compress` | `data`, `level?`, `allocator` | `compressed { data, original_size }` or `error []const u8` |
+| `compress-bytes` | `data`, `allocator` | `ok []const u8` or `error []const u8` |
+| `decompress` | `data`, `allocator` | `decompressed []const u8` or `error []const u8` |
 
 ## The "Deleted Work" Pattern
 
