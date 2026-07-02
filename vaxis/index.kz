@@ -107,8 +107,8 @@ const VaxisEvent = union(enum) {
 
 ~pub event run { title: []const u8 }
 ! ?ready
-! ?key koru.vaxis:KeyData
-! ?resize koru.vaxis:SizeData
+! ?key koru/vaxis:KeyData
+! ?resize koru/vaxis:SizeData
 ! ?focus-in
 ! ?focus-out
 | ?done
