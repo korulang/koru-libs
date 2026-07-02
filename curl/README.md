@@ -21,42 +21,42 @@ Wrap around industry-standard [libcurl](https://curl.se/) that enforces connecti
 ### Basic GET Request
 
 ```koru
-~import "$koru/curl"
+~import koru/curl
+~import std/io
 
-// Simple GET request
-~koru.curl:get(url: "https://api.example.com/users/123", allocator: alloc)
-| response r |>
-    // Read response body, check status code, etc. (before closing)
-    std.io:print.ln("Got response: {s}", args: [r.status])
-    // Now close the connection (discharge obligation)
-    ~koru.curl:close(resp: r)
-    | closed _ |>
-        std.io:print.ln("Connection closed")
-| error e |>
-    std.io:print.ln("Request failed: {s}", args: [e.msg])
+~koru/curl:get(url: "https://httpbin.org/get")
+| ok r |> std/io:print.blk {
+    === HTTP Response ===
+    Status: {{ r.status:d }}
+    Body length: {{ r.body.len:d }}
+    }
+| err e |> std/io:print.ln("Error: {{ e.msg:s }}")
 ```
 
-### POST with JSON
+Note there is no explicit `close` call here — the compiler's **auto-discharge**
+pass traces the single legal disposer for `r`'s `open!` obligation and inserts
+the `close` call for you. See `examples/01_simple_get.kz`.
+
+### POST with headers
 
 ```koru
-~import "$koru/curl"
-~import "$std/io"
+~import koru/curl
+~import std/io
 
-const data = "{ \"name\": \"Koru\" }"
-const headers = [ .{
-    .key = "Content-Type",
-    .val = "application/json",
-} ]
+const data = "{ \"name\": \"Koru\" }";
 
-~koru.curl:post(url: "https://api.example.com/users", body: data, headers: headers, allocator: alloc)
-| response r |>
-    std.io:print.ln("Got response, now closing...")
-    ~koru.curl:close(resp: r)
-    | closed _ |>
-        std.io:print.ln("Done")
-| error e |>
-    std.io:print.ln("Error: {s}", args: [e.msg])
+~koru/curl:post.with-headers(url: "https://httpbin.org/post", body: data, headers: &.{ .{ .name = "Content-Type", .value = "application/json" } })
+| ok r |> std/io:print.blk {
+    === POST Response ===
+    Status: {{ r.status:d }}
+    } |> koru/curl:close(resp: r)
+| err e |> std/io:print.ln("Error: {{ e.msg:s }}")
 ```
+
+Here `close` is called explicitly (inside the `ok` branch, chained after the
+print) rather than relying on auto-discharge — both styles are legal; explicit
+`close` is clearer when you need to do work with the response first. See
+`examples/02_post_json.kz`.
 
 ---
 
@@ -66,31 +66,19 @@ The compiler ensures you never forget to close connections:
 
 ### State Machine
 
-1. **Request[not_sent]** - Initial request state
-2. **Response[opened!]** - After request succeeds, obligation to close
-3. **closed** - Final state, obligation fulfilled
+1. **`*Response<open!>`** - After a request succeeds, obligation to close
+2. Fulfilled by `koru/curl:close`, which consumes `*Response<!open>` and
+   discharges the obligation
 
 ### Example: Compiler Prevents Leaks
 
-```koru
-// ❌ This WON'T compile - forgot to close response:
-~koru.curl:get(url: "https://api.example.com", allocator: alloc)
-| response r |>
-    std.io:print.ln("Body: {s}", args: [r.body])
-    // ERROR: r is Response[!not_closed] - MUST close first!
-```
-
-```koru
-// ✅ Correct - fulfill obligation:
-~koru.curl:get(url: "https://api.example.com", allocator: alloc)
-| response r |>
-    std.io:print.ln("Body: {s}", args: [r.body])
-    ~koru.curl:close(resp: r)  // Obligation fulfilled
-    | closed _ |>
-        std.io:print.ln("Done")
-| error e |>
-    std.io:print.ln("Error: {s}", args: [e.msg])
-```
+If you discard a response without ever routing it through `close` (and the
+compiler's default auto-discharge convenience can't find a disposer to trace
+— e.g. the binding is thrown away with `_`), the build fails loudly instead
+of leaking the connection and its body buffer. See
+`tests/negative/forgotten_close.kz` for a pinned, runnable repro (it needs
+`--auto-discharge=disable` to force the failure, since auto-discharge quietly
+saves the naive case by default — see that file's header comment for why).
 
 **The phantom type tracks resource lifecycle at compile-time. No more connection leaks!**
 
@@ -101,36 +89,45 @@ The compiler ensures you never forget to close connections:
 ### GET Request
 
 ```koru
-~koru.curl:get(url: []const u8, allocator: std.mem.Allocator)
-| response Response[!not_closed]
-| error Error
+~koru/curl:get(url: []const u8, allocator: ?std.mem.Allocator)
+| ok *Response<open!>
+| err Error
 ```
 
 **Parameters:**
 - `url` - Full HTTP URL
-- `allocator` - Memory allocator for response data
+- `allocator` - Optional memory allocator for response data (defaults to `std.heap.page_allocator`)
 
 ### POST Request
 
 ```koru
-~koru.curl:post(
+~koru/curl:post(url: []const u8, body: []const u8, allocator: ?std.mem.Allocator)
+| ok *Response<open!>
+| err Error
+```
+
+### POST with Headers
+
+```koru
+~koru/curl:post.with-headers(
     url: []const u8,
     body: []const u8,
     headers: []const Header,
-    allocator: std.mem.Allocator
+    allocator: ?std.mem.Allocator
 )
-| response Response[!not_closed]
-| error Error
+| ok *Response<open!>
+| err Error
 ```
 
 ### Close Connection
 
 ```koru
-~koru.curl:close(resp: Response[!not_closed])
-| closed {}
+~koru/curl:close(resp: *Response<!open>)
 ```
 
-**Required:** You MUST call this before the response value goes out of scope, or the code won't compile.
+**Required:** the `open!` obligation on every `Response` must be discharged
+via `close` — either explicitly, or by relying on auto-discharge when the
+compiler can trace a single legal disposer for the binding.
 
 ---
 
@@ -155,15 +152,13 @@ with requests.get(url) as resp:
 
 **Koru:**
 ```koru
-~koru.curl:get(url: url, allocator: alloc)
-| resp r |>
-    // COMPILER ERROR if you forget to close!
-    ~koru.curl:close(resp: r)
-    | closed _ |>
-        // Now you can use the data
+~koru/curl:get(url: url)
+| ok r |> koru/curl:close(resp: r)
+| err e |> std/io:print.ln("Error: {{ e.msg:s }}")
 ```
 
-**The compiler won't let you forget.**
+**The compiler won't let you forget** — and with auto-discharge, in the common
+case you don't even have to write the `close` call yourself.
 
 ---
 
@@ -182,19 +177,23 @@ This package wraps [libcurl](https://curl.se/libcurl/) using FFI bindings:
 
 ## Current Status
 
-🚧 **In Development**
+✅ **Working — compiles and runs against the current Koru compiler** (see
+`LIFT_NOTES.md` for the 2026-07-02 migration writeup)
 
 - [x] Package structure
-- [ ] FFI bindings to libcurl
-- [ ] Phantom type definitions
-- [ ] GET implementation
-- [ ] POST/PUT/DELETE implementation
-- [ ] Header support
-- [ ] Response body reading
-- [ ] Error handling
-- [ ] Tests
-- [ ] Examples
-- [ ] Documentation
+- [x] FFI bindings to libcurl
+- [x] Phantom type definitions (`open!` obligation on `Response`)
+- [x] GET implementation
+- [x] POST implementation (plain + with-headers)
+- [x] Header support
+- [x] Response body reading (buffered, all-at-once)
+- [x] Error handling (transport-level errors only — HTTP status codes are
+      not errors, see `examples/03_error_handling.kz`)
+- [x] Negative test proving the obligation actually bites
+- [x] Examples (all three run end-to-end against httpbin.org)
+- [x] Documentation
+- [ ] PUT/DELETE/PATCH
+- [ ] Streaming response bodies
 
 ---
 
@@ -207,6 +206,7 @@ This package wraps [libcurl](https://curl.se/libcurl/) using FFI bindings:
 - [ ] Progress callbacks
 - [ ] Timeout handling
 - [ ] Proxy configuration
+- [ ] PUT / DELETE / PATCH methods
 
 ---
 

@@ -73,7 +73,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 | ok *Response<open!>
 | err Error
 
-~proc get {
+~proc get|zig {
     // Use provided allocator or default to page_allocator
     const alloc = allocator orelse std.heap.page_allocator;
 
@@ -131,7 +131,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 | ok *Response<open!>
 | err Error
 
-~proc post {
+~proc post|zig {
     // Use provided allocator or default to page_allocator
     const alloc = allocator orelse std.heap.page_allocator;
 
@@ -201,7 +201,7 @@ pub const Header = struct {
 | ok *Response<open!>
 | err Error
 
-~proc post.with-headers {
+~proc post.with-headers|zig {
     const alloc = allocator orelse std.heap.page_allocator;
 
     const handle = c.curl_easy_init();
@@ -220,7 +220,7 @@ pub const Header = struct {
     var header_list: ?*c.curl_slist = null;
     for (headers) |h| {
         // Format: "Name: Value"
-        const header_str = std.fmt.allocPrintZ(alloc, "{s}: {s}", .{ h.name, h.value }) catch {
+        const header_str = std.fmt.allocPrintSentinel(alloc, "{s}: {s}", .{ h.name, h.value }, 0) catch {
             if (header_list) |list| c.curl_slist_free_all(list);
             return .{ .err = .{ .code = -1, .msg = "header allocation failed" } };
         };
@@ -275,7 +275,7 @@ pub const Header = struct {
 
 ~pub event close { resp: *Response<!open> }
 
-~proc close {
+~proc close|zig {
     // Clean up curl handle
     if (resp.handle) |h| {
         c.curl_easy_cleanup(h);

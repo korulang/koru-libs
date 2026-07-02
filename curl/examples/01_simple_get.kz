@@ -15,7 +15,7 @@
 ~koru/curl:get(url: "https://httpbin.org/get")
 | ok r |> std/io:print.blk {
     === HTTP Response ===
-    Status: {{ r.status }}
-    Body length: {{ r.body.len }}
+    Status: {{ r.status:d }}
+    Body length: {{ r.body.len:d }}
     }
 | err e |> std/io:print.ln("Error: {{ e.msg:s }}")

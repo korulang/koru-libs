@@ -1,0 +1,30 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// A `koru/curl:get` response carries the `open!` obligation: it MUST be
+// closed via `koru/curl:close`, or the connection/body memory leaks.
+//
+// By default the compiler's auto-discharge pass is clever enough to insert
+// the missing `koru/curl:close` call for you when it can trace the response
+// binding to its single legal disposer (see examples/01_simple_get.kz, which
+// leans on exactly that convenience). So under DEFAULT settings this file
+// actually compiles — auto-discharge silently plugs the leak.
+//
+// Disable that safety net (`--auto-discharge=disable`, same flag koru's own
+// suite uses for this exact class of test — see
+// tests/regression/300_ADVANCED_FEATURES/330_PHANTOM_TYPES/330_025_auto_discharge_disabled/
+// and tests/regression/900_EXAMPLES_SHOWCASE/910_LANGUAGE_SHOOTOUT/2104_01_unused_connection/
+// in the koru compiler repo) and the underlying obligation tracking is laid
+// bare: the response is bound to `_` and discarded, no disposer runs, and
+// the build fails loudly instead of leaking silently.
+//
+// Reproduce:
+//   koruc --check curl/tests/negative/forgotten_close.kz --auto-discharge=disable   # passes shape check
+//   koruc run curl/tests/negative/forgotten_close.kz --auto-discharge=disable       # FAILS at phantom-obligation check:
+//
+//   error[KORU030]: Resource '_' <open!> was not discharged. Call: koru.curl:close
+
+~import koru/curl
+
+~koru/curl:get(url: "https://httpbin.org/get")
+| ok _ |> _
+| err _ |> _
