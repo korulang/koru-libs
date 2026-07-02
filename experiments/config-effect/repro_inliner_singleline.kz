@@ -1,0 +1,48 @@
+// TOOLCHAIN REPRO (FLOATED, suspected inliner defect) — FAILS to build.
+// ----------------------------------------------------------------------------
+// This file is byte-identical in MEANING to a passing program; the ONLY
+// difference from the green twin is that the `|zig` proc body is written on a
+// SINGLE physical line. That flips codegen from correct to broken.
+//
+//   GREEN twin (same program, multi-line body):  see probe1_defaults.kz /
+//   the `fetch` proc in probe3_inward_mutation.kz — both compile and run.
+//
+//   THIS file (single-line body) fails at BACKEND with a RAW ZIG error that
+//   leaks generated-host-code coordinates instead of a koru-level diagnostic:
+//
+//     Error: output_emitted.zig:71:17: error: pointless discard of local constant
+//         _ = url; var cfg = Config{}; { const c = &cfg; _ = &c; ... }
+//                 ^~~
+//     output_emitted.zig:70:37: note: used here   (the auto-inserted `_ = &url;`)
+//
+// ROOT (suspected): when a proc that contains an effect-branch call is INLINED
+// into the flow, the inliner auto-emits `_ = &url;` for the param AND also keeps
+// the user's own `_ = url;` from the body prologue — a double discard Zig
+// rejects. The multi-line body path dedups this; the single-line path does not.
+// Layout of the source should never change codegen correctness => defect.
+//
+// SECONDARY defect: the failure surfaces as a raw Zig diagnostic pointing at
+// generated `output_emitted.zig`, with no koru-level wall. (Per the compiler
+// repo's own note in test 400_080, phantom/obligation tracking through effect
+// branches is Phase-4-incomplete; this is another effect-branch-lowering edge.)
+//
+// FLOAT, not fix: ~50% chance this is a niche I misused; reported for a human
+// decision. It does NOT block the config-effect pattern (the multi-line form is
+// idiomatic and compiles cleanly).
+
+~import std/io
+
+const std = @import("std");
+const Config = struct { timeout_ms: usize = 30 };
+
+~pub event fetch { url: []const u8 }
+! ?configure *Config
+| done usize
+
+// The offending shape: entire proc body on one physical line, param discarded.
+~proc fetch|zig { _ = url; var cfg = Config{}; configure(&cfg); return .{ .done = cfg.timeout_ms }; }
+
+~fetch(url: "http://example.com")
+| done n |> std/io:print.blk {
+    done {{ n:d }}
+}

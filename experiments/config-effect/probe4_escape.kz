@@ -1,0 +1,55 @@
+// PROBE 4 — ESCAPE LEG (stretch)
+// ----------------------------------------------------------------------------
+// The borrow `c: *Config` handed to the handler points at a STACK local inside
+// the proc (`var cfg = Config{}; configure(&cfg);`). It is only valid DURING
+// the firing. If the handler stashes it into a module-level `var` and it is
+// read after the proc returns, that is a use-after-free.
+//
+// sqlite3's row borrow (`*Statement<prepared!>`) makes escaping the borrow a
+// COMPILE error via a phantom obligation. This probe asks: does the same
+// protection extend to an effect-branch borrow? i.e. does stashing `c` outside
+// the handler fail to compile?
+//
+// Grounding:
+//   - module-level mutable state a proc writes (`var global_r = Resource{..}`):
+//     400_107.
+//   - handler invoking an event that writes through a pointer: 400_061 / 230_015.
+//
+// PREDICTION (from 400_080's own comment): NOT caught — effect-branch payload
+// phantom states are decorative; the phantom checker does not track obligations
+// through `!` branches. This probe is a HONEST-COMPILES demonstration of the
+// safety gap, not a green we are chasing.
+
+~import std/io
+
+const std = @import("std");
+
+const Config = struct {
+    timeout_ms: usize = 30,
+};
+
+// Module-level stash — the escape hatch.
+var stashed: ?*Config = null;
+
+// Handler stashes the borrow past the firing boundary.
+~event stash { cfg: *Config<ready> }
+~proc stash|zig {
+    stashed = cfg;                      // <-- escape: pointer outlives the firing
+}
+
+~pub event fetch { url: []const u8 }
+! ?configure *Config<ready>
+| done usize
+
+~proc fetch|zig {
+    _ = url;
+    var cfg = Config{};
+    configure(&cfg);                    // handler stashes &cfg into `stashed`
+    return .{ .done = cfg.timeout_ms };
+}
+
+~fetch(url: "http://example.com")
+! configure c |> stash(cfg: c)          // escape the borrow — should the compiler stop us?
+| done n |> std/io:print.blk {
+    done {{ n:d }}
+}

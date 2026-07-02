@@ -1,0 +1,59 @@
+// PROBE 3 — INWARD-MUTATION LEG  (THE CRUX)
+// ----------------------------------------------------------------------------
+// The whole question: can configuration flow INWARD through the effect channel?
+// The proc hands the caller a mutable borrow (`*Config`) via `! configure`; the
+// caller's handler MUTATES it (by invoking a `set.*` event whose |zig proc
+// writes through the borrowed pointer); the proc then proceeds using the
+// MUTATED config — observably, not the default.
+//
+// If inward flow works, `done` will carry 5000 (handler-set) + 3 (handler-set),
+// NOT the defaults 30 / 0.
+//
+// Grounding:
+//   - handler invoking an event with a literal arg (`! v _ |> leaf(n: 3)`):
+//     230_015. Also `respond_error(code: 404, ...)` in 220_008.
+//   - |zig proc writing THROUGH a pointer arg (`res.* = ...`): 400_061.
+//   - proc reads state after the synchronous firing returns (frame(f);
+//     destroy(f);): 400_080.
+// The corpus's effect payloads all flow data OUTWARD (proc -> handler). This
+// probe tests the reverse: handler -> proc, via mutation of the shared borrow.
+
+~import std/io
+
+const std = @import("std");
+
+const Config = struct {
+    timeout_ms: usize = 30,          // default
+    retries: usize = 0,              // default
+};
+
+// Inward mutators: |zig procs that write through the borrowed Config pointer.
+~event set.timeout { cfg: *Config<ready>, ms: usize }
+~proc set.timeout|zig {
+    cfg.timeout_ms = ms;
+}
+
+~event set.retries { cfg: *Config<ready>, n: usize }
+~proc set.retries|zig {
+    cfg.retries = n;
+}
+
+~pub event fetch { url: []const u8 }
+! ?configure *Config<ready>
+| done usize
+
+~proc fetch|zig {
+    var cfg = Config{};                 // defaults 30 / 0
+    configure(&cfg);                    // caller's handler mutates cfg inward
+    std.debug.print("fetch {s} timeout={} retries={}\n", .{ url, cfg.timeout_ms, cfg.retries });
+    // The library proceeds using the MUTATED config. Encode both fields into
+    // the terminal so the observable result depends on the inward mutation.
+    return .{ .done = cfg.timeout_ms + cfg.retries };
+}
+
+// Caller configures inward: set timeout to 5000 and retries to 3.
+~fetch(url: "http://example.com")
+! configure c |> set.timeout(cfg: c, ms: 5000) |> set.retries(cfg: c, n: 3)
+| done n |> std/io:print.blk {
+    done {{ n:d }}
+}
