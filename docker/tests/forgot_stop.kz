@@ -1,0 +1,23 @@
+// NEGATIVE TEST: misuse of the `running!` phantom obligation.
+//
+// `run` hands back a Container<running!> that only `stop`/`kill` can
+// discharge. This flow starts a container and never stops it — the
+// obligation is left open on every path.
+//
+// This MUST fail to compile: `stop` and `kill` are both valid ways to
+// discharge `running!`, so auto-discharge refuses to guess which one you
+// meant (KORU030 via "Auto-discharge failed: multiple disposal options").
+// Forcing auto-discharge off entirely (`--auto-discharge=disable`, the flag
+// tests/regression/900_EXAMPLES_SHOWCASE/910_LANGUAGE_SHOOTOUT/2104_21_open_tx_forgot_close
+// uses to prove the same class of obligation bites) gets the same KORU030
+// rejection by the more direct "was not discharged" path. Either way the
+// compiler refuses to let a running container go unaccounted for.
+//
+// Run: koruc run docker/tests/forgot_stop.kz
+
+~import libs/docker
+~import std/io
+
+~libs/docker:run(image: "alpine:3.18", name: "koru-forgot-stop")
+| started c |> std/io:print.ln("started, forgot to stop!")
+| failed e |> std/io:print.ln(e.msg)

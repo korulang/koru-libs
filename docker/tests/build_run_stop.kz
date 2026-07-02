@@ -1,0 +1,17 @@
+// Full container lifecycle: build -> run -> stop.
+//
+// Exercises the `running!` phantom obligation end to end: `run` returns a
+// Container<running!> that only `stop` (or `kill`) can discharge. Every path
+// through this flow discharges it or reports a build/run failure honestly —
+// there is no path that leaks a running container.
+
+~import libs/docker
+~import std/io
+
+~libs/docker:build(tag: "koru-lift-test:latest", context: ".")
+| built img |> libs/docker:run(image: img.tag, name: "koru-lift-test")
+    | started c |> libs/docker:stop(container: c)
+        | stopped |> std/io:print.ln("lifecycle ok: built, ran, stopped")
+        | failed e |> std/io:print.ln(e.msg)
+    | failed e |> std/io:print.ln(e.msg)
+| failed e |> std/io:print.ln(e.msg)
