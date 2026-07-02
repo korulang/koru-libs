@@ -1,0 +1,29 @@
+// NEGATIVE TEST — this file must NOT compile.
+//
+// Misuse: calling koru/pq:exec on a *Conn after its <connected!> obligation
+// has already been discharged by koru/pq:disconnect. The phantom obligation
+// system must catch this at compile time — a use-after-disconnect is exactly
+// the class of bug (analogous to use-after-close) the phantom type on Conn
+// exists to make impossible.
+//
+// Grounded in the same shape as the koru compiler's own regression test for
+// this class of bug:
+//   tests/regression/300_ADVANCED_FEATURES/330_PHANTOM_TYPES/330_007_use_after_disposal/input.kz
+//     ~app/fs:open(path: "test.txt")
+//     | opened f |> app/fs:close(file: f) |> app/fs:use-file(file: f)  // ERROR: f was disposed!
+//   EXPECT: CONTAINS Use-after-discharge
+//
+// Real compiler rejection observed for this exact file (`koruc run
+// tests/negative_use_after_disconnect.kz`), pasted verbatim in LIFT_NOTES.md:
+//
+//   error[KORU030]: Use-after-discharge: binding 'conn' was already
+//   discharged and cannot be used
+
+~import koru/pq
+~import std/io
+
+~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+| ok conn |> koru/pq:disconnect(conn) |> koru/pq:exec(conn, sql: "SELECT 1")
+    | ok |> _
+    | err e |> std/io:print.ln("exec failed: {{ e:s }}")
+| err msg |> std/io:print.ln("connect failed: {{ msg:s }}")

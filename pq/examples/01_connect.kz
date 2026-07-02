@@ -10,6 +10,5 @@
 ~import std/io
 
 ~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
-| ok conn |> std/io:print.ln("Connected to PostgreSQL!")
-    |> koru/pq:disconnect(conn: conn)
+| ok conn |> std/io:print.ln("Connected to PostgreSQL!") |> koru/pq:disconnect(conn)
 | err msg |> std/io:print.ln("Connection failed: {{ msg:s }}")

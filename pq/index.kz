@@ -38,12 +38,17 @@ pub const Result = struct {
 | ok *Conn<connected!>
 | err []const u8
 
-~proc connect {
+~proc connect|zig {
     const handle = c.PQconnectdb(conninfo.ptr);
     if (handle == null or c.PQstatus(handle) != c.CONNECTION_OK) {
-        const msg = c.PQerrorMessage(handle);
+        // PQerrorMessage's pointer is owned by the connection handle and is
+        // invalidated the instant PQfinish runs — dupe it into an owned
+        // buffer BEFORE freeing, or the returned .err slice dangles (use-
+        // after-free: reads garbage that varies run to run).
+        const msg = std.mem.span(c.PQerrorMessage(handle));
+        const owned_msg = std.heap.page_allocator.dupe(u8, msg) catch unreachable;
         if (handle) |h| c.PQfinish(h);
-        return .{ .err = std.mem.span(msg) };
+        return .{ .err = owned_msg };
     }
     const conn = std.heap.page_allocator.create(Conn) catch unreachable;
     conn.* = Conn{ .handle = handle };
@@ -52,7 +57,7 @@ pub const Result = struct {
 
 ~pub event disconnect { conn: *Conn<!connected> }
 
-~proc disconnect {
+~proc disconnect|zig {
     if (conn.handle) |h| {
         c.PQfinish(h);
     }
@@ -69,7 +74,7 @@ pub const Result = struct {
 | ok
 | err []const u8
 
-~proc exec {
+~proc exec|zig {
     const res = c.PQexec(conn.handle, sql.ptr);
     if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK) {
         const msg = std.mem.span(c.PQerrorMessage(conn.handle));
@@ -86,7 +91,7 @@ pub const Result = struct {
 | empty
 | err []const u8
 
-~proc query {
+~proc query|zig {
     const res = c.PQexec(conn.handle, sql.ptr);
     if (c.PQresultStatus(res) == c.PGRES_FATAL_ERROR) {
         const msg = std.mem.span(c.PQerrorMessage(conn.handle));
@@ -106,7 +111,7 @@ pub const Result = struct {
 ~pub event result.nrows { result: *Result<result> }
 | ok usize
 
-~proc result.nrows {
+~proc result.nrows|zig {
     const n = c.PQntuples(result.handle);
     return .{ .ok = @intCast(n) };
 }
@@ -118,10 +123,10 @@ pub const Result = struct {
 | is-null
 | no-such-col
 
-~proc result.col {
+~proc result.col|zig {
     const field_num = c.PQfnumber(result.handle, col.ptr);
-    if (field_num < 0) return .{ .no-such-col = .{} };
-    if (c.PQgetisnull(result.handle, @intCast(row), field_num) == 1) return .{ .is-null = .{} };
+    if (field_num < 0) return .{ .no_such_col = .{} };
+    if (c.PQgetisnull(result.handle, @intCast(row), field_num) == 1) return .{ .is_null = .{} };
     const val = c.PQgetvalue(result.handle, @intCast(row), field_num);
     return .{ .some = std.mem.span(val) };
 }
@@ -129,7 +134,7 @@ pub const Result = struct {
 // Discharge the result obligation — must be called when done with a result.
 ~pub event result.clear { result: *Result<!result> }
 
-~proc result.clear {
+~proc result.clear|zig {
     if (result.handle) |h| {
         c.PQclear(h);
     }
@@ -150,21 +155,32 @@ pub const Result = struct {
 | ok
 | err []const u8
 
-~proc sql {
+~proc sql|zig {
     const handle = c.PQconnectdb(conninfo.ptr);
-    defer if (handle) |h| c.PQfinish(h);
+    // NOTE: no `defer PQfinish` here on purpose. PQerrorMessage's pointer is
+    // owned by the connection handle and dies the instant PQfinish runs, so
+    // every error path below dupes the message into an owned buffer BEFORE
+    // finishing the connection — a deferred PQfinish would fire after the
+    // return value is built but still invalidate it before the caller sees
+    // it (use-after-free: garbage that varies run to run).
     if (handle == null or c.PQstatus(handle) != c.CONNECTION_OK) {
-        const msg = c.PQerrorMessage(handle);
-        return .{ .err = std.mem.span(msg) };
+        const msg = std.mem.span(c.PQerrorMessage(handle));
+        const owned_msg = std.heap.page_allocator.dupe(u8, msg) catch unreachable;
+        if (handle) |h| c.PQfinish(h);
+        return .{ .err = owned_msg };
     }
     const res = c.PQexec(handle, source.text.ptr);
-    defer c.PQclear(res);
     if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK and
         c.PQresultStatus(res) != c.PGRES_TUPLES_OK)
     {
         const msg = std.mem.span(c.PQerrorMessage(handle));
-        return .{ .err = msg };
+        const owned_msg = std.heap.page_allocator.dupe(u8, msg) catch unreachable;
+        c.PQclear(res);
+        if (handle) |h| c.PQfinish(h);
+        return .{ .err = owned_msg };
     }
+    c.PQclear(res);
+    if (handle) |h| c.PQfinish(h);
     return .{ .ok = {} };
 }
 
