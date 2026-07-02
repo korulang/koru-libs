@@ -1,0 +1,35 @@
+// PIN (design gap, not a bug in this package): gzip's compress/decompress
+// events allocate their output buffer via the caller-supplied allocator
+// (index.kz compress|zig: `allocator.alloc(u8, max_output)`) and return it
+// as a bare `[]const u8` in the success branch. There is no `free`/`dispose`
+// event in gzip's public API, and the returned slice carries no phantom
+// state (unlike sqlite3's `*Connection<opened!>` or `*Statement<prepared!>`).
+//
+// So the phantom checker has nothing to hold onto: a program can compress
+// the same data twice, throw both buffers away, and the compiler raises
+// zero complaints - even though both allocations are real leaks at the
+// allocator level. This mirrors the koru compiler's own pinned gap for
+// std/io:read-file (tests/regression/300_ADVANCED_FEATURES/
+// 335_OBLIGATION_STRESS/335_042_read_file_no_free): a bare `[]const u8`
+// surface is invisible to the phantom checker regardless of which library
+// produced it.
+//
+// This file compiles and runs clean today - that IS the finding. There is
+// no phantom obligation on gzip's returned buffers to misuse, so gate 3's
+// negative test (a compile-time-rejected misuse) cannot be honestly
+// written without inventing an obligation gzip's API doesn't currently
+// carry. See gzip/README.md's "Toolchain findings" / quadrifecta
+// self-audit section for the write-up.
+
+~import libs/gzip
+~import std/io
+
+const std = @import("std");
+
+const data: []const u8 = "leaked on purpose to demonstrate the gap";
+
+~libs/gzip:compress(data, allocator: std.heap.page_allocator)
+| compressed _first |> libs/gzip:compress(data, allocator: std.heap.page_allocator)
+    | compressed _second |> std/io:print.ln("Both buffers dropped here - no free() exists, no phantom obligation, no compiler complaint.")
+    | error e |> std/io:print.ln(e)
+| error e |> std/io:print.ln(e)
