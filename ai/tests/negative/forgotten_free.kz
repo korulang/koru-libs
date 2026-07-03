@@ -1,0 +1,19 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// koru/ai:request.anthropic yields a *Request<built!>: the request scratch
+// MUST be discharged with `koru/ai:free.request`, or the JSON body leaks. Here
+// the request is built and sent but `free.request` is deliberately omitted.
+//
+// Under default settings auto-discharge inserts the missing free.request for
+// you. Disable that safety net and the obligation is laid bare:
+//
+//   koruc run ai/tests/negative/forgotten_free.kz --auto-discharge=disable
+//   -> error[KORU030]: Resource 'req' <built!> was not discharged. Call: koru.ai:free.request
+~import koru/ai
+~import koru/curl
+~import std/io
+
+~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null)
+| built req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "x-api-key", .value = "k" } })
+    | ok resp |> std/io:print.ln("status {{ resp.status:d }}") |> koru/curl:close(resp)
+    | err e |> std/io:print.ln("err")

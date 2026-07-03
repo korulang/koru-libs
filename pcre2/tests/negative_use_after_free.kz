@@ -1,0 +1,31 @@
+// NEGATIVE TEST — this file must NOT compile.
+//
+// Misuse: calling libs/pcre2:find.all on a *Regex after its <compiled!>
+// obligation has already been discharged by libs/pcre2:free. A
+// use-after-free on the compiled pattern is exactly the class of bug the
+// phantom obligation on Regex exists to make impossible — the pcre2_code has
+// been handed to pcre2_code_free_8 and any further use dereferences freed
+// memory.
+//
+// Grounded in the same shape as the koru compiler's own regression for this
+// class of bug (tests/regression/300_ADVANCED_FEATURES/330_PHANTOM_TYPES/
+// 330_007_use_after_disposal) and the pq lift's
+// negative_use_after_disconnect.kz.
+//
+// Real compiler rejection observed for this exact file
+// (`koruc run pcre2/tests/negative_use_after_free.kz`), pasted in the README:
+//
+//   error[KORU030]: Use-after-discharge: binding 're' was already
+//   discharged and cannot be used
+
+~import libs/pcre2
+~import std/io
+
+~libs/pcre2:compile(pattern: "\\d+")
+| ok re |> libs/pcre2:free(re) |> libs/pcre2:find.all(re, subject: "123")
+    ! match _ |> _
+    | done re2 |> libs/pcre2:free(re2)
+    | err e |> libs/pcre2:free(e.re)
+| err e |> std/io:print.ln("bad pattern: {{ e.msg:s }}")
+
+pub fn main() void {}

@@ -1,0 +1,28 @@
+// FINDING A — a cross-module resource's <open!> obligation is LOST when the
+// resource-producing event (koru/curl:get) sits in a NON-HEAD subflow branch,
+// rather than being the subflow HEAD. Same discharge idiom either way.
+//   koruc build ai/toolchain-repros/A_nested_obligation_lost.kz
+//   -> error[KORU030]: argument 'resp' carries no obligation here ...
+// Flip to A_control_head.kz (curl:get as the HEAD) and it compiles.
+~import koru/curl
+const std = @import("std");
+
+~pub event prep { u: []const u8 }
+| ok []const u8
+| err koru/curl:Error
+~proc prep|zig { return .{ .ok = u }; }
+
+~pub event status-of { r: *koru/curl:Response<koru/curl:open> }
+| val i32
+~proc status-of|zig { return .{ .val = r.status }; }
+
+~pub event run { u: []const u8 }
+| ok i32
+| err koru/curl:Error
+
+~run = prep(u)
+| ok p => koru/curl:get(url: p)
+    | ok resp => status-of(resp): v |> koru/curl:close(resp)
+        | val x => ok x
+    | err e => err e
+| err pe => err pe

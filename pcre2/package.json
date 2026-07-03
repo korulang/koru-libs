@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/pcre2",
+  "version": "0.0.1",
+  "description": "PCRE2 (Perl-compatible regular expressions) for Koru with phantom obligation types",
+  "keywords": ["koru", "korulang", "pcre2", "regex", "regular-expressions", "perl", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "pcre2"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["pcre2"]
+    }
+  }
+}

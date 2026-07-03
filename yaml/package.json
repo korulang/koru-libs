@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/yaml",
+  "version": "0.0.1",
+  "description": "Streaming YAML parser for Koru wrapping libyaml with phantom obligation types",
+  "keywords": ["koru", "korulang", "yaml", "libyaml", "parser", "streaming", "zig", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/yaml"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["yaml"]
+    }
+  }
+}

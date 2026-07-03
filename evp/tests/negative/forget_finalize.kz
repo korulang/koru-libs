@@ -1,0 +1,21 @@
+// NEGATIVE TEST — this file MUST NOT COMPILE.
+//
+// It opens a digest and feeds it data, but never calls final.hex / final.bytes.
+// In raw OpenSSL C that is a silent EVP_MD_CTX leak on every hash. Here the
+// `hashing` obligation makes it a build error:
+//
+//   error[KORU030]: Resource 'd2' <hashing!> was not discharged.
+//                   Call one of: final.bytes, final.hex
+//
+// Run it to see the obligation bite (expected to FAIL):
+//   koruc run openssl/tests/negative/forget_finalize.kz
+//
+// The forgotten cleanup cannot slip past the compiler, and the error even
+// names the two events that would discharge it.
+
+~import libs/evp
+~import std/io
+
+~libs/evp:sha256.init()
+| ctx d |> libs/evp:update(d, bytes: "abc")
+    | ok d2 |> std/io:print.ln("BUG: reached here without finalizing d2")

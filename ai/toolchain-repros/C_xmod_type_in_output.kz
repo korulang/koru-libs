@@ -1,0 +1,28 @@
+// FINDING C — a consumer package cannot NAME or CONSTRUCT a sibling package's
+// Zig type (curl.Header) in its emitted OUTPUT binary. Two dead ends:
+//   (1) `@import("root").koru_libs.curl` works in the backend/inlined context
+//       (sqlite3 uses it for its own cimport) but in the OUTPUT binary yields:
+//       error: root source file struct 'output_emitted' has no member named 'koru_libs'
+//   (2) the koru-level `koru/curl:Header` type-ref translates in event-signature
+//       positions but leaks VERBATIM inside a raw-Zig `struct {}` field / a
+//       constructor in a proc body:
+//       error: expected ',' after field
+// This repro shows (2).
+//   koruc build ai/toolchain-repros/C_xmod_type_in_output.kz
+~import koru/curl
+const std = @import("std");
+
+pub const Request = struct {
+    url: []const u8,
+    headers: []const koru/curl:Header,
+};
+
+~pub event mk { }
+| ok Request
+~proc mk|zig {
+    const hs = &[_]koru/curl:Header{ .{ .name = "Content-Type", .value = "application/json" } };
+    return .{ .ok = .{ .url = "x", .headers = hs } };
+}
+
+~mk()
+| ok _ |> _

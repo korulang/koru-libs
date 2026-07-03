@@ -1,0 +1,31 @@
+// Every algorithm in v0, against its published test vector for input "abc".
+// The algorithm is chosen by the event name — there is no runtime digest string
+// to misspell.
+//
+//   sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+//   sha512("abc") = ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f
+//   sha1("abc")   = a9993e364706816aba3e25717850c26c9cd0d89d
+//   md5("abc")    = 900150983cd24fb0d6963f7d28e17f72
+
+~import libs/evp
+~import std/io
+
+~libs/evp:sha256.init()
+| ctx d |> libs/evp:update(d, bytes: "abc")
+    | ok d2 |> libs/evp:final.hex(d: d2)
+        | digest h |> std/io:print.ln("sha256 = {{ h:s }}")
+
+~libs/evp:sha512.init()
+| ctx d |> libs/evp:update(d, bytes: "abc")
+    | ok d2 |> libs/evp:final.hex(d: d2)
+        | digest h |> std/io:print.ln("sha512 = {{ h:s }}")
+
+~libs/evp:sha1.init()
+| ctx d |> libs/evp:update(d, bytes: "abc")
+    | ok d2 |> libs/evp:final.hex(d: d2)
+        | digest h |> std/io:print.ln("sha1   = {{ h:s }}")
+
+~libs/evp:md5.init()
+| ctx d |> libs/evp:update(d, bytes: "abc")
+    | ok d2 |> libs/evp:final.hex(d: d2)
+        | digest h |> std/io:print.ln("md5    = {{ h:s }}")

@@ -1,0 +1,60 @@
+// TOOLCHAIN REPRO — a module `c` (the cimport idiom) collides with the local
+// `c` an effect-branch producer must declare to reach it.
+//
+// NOT part of the pcre2 happy path. This file is EXPECTED TO FAIL to build;
+// running it prints the raw generated-Zig error that is the finding.
+//
+// SETUP mirrors any real C-lib wrapper: a module-level `pub const c` (in the
+// real lift, `@cImport(...)`), and an effect-branch (`!`) producer whose body
+// needs to reach `c`.
+//
+// An effect-branch producer's proc body is emitted at TWO sites: (1) inlined
+// into the CONSUMER's frame, where the module's `c` is NOT in scope, so the
+// body MUST bind a local `const c = @import("root")...` (the idiom the sqlite3
+// exemplar documents, index.kz:98); and (2) as this module's own event handler,
+// where `c` IS in scope — so that same local `const c` SHADOWS it:
+//
+//   output_emitted.zig: error: local constant shadows declaration of 'c'
+//
+// That is a raw Zig error from generated code, with no koru-level diagnostic
+// pointing at the cause. There is no spelling using the name `c` that satisfies
+// both sites. The pcre2 lift ships around it by reaching every module decl
+// through ONE non-colliding module alias (`const px = @import("root").koru_libs
+// .koru_pcre2;` → `px.c`), never re-binding the name `c`. See index.kz find.all.
+//
+// Run: koruc run pcre2/tests/TOOLCHAIN_REPRO_effect_module_scope.kz
+
+~import std/io
+
+const std = @import("std");
+
+// Stand-in for a real `@cImport(...)`: a module-level decl named `c`.
+pub const c = struct {
+    pub fn seven() i64 { return 7; }
+};
+pub const Thing = struct { n: i64 };
+
+~pub event produce {}
+! item *Thing
+| done
+
+~proc produce|zig {
+    // The effect body binds a local `c` to reach the module — required at the
+    // inlined consumer site, but a shadow at this module's own handler site.
+    const c = @import("std");
+    _ = c;
+    var t = Thing{ .n = 7 };
+    item(&t);
+    return .{ .done = .{} };
+}
+
+~pub event show { t: *Thing }
+~proc show|zig {
+    std.debug.print("n={d}\n", .{t.n});
+}
+
+~produce()
+! item it |> show(t: it)
+| done |> std/io:print.ln("done")
+
+pub fn main() void {}

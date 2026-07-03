@@ -1,0 +1,294 @@
+// @korulang/yaml - Streaming YAML parser for Koru
+//
+// Wraps libyaml (the reference C implementation — the same engine behind
+// PyYAML, Ruby's Psych, and most language YAML bindings) and lifts its
+// notoriously leak-prone streaming event API into Koru's phantom obligation
+// system.
+//
+// libyaml's parser is a two-level resource machine, and BOTH levels leak if you
+// forget a single call:
+//   * the parser itself must be `yaml_parser_delete`d, and
+//   * EVERY event returned by `yaml_parser_parse` must be `yaml_event_delete`d
+//     (each event owns heap-allocated scalar / tag / anchor buffers).
+//
+// The classic footgun is the second one: a `while` loop that parses events but
+// forgets `yaml_event_delete` inside the loop body leaks on every single event.
+// In C that is a silent, unbounded leak. Here it is a compile error.
+//
+// This edition fuses the two resources into ONE obligation-bearing handle — a
+// `Cursor<live!>` — exactly the way the language's own resource-lifecycle
+// idiom fuses a connection and its open transaction into a single tracked
+// state (koru tests/regression/.../2104 `app/db`: `Transaction<active!>`). A
+// live cursor means "the parser is open AND a current event is undeleted"; you
+// thread that one obligation, and the compiler will not let you drop it:
+//   * `advance` consumes a live cursor and mints a fresh one (delete-then-parse)
+//   * `finish`  consumes a live cursor and fully cleans up (delete + close)
+// Forgetting either — leaking the cursor — does not compile.
+//
+// USAGE (straight-line; see examples/ for a walked document):
+//   ~import libs/yaml
+//
+//   ~libs/yaml:open(input: yaml_text)
+//   | ok p |> libs/yaml:begin(parser: p)
+//       | at c |> libs/yaml:kind(c) | k kk |> ...inspect... |> libs/yaml:finish(kk.cur)
+//       | eof pp |> libs/yaml:close(parser: pp)
+//       | err ep |> libs/yaml:close(parser: ep)
+//   | err e |> ...
+
+~import std/build
+~import std/deps
+
+// System dependency: libyaml must be installed
+~std/deps:requires.system {
+    "name": "yaml",
+    "check": "pkg-config --modversion yaml-0.1",
+    "brew": "libyaml",
+    "apt": "libyaml-dev",
+    "dnf": "libyaml-devel",
+    "pacman": "libyaml",
+    "apk": "yaml-dev"
+}
+
+const std = @import("std");
+pub const c = @cImport({
+    @cInclude("yaml.h");
+});
+
+// A parser owns the libyaml parser state, a private copy of the input bytes
+// (libyaml borrows the input pointer for the parser's whole lifetime), the
+// allocator that created everything, and the text of the last parse error.
+pub const Parser = struct {
+    raw: c.yaml_parser_t,
+    input: []u8,
+    allocator: std.mem.Allocator,
+    last_error: []const u8 = "",
+};
+
+// A cursor fuses an open parser with its current, undeleted event into a single
+// obligation. Advancing deletes the current event and parses the next into the
+// same wrapper; finishing deletes the event and closes the parser.
+pub const Cursor = struct {
+    parser: *Parser,
+    event: c.yaml_event_t,
+};
+
+// ============================================================================
+// Parser lifecycle
+// ============================================================================
+
+// Open a parser over an in-memory YAML document. The returned Parser carries
+// the `open!` obligation: it MUST reach `begin` (which converts it to a live
+// cursor) or `close`, or the program will not compile.
+~pub event open { input: []const u8, allocator: ?std.mem.Allocator }
+| ok *Parser<open!>
+| err []const u8
+
+~proc open|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+
+    const p = alloc.create(Parser) catch return .{ .err = "yaml: out of memory" };
+    p.allocator = alloc;
+    p.last_error = "";
+
+    if (c.yaml_parser_initialize(&p.raw) == 0) {
+        alloc.destroy(p);
+        return .{ .err = "yaml: yaml_parser_initialize failed" };
+    }
+
+    // libyaml keeps the input pointer alive for the parser's whole life, so we
+    // own a private copy and free it in `close` / `finish`.
+    const buf = alloc.dupe(u8, input) catch {
+        c.yaml_parser_delete(&p.raw);
+        alloc.destroy(p);
+        return .{ .err = "yaml: out of memory" };
+    };
+    p.input = buf;
+    c.yaml_parser_set_input_string(&p.raw, buf.ptr, buf.len);
+
+    return .{ .ok = p };
+}
+
+// Close an open parser, discharging the `open!` obligation. Used on the `eof`
+// and `err` branches of `begin` / `advance`, where there is no live event.
+~pub event close { parser: *Parser<!open> }
+
+~proc close|zig {
+    c.yaml_parser_delete(&parser.raw);
+    parser.allocator.free(parser.input);
+    parser.allocator.destroy(parser);
+}
+
+// The text of the last parse error on a parser. Threads `open!` so you can read
+// the message and then `close`.
+~pub event error-text { parser: *Parser<!open> }
+| e { parser: *Parser<open!>, text: []const u8 }
+
+~proc error-text|zig {
+    return .{ .e = .{ .parser = parser, .text = parser.last_error } };
+}
+
+// ============================================================================
+// Cursor: the fused parser+event obligation
+// ============================================================================
+
+// Parse the first event and hand back a live cursor. Consumes the parser's
+// `open!` and mints a `live!` cursor. On an empty stream returns the parser
+// (still open) via `eof`; on a parse error, sets `parser.last_error` and
+// returns the parser (still open) via `err` so you can inspect and close it.
+~pub event begin { parser: *Parser<!open> }
+| at *Cursor<live!>
+| eof *Parser<open!>
+| err *Parser<open!>
+
+~proc begin|zig {
+    const cur = parser.allocator.create(Cursor) catch {
+        parser.last_error = "yaml: out of memory";
+        return .{ .err = parser };
+    };
+    cur.parser = parser;
+
+    if (c.yaml_parser_parse(&parser.raw, &cur.event) == 0) {
+        parser.allocator.destroy(cur);
+        parser.last_error = errText(parser);
+        return .{ .err = parser };
+    }
+
+    if (cur.event.type == c.YAML_STREAM_END_EVENT) {
+        c.yaml_event_delete(&cur.event);
+        parser.allocator.destroy(cur);
+        return .{ .eof = parser };
+    }
+
+    return .{ .at = cur };
+}
+
+// Delete the current event and parse the next one, threading the single `live!`
+// obligation. On stream end deletes the final event, frees the cursor wrapper,
+// and returns the parser (still open) via `eof`. On error likewise returns the
+// open parser via `err` with `parser.last_error` set.
+~pub event advance { cur: *Cursor<!live> }
+| at *Cursor<live!>
+| eof *Parser<open!>
+| err *Parser<open!>
+
+~proc advance|zig {
+    const parser = cur.parser;
+    c.yaml_event_delete(&cur.event);
+
+    if (c.yaml_parser_parse(&parser.raw, &cur.event) == 0) {
+        parser.allocator.destroy(cur);
+        parser.last_error = errText(parser);
+        return .{ .err = parser };
+    }
+
+    if (cur.event.type == c.YAML_STREAM_END_EVENT) {
+        c.yaml_event_delete(&cur.event);
+        parser.allocator.destroy(cur);
+        return .{ .eof = parser };
+    }
+
+    return .{ .at = cur };
+}
+
+// Delete the current event and close the parser in one move — the full-cleanup
+// discharge of a live cursor. Use this to stop walking early.
+~pub event finish { cur: *Cursor<!live> }
+
+~proc finish|zig {
+    const parser = cur.parser;
+    const alloc = parser.allocator;
+    c.yaml_event_delete(&cur.event);
+    c.yaml_parser_delete(&parser.raw);
+    alloc.free(parser.input);
+    alloc.destroy(parser);
+    alloc.destroy(cur);
+}
+
+// ============================================================================
+// Event inspection (all accessors thread the cursor's `live!` obligation)
+// ============================================================================
+
+// The human-readable kind of the current event, as a stable static string.
+~pub event kind { cur: *Cursor<!live> }
+| k { cur: *Cursor<live!>, name: []const u8 }
+
+~proc kind|zig {
+    const t = cur.event.type;
+    const name: []const u8 =
+        if (t == c.YAML_STREAM_START_EVENT) "stream-start"
+        else if (t == c.YAML_STREAM_END_EVENT) "stream-end"
+        else if (t == c.YAML_DOCUMENT_START_EVENT) "document-start"
+        else if (t == c.YAML_DOCUMENT_END_EVENT) "document-end"
+        else if (t == c.YAML_ALIAS_EVENT) "alias"
+        else if (t == c.YAML_SCALAR_EVENT) "scalar"
+        else if (t == c.YAML_SEQUENCE_START_EVENT) "sequence-start"
+        else if (t == c.YAML_SEQUENCE_END_EVENT) "sequence-end"
+        else if (t == c.YAML_MAPPING_START_EVENT) "mapping-start"
+        else if (t == c.YAML_MAPPING_END_EVENT) "mapping-end"
+        else "other";
+    return .{ .k = .{ .cur = cur, .name = name } };
+}
+
+// The scalar text of the current event. On a non-scalar event, `other` threads
+// the obligation back with no value. The returned slice borrows the event's
+// internal buffer and is valid only until the next `advance` / `finish` — read
+// it before advancing.
+~pub event scalar { cur: *Cursor<!live> }
+| value { cur: *Cursor<live!>, text: []const u8 }
+| other *Cursor<live!>
+
+~proc scalar|zig {
+    if (cur.event.type != c.YAML_SCALAR_EVENT) {
+        return .{ .other = cur };
+    }
+    const ptr = cur.event.data.scalar.value;
+    const len = cur.event.data.scalar.length;
+    const text: []const u8 = if (ptr == null) "" else ptr[0..len];
+    return .{ .value = .{ .cur = cur, .text = text } };
+}
+
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+fn errText(parser: *Parser) []const u8 {
+    if (parser.raw.problem == null) return "yaml: parse error";
+    return std.mem.span(parser.raw.problem);
+}
+
+// ============================================================================
+// Build wiring
+// ============================================================================
+// yaml.h is not in the platform SDK (unlike sqlite3.h / zlib.h), so on macOS we
+// add homebrew's include/lib directories. libyaml is NOT keg-only, so the
+// default homebrew prefix suffices. Both the metacircular backend (which embeds
+// this module's @cImport) and the final output binary need the paths and the
+// link — mirroring the pq package's dual-requires idiom.
+
+~std/compiler:requires {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .macos) {
+        const homebrew_prefix: []const u8 = if (builtin.cpu.arch == .aarch64)
+            "/opt/homebrew"
+        else
+            "/usr/local";
+        exe.addIncludePath(.{ .cwd_relative = homebrew_prefix ++ "/include" });
+        exe.addLibraryPath(.{ .cwd_relative = homebrew_prefix ++ "/lib" });
+    }
+    exe.linkSystemLibrary("yaml");
+    exe.linkLibC();
+}
+
+~std/build:requires {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .macos) {
+        const homebrew_prefix: []const u8 = if (builtin.cpu.arch == .aarch64)
+            "/opt/homebrew"
+        else
+            "/usr/local";
+        exe.addIncludePath(.{ .cwd_relative = homebrew_prefix ++ "/include" });
+        exe.addLibraryPath(.{ .cwd_relative = homebrew_prefix ++ "/lib" });
+    }
+    exe.linkSystemLibrary("yaml");
+    exe.linkLibC();
+}

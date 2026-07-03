@@ -1,0 +1,27 @@
+// Full-lifecycle end-to-end TLS: verified connect -> write -> read ->
+// clean shutdown -> close, against a real public HTTPS host.
+//
+// `connect` does the full handshake WITH certificate + hostname verification
+// (there is no other kind of connect). `write`/`read` require the connection
+// to be in the <open> state. `shutdown` sends close_notify and moves it to
+// <closing>. `close` discharges the free-chain (SSL, SSL_CTX, socket) in one
+// call. Every fallible step has an honest `err` branch fed from OpenSSL's
+// drained error queue.
+
+~import koru/openssl
+~import std/io
+
+var buf: [4096]u8 = undefined;
+
+~koru/openssl:connect(host: "example.com", port: 443)
+| ok conn |> koru/openssl:write(conn, data: "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    | ok w |> koru/openssl:read(w.conn, buf: buf[0..])
+        | data d |> std/io:print.ln("TLS OK — read {{ d.bytes.len:d }} bytes") |> koru/openssl:shutdown(d.conn)
+            | ok s |> koru/openssl:close(s) |> std/io:print.ln("Closed cleanly!")
+            | err e |> koru/openssl:close(e.conn) |> std/io:print.ln("Closed after shutdown error")
+        | eof ec |> std/io:print.ln("Peer closed before data") |> koru/openssl:shutdown(ec)
+            | ok s |> koru/openssl:close(s)
+            | err e |> koru/openssl:close(e.conn)
+        | err re |> std/io:print.ln("Read error: {{ re.msg:s }}") |> koru/openssl:close(re.conn)
+    | err we |> std/io:print.ln("Write error: {{ we.msg:s }}") |> koru/openssl:close(we.conn)
+| err e |> std/io:print.ln("Connect error: {{ e.msg:s }}")

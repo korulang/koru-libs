@@ -1,0 +1,20 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// A verified `connect` hands back a `*Tls<open!>` connection: the SSL object,
+// its SSL_CTX, and the socket must all be freed, and that is a single `open!`
+// obligation discharged by `close`. Here the connection is bound to `_` and
+// discarded — no `close` ever runs — so the free-chain would leak.
+//
+// As in the curl lift, the compiler's default auto-discharge pass is clever
+// enough to insert the missing `close` for the naive single-disposer case, so
+// under DEFAULT settings this compiles. Disable that safety net to lay the
+// obligation bare (same flag koru's own suite uses for this class of test):
+//
+//   koruc run openssl/tests/negative/forgotten_close.kz --auto-discharge=disable
+//     -> error[KORU030]: Resource '_' <open!> was not discharged. Call: koru.openssl:close
+
+~import koru/openssl
+
+~koru/openssl:connect(host: "example.com", port: 443)
+| ok _ |> _
+| err _ |> _

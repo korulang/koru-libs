@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/openssl",
+  "version": "0.0.1",
+  "description": "Client-side TLS for Koru, lifted from OpenSSL with verified-by-default connections and phantom free-chain obligations",
+  "keywords": ["koru", "korulang", "openssl", "tls", "ssl", "https", "crypto", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "openssl"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["openssl"]
+    }
+  }
+}

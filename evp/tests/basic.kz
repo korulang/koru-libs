@@ -1,0 +1,17 @@
+// Basic openssl digest test: one-shot and streaming produce the NIST vector.
+//
+// sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+
+~import libs/evp
+~import std/io
+
+// One-shot: hash a whole buffer, no handle to manage.
+~libs/evp:sha256.hex(input: "abc")
+| digest h |> std/io:print.ln("oneshot  sha256(abc) = {{ h:s }}")
+
+// Streaming: init -> update -> final. The `hashing` obligation is created by
+// init and discharged by final; the compiler proved it was not dropped.
+~libs/evp:sha256.init()
+| ctx d |> libs/evp:update(d, bytes: "abc")
+    | ok d2 |> libs/evp:final.hex(d: d2)
+        | digest h |> std/io:print.ln("stream   sha256(abc) = {{ h:s }}")

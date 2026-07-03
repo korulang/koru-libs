@@ -1,0 +1,17 @@
+// POSITIVE: one-shot compress then one-shot decompress.
+// Proves the migrated whole-buffer API still round-trips.
+//
+// Expected output: the exact original text.
+
+~import libs/gzip
+~import std/io
+
+~libs/gzip:compress(data: "hello hello hello world world world", level: .default, allocator: std.heap.page_allocator)
+| compressed c |> libs/gzip:decompress(c.data, allocator: std.heap.page_allocator)
+    | decompressed orig |> std/io:print.ln(orig)
+    | error e |> std/io:print.ln(e)
+| error e |> std/io:print.ln(e)
+
+const std = @import("std");
+
+pub fn main() void {}

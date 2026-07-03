@@ -1,0 +1,227 @@
+// @korulang/pcre2 — the definitive Koru PCRE2 edition
+// ====================================================
+//
+// Lifts PCRE2 (the Perl-Compatible Regular Expressions library that git,
+// PHP, nginx, and Apache all rely on) into a phantom-obligation-typed Koru
+// edition. The raw C API has two hand-managed heap resources — the compiled
+// pattern (`pcre2_code`) and the per-search match data (`pcre2_match_data`) —
+// and the classic footgun of iterating matches with a manual offset cursor.
+//
+// This edition compiles those footguns away:
+//   • The compiled pattern is a phantom obligation: the build FAILS if you
+//     forget to free it, and fails if you use it after freeing it.
+//   • The match-data buffer never touches your hands at all — the `find.all`
+//     loop owns it, iterates every match for you, and frees it exactly once.
+//     You cannot leak it because you never hold it.
+//   • Each match is a per-iteration BORROW, valid only inside its `! match`
+//     body — capture that borrow past the body and the phantom checker
+//     rejects the build (KORU030), the same wall sqlite3's `! row` uses.
+//
+// USAGE:
+//   ~import libs/pcre2
+//
+//   ~libs/pcre2:compile(pattern: "(\\w+)@(\\w+)")
+//   | ok re |>
+//       libs/pcre2:find.all(re: re, subject: "a@b and c@d")
+//       ! match m |>
+//           libs/pcre2:group.text(m: m, index: 1): user |>
+//           libs/pcre2:group.text(m: m, index: 2): host |>
+//           std/io:print.ln("{{ user:s }} at {{ host:s }}")
+//       | done re2 |> libs/pcre2:free(re: re2)
+//       | err e |> libs/pcre2:free(re: e.re)
+//   | err e |> std/io:print.ln("bad pattern: {{ e.msg:s }}")
+
+~import std/build
+~import std/deps
+
+// System dependency: PCRE2 (8-bit code unit width) must be installed.
+~std/deps:requires.system {
+    "name": "pcre2",
+    "check": "pkg-config --modversion libpcre2-8",
+    "brew": "pcre2",
+    "apt": "libpcre2-dev",
+    "dnf": "pcre2-devel",
+    "pacman": "pcre2",
+    "apk": "pcre2-dev"
+}
+
+// Build requirements: link against libpcre2-8 (the 8-bit / UTF-8 build).
+~std/build:requires {
+    exe.linkSystemLibrary("pcre2-8");
+    exe.linkLibC();
+}
+
+const std = @import("std");
+// PCRE2 is a multi-width library; you MUST pick a code-unit width before
+// including the header. 8 = bytes / UTF-8, which is what a Koru []const u8 is.
+// With the width fixed the API symbols carry the `_8` suffix (pcre2_compile_8,
+// pcre2_match_8, ...) — we call those directly rather than the width-generic
+// macros, which translate-c does not surface.
+pub const c = @cImport({
+    @cDefine("PCRE2_CODE_UNIT_WIDTH", "8");
+    @cInclude("pcre2.h");
+});
+
+// A compiled pattern. `code` is the heap-allocated pcre2_code owned by this
+// Regex; the phantom `compiled` obligation is what forces you to free it.
+pub const Regex = struct {
+    code: ?*c.pcre2_code_8,
+};
+
+// A single match, handed to the `! match` body as a BORROW. It points into
+// the caller's subject string and into the match-data ovector owned by the
+// `find.all` loop — both valid only for the duration of one match body.
+pub const Match = struct {
+    subject: []const u8,
+    ovector: [*c]usize,
+    count: u32,
+};
+
+// ============================================================================
+// Compile — mint the `compiled` obligation
+// ============================================================================
+//
+// A pattern that PCRE2 cannot compile is a loud `err` (with the exact PCRE2
+// diagnostic and the byte offset it choked on), never a silent null.
+
+~pub event compile { pattern: []const u8 }
+| ok *Regex<compiled!>
+| err { code: i32, offset: usize, msg: []const u8 }
+
+~proc compile|zig {
+    var errcode: c_int = 0;
+    var erroffset: usize = 0;
+    const code = c.pcre2_compile_8(pattern.ptr, pattern.len, 0, &errcode, &erroffset, null);
+    if (code == null) {
+        var buf: [256]u8 = undefined;
+        _ = c.pcre2_get_error_message_8(errcode, &buf, buf.len);
+        const msg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&buf, 0)) catch "pcre2 compile error";
+        return .{ .err = .{ .code = errcode, .offset = erroffset, .msg = msg } };
+    }
+    const re = std.heap.page_allocator.create(Regex) catch unreachable;
+    re.* = Regex{ .code = code };
+    return .{ .ok = re };
+}
+
+// ============================================================================
+// Free — discharge the `compiled` obligation
+// ============================================================================
+
+~pub event free { re: *Regex<!compiled> }
+~proc free|zig {
+    if (re.code) |code| {
+        c.pcre2_code_free_8(code);
+    }
+    std.heap.page_allocator.destroy(re);
+}
+
+// ============================================================================
+// find.all — iterate every match; the match-data buffer never escapes
+// ============================================================================
+//
+// `! match` fires once per match in `subject`, its body inlined here. The
+// `*Match<match!>` handed to each firing is a per-iteration borrow the engine
+// auto-releases at the body boundary (see `unmatch`). The match-data
+// buffer is created once and freed exactly once by this proc — the caller
+// never holds it and therefore cannot leak it (safe by construction, proven
+// at compile time). The `compiled` obligation is threaded straight back out
+// on `| done`, so the caller still owes exactly one `free`.
+
+~pub event find.all { re: *Regex<!compiled>, subject: []const u8 }
+! match *Match<match!>
+| done *Regex<compiled!>
+| err { re: *Regex<compiled!>, code: i32, msg: []const u8 }
+
+~proc find.all|zig {
+    // Effect-branch body: this proc is emitted at TWO sites — inlined into the
+    // consumer's frame (where this module's decls, INCLUDING the cimport `c`
+    // and the type `Match`, are out of scope) AND as this module's own handler
+    // (where `c`/`Match` ARE in scope). No spelling using the bare names or a
+    // local named `c` satisfies both: a local `const c = ...` shadows the
+    // module `c` at the handler site, and a bare `Match` is undeclared at the
+    // inlined site. So reach EVERY module decl through one non-colliding module
+    // alias, which resolves at both sites. See tests/TOOLCHAIN_REPRO_*.kz and
+    // the README's toolchain-findings section.
+    const px = @import("root").koru_libs.koru_pcre2;
+    const md = px.c.pcre2_match_data_create_from_pattern_8(re.code, null);
+    if (md == null) {
+        return .{ .err = .{ .re = re, .code = 0, .msg = "pcre2: failed to allocate match data" } };
+    }
+    defer px.c.pcre2_match_data_free_8(md);
+
+    // Named with `__` so it can't collide with the consumer's `! match <name>`
+    // binding, whose body is inlined right here (same convention as sqlite3's
+    // `__row`).
+    var __match = px.Match{ .subject = subject, .ovector = undefined, .count = 0 };
+    var offset: usize = 0;
+    while (offset <= subject.len) {
+        const rc = px.c.pcre2_match_8(re.code, subject.ptr, subject.len, offset, 0, md, null);
+        if (rc == px.c.PCRE2_ERROR_NOMATCH) break;
+        if (rc <= 0) {
+            var buf: [256]u8 = undefined;
+            _ = px.c.pcre2_get_error_message_8(rc, &buf, buf.len);
+            const dupmsg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&buf, 0)) catch "pcre2 match error";
+            return .{ .err = .{ .re = re, .code = rc, .msg = dupmsg } };
+        }
+        const ov = px.c.pcre2_get_ovector_pointer_8(md);
+        __match.ovector = ov;
+        __match.count = @intCast(rc);
+        match(&__match);
+        // Advance past this match. An empty match (zero-width, e.g. `\b` or
+        // `a*` at a non-`a`) would loop forever at the same offset, so nudge
+        // forward by one code unit in that case to guarantee progress.
+        const mstart = ov[0];
+        var mend = ov[1];
+        if (mend <= mstart) {
+            mend = mstart + 1;
+        }
+        offset = mend;
+    }
+    return .{ .done = re };
+}
+
+// No-op consumer of the per-match borrow. The compiler finds it by SIGNATURE
+// (it consumes `<!match>`) and auto-inserts a call at each match-body boundary;
+// the user never calls it. Its existence is what lets the phantom checker prove
+// the borrow is scoped — capture it past the match body and the build fails
+// with KORU030.
+//
+// NAMING: this is deliberately a single non-dotted segment. sqlite3's exemplar
+// spells the analogue `release.row`, but the auto-inserted call for a DOTTED
+// release-event name is emitted as `<pkg>.release.row_event.handler` (dot kept)
+// while the declaration registers flat as `release_row_event` — a codegen
+// mismatch that fails to build. A single-segment name sidesteps it. See the
+// README's toolchain-findings section and tests/TOOLCHAIN_REPRO_*.kz.
+~pub event unmatch { m: *Match<!match> }
+~proc unmatch|zig { _ = &m; }
+
+// ============================================================================
+// Capture access — within a `! match` body (borrow reads, no obligation)
+// ============================================================================
+
+// Number of capture slots this match has (index 0 = the whole match, then one
+// per `( )` group in the pattern).
+~pub event group.count { m: *Match<match> } -> i64
+~proc group.count|zig {
+    return @intCast(m.count);
+}
+
+// Text of capture group `index` (0 = whole match). Returns "" for a group that
+// did not participate in the match (PCRE2_UNSET) or an out-of-range index —
+// never reads out of bounds.
+~pub event group.text { m: *Match<match>, index: i32 } -> []const u8
+~proc group.text|zig {
+    const i: usize = @intCast(index);
+    if (i >= m.count) return "";
+    const s = m.ovector[2 * i];
+    const e = m.ovector[2 * i + 1];
+    const unset = std.math.maxInt(usize);
+    if (s == unset or e == unset or e < s or e > m.subject.len) return "";
+    return m.subject[s..e];
+}
+
+// Byte offset where the whole match starts in the subject.
+~pub event match.start { m: *Match<match> } -> i64
+~proc match.start|zig {
+    return @intCast(m.ovector[0]);
+}

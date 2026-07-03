@@ -1,0 +1,26 @@
+{
+  "name": "@korulang/ai",
+  "version": "0.0.1",
+  "description": "First-class Koru edition of LLM text generation (Anthropic, OpenAI) over @korulang/curl, with request + response resources tracked as phantom obligations",
+  "keywords": ["koru", "korulang", "ai", "llm", "anthropic", "openai", "http"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/ai"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "koru.json",
+    "README.md",
+    "LIFT_NOTES.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}

@@ -1,0 +1,16 @@
+// End-to-end runnable test of the FULL ai stack against the real Anthropic
+// endpoint. A deliberately-invalid key yields a deterministic 401, so the
+// `err` arm fires — proving build-request, the POST, the borrow-parse, and
+// BOTH obligation discharges (close + free.request) all run for real.
+//
+//   koruc run ai/tests/roundtrip.kz   ->   API error [401] from anthropic
+~import koru/ai
+~import koru/curl
+~import std/io
+
+~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null)
+| built req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "Content-Type", .value = "application/json" }, .{ .name = "x-api-key", .value = "sk-ant-invalid-test-key" }, .{ .name = "anthropic-version", .value = "2023-06-01" } })
+    | ok resp |> koru/ai:parse.anthropic(resp)
+        | ok result |> std/io:print.ln("ok: {{ result.text:s }}") |> koru/curl:close(resp) |> koru/ai:free.request(req)
+        | err e |> std/io:print.ln("API error [{{ e.code:d }}] from {{ e.provider:s }}") |> koru/curl:close(resp) |> koru/ai:free.request(req)
+    | err e |> std/io:print.ln("transport error [{{ e.code:d }}]: {{ e.msg:s }}") |> koru/ai:free.request(req)

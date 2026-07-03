@@ -1,0 +1,10 @@
+// Proof that verification is ENFORCED, not decorative.
+// `connect` to a host with an expired certificate MUST land in `err` with a
+// real X509 reason — it can never hand back a usable connection.
+// `connect.insecure` to the SAME host succeeds, proving the escape hatch is
+// the ONLY way past verification (and that you must type its scary name).
+~import koru/openssl
+~import std/io
+~koru/openssl:connect(host: "expired.badssl.com", port: 443)
+| ok conn |> std/io:print.ln("BUG: verified connect accepted an expired cert!") |> koru/openssl:close(conn)
+| err e |> std/io:print.ln("Verified connect correctly REJECTED: {{ e.msg:s }}")

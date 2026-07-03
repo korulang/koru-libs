@@ -1,0 +1,29 @@
+// checksum.kz — the newcomer's first hash.
+//
+// Two ways to get a SHA-256, both leak-proof:
+//   1. one-shot   — you have the whole buffer, hand it over, get hex back.
+//   2. streaming  — you have chunks (a file, a socket); feed them one at a
+//                   time. The compiler tracks the open digest and refuses to
+//                   let you drop it without finalizing.
+//
+// Run:  koruc run openssl/examples/checksum.kz
+
+~import libs/evp
+~import std/io
+
+// --- one-shot: the 90% case -------------------------------------------------
+~libs/evp:sha256.hex(input: "The quick brown fox jumps over the lazy dog")
+| digest h |> std/io:print.ln("fox     sha256 = {{ h:s }}")
+
+// --- streaming: hash "hello world" as two chunks ----------------------------
+~libs/evp:sha256.init()
+| ctx d |> libs/evp:update(d, bytes: "hello ")
+    | ok d2 |> libs/evp:update(d2, bytes: "world")
+        | ok d3 |> libs/evp:final.hex(d: d3)
+            | digest h |> std/io:print.ln("hello   sha256 = {{ h:s }}")
+
+// --- a different algorithm, same shape --------------------------------------
+~libs/evp:sha512.init()
+| ctx d |> libs/evp:update(d, bytes: "hello world")
+    | ok d2 |> libs/evp:final.hex(d: d2)
+        | digest h |> std/io:print.ln("hello   sha512 = {{ h:s }}")

@@ -1,0 +1,337 @@
+// @koru/openssl — the definitive Koru client-TLS edition (scope v0)
+//
+// Wraps industry-standard OpenSSL (libssl/libcrypto) and lifts its most
+// infamous footguns into Koru's type system:
+//
+//   1. VERIFIED BY DEFAULT. `connect` ALWAYS verifies the peer certificate
+//      AND the hostname. There is no knob to turn verification off. The only
+//      way to get an unverified channel is to type a *different, loudly named*
+//      event — `connect.insecure` — so a skipped-verification connection can
+//      never happen by omission. Decades of CVEs come from SSL_VERIFY_NONE and
+//      forgotten SSL_set1_host; here the safe path is the only unmarked path.
+//
+//   2. HANDSHAKE IS A PHANTOM STATE. `connect` performs the full handshake
+//      before it hands you an `open!` connection, so "read before handshake"
+//      is unrepresentable. `shutdown` transitions the connection out of the
+//      `open` state into `closing`, so "write after shutdown" does not compile.
+//
+//   3. THE FREE-CHAIN IS ONE PHANTOM OBLIGATION. SSL_free + SSL_CTX_free +
+//      closing the socket are the classic OpenSSL leak trio. Here they are a
+//      single `open!` obligation discharged by `close`. Forget it and the
+//      build fails (KORU030) — you cannot leak an SSL context.
+//
+//   4. THE ERROR QUEUE IS LIFTED. OpenSSL's ERR_get_error() drain-the-queue
+//      model becomes an honest `| err` branch on every fallible event, with
+//      the queue drained and the first diagnostic surfaced. Never silent.
+//
+// Grounded in the koru phantom-type suite: obligation threading follows
+// sqlite3's `next`/`col.*` (consume `<!open>`, re-emit `<open!>`); the
+// open! -> closing! -> discharge chain follows tests/regression/.../330_051
+// (`start-close` transition + `finalize` union `<!opened|closing>`).
+
+~import std/build
+~import std/deps
+
+// System dependency: OpenSSL must be installed.
+~std/deps:requires.system {
+    "name": "openssl",
+    "check": "pkg-config --modversion openssl",
+    "brew": "openssl@3",
+    "apt": "libssl-dev",
+    "dnf": "openssl-devel",
+    "pacman": "openssl",
+    "apk": "openssl-dev"
+}
+
+// Build requirements: link against libssl + libcrypto.
+// OpenSSL is keg-only on macOS/Homebrew, so we point the C importer and the
+// linker at the Homebrew prefix explicitly. (Verified this session against
+// openssl@3 3.6.2 at /opt/homebrew/opt/openssl@3 — see README "Proof of life".)
+~std/build:requires {
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
+    exe.linkSystemLibrary("ssl");
+    exe.linkSystemLibrary("crypto");
+    exe.linkLibC();
+}
+
+const std = @import("std");
+pub const c = @cImport({
+    @cInclude("openssl/ssl.h");
+    @cInclude("openssl/err.h");
+    @cInclude("openssl/x509v3.h");
+});
+
+// ============================================================================
+// Types
+// ============================================================================
+
+// One handle owns the entire free-chain: the SSL object, its SSL_CTX, and the
+// underlying TCP socket fd. `close` frees all three; there is no way to free
+// them piecemeal, so you cannot half-free an OpenSSL connection.
+pub const Tls = struct {
+    ssl: ?*c.SSL,
+    ctx: ?*c.SSL_CTX,
+    fd: c_int,
+    allocator: std.mem.Allocator,
+};
+
+pub const Error = struct {
+    code: c_ulong,
+    msg: []const u8,
+};
+
+// Drain OpenSSL's thread-local error queue and surface the FIRST diagnostic.
+// This is the "error queue lifted" move: we never leave errors sitting in the
+// queue to poison the next call, and we never swallow them silently.
+fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
+    const code = c.ERR_get_error();
+    if (code == 0) {
+        return .{ .code = 0, .msg = alloc.dupe(u8, fallback) catch fallback };
+    }
+    var buf: [256]u8 = undefined;
+    c.ERR_error_string_n(code, &buf, buf.len);
+    const span = std.mem.sliceTo(&buf, 0);
+    const duped = alloc.dupe(u8, span) catch fallback;
+    // Drain the rest of the queue so a stale error can't leak into a later op.
+    while (c.ERR_get_error() != 0) {}
+    return .{ .code = code, .msg = duped };
+}
+
+// ============================================================================
+// connect — VERIFIED client TLS. The only safe constructor.
+// ============================================================================
+// Performs: TCP connect, SSL_VERIFY_PEER, system CA trust store, SNI, strict
+// hostname verification (SSL_set1_host), full handshake, and a belt-and-braces
+// SSL_get_verify_result check. Any failure returns `err` loudly — it never
+// hands back an unverified connection.
+
+~pub event connect { host: []const u8, port: u16, allocator: ?std.mem.Allocator }
+| ok *Tls<open!>
+| err Error
+
+~proc connect|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+
+    const host_z = alloc.dupeZ(u8, host) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory duplicating host" } };
+    };
+    defer alloc.free(host_z);
+
+    // --- TCP ---
+    const stream = std.net.tcpConnectToHost(alloc, host, port) catch {
+        return .{ .err = .{ .code = 0, .msg = "TCP connection failed" } };
+    };
+    const fd: c_int = @intCast(stream.handle);
+    errdefer std.posix.close(stream.handle);
+
+    // --- SSL_CTX with mandatory verification ---
+    const ctx = c.SSL_CTX_new(c.TLS_client_method());
+    if (ctx == null) {
+        return .{ .err = drainErr(alloc, "SSL_CTX_new failed") };
+    }
+    errdefer c.SSL_CTX_free(ctx);
+
+    // Verify the peer certificate. This is the setting whose ABSENCE is the
+    // classic CVE. It is not optional here.
+    c.SSL_CTX_set_verify(ctx, c.SSL_VERIFY_PEER, null);
+    if (c.SSL_CTX_set_default_verify_paths(ctx) != 1) {
+        return .{ .err = drainErr(alloc, "could not load system CA trust store") };
+    }
+    _ = c.SSL_CTX_set_min_proto_version(ctx, c.TLS1_2_VERSION);
+
+    // --- SSL object ---
+    const ssl = c.SSL_new(ctx);
+    if (ssl == null) {
+        return .{ .err = drainErr(alloc, "SSL_new failed") };
+    }
+    errdefer c.SSL_free(ssl);
+
+    _ = c.SSL_set_fd(ssl, fd);
+
+    // SNI — tell the server which host we want (many servers require it).
+    _ = c.SSL_set_tlsext_host_name(ssl, host_z.ptr);
+
+    // Strict hostname check: the presented cert MUST match `host`. Forgetting
+    // this is the OTHER half of the classic MITM footgun; it is mandatory here.
+    if (c.SSL_set1_host(ssl, host_z.ptr) != 1) {
+        return .{ .err = drainErr(alloc, "SSL_set1_host failed") };
+    }
+
+    // --- handshake (this is where the handshake phantom state is established) ---
+    if (c.SSL_connect(ssl) != 1) {
+        // Prefer the human-readable X509 verify reason when that is the cause.
+        const vr = c.SSL_get_verify_result(ssl);
+        if (vr != c.X509_V_OK) {
+            const reason = c.X509_verify_cert_error_string(vr);
+            return .{ .err = .{
+                .code = @intCast(vr),
+                .msg = alloc.dupe(u8, std.mem.span(reason)) catch "certificate verification failed",
+            } };
+        }
+        return .{ .err = drainErr(alloc, "TLS handshake failed") };
+    }
+
+    // Belt and braces: SSL_set1_host already enforces this, but confirm.
+    const vr = c.SSL_get_verify_result(ssl);
+    if (vr != c.X509_V_OK) {
+        const reason = c.X509_verify_cert_error_string(vr);
+        return .{ .err = .{
+            .code = @intCast(vr),
+            .msg = alloc.dupe(u8, std.mem.span(reason)) catch "certificate verification failed",
+        } };
+    }
+
+    const conn = alloc.create(Tls) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory allocating connection" } };
+    };
+    conn.* = .{ .ssl = ssl, .ctx = ctx, .fd = fd, .allocator = alloc };
+    return .{ .ok = conn };
+}
+
+// ============================================================================
+// connect.insecure — THE EXPLICITLY-NAMED UNSAFE ESCAPE HATCH.
+// ============================================================================
+// !!! DANGER !!! This skips certificate AND hostname verification. It exists so
+// that "no verification" is something you must TYPE, in a name that screams what
+// it is — never something that happens because you forgot a flag. Use it only
+// for talking to a host with a self-signed cert you already trust out-of-band
+// (e.g. local dev). Everything downstream (read/write/shutdown/close) is
+// identical, so the ONLY signal of danger is at the call site — which is the
+// point.
+
+~pub event connect.insecure { host: []const u8, port: u16, allocator: ?std.mem.Allocator }
+| ok *Tls<open!>
+| err Error
+
+~proc connect.insecure|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+
+    const host_z = alloc.dupeZ(u8, host) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory duplicating host" } };
+    };
+    defer alloc.free(host_z);
+
+    const stream = std.net.tcpConnectToHost(alloc, host, port) catch {
+        return .{ .err = .{ .code = 0, .msg = "TCP connection failed" } };
+    };
+    const fd: c_int = @intCast(stream.handle);
+    errdefer std.posix.close(stream.handle);
+
+    const ctx = c.SSL_CTX_new(c.TLS_client_method());
+    if (ctx == null) {
+        return .{ .err = drainErr(alloc, "SSL_CTX_new failed") };
+    }
+    errdefer c.SSL_CTX_free(ctx);
+
+    // Deliberately NO verification. This is the whole (unsafe) point.
+    c.SSL_CTX_set_verify(ctx, c.SSL_VERIFY_NONE, null);
+    _ = c.SSL_CTX_set_min_proto_version(ctx, c.TLS1_2_VERSION);
+
+    const ssl = c.SSL_new(ctx);
+    if (ssl == null) {
+        return .{ .err = drainErr(alloc, "SSL_new failed") };
+    }
+    errdefer c.SSL_free(ssl);
+
+    _ = c.SSL_set_fd(ssl, fd);
+    _ = c.SSL_set_tlsext_host_name(ssl, host_z.ptr);
+
+    if (c.SSL_connect(ssl) != 1) {
+        return .{ .err = drainErr(alloc, "TLS handshake failed") };
+    }
+
+    const conn = alloc.create(Tls) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory allocating connection" } };
+    };
+    conn.* = .{ .ssl = ssl, .ctx = ctx, .fd = fd, .allocator = alloc };
+    return .{ .ok = conn };
+}
+
+// ============================================================================
+// write — requires `open`, so it cannot run before connect or after shutdown.
+// ============================================================================
+
+~pub event write { conn: *Tls<!open>, data: []const u8 }
+| ok { conn: *Tls<open!>, n: usize }
+| err { conn: *Tls<open!>, code: c_ulong, msg: []const u8 }
+
+~proc write|zig {
+    if (data.len == 0) {
+        return .{ .ok = .{ .conn = conn, .n = 0 } };
+    }
+    const rc = c.SSL_write(conn.ssl, data.ptr, @intCast(data.len));
+    if (rc <= 0) {
+        const e = drainErr(conn.allocator, "SSL_write failed");
+        return .{ .err = .{ .conn = conn, .code = e.code, .msg = e.msg } };
+    }
+    return .{ .ok = .{ .conn = conn, .n = @intCast(rc) } };
+}
+
+// ============================================================================
+// read — fills a caller-owned buffer (zero-copy). Requires `open`.
+// ============================================================================
+// `bytes` is a slice INTO the caller's `buf`, so there is nothing extra to free.
+
+~pub event read { conn: *Tls<!open>, buf: []u8 }
+| data { conn: *Tls<open!>, bytes: []u8 }
+| eof *Tls<open!>
+| err { conn: *Tls<open!>, code: c_ulong, msg: []const u8 }
+
+~proc read|zig {
+    const rc = c.SSL_read(conn.ssl, buf.ptr, @intCast(buf.len));
+    if (rc > 0) {
+        return .{ .data = .{ .conn = conn, .bytes = buf[0..@intCast(rc)] } };
+    }
+    // rc <= 0: distinguish a clean peer close from a real error.
+    const err_code = c.SSL_get_error(conn.ssl, rc);
+    if (err_code == c.SSL_ERROR_ZERO_RETURN) {
+        return .{ .eof = conn };
+    }
+    const e = drainErr(conn.allocator, "SSL_read failed");
+    return .{ .err = .{ .conn = conn, .code = e.code, .msg = e.msg } };
+}
+
+// ============================================================================
+// shutdown — clean TLS close_notify. Transitions `open` -> `closing`.
+// ============================================================================
+// After shutdown the connection is no longer `open`, so read/write no longer
+// type-check against it. The free obligation rides along as `closing!` — you
+// still MUST call `close`.
+
+~pub event shutdown { conn: *Tls<!open> }
+| ok *Tls<closing!>
+| err { conn: *Tls<closing!>, code: c_ulong, msg: []const u8 }
+
+~proc shutdown|zig {
+    const rc = c.SSL_shutdown(conn.ssl);
+    if (rc < 0) {
+        const e = drainErr(conn.allocator, "SSL_shutdown failed");
+        return .{ .err = .{ .conn = conn, .code = e.code, .msg = e.msg } };
+    }
+    return .{ .ok = conn };
+}
+
+// ============================================================================
+// close — discharges the free obligation. Frees SSL + SSL_CTX + socket.
+// ============================================================================
+// Accepts EITHER `open` (close without an explicit shutdown) OR `closing`
+// (close after shutdown). Union input is grounded in 330_051's `finalize`.
+
+~pub event close { conn: *Tls<!open|closing> }
+
+~proc close|zig {
+    if (conn.ssl) |s| {
+        // If the caller never called shutdown, send close_notify now so the
+        // peer sees a clean teardown rather than a truncated connection.
+        _ = c.SSL_shutdown(s);
+        c.SSL_free(s);
+    }
+    if (conn.ctx) |x| {
+        c.SSL_CTX_free(x);
+    }
+    if (conn.fd >= 0) {
+        std.posix.close(@intCast(conn.fd));
+    }
+    conn.allocator.destroy(conn);
+}

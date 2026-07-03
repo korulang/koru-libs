@@ -1,0 +1,23 @@
+// extract_emails — a runnable newcomer example.
+//
+// Pull every "user@host" out of a blob of text and print the user and host
+// halves of each. Note there is NO explicit free: the compiler's auto-discharge
+// pass sees the single legal disposer (libs/pcre2:free) and inserts it for you.
+// Try deleting a branch or misusing `re` and watch the build refuse.
+//
+//   $ koruc run pcre2/examples/extract_emails.kz
+//   alice / example.com
+//   bob / work.org
+//   carol / mail.net
+
+~import libs/pcre2
+~import std/io
+
+~libs/pcre2:compile(pattern: "(\\w+)@([\\w.]+)")
+| ok re |> libs/pcre2:find.all(re, subject: "reach alice@example.com, bob@work.org, or carol@mail.net")
+    ! match m |> libs/pcre2:group.text(m, index: 1): user |> libs/pcre2:group.text(m, index: 2): host |> std/io:print.ln("{{ user:s }} / {{ host:s }}")
+    | done re2 |> libs/pcre2:free(re2)
+    | err e |> libs/pcre2:free(e.re) |> std/io:print.ln("match error: {{ e.msg:s }}")
+| err e |> std/io:print.ln("could not compile pattern: {{ e.msg:s }}")
+
+pub fn main() void {}

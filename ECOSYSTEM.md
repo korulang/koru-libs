@@ -70,10 +70,30 @@ This document outlines foundational infrastructure packages needed to make Koru 
 - libyaml (C) - Reference implementation, YAML 1.2
 - yaml-cpp (C++) - Feature-rich, good error messages
 
-**Koru advantage:** Schema validation at compile-time, prevent config errors before runtime
+**Koru advantage:** Streaming parse with phantom obligations — libyaml's
+per-event `yaml_event_delete` leak footgun and the parser lifecycle are both
+uncompilable. (Compile-time schema validation is still future.)
 
 **Priority:** 🔥 Critical
-**Status:** 📋 Planned
+**Status:** ✅ Available (@korulang/yaml — streaming parser v0). See `yaml/README.md`.
+
+---
+
+### Regular Expressions (PCRE)
+**Ecosystem counterparts:** `re` (Python), RegExp (Node), the regex crate (Rust)
+**Use case:** Text extraction, validation, log parsing — the full Perl dialect
+(backreferences, lookaround, named groups) that a bounded DFA cannot express
+**C/Zig libraries:**
+- PCRE2 (C) - the engine inside git, PHP, nginx, Apache
+- ✅ **Already done!** @korulang/pcre2
+
+**Koru advantage:** The compiled pattern is a phantom obligation (free-or-fail,
+no use-after-free); the match-data buffer is unleakable by construction (owned
+by the `find.all` loop); each match is a scoped `! match` borrow. Complements
+Koru's built-in `std/regex` (compile-time DFA) with a runtime PCRE engine.
+
+**Priority:** ✅ Available
+**Status:** ✅ Complete
 
 ---
 
@@ -209,8 +229,10 @@ This document outlines foundational infrastructure packages needed to make Koru 
 - OpenSSL (C) - Industry standard
 - libsodium (C) - Modern, secure by default
 
-**Priority:** ✅ Available (Zig std.crypto)
-**Status:** Ready to use
+**Koru advantage:** Phantom `hashing` obligation makes a forgotten `EVP_MD_CTX_free` uncompilable; algorithm chosen at compile time (no runtime "unknown digest")
+
+**Priority:** ✅ Available
+**Status:** ✅ **Done (v0: message digests)** — @korulang/openssl wraps OpenSSL EVP (SHA-256/512/1, MD5). Next depth: HMAC, then ciphers.
 
 ---
 
@@ -225,6 +247,25 @@ This document outlines foundational infrastructure packages needed to make Koru 
 
 **Priority:** 🔥 Critical (security)
 **Status:** 📋 Planned (wrap bcrypt or argon2)
+
+---
+
+### TLS / SSL (secure sockets)
+**Ecosystem counterparts:** tls (Node), ssl/`http.client` (Python), crypto/tls (Go)
+**Use case:** Encrypted client connections — HTTPS, secure DB/redis links, any TLS socket
+**C/Zig libraries:**
+- OpenSSL (C) - Industry standard; libssl + libcrypto
+- BoringSSL (C) - Google's fork
+- Zig std: `std.crypto.tls` (client, no system CA store integration yet)
+
+**Koru advantage:** Verification is uncompilable to skip — the safe `connect`
+always verifies cert + hostname, and the only unverified path is a loudly-named
+`connect.insecure`. Handshake/shutdown are phantom states (no read-before-handshake,
+no write-after-shutdown), the SSL/SSL_CTX/socket free-chain is a single phantom
+obligation, and the `ERR_get_error()` queue becomes honest effect branches.
+
+**Priority:** 🔥 Critical (security)
+**Status:** ✅ Available (client v0) — @korulang/openssl (`openssl/`), wraps OpenSSL 3.x
 
 ---
 

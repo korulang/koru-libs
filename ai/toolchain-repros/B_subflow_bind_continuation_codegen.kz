@@ -1,0 +1,28 @@
+// FINDING B — a pipe-binding (`: reply`) in a subflow `=>` branch continuation
+// emits malformed Zig: the emitter turns the bound call into a struct field
+// name and leaks the binding as an undeclared identifier. (Kin to the pinned
+// koru test 020_030 "chained bind->produce drops the trailing produce".)
+//   koruc run ai/toolchain-repros/B_subflow_bind_continuation_codegen.kz
+//   -> output_emitted.zig: error: use of undeclared identifier 'reply'
+//      (emitted:  return .{ .@"parse(resp):" = reply };)
+~import koru/curl
+~import std/io
+const std = @import("std");
+
+~pub event parse { resp: *koru/curl:Response<koru/curl:open> }
+| ok i32
+| err koru/curl:Error
+~proc parse|zig { return .{ .ok = resp.status }; }
+
+~pub event fetch { u: []const u8 }
+| ok i32
+| err koru/curl:Error
+~fetch = koru/curl:get(url: u)
+| ok resp => parse(resp): reply |> koru/curl:close(resp)
+    | ok x => ok x
+    | err pe => err pe
+| err e => err e
+
+~fetch(u: "https://httpbin.org/get")
+| ok s |> std/io:print.ln("{{ s:d }}")
+| err e |> std/io:print.ln("err")

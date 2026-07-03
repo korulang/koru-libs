@@ -1,0 +1,8 @@
+// The explicitly-named escape hatch: connect.insecure skips verification, so
+// it accepts the same expired cert the safe `connect` rejects. Danger is at
+// the call site, in a name you had to type.
+~import koru/openssl
+~import std/io
+~koru/openssl:connect.insecure(host: "expired.badssl.com", port: 443)
+| ok conn |> std/io:print.ln("insecure connect accepted expired cert (as designed)") |> koru/openssl:close(conn)
+| err e |> std/io:print.ln("insecure connect failed: {{ e.msg:s }}")

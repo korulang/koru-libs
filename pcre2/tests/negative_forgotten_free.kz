@@ -1,0 +1,27 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// A `libs/pcre2:compile` success carries the `compiled!` obligation: the
+// pcre2_code MUST be handed back to libs/pcre2:free, or it leaks.
+//
+// By default the compiler's auto-discharge pass is clever enough to insert the
+// missing `libs/pcre2:free` for you when it can trace the binding to its single
+// legal disposer (examples/extract_emails.kz leans on that convenience). So
+// under DEFAULT settings this file compiles — auto-discharge plugs the leak.
+//
+// Disable that safety net (`--auto-discharge=disable`, the same flag koru's own
+// suite uses for this class of test, and the curl lift's forgotten_close.kz)
+// and the obligation tracking is laid bare: the compiled regex is bound to `_`
+// and dropped, no disposer runs, and the build fails loudly instead of leaking.
+//
+// Reproduce:
+//   koruc --check pcre2/tests/negative_forgotten_free.kz --auto-discharge=disable  # passes shape check
+//   koruc run   pcre2/tests/negative_forgotten_free.kz --auto-discharge=disable    # FAILS:
+//     error[KORU030]: Resource '_' <compiled!> was not discharged. Call: libs.pcre2:free
+
+~import libs/pcre2
+
+~libs/pcre2:compile(pattern: "\\w+")
+| ok _ |> _
+| err _ |> _
+
+pub fn main() void {}

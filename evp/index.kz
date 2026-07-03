@@ -1,0 +1,171 @@
+// @korulang/openssl — the definitive Koru OpenSSL edition (v0: message digests)
+//
+// Lifts OpenSSL's EVP message-digest API (SHA-256/512/1, MD5) behind a phantom
+// obligation. The notorious C footguns this compiles away:
+//
+//   1. EVP_MD_CTX_new() returns a context that MUST be freed with
+//      EVP_MD_CTX_free() — forget it and you leak on every hash. Here the
+//      `hashing` obligation makes forgetting uncompilable.
+//   2. Reading a digest before EVP_DigestFinal_ex, or calling update() after
+//      final, is undefined behaviour. Here `final` CONSUMES the handle and
+//      never re-grants it, so use-after-final is a build error.
+//   3. Picking a digest by runtime string ("sha266") is a runtime failure.
+//      Here the algorithm is a distinct event — an invalid one won't parse.
+//
+// House style follows the phantom-obligation cursor in the Koru suite
+// (tests/regression/900_EXAMPLES_SHOWCASE/910_LANGUAGE_SHOOTOUT/2104_*/db.kz
+// and sqlite3/index.kz): `<state!>` grants an obligation, `<!state>` consumes
+// it, re-granting `<state!>` keeps the resource alive across a loop.
+
+~import std/build
+
+// libcrypto is part of OpenSSL, installed everywhere OpenSSL is.
+~std/build:requires {
+    exe.linkSystemLibrary("crypto");
+    exe.linkLibC();
+    // Homebrew's OpenSSL is keg-only, so its headers/libs are not on the
+    // default search path. These are the standard Apple-silicon Homebrew
+    // locations; on Linux the system paths are already searched and these
+    // are harmless. (v0 portability edge — see README.)
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+}
+
+const std = @import("std");
+pub const c = @cImport({
+    @cInclude("openssl/evp.h");
+});
+
+// An in-flight digest computation. `ctx` is the OpenSSL EVP context that owns
+// the streaming state and must be freed exactly once (by `final`).
+pub const Digest = struct {
+    ctx: ?*c.EVP_MD_CTX,
+};
+
+// Internal: allocate a Digest around a freshly-initialised EVP context for the
+// given algorithm. Built-in digests never fail to init; OOM asserts loudly
+// rather than silently degrading (Koru house rule: assert, don't fall back).
+fn begin(md: ?*const c.EVP_MD) *Digest {
+    const ctx = c.EVP_MD_CTX_new() orelse @panic("openssl: EVP_MD_CTX_new returned null (out of memory)");
+    if (c.EVP_DigestInit_ex(ctx, md, null) != 1) {
+        @panic("openssl: EVP_DigestInit_ex failed for a built-in digest");
+    }
+    const d = std.heap.page_allocator.create(Digest) catch @panic("openssl: OOM allocating Digest");
+    d.* = Digest{ .ctx = ctx };
+    return d;
+}
+
+// Internal: hex-encode a byte slice into a fresh page-allocator buffer.
+fn hexEncode(bytes: []const u8) []const u8 {
+    const hexchars = "0123456789abcdef";
+    const buf = std.heap.page_allocator.alloc(u8, bytes.len * 2) catch @panic("openssl: OOM allocating hex buffer");
+    var i: usize = 0;
+    while (i < bytes.len) : (i += 1) {
+        buf[i * 2] = hexchars[bytes[i] >> 4];
+        buf[i * 2 + 1] = hexchars[bytes[i] & 0x0f];
+    }
+    return buf;
+}
+
+// ============================================================================
+// Algorithm selection — one event per digest. There is no runtime algorithm
+// name, so "unknown digest" is not a reachable state.
+// ============================================================================
+
+~pub event sha256.init {}
+| ctx *Digest<hashing!>
+
+~proc sha256.init|zig {
+    return .{ .ctx = begin(c.EVP_sha256()) };
+}
+
+~pub event sha512.init {}
+| ctx *Digest<hashing!>
+
+~proc sha512.init|zig {
+    return .{ .ctx = begin(c.EVP_sha512()) };
+}
+
+~pub event sha1.init {}
+| ctx *Digest<hashing!>
+
+~proc sha1.init|zig {
+    return .{ .ctx = begin(c.EVP_sha1()) };
+}
+
+~pub event md5.init {}
+| ctx *Digest<hashing!>
+
+~proc md5.init|zig {
+    return .{ .ctx = begin(c.EVP_md5()) };
+}
+
+// ============================================================================
+// Streaming — feed the digest in chunks. Consumes the obligation and re-grants
+// it, so you can call update in a loop (each call keeps the handle alive).
+// ============================================================================
+
+~pub event update { d: *Digest<!hashing>, bytes: []const u8 }
+| ok *Digest<hashing!>
+
+~proc update|zig {
+    if (c.EVP_DigestUpdate(d.ctx, bytes.ptr, bytes.len) != 1) {
+        @panic("openssl: EVP_DigestUpdate failed");
+    }
+    return .{ .ok = d };
+}
+
+// ============================================================================
+// Finalisation — consumes the handle for good. It is NOT re-granted, so the
+// `hashing` obligation is discharged here and the EVP context is freed. Any
+// use of the handle after `final` is a compile error.
+// ============================================================================
+
+~pub event final.hex { d: *Digest<!hashing> }
+| digest []const u8
+
+~proc final.hex|zig {
+    var out: [c.EVP_MAX_MD_SIZE]u8 = undefined;
+    var outlen: c_uint = 0;
+    if (c.EVP_DigestFinal_ex(d.ctx, &out, &outlen) != 1) {
+        @panic("openssl: EVP_DigestFinal_ex failed");
+    }
+    c.EVP_MD_CTX_free(d.ctx);
+    std.heap.page_allocator.destroy(d);
+    return .{ .digest = hexEncode(out[0..outlen]) };
+}
+
+~pub event final.bytes { d: *Digest<!hashing> }
+| digest []const u8
+
+~proc final.bytes|zig {
+    var out: [c.EVP_MAX_MD_SIZE]u8 = undefined;
+    var outlen: c_uint = 0;
+    if (c.EVP_DigestFinal_ex(d.ctx, &out, &outlen) != 1) {
+        @panic("openssl: EVP_DigestFinal_ex failed");
+    }
+    c.EVP_MD_CTX_free(d.ctx);
+    const buf = std.heap.page_allocator.alloc(u8, outlen) catch @panic("openssl: OOM");
+    @memcpy(buf, out[0..outlen]);
+    std.heap.page_allocator.destroy(d);
+    return .{ .digest = buf };
+}
+
+// ============================================================================
+// One-shot convenience — the whole obligation lifecycle in one call for the
+// common "hash this buffer" case. No handle escapes, so nothing to forget.
+// ============================================================================
+
+~pub event sha256.hex { input: []const u8 }
+| digest []const u8
+
+~proc sha256.hex|zig {
+    var out: [32]u8 = undefined;
+    var outlen: c_uint = 0;
+    if (c.EVP_Digest(input.ptr, input.len, &out, &outlen, c.EVP_sha256(), null) != 1) {
+        @panic("openssl: EVP_Digest failed");
+    }
+    return .{ .digest = hexEncode(out[0..outlen]) };
+}

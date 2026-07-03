@@ -1,0 +1,15 @@
+// Basic: open a parser, begin a cursor over the first event, finish it (which
+// deletes the event and closes the parser in one move). Round-trips the whole
+// obligation chain: open! -> live! -> discharged.
+
+~import libs/yaml
+~import std/io
+
+~libs/yaml:open(input: "greeting: hello")
+| ok p |> libs/yaml:begin(parser: p)
+    | at c |> libs/yaml:finish(cur: c) |> std/io:print.ln("Opened, read one event, closed!")
+    | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty stream")
+    | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error")
+| err e |> std/io:print.ln("open error: {{ e:s }}")
+
+pub fn main() void {}

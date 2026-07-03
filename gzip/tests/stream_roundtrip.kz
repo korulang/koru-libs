@@ -1,0 +1,25 @@
+// POSITIVE: streaming compress (chunk-by-chunk) then one-shot decompress.
+// Proves the streaming Deflater produces valid gzip AND that the phantom
+// obligation lifecycle (init -> push -> finish -> release) discharges cleanly.
+//
+// Expected output: the exact original text, recovered after a full round-trip.
+
+~import libs/gzip
+~import std/io
+
+~libs/gzip:deflate.init(level: .best)
+| ok d |> libs/gzip:deflate.push(d, chunk: "The quick brown fox. ")
+    | ok d2 |> libs/gzip:deflate.push(d2, chunk: "The quick brown fox. ")
+        | ok d3 |> libs/gzip:deflate.finish(d3)
+            | done r |> libs/gzip:deflate.release(r.d, r.data)
+                | bytes gz |> libs/gzip:decompress(data: gz, allocator: std.heap.page_allocator)
+                    | decompressed orig |> std/io:print.ln(orig)
+                    | error e |> std/io:print.ln(e)
+            | err e |> std/io:print.ln(e)
+        | err e |> std/io:print.ln(e)
+    | err e |> std/io:print.ln(e)
+| err e |> std/io:print.ln(e)
+
+const std = @import("std");
+
+pub fn main() void {}

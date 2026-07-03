@@ -1,0 +1,19 @@
+// Streaming invariance: feeding "a" then "bc" through two update() calls must
+// equal hashing "abc" in one shot. This exercises the re-granted obligation —
+// update consumes <!hashing> and hands back <hashing!>, so the handle survives
+// the loop and the final call still proves the obligation was discharged.
+//
+// Expected: both lines print
+//   ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+
+~import libs/evp
+~import std/io
+
+~libs/evp:sha256.hex(input: "abc")
+| digest h |> std/io:print.ln("oneshot = {{ h:s }}")
+
+~libs/evp:sha256.init()
+| ctx d |> libs/evp:update(d, bytes: "a")
+    | ok d2 |> libs/evp:update(d2, bytes: "bc")
+        | ok d3 |> libs/evp:final.hex(d: d3)
+            | digest h |> std/io:print.ln("chunked = {{ h:s }}")

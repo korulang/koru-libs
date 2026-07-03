@@ -1,0 +1,28 @@
+// Example: pull the first scalar value out of a YAML document.
+//
+// Run:  koruc run yaml/examples/first_scalar.kz
+//
+// A bare scalar document ("just some text") produces STREAM-START, then
+// DOCUMENT-START, then the SCALAR — so two advances reach the value. The scalar
+// text is a slice borrowing libyaml's internal buffer; we read it BEFORE the
+// cursor is finished (which frees that buffer).
+
+~import libs/yaml
+~import std/io
+
+~libs/yaml:open(input: "the definitive edition")
+| ok p |> libs/yaml:begin(parser: p)
+    | at c |> libs/yaml:advance(cur: c)
+        | at c2 |> libs/yaml:advance(cur: c2)
+            | at c3 |> libs/yaml:scalar(cur: c3)
+                | value v |> std/io:print.ln("first scalar: \"{{ v.text:s }}\"") |> libs/yaml:finish(v.cur)
+                | other o |> std/io:print.ln("first content event was not a scalar") |> libs/yaml:finish(cur: o)
+            | eof e3 |> libs/yaml:close(parser: e3) |> std/io:print.ln("no scalar found")
+            | err x3 |> libs/yaml:close(parser: x3) |> std/io:print.ln("parse error")
+        | eof e2 |> libs/yaml:close(parser: e2) |> std/io:print.ln("no scalar found")
+        | err x2 |> libs/yaml:close(parser: x2) |> std/io:print.ln("parse error")
+    | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty document")
+    | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error at start")
+| err e |> std/io:print.ln("could not open: {{ e:s }}")
+
+pub fn main() void {}

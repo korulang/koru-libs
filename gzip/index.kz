@@ -247,3 +247,117 @@ fn levelToZlib(level: ?Level) c_int {
         return .{ .error = "Decompression failed" };
     }
 }
+
+// ============================================================================
+// STREAMING COMPRESSION - the lift zlib alone cannot give you
+// ============================================================================
+//
+// A `Deflater` owns a live zlib `z_stream` plus a growing output buffer. Its
+// lifecycle is a phantom obligation:
+//
+//     deflate.init   mints  <open!>   (deflateInit2 ran; stream is live)
+//     deflate.push   needs  <!open>, re-mints <open!>   (feed a chunk)
+//     deflate.finish needs  <!open>, mints <done!>      (deflateEnd ran)
+//     deflate.release needs <!done>                     (frees the Deflater)
+//
+// Because `finish` transitions the handle from <open!> to <done!>, calling
+// `push` (which requires <!open>) on a finished stream is a COMPILE ERROR:
+// the compiler sees `expected 'open' but got 'done!'`. That is a
+// use-after-free the type system catches before the program ever runs.
+// See tests/deflate_use_after_finish.kz.
+
+const Deflater = struct {
+    strm: c.z_stream,
+    out: std.ArrayList(u8),
+};
+
+~pub event deflate.init { level: ?Level }
+| ok *Deflater<open!>
+| err []const u8
+
+~proc deflate.init|zig {
+    const d = std.heap.page_allocator.create(Deflater) catch {
+        return .{ .err = "Failed to allocate Deflater" };
+    };
+    d.strm = std.mem.zeroes(c.z_stream);
+    d.out = std.ArrayList(u8){};
+    const rc = c.deflateInit2(
+        &d.strm,
+        levelToZlib(level),
+        c.Z_DEFLATED,
+        15 + 16,  // gzip format
+        8,
+        c.Z_DEFAULT_STRATEGY
+    );
+    if (rc != c.Z_OK) {
+        std.heap.page_allocator.destroy(d);
+        return .{ .err = "deflateInit2 failed" };
+    }
+    return .{ .ok = d };
+}
+
+~pub event deflate.push { d: *Deflater<!open>, chunk: []const u8 }
+| ok *Deflater<open!>
+| err []const u8
+
+~proc deflate.push|zig {
+    const a = std.heap.page_allocator;
+    d.strm.next_in = @constCast(chunk.ptr);
+    d.strm.avail_in = @intCast(chunk.len);
+    var buf: [16384]u8 = undefined;
+    while (d.strm.avail_in > 0) {
+        d.strm.next_out = &buf;
+        d.strm.avail_out = buf.len;
+        if (c.deflate(&d.strm, c.Z_NO_FLUSH) != c.Z_OK) {
+            return .{ .err = "deflate(Z_NO_FLUSH) failed" };
+        }
+        const produced = buf.len - d.strm.avail_out;
+        d.out.appendSlice(a, buf[0..produced]) catch {
+            return .{ .err = "Failed to grow output buffer" };
+        };
+    }
+    return .{ .ok = d };
+}
+
+~pub event deflate.finish { d: *Deflater<!open> }
+| done { d: *Deflater<done!>, data: []const u8 }
+| err []const u8
+
+~proc deflate.finish|zig {
+    const a = std.heap.page_allocator;
+    d.strm.avail_in = 0;
+    var buf: [16384]u8 = undefined;
+    while (true) {
+        d.strm.next_out = &buf;
+        d.strm.avail_out = buf.len;
+        const rc = c.deflate(&d.strm, c.Z_FINISH);
+        const produced = buf.len - d.strm.avail_out;
+        d.out.appendSlice(a, buf[0..produced]) catch {
+            return .{ .err = "Failed to grow output buffer" };
+        };
+        if (rc == c.Z_STREAM_END) break;
+        if (rc != c.Z_OK) {
+            return .{ .err = "deflate(Z_FINISH) failed" };
+        }
+    }
+    _ = c.deflateEnd(&d.strm);
+    // `data` is borrowed from the Deflater's buffer; it stays valid until
+    // `deflate.release`, which is the only event that accepts <!done>.
+    return .{ .done = .{ .d = d, .data = d.out.items } };
+}
+
+// Discharge the <done!> obligation: copy the compressed bytes out into
+// caller-owned memory, then free the Deflater and its internal buffer.
+// After this call `data` (borrowed) is gone but `bytes` (owned) is yours.
+~pub event deflate.release { d: *Deflater<!done>, data: []const u8 }
+| bytes []const u8
+
+~proc deflate.release|zig {
+    const a = std.heap.page_allocator;
+    // Fail loudly: OOM while copying already-allocated bytes is a broken
+    // invariant, not a recoverable condition. No silent empty-slice fallback.
+    const owned = a.dupe(u8, data) catch @panic("gzip: out of memory copying compressed bytes in deflate.release");
+    d.out.deinit(a);
+    std.heap.page_allocator.destroy(d);
+    return .{ .bytes = owned };
+}

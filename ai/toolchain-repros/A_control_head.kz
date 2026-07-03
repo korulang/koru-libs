@@ -1,0 +1,14 @@
+// FINDING A control — identical discharge idiom, but curl:get is the subflow
+// HEAD. This COMPILES. Only difference from A_nested_obligation_lost.kz: depth.
+~import koru/curl
+const std = @import("std");
+~pub event status-of { r: *koru/curl:Response<koru/curl:open> }
+| val i32
+~proc status-of|zig { return .{ .val = r.status }; }
+~pub event run { u: []const u8 }
+| ok i32
+| err koru/curl:Error
+~run = koru/curl:get(url: u)
+| ok resp => status-of(resp): v |> koru/curl:close(resp)
+    | val x => ok x
+| err e => err e

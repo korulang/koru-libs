@@ -147,3 +147,164 @@ Both buffers dropped here - no free() exists, no phantom obligation, no compiler
 
 All four commands run from the koru-libs repo root, using
 `/Users/larsde/src/koru/zig-out/bin/koruc`.
+
+---
+
+# gzip — quality pass: the streaming lift
+
+**Entry type**: quality pass on `@korulang/gzip`
+
+**Author**: Claude (Opus 4.8, lift-challenge contestant, session 2026-07-03)
+
+**Compiler**: `koruc 0.1.7` (koru @ `20479c55`)
+
+## The pillar gap this pass closes
+
+Before this pass, `gzip` shipped only a **one-shot** API (`compress` /
+`decompress` / `compress-bytes`): the whole payload in, the whole payload out.
+That API is honest but it exposes **zero** of Koru's type system — the entire
+zlib `z_stream` lifecycle (`deflateInit2` … `deflateEnd`) is opened and closed
+*atomically inside a single `~proc`*, so there is nothing to thread to the
+caller and nothing they can get wrong. Measured against the four pillars, the
+package failed two of them outright:
+
+- **Resource safety (pillar 4): absent.** No phantom obligations anywhere in
+  `index.kz` (0 obligation markers, vs. 30 in the `sqlite3` exemplar). Nothing
+  for the compiler to enforce.
+- **"Koru's type system has to do the lifting" (non-negotiable #2): failed.**
+  The one-shot wrapper would port unchanged to Python or Go. It is a binding,
+  not a lift.
+
+The gap is not "the one-shot API is wrong" — it is that gzip never offered the
+one operation where zlib genuinely needs a session type: **streaming**, where
+the `z_stream` lives *across* calls and a finished stream must never be touched
+again.
+
+## Before / after
+
+**Before** — `deflateInit2 … deflate … deflateEnd` all inside `~proc compress`.
+The caller holds no handle; the type system is idle.
+
+**After** — a session-typed streaming Deflater whose lifecycle the compiler
+threads:
+
+```
+deflate.init    mints  <open!>            (deflateInit2 ran; stream is live)
+deflate.push    needs  <!open>, re-mints  <open!>   (feed a chunk)
+deflate.finish  needs  <!open>, mints     <done!>   (deflateEnd ran)
+deflate.release needs  <!done>                      (frees the Deflater)
+```
+
+Because `finish` transitions the handle `<open!> → <done!>`, calling `push`
+(which requires `<!open>`) on a finished stream is a **build error**, not a
+use-after-free at runtime. That is the lift: a zlib footgun that only exists at
+runtime in C becomes uncompilable in Koru.
+
+## The quadrifecta self-audit
+
+- **DX**: The happy path is a linear pipeline that reads like the operation it
+  performs — `init → push → push → finish → release` — and the compiler names
+  the next legal move if you stray. A newcomer never learns `windowBits = 15+16`
+  (gzip vs. raw deflate), never sizes an output buffer, never calls
+  `deflateEnd`. `deflate.release` hands back caller-owned bytes so the borrow
+  from the internal buffer is resolved for you.
+
+- **Performance**: The lifting is entirely compile-time — the phantom states are
+  erased before codegen; the runtime is a thin pass over `deflate()` with a 16 KB
+  stack scratch buffer draining into one growing `ArrayList`. That is the same
+  shape you would hand-write against zlib; there is no per-call allocation of the
+  stream and no runtime obligation bookkeeping. **Unmeasured** against a C
+  baseline — I did not run a throughput benchmark, so I make no speed claim
+  beyond "no runtime tax was added over a hand-written streaming loop."
+
+- **Correctness**: A finished stream is uncompilable to reuse. Proof:
+  `tests/deflate_use_after_finish.kz` fails to compile with
+  `error[KORU030]: Phantom state mismatch: expected 'libs.gzip:open' but got
+  'libs.gzip:done!' for argument 'd'`. Round-trip correctness is shown by
+  `tests/stream_roundtrip.kz` (streaming-compress → decompress recovers the
+  original text) and `tests/oneshot_roundtrip.kz`.
+
+- **Resource safety**: The **ordering / use-after-free** dimension is enforced
+  by the compiler (the negative test above proves it bites). The **leak on a
+  forgotten `finish`/`release`** dimension is *not* statically enforced by the
+  current compiler — see Toolchain findings. I state that plainly rather than
+  claim a guarantee the toolchain does not yet deliver. The stream is small (one
+  `z_stream` + one buffer) and every internal error path calls `deflateEnd` /
+  frees before returning, so there is no leak on the *error* paths; the only
+  un-caught leak is the caller simply walking away from an `<open!>`/`<done!>`
+  handle.
+
+## What it explicitly doesn't do (yet)
+
+- **Streaming *decompress*** (an `Inflater` mirror of the Deflater). This pass
+  ships streaming compression only; decompression is still one-shot. The
+  `Inflater` is the obvious next quality pass and would reuse this exact
+  session-type shape.
+- **`gzip.release` does not tighten the `data` borrow.** `finish` returns
+  `data` borrowed from the Deflater's buffer, valid until `release`. That borrow
+  is not phantom-tracked (the `[]const u8` carries no obligation), so using
+  `data` *after* `release` is not a compile error. Tracking slice borrows is a
+  language-level feature, out of scope here.
+- **README not rewritten.** `README.md` still shows the pre-migration import
+  form (`~import "$koru/gzip"`, dotted `~koru.gzip:`). This pass migrated
+  `index.kz` procs to the required `|zig` host tag and added the streaming API +
+  tests; a full README refresh is a separate documentation pass.
+
+## Toolchain findings
+
+1. **The whole worktree predates the `~proc name|zig` host-tag migration
+   (KORU110).** Every package here (`curl`, `docker`, `gzip`, `pq`, `sqlite3`,
+   `vaxis`) uses bare `~proc name { … }`, which the current compiler rejects:
+   `error[KORU110]: event 'open' is called but its ~proc declaration has no
+   |variant tag`. The exemplar's own gate-2 command (`koruc run
+   sqlite3/tests/basic.kz`) does **not** produce `Opened and closed!` against
+   this compiler for that reason — it errors on KORU110. I migrated `gzip` (my
+   target) to `|zig`; the other packages remain on the old form. Repro:
+   `koruc run sqlite3/tests/basic.kz`.
+
+2. **"Forgot to discharge" is not caught for the common case — the
+   resource-safety pillar is softer than the catalog implies.** The phantom
+   checker does *not* reject a top-level flow that mints an obligation and simply
+   never discharges it, *when a discharge event exists*. Minimal repro (built
+   clean, no error):
+
+   ```koru
+   ~event init {} | ok *Stream<open!>
+   ~proc init|zig { … return .{ .ok = s }; }
+   ~event finish { s: *Stream<!open> }        // a discharge event DOES exist
+   ~proc finish|zig { … }
+   ~init() | ok s |> std/io:print.ln("forgot finish")   // <open!> dropped — COMPILES
+   ```
+
+   It *is* caught only when **no** event anywhere accepts the discharge
+   (`KORU030: … was not discharged. No event accepts <!x>`), or via the
+   nested-secondary-obligation and loop back-edge paths. This matches the
+   red-pin design gaps already in the koru suite
+   (`335_040_subflow_drops_obligation_on_input`,
+   `900_.../2104_05_commit_without_close`). Consequence for this challenge:
+   negative tests should target **use-after-free / wrong-state** (which *is*
+   enforced), not "forgot close" (which is not) — otherwise the negative test
+   silently compiles and the "obligations bite" claim is hollow. My negative
+   test targets use-after-free accordingly.
+
+3. **Error message quality is good where it fires.** The wrong-state rejection
+   is a clean, koru-level diagnostic naming the expected/actual phantom state
+   and the argument — no raw Zig leaked through. No complaint there.
+
+## Proof of life
+
+```
+$ koruc --check gzip/index.kz
+✓ Shape checking passed
+
+$ koruc run gzip/tests/stream_roundtrip.kz
+The quick brown fox. The quick brown fox.
+
+$ koruc run gzip/tests/oneshot_roundtrip.kz
+hello hello hello world world world
+
+$ koruc build gzip/tests/deflate_use_after_finish.kz
+error[KORU030]: Phantom state mismatch: expected 'libs.gzip:open' but got 'libs.gzip:done!' for argument 'd'
+error[KORU030]: Resource 'd' <done!> was not discharged. Call: libs.gzip:deflate.release
+✗ Backend execution failed          # no executable built — the misuse is uncompilable
+```

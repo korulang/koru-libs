@@ -1,0 +1,17 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// Open a parser and immediately discard it. The `open!` obligation is never
+// discharged (no `begin`, no `close`). Under default settings auto-discharge
+// inserts `close` for you; disable that and the leak is a build error:
+//
+//   koruc run yaml/tests/negative/forgotten_close.kz --auto-discharge=disable
+//   -> error[KORU030]: Resource '_' <open!> was not discharged.
+//                      Call one of: libs.yaml:begin, libs.yaml:close, ...
+
+~import libs/yaml
+
+~libs/yaml:open(input: "x: 1")
+| ok _ |> _
+| err _ |> _
+
+pub fn main() void {}

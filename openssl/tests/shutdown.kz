@@ -1,0 +1,10 @@
+// Clean shutdown demonstration: connect (verified) -> shutdown (close_notify)
+// -> close. `shutdown` transitions the connection from <open> to <closing>;
+// the free obligation rides along and is discharged by `close`.
+~import koru/openssl
+~import std/io
+~koru/openssl:connect(host: "example.com", port: 443)
+| ok conn |> koru/openssl:shutdown(conn)
+    | ok s |> koru/openssl:close(s) |> std/io:print.ln("Clean shutdown complete")
+    | err e |> koru/openssl:close(e.conn) |> std/io:print.ln("Shutdown error, closed anyway")
+| err e |> std/io:print.ln("Connect error: {{ e.msg:s }}")

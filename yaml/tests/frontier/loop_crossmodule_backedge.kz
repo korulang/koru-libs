@@ -1,0 +1,45 @@
+// FRONTIER REPRO — currently RED. Pins a Koru COMPILER bug, not a library bug.
+//
+// A phantom obligation minted in an imported module (`Cursor<live!>` from
+// libs/yaml) is rejected when it flows through a `#loop` / `@loop` BACK-EDGE,
+// with a namespace-qualification mismatch:
+//
+//   error[KORU030]: Phantom state mismatch: expected 'index:live'
+//                   but got 'libs.yaml:live!' for argument 'c2'
+//
+// `index:` is libs/yaml/index.kz's own module name; `libs.yaml:` is the import
+// alias the obligation is minted under. Straight-line threading of the SAME
+// obligation normalizes these correctly (yaml/tests/walk.kz and scalars.kz walk
+// the cursor through repeated `advance` calls and pass). Only the back-edge
+// re-resolution drops the import-alias normalization.
+//
+// This is NOT "held-across" specific: here `c2` is the loop's own threaded
+// variable — consumed by `advance` and freshly re-minted every turn — not a
+// value carried across an unrelated fold. The mismatch is purely: obligation
+// minted under an import alias + `@loop` edge. In a SAME-FILE loop the two
+// module names coincide, so the mismatch cannot arise (cf. koru
+// tests/regression/.../330_085_obligation_held_across_back_edge, which is
+// same-file and green).
+//
+// Reproduce:
+//   koruc run yaml/tests/frontier/loop_crossmodule_backedge.kz
+//   -> error[KORU030]: Phantom state mismatch: expected 'index:live'
+//                      but got 'libs.yaml:live!' for argument 'c2'
+//
+// When fixed upstream, this goes green and the unbounded streaming walk (see the
+// commented loop in index.kz's header) becomes the headline example.
+
+~import libs/yaml
+~import std/io
+
+~libs/yaml:open(input: "a: 1")
+| ok p |> libs/yaml:begin(parser: p)
+    | at c |> #loop libs/yaml:advance(cur: c)
+        | at c2 |> @loop(c2)
+        | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("done")
+        | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error")
+    | eof pp0 |> libs/yaml:close(parser: pp0) |> std/io:print.ln("empty")
+    | err ep0 |> libs/yaml:close(parser: ep0) |> std/io:print.ln("parse error at start")
+| err e |> std/io:print.ln("open error: {{ e:s }}")
+
+pub fn main() void {}

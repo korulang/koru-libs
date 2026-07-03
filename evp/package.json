@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/evp",
+  "version": "0.0.1",
+  "description": "OpenSSL message digests for Koru — leak-proof SHA-256/512/1 and MD5 with phantom obligations",
+  "keywords": ["koru", "korulang", "openssl", "libcrypto", "sha256", "sha512", "md5", "hash", "digest", "crypto", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "openssl"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["crypto"]
+    }
+  }
+}
