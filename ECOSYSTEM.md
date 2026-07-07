@@ -18,7 +18,73 @@ This document outlines foundational infrastructure packages needed to make Koru 
 
 ---
 
+## Orisha demand triage — the shelf a real webserver actually needs
+
+> Added 2026-07-07 on an `/arbiters` walk. Orisha (`~/src/orisha`) is the
+> Koru-native HTTP framework; its `ROADMAP.md` names the libraries a production
+> webserver leans on (Phases 3–7). This section reads that demand back onto the
+> catalog so the next `LIFT_CHALLENGE` replay has a **real target-set to diverge
+> across**. Orisha is a *demand signal that shapes the shelf* — NOT a
+> per-contestant goal. The challenge stays divergent; variance is still the
+> metric. Contestants still self-pick; this just tells them where real-app
+> pressure is highest.
+
+| Orisha need (roadmap phase) | C library | Catalog status | Verdict |
+|---|---|---|---|
+| Compression (P3 middleware) | zlib | ✅ `gzip` | met |
+| Embedded DB / migrations (P4) | sqlite3 | ✅ `sqlite3` | met |
+| PostgreSQL + connection pooling (P4) | libpq | ✅ `pq` | met |
+| Regex route paths `/posts/[0-9]+` (P2) | PCRE2 | ✅ `pcre2` | met |
+| Cookie/session signing, ETags (P4/P6) | OpenSSL EVP | ✅ `evp` | met |
+| HTTPS client — upstream/webhook calls | OpenSSL / libcurl | ✅ `openssl` + `curl` | met |
+| **JSON body parse + serialize (P6)** | yyjson / cJSON | ❌ **MISSING** | 🔥🔥 **the biggest hole** |
+| **JWT sessions / auth (P4)** | libjwt | ❌ missing | 🔥 new lift |
+| **Redis — sessions / cache / rate-limit (P4)** | hiredis | ❌ missing | 🔥 new lift |
+| **Password hashing (P3 auth)** | libargon2 / bcrypt | ❌ missing | 🔥 security, new lift |
+| **WebSocket (P5 real-time)** | libwebsockets | ❌ missing | 🚧 new lift |
+| **Structured logging (P3)** | spdlog | ❌ missing | 🚧 new lift |
+| **Server-side TLS — accept + cert/key** | OpenSSL | ⚠️ `openssl` is *client* v0 | 🔥 **depth pass** |
+| HTTP date / cookie expiry (P4/P6) | cctz / tz | ❌ missing | 🚧 new lift |
+
+**The headline new lift: JSON.** A webserver framework that cannot parse a JSON
+body or serialize a JSON response is not usable, and the catalog has *no* JSON
+lift at all (the JSON5/JSONC entry below never shipped). Target: **yyjson**
+(fastest proven C JSON lib) or cJSON. The Koru advantage is a parse tree whose
+node handles are phantom-scoped borrows (no use-after-free of a freed value),
+whose lifecycle (`yyjson_doc_free`) is an unleakable obligation, and whose
+expected shape can be validated at the boundary. Single highest-value new lift
+for real-app readiness.
+
+**The headline depth pass: server TLS.** `openssl` is client-v0 only; a webserver
+*terminates* TLS. `SSL_CTX` cert/key loading + the `accept`-side handshake is the
+worst pillar gap on an existing package, measured against real-app demand.
+
+*(Also shipped and catalog-complete, outside Orisha's demand surface: `ai`
+(LLM text generation), `docker` (typed container DSL), `vaxis` (terminal UI —
+under-tested, a standing quality-pass candidate).)*
+
+---
+
 ## 1. Data Formats
+
+### JSON (parse + serialize)
+**Ecosystem counterparts:** `JSON.parse`/`stringify` (Node), `json` (Python), encoding/json (Go)
+**Use case:** The lingua franca of HTTP — request bodies, API responses, config.
+A webserver without it is a toy. (See the Orisha demand triage above.)
+**C/Zig libraries:**
+- yyjson (C) - the fastest conformant JSON library, single-file, permissive license
+- cJSON (C) - the ubiquitous minimal option
+- Zig std: `std.json` (usable, but the brief wants a proven C lib contributing)
+
+**Koru advantage:** Parse-tree node handles are phantom-scoped borrows
+(use-after-free of a value read from a freed doc is uncompilable); the
+`yyjson_doc` lifecycle is an unleakable free-or-fail obligation; the expected
+document shape can be validated at the type boundary instead of at runtime.
+
+**Priority:** 🔥🔥 Critical (real-app blocker — see Orisha triage)
+**Status:** 📋 Planned (open shelf space — no lift yet)
+
+---
 
 ### CSV/TSV Processing
 **Ecosystem counterparts:** pandas (Python), csv-parse (Node), csvlib (Go)
@@ -187,7 +253,7 @@ Koru's built-in `std/regex` (compile-time DFA) with a runtime PCRE engine.
 **Koru advantage:** Phantom obligation types (never forget to close connection), type-safe request/response
 
 **Priority:** 🔥 Critical
-**Status:** 🚧 In Progress (currently implementing)
+**Status:** ✅ Available (@korulang/curl — HTTP client, shipped + quality pass). See `curl/README.md`.
 
 ---
 
@@ -232,7 +298,7 @@ Koru's built-in `std/regex` (compile-time DFA) with a runtime PCRE engine.
 **Koru advantage:** Phantom `hashing` obligation makes a forgotten `EVP_MD_CTX_free` uncompilable; algorithm chosen at compile time (no runtime "unknown digest")
 
 **Priority:** ✅ Available
-**Status:** ✅ **Done (v0: message digests)** — @korulang/openssl wraps OpenSSL EVP (SHA-256/512/1, MD5). Next depth: HMAC, then ciphers.
+**Status:** ✅ **Done (v0: message digests)** — @korulang/evp wraps OpenSSL EVP (SHA-256/512/1, MD5). Next depth: HMAC, then ciphers.
 
 ---
 
@@ -449,7 +515,7 @@ obligation, and the `ERR_get_error()` queue becomes honest effect branches.
 - Zig std: Has some PG protocol support
 
 **Priority:** 🚧 High
-**Status:** 📋 Planned (wrap libpq)
+**Status:** ✅ Available (@korulang/pq — libpq with phantom connection/result obligations, shipped). See `pq/README.md`.
 
 ---
 
@@ -683,4 +749,4 @@ C libraries we wrap may have their own licenses - always check compatibility.
 
 ---
 
-**Last updated:** 2025-01-16
+**Last updated:** 2026-07-07 (Orisha demand triage + catalog status true-up)

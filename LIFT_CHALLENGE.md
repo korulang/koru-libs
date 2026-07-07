@@ -50,9 +50,16 @@ that trade:
    The lifting happens at compile time, never as a runtime tax.
 3. **Correctness** — wrong usage is a *build error*, not a runtime
    surprise.
-4. **Resource safety** — leaks and use-after-free are uncompilable.
+4. **Resource safety** — leaks, use-after-free, and double-free are
+   uncompilable, and a resource cannot be *prematurely finalized*: an
+   obligation must be dischargeable only from a state that real work
+   reaches, never straight from `init`. (This is the RAII/Drop blind spot —
+   cleanup is guaranteed to *run*, but the resource is never forced to be
+   *used*; `init → finish` with nothing in between must NOT compile.)
    Phantom obligations mean the compiler *will not let you forget* to
-   close/finalize/free.
+   close/finalize/free — nor let you finalize something you never used. The
+   asymmetric-barrier pattern (`gzip`'s `fed` gate: `finish` requires a
+   state only `push` can reach) is the house exemplar.
 
 Judge your own work as a demanding developer who knows the raw C original
 intimately and will notice instantly if you wasted their time or cost them
@@ -140,9 +147,9 @@ documenting: the pillar gap closed, the before/after, and the proof.
    (Verified example: `koruc run sqlite3/tests/basic.kz` →
    `Opened and closed!`)
 3. At least one **negative test**: a misuse (forgotten close, wrong-type
-   bind, use-after-free) that FAILS to compile, proving the phantom
-   obligations actually bite. An uncompilable footgun you can't
-   demonstrate is a claim, not a lift.
+   bind, use-after-free, or a resource finalized before it was ever used)
+   that FAILS to compile, proving the phantom obligations actually bite. An
+   uncompilable footgun you can't demonstrate is a claim, not a lift.
 4. No silent fallbacks anywhere — failures fail loudly with the actual
    error.
 5. The writeup is filed (template below), including the quadrifecta
