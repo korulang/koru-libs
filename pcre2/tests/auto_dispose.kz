@@ -1,0 +1,24 @@
+// Auto-dispose test — the SAME flow as basic.kz, but with NO explicit free
+// anywhere. The compiled pattern still carries the `compiled!` obligation;
+// because `find.all` only BORROWS it, the caller still owes exactly one free
+// after the loop — and the compiler's auto-discharge pass inserts it (the
+// single legal disposer, libs/pcre2:free) at the end of every branch. The leak
+// is not tolerated; it is written for you.
+//
+// Contrast tests/basic.kz, which spells the `free` out by hand. Both compile
+// and run identically — this one proves the compiler fills the discharge in.
+//
+// EXPECTED output:
+//   alice @ example
+//   bob @ work
+//   done
+
+~import libs/pcre2
+~import std/io
+
+~libs/pcre2:compile(pattern: "(\\w+)@(\\w+)")
+| ok re |> libs/pcre2:find.all(re, subject: "alice@example and bob@work")
+    ! match m |> libs/pcre2:group.text(m, index: 1): user |> libs/pcre2:group.text(m, index: 2): host |> std/io:print.ln("{{ user:s }} @ {{ host:s }}")
+    | done |> std/io:print.ln("done")
+    | err e |> std/io:print.ln("match error: {{ e.msg:s }}")
+| err e |> std/io:print.ln("bad pattern: {{ e.msg:s }}")

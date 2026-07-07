@@ -77,7 +77,12 @@ Five entry points, each impossible to misuse: `compile`, `find.all`,
 
 - **Resource safety**: The `compiled` obligation is enforced end-to-end —
   `tests/negative_forgotten_free.kz` run with `--auto-discharge=disable` fails
-  with `error[KORU030]: Resource '_' <compiled!> was not discharged`. The
+  with `error[KORU030]: Resource '_' <compiled!> was not discharged`. Because
+  `find.all` only *borrows* the pattern, the obligation lives with the caller
+  across the whole loop; you can discharge it by hand (`tests/basic.kz` writes
+  `free` explicitly) or let the compiler insert the single legal disposer at
+  every branch exit (`tests/auto_dispose.kz` and `examples/extract_emails.kz`
+  carry no `free` at all — auto-discharge fills it in). The
   per-match borrow `*Match<match!>` (index.kz:131) is proven scoped by the
   auto-inserted `unmatch` discharge (index.kz:187): capture it past the `! match`
   body and the phantom checker rejects the build (KORU030), the same wall
