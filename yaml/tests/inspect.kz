@@ -8,10 +8,9 @@
 
 ~libs/yaml:open(input: "hello")
 | ok p |> libs/yaml:begin(parser: p)
-    | at c |> libs/yaml:kind(cur: c)
-        | k kk |> libs/yaml:scalar(kk.cur)
-            | value v |> std/io:print.ln("scalar {{ kk.name:s }} = {{ v.text:s }}") |> libs/yaml:finish(v.cur)
-            | other o |> std/io:print.ln("kind = {{ kk.name:s }} (non-scalar)") |> libs/yaml:finish(cur: o)
+    | at c |> libs/yaml:kind(cur: c): name |> libs/yaml:scalar(cur: c)
+        | value v |> std/io:print.ln("scalar {{ name:s }} = {{ v:s }}") |> libs/yaml:finish(cur: c)
+        | other |> std/io:print.ln("kind = {{ name:s }} (non-scalar)") |> libs/yaml:finish(cur: c)
     | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty stream")
     | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error")
 | err e |> std/io:print.ln("open error: {{ e:s }}")

@@ -30,10 +30,26 @@
 //
 //   ~libs/yaml:open(input: yaml_text)
 //   | ok p |> libs/yaml:begin(parser: p)
-//       | at c |> libs/yaml:kind(cur: c) | k kk |> ...inspect... |> libs/yaml:finish(kk.cur)
+//       | at c |> libs/yaml:kind(cur: c): k |> ...inspect c... |> libs/yaml:finish(cur: c)
 //       | eof pp |> libs/yaml:close(parser: pp)
 //       | err ep |> libs/yaml:close(parser: ep)
 //   | err e |> ...
+//
+// ─────────────────────────────────────────────────────────────────────────
+// ⚠ DESIGN-DEBT / REVISIT (grep: DESIGN-DEBT yaml): this library is a bit
+// wonky and does not yet play fully to Koru's strengths.
+//   * FIXED: the read-only accessors (`kind`, `scalar`, `error-text`) BORROW
+//     the handle (`<live>` / `<open>`) instead of consuming + re-minting it —
+//     the clean accessor form (cf. pcre2 `group.text { m: *Match<match> }`).
+//   * STILL WONKY: `begin`/`advance` return a MULTI-branch shape
+//     (`at` cursor | `eof`/`err` parser), so they re-mint the parser
+//     obligation on the non-cursor branches. There IS a real reason for that
+//     (each branch needs its own single obligation) — it is not ceremony.
+//   * THE FIX (deferred): add an OPTIONAL effect-branch parse form — a
+//     library-driven `walk` yielding each event via `! event e` (modelled on
+//     pcre2 `find.all ! match` / sqlite3 `! row`), keeping the manual
+//     primitives for fine control. That removes the re-minting entirely.
+// ─────────────────────────────────────────────────────────────────────────
 
 ~import std/build
 ~import std/deps
@@ -118,13 +134,12 @@ pub const Cursor = struct {
     parser.allocator.destroy(parser);
 }
 
-// The text of the last parse error on a parser. Threads `open!` so you can read
-// the message and then `close`.
-~pub event error-text { parser: *Parser<!open> }
-| e { parser: *Parser<open!>, text: []const u8 }
+// The text of the last parse error on a parser. BORROWS the parser (`<open>`)
+// so you can read the message and then still `close` it — no threading.
+~pub event error-text { parser: *Parser<open> } -> []const u8
 
 ~proc error-text|zig {
-    return .{ .e = .{ .parser = parser, .text = parser.last_error } };
+    return parser.last_error;
 }
 
 // ============================================================================
@@ -209,8 +224,7 @@ pub const Cursor = struct {
 // ============================================================================
 
 // The human-readable kind of the current event, as a stable static string.
-~pub event kind { cur: *Cursor<!live> }
-| k { cur: *Cursor<live!>, name: []const u8 }
+~pub event kind { cur: *Cursor<live> } -> []const u8
 
 ~proc kind|zig {
     const t = cur.event.type;
@@ -226,25 +240,25 @@ pub const Cursor = struct {
         else if (t == c.YAML_MAPPING_START_EVENT) "mapping-start"
         else if (t == c.YAML_MAPPING_END_EVENT) "mapping-end"
         else "other";
-    return .{ .k = .{ .cur = cur, .name = name } };
+    return name;
 }
 
-// The scalar text of the current event. On a non-scalar event, `other` threads
-// the obligation back with no value. The returned slice borrows the event's
-// internal buffer and is valid only until the next `advance` / `finish` — read
-// it before advancing.
-~pub event scalar { cur: *Cursor<!live> }
-| value { cur: *Cursor<live!>, text: []const u8 }
-| other *Cursor<live!>
+// The scalar text of the current event. BORROWS the cursor (`<live>`); on a
+// non-scalar event takes the `other` branch with no value. The returned slice
+// borrows the event's internal buffer and is valid only until the next
+// `advance` / `finish` — read it before advancing (the cursor stays live).
+~pub event scalar { cur: *Cursor<live> }
+| value []const u8
+| other
 
 ~proc scalar|zig {
     if (cur.event.type != c.YAML_SCALAR_EVENT) {
-        return .{ .other = cur };
+        return .{ .other = .{} };
     }
     const ptr = cur.event.data.scalar.value;
     const len = cur.event.data.scalar.length;
     const text: []const u8 = if (ptr == null) "" else ptr[0..len];
-    return .{ .value = .{ .cur = cur, .text = text } };
+    return .{ .value = text };
 }
 
 // ============================================================================
