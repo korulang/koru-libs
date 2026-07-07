@@ -30,7 +30,7 @@
 //
 //   ~libs/yaml:open(input: yaml_text)
 //   | ok p |> libs/yaml:begin(parser: p)
-//       | at c |> libs/yaml:kind(c) | k kk |> ...inspect... |> libs/yaml:finish(kk.cur)
+//       | at c |> libs/yaml:kind(cur: c) | k kk |> ...inspect... |> libs/yaml:finish(kk.cur)
 //       | eof pp |> libs/yaml:close(parser: pp)
 //       | err ep |> libs/yaml:close(parser: ep)
 //   | err e |> ...

@@ -24,7 +24,7 @@
 ~libs/pcre2:compile(pattern: "\\d+")
 | ok re |> libs/pcre2:free(re) |> libs/pcre2:find.all(re, subject: "123")
     ! match _ |> _
-    | done re2 |> libs/pcre2:free(re2)
+    | done re2 |> libs/pcre2:free(re: re2)
     | err e |> libs/pcre2:free(e.re)
 | err e |> std/io:print.ln("bad pattern: {{ e.msg:s }}")
 

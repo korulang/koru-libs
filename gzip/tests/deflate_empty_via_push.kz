@@ -18,7 +18,7 @@
 
 ~libs/gzip:deflate.init(level: .fast)
 | ok d |> libs/gzip:deflate.push(d, chunk: "")
-    | ok d1 |> libs/gzip:deflate.finish(d1)
+    | ok d1 |> libs/gzip:deflate.finish(d: d1)
         | done r |> libs/gzip:deflate.release(r.d, r.data)
             | bytes gz |> libs/gzip:decompress(data: gz, allocator: std.heap.page_allocator)
                 | decompressed orig |> std/io:print.ln(orig)

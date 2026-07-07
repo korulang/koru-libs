@@ -5,6 +5,6 @@
 ~import std/io
 ~koru/openssl:connect(host: "example.com", port: 443)
 | ok conn |> koru/openssl:shutdown(conn)
-    | ok s |> koru/openssl:close(s) |> std/io:print.ln("Clean shutdown complete")
+    | ok s |> koru/openssl:close(conn: s) |> std/io:print.ln("Clean shutdown complete")
     | err e |> koru/openssl:close(e.conn) |> std/io:print.ln("Shutdown error, closed anyway")
 | err e |> std/io:print.ln("Connect error: {{ e.msg:s }}")

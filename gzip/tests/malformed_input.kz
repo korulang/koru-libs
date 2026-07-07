@@ -10,7 +10,7 @@ const std = @import("std");
 
 const garbage: []const u8 = "this is definitely not gzip data, just plain text bytes";
 
-~libs/gzip:decompress(garbage, allocator: std.heap.page_allocator)
+~libs/gzip:decompress(data: garbage, allocator: std.heap.page_allocator)
 | decompressed _ |> unexpected-success()
 | error e |> expected-error(msg: e)
 

@@ -13,20 +13,20 @@ const original: []const u8 =
     "Repeated text compresses well. Repeated text compresses well. " ++
     "Repeated text compresses well. Repeated text compresses well.";
 
-~libs/gzip:compress(original, level: .fast, allocator: std.heap.page_allocator)
+~libs/gzip:compress(data: original, level: .fast, allocator: std.heap.page_allocator)
 | compressed c |> libs/gzip:decompress(c.data, allocator: std.heap.page_allocator)
     | decompressed d |> check(label: "fast", roundtripped: d)
     | error e |> fail(msg: e)
 | error e |> fail(msg: e)
 
-~libs/gzip:compress(original, level: .best, allocator: std.heap.page_allocator)
+~libs/gzip:compress(data: original, level: .best, allocator: std.heap.page_allocator)
 | compressed c |> libs/gzip:decompress(c.data, allocator: std.heap.page_allocator)
     | decompressed d |> check(label: "best", roundtripped: d)
     | error e |> fail(msg: e)
 | error e |> fail(msg: e)
 
-~libs/gzip:compress-bytes(original, allocator: std.heap.page_allocator)
-| ok bytes |> libs/gzip:decompress(bytes, allocator: std.heap.page_allocator)
+~libs/gzip:compress-bytes(data: original, allocator: std.heap.page_allocator)
+| ok bytes |> libs/gzip:decompress(data: bytes, allocator: std.heap.page_allocator)
     | decompressed d |> check(label: "compress-bytes", roundtripped: d)
     | error e |> fail(msg: e)
 | error e |> fail(msg: e)

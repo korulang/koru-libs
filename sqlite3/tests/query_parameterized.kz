@@ -8,11 +8,11 @@
 ~import std/io
 
 ~libs/sqlite3:open(path: ":memory:")
-| db d |> libs/sqlite3:exec(d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok d2 |> libs/sqlite3:exec(d2, sql: "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
-        | ok d3 |> libs/sqlite3:query.literal(d3, sql: "SELECT id FROM users ORDER BY id")
-            ! row r |> libs/sqlite3:col.int(r, index: 0): id |> std/io:print.ln("id={{ id:d }}")
-            | done d4 |> libs/sqlite3:close(d4) |> std/io:print.ln("done iterating")
+| db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
+    | ok d2 |> libs/sqlite3:exec(conn: d2, sql: "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+        | ok d3 |> libs/sqlite3:query.literal(conn: d3, sql: "SELECT id FROM users ORDER BY id")
+            ! row r |> libs/sqlite3:col.int(stmt: r, index: 0): id |> std/io:print.ln("id={{ id:d }}")
+            | done d4 |> libs/sqlite3:close(conn: d4) |> std/io:print.ln("done iterating")
             | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("query error")
         | err e3 |> libs/sqlite3:close(e3.conn) |> std/io:print.ln("Insert error")
     | err e2 |> libs/sqlite3:close(e2.conn) |> std/io:print.ln("Create error")

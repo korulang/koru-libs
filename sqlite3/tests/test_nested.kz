@@ -4,5 +4,5 @@
 ~import std/io
 
 ~libs/sqlite3:open(path: ":memory:")
-| db d |> libs/sqlite3:close(d) |> std/io:print.ln("Closed!")
+| db d |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Closed!")
 | err _ |> std/io:print.ln("Open error")

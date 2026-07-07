@@ -15,7 +15,7 @@
 
 ~koru/openssl:connect(host: "example.com", port: 443)
 | ok conn |> koru/openssl:shutdown(conn)
-    | ok s |> koru/openssl:write(s, data: "this must not compile")
+    | ok s |> koru/openssl:write(conn: s, data: "this must not compile")
         | ok w |> koru/openssl:close(w.conn)
         | err e |> koru/openssl:close(e.conn)
     | err e |> koru/openssl:close(e.conn)
