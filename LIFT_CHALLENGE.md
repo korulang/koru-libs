@@ -81,7 +81,11 @@ a single pillar.
    language does — never docs, never analogy, never memory. Before using
    any construct, find it in a passing test. The exemplar package
    (`sqlite3/index.kz`) shows the house style for phantom obligations and
-   effect-branch cursors — read it before writing your own.
+   effect-branch cursors — read it before writing your own. And
+   `LIFT_IDIOMS.md` (generated) is the catalog's **footgun gallery**: every
+   uncompilable misuse across the shelf, verbatim, with its real `koruc build`
+   rejection — read it to see the resource-safety idioms your own negative
+   test should join.
 
 ## If the toolchain rejects your clean code — STOP, report, never route
 
@@ -150,6 +154,14 @@ documenting: the pillar gap closed, the before/after, and the proof.
    bind, use-after-free, or a resource finalized before it was ever used)
    that FAILS to compile, proving the phantom obligations actually bite. An
    uncompilable footgun you can't demonstrate is a claim, not a lift.
+   **Prove it through the FULL pipeline** — `koruc build` (or `run`), never
+   `--check`: phantom-obligation validation fires in the emit pass, so
+   `--check` prints "Shape checking passed" on a footgun a real build rejects.
+   A *leak* (forgotten discharge) compiles clean by default because
+   auto-discharge inserts the disposer — demonstrate it with
+   `--auto-discharge=disable`. Then run `node scripts/generate-lift-idioms.mjs`
+   so your negative test joins `LIFT_IDIOMS.md` (the generator also fails loudly
+   if any footgun in the catalog stops biting).
 4. No silent fallbacks anywhere — failures fail loudly with the actual
    error.
 5. The writeup is filed (template below), including the quadrifecta
@@ -204,6 +216,7 @@ with the minimal repro. "None" is a fine answer; a hidden one is not.>
 | The language's law | `/Users/larsde/src/koru/tests/` (passing tests only) |
 | Compiler-repo standards | `/Users/larsde/src/koru/CLAUDE.md` — read first |
 | The exemplar lift | `sqlite3/index.kz` + `sqlite3/tests/` |
+| The footgun gallery | `LIFT_IDIOMS.md` — every uncompilable misuse in the catalog + its real rejection (generated: `node scripts/generate-lift-idioms.mjs`) |
 | Compile-time DSL validation precedent | `/Users/larsde/src/koru/koru_std/regex.kz` (analyze + compile-error pattern) |
 | The triage shelf | `ECOSYSTEM.md` |
 | Package conventions | any shipped package's `package.json` |
