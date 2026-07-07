@@ -12,8 +12,6 @@
 ~libs/pcre2:compile(pattern: "(\\w+)@(\\w+)")
 | ok re |> libs/pcre2:find.all(re, subject: "alice@example and bob@work")
     ! match m |> libs/pcre2:group.text(m, index: 1): user |> libs/pcre2:group.text(m, index: 2): host |> std/io:print.ln("{{ user:s }} @ {{ host:s }}")
-    | done re2 |> libs/pcre2:free(re: re2) |> std/io:print.ln("done")
-    | err e |> libs/pcre2:free(e.re) |> std/io:print.ln("match error: {{ e.msg:s }}")
+    | done |> libs/pcre2:free(re) |> std/io:print.ln("done")
+    | err e |> libs/pcre2:free(re) |> std/io:print.ln("match error: {{ e.msg:s }}")
 | err e |> std/io:print.ln("bad pattern: {{ e.msg:s }}")
-
-pub fn main() void {}

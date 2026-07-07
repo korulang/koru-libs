@@ -11,5 +11,3 @@
     | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty stream")
     | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error")
 | err e |> std/io:print.ln("open error: {{ e:s }}")
-
-pub fn main() void {}

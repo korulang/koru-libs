@@ -16,16 +16,16 @@
 ~libs/pcre2:compile(pattern: "(\\d+)")
 | ok re |> libs/pcre2:find.all(re, subject: "2015-12-25")
     ! match m |> libs/pcre2:group.count(m): n |> libs/pcre2:match.start(m): at |> libs/pcre2:group.text(m, index: 1): w |> std/io:print.ln("groups={{ n:d }} start={{ at:d }} word={{ w:s }}")
-    | done re2 |> libs/pcre2:free(re: re2) |> std/io:print.ln("scanned")
-    | err e |> libs/pcre2:free(e.re) |> std/io:print.ln("err: {{ e.msg:s }}")
+    | done |> libs/pcre2:free(re) |> std/io:print.ln("scanned")
+    | err e |> libs/pcre2:free(re) |> std/io:print.ln("err: {{ e.msg:s }}")
 | err e |> std/io:print.ln("compile err: {{ e.msg:s }}")
 
 // (2) No match: the ! match body never fires, we go straight to done.
 ~libs/pcre2:compile(pattern: "zzz")
 | ok re |> libs/pcre2:find.all(re, subject: "no digits here")
     ! match _ |> std/io:print.ln("SHOULD NOT FIRE")
-    | done re2 |> libs/pcre2:free(re: re2) |> std/io:print.ln("nomatch-ok")
-    | err e |> libs/pcre2:free(e.re) |> std/io:print.ln("err: {{ e.msg:s }}")
+    | done |> libs/pcre2:free(re) |> std/io:print.ln("nomatch-ok")
+    | err e |> libs/pcre2:free(re) |> std/io:print.ln("err: {{ e.msg:s }}")
 | err e |> std/io:print.ln("compile err: {{ e.msg:s }}")
 
 // (3) Uncompilable pattern: unmatched '(' — the err branch fires loudly with
@@ -33,5 +33,3 @@
 ~libs/pcre2:compile(pattern: "(")
 | ok re |> libs/pcre2:free(re) |> std/io:print.ln("SHOULD NOT COMPILE")
 | err e |> std/io:print.ln("bad pattern at offset {{ e.offset:d }}")
-
-pub fn main() void {}

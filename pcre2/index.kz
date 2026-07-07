@@ -27,8 +27,8 @@
 //           libs/pcre2:group.text(m: m, index: 1): user |>
 //           libs/pcre2:group.text(m: m, index: 2): host |>
 //           std/io:print.ln("{{ user:s }} at {{ host:s }}")
-//       | done re2 |> libs/pcre2:free(re: re2)
-//       | err e |> libs/pcre2:free(re: e.re)
+//       | done |> libs/pcre2:free(re)
+//       | err e |> libs/pcre2:free(re)
 //   | err e |> std/io:print.ln("bad pattern: {{ e.msg:s }}")
 
 ~import std/build
@@ -124,13 +124,14 @@ pub const Match = struct {
 // auto-releases at the body boundary (see `unmatch`). The match-data
 // buffer is created once and freed exactly once by this proc — the caller
 // never holds it and therefore cannot leak it (safe by construction, proven
-// at compile time). The `compiled` obligation is threaded straight back out
-// on `| done`, so the caller still owes exactly one `free`.
+// at compile time). The `compiled` obligation is BORROWED, not threaded —
+// `find.all` only reads the pattern, never frees it, so the caller keeps the
+// live obligation across the whole call and still owes exactly one `free`.
 
-~pub event find.all { re: *Regex<!compiled>, subject: []const u8 }
+~pub event find.all { re: *Regex<compiled>, subject: []const u8 }
 ! match *Match<match!>
-| done *Regex<compiled!>
-| err { re: *Regex<compiled!>, code: i32, msg: []const u8 }
+| done
+| err { code: i32, msg: []const u8 }
 
 ~proc find.all|zig {
     // Effect-branch body: this proc is emitted at TWO sites — inlined into the
@@ -145,7 +146,7 @@ pub const Match = struct {
     const px = @import("root").koru_libs.koru_pcre2;
     const md = px.c.pcre2_match_data_create_from_pattern_8(re.code, null);
     if (md == null) {
-        return .{ .err = .{ .re = re, .code = 0, .msg = "pcre2: failed to allocate match data" } };
+        return .{ .err = .{ .code = 0, .msg = "pcre2: failed to allocate match data" } };
     }
     defer px.c.pcre2_match_data_free_8(md);
 
@@ -161,7 +162,7 @@ pub const Match = struct {
             var buf: [256]u8 = undefined;
             _ = px.c.pcre2_get_error_message_8(rc, &buf, buf.len);
             const dupmsg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&buf, 0)) catch "pcre2 match error";
-            return .{ .err = .{ .re = re, .code = rc, .msg = dupmsg } };
+            return .{ .err = .{ .code = rc, .msg = dupmsg } };
         }
         const ov = px.c.pcre2_get_ovector_pointer_8(md);
         __match.ovector = ov;
@@ -177,7 +178,7 @@ pub const Match = struct {
         }
         offset = mend;
     }
-    return .{ .done = re };
+    return .{ .done = .{} };
 }
 
 // No-op consumer of the per-match borrow. The compiler finds it by SIGNATURE

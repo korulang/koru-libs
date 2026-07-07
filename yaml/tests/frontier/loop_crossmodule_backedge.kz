@@ -41,5 +41,3 @@
     | eof pp0 |> libs/yaml:close(parser: pp0) |> std/io:print.ln("empty")
     | err ep0 |> libs/yaml:close(parser: ep0) |> std/io:print.ln("parse error at start")
 | err e |> std/io:print.ln("open error: {{ e:s }}")
-
-pub fn main() void {}

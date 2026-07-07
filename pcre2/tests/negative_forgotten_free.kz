@@ -23,5 +23,3 @@
 ~libs/pcre2:compile(pattern: "\\w+")
 | ok _ |> _
 | err _ |> _
-
-pub fn main() void {}

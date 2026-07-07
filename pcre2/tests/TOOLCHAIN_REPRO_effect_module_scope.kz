@@ -56,5 +56,3 @@ pub const Thing = struct { n: i64 };
 ~produce()
 ! item it |> show(t: it)
 | done |> std/io:print.ln("done")
-
-pub fn main() void {}

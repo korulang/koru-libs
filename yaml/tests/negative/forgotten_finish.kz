@@ -6,4 +6,3 @@
     | eof pp |> libs/yaml:close(parser: pp)
     | err ep |> libs/yaml:close(parser: ep)
 | err _ |> _
-pub fn main() void {}

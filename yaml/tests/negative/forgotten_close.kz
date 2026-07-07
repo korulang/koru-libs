@@ -13,5 +13,3 @@
 ~libs/yaml:open(input: "x: 1")
 | ok _ |> _
 | err _ |> _
-
-pub fn main() void {}

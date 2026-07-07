@@ -13,5 +13,3 @@
 | error e |> std/io:print.ln(e)
 
 const std = @import("std");
-
-pub fn main() void {}

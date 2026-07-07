@@ -31,5 +31,3 @@
         | bytes _ |> std/io:print.ln("should never get here")
     | err e |> std/io:print.ln(e)
 | err e |> std/io:print.ln(e)
-
-pub fn main() void {}
