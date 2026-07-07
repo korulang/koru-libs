@@ -253,18 +253,29 @@ fn levelToZlib(level: ?Level) c_int {
 // ============================================================================
 //
 // A `Deflater` owns a live zlib `z_stream` plus a growing output buffer. Its
-// lifecycle is a phantom obligation:
+// lifecycle is a phantom obligation with an ASYMMETRIC barrier:
 //
-//     deflate.init   mints  <open!>   (deflateInit2 ran; stream is live)
-//     deflate.push   needs  <!open>, re-mints <open!>   (feed a chunk)
-//     deflate.finish needs  <!open>, mints <done!>      (deflateEnd ran)
-//     deflate.release needs <!done>                     (frees the Deflater)
+//     deflate.init   mints  <open!>                       (stream is live, nothing fed)
+//     deflate.push   needs  <!open|!fed>, mints <fed!>     (feed a chunk)
+//     deflate.finish needs  <!fed>,       mints <done!>    (deflateEnd ran)
+//     deflate.release needs <!done>                        (frees the Deflater)
 //
-// Because `finish` transitions the handle from <open!> to <done!>, calling
-// `push` (which requires <!open>) on a finished stream is a COMPILE ERROR:
-// the compiler sees `expected 'open' but got 'done!'`. That is a
-// use-after-free the type system catches before the program ever runs.
-// See tests/deflate_use_after_finish.kz.
+// The barrier is the distinct `fed` state, and it is deliberately NOT the
+// state `init` produces. `finish` accepts ONLY <!fed>, which is reachable
+// ONLY through `push`. So `init -> finish` (open a stream, immediately close
+// it, never feed a byte) is a COMPILE ERROR: the compiler sees
+// `expected 'fed' but got 'open!'`. You cannot gzip a stream you never used.
+// This is the streaming twin of the transaction showcase's `exec`-gates-
+// `commit` rule (koru tests/.../910_LANGUAGE_SHOOTOUT/2104_09_empty_transaction):
+// Rust's Drop guarantees cleanup RUNS but cannot force the resource to be USED;
+// the phantom obligation forces both. An empty gzip stream is still reachable
+// on purpose — write `push("")` to state that intent explicitly.
+// See tests/deflate_finish_without_push.kz.
+//
+// Because `finish` also transitions the handle to <done!>, calling `push`
+// (which requires <!open|!fed>) on a finished stream is likewise a COMPILE
+// ERROR — a use-after-free the type system catches before the program ever
+// runs. See tests/deflate_use_after_finish.kz.
 
 const Deflater = struct {
     strm: c.z_stream,
@@ -296,8 +307,8 @@ const Deflater = struct {
     return .{ .ok = d };
 }
 
-~pub event deflate.push { d: *Deflater<!open>, chunk: []const u8 }
-| ok *Deflater<open!>
+~pub event deflate.push { d: *Deflater<!open|!fed>, chunk: []const u8 }
+| ok *Deflater<fed!>
 | err []const u8
 
 ~proc deflate.push|zig {
@@ -319,7 +330,7 @@ const Deflater = struct {
     return .{ .ok = d };
 }
 
-~pub event deflate.finish { d: *Deflater<!open> }
+~pub event deflate.finish { d: *Deflater<!fed> }
 | done { d: *Deflater<done!>, data: []const u8 }
 | err []const u8
 

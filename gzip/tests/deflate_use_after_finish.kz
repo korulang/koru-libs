@@ -1,12 +1,16 @@
 // NEGATIVE (must FAIL to compile): use-after-free of a finished stream.
 //
-// `deflate.finish` transitions the Deflater from <open!> to <done!>. Pushing
-// to it afterwards (deflate.push requires <!open>) is a use-after-free: the
-// zlib z_stream has already had deflateEnd() called on it. The phantom checker
-// rejects this at compile time.
+// `deflate.finish` transitions the Deflater from <fed!> to <done!>. Pushing
+// to it afterwards (deflate.push requires <!open|!fed>) is a use-after-free:
+// the zlib z_stream has already had deflateEnd() called on it. The phantom
+// checker rejects this at compile time.
 //
-// EXPECTED: error[KORU030]: Phantom state mismatch: expected 'libs.gzip:open'
-//           but got 'libs.gzip:done!' for argument 'd'
+// Note we push a real chunk BEFORE finishing — that is what reaches the <fed!>
+// state finish now demands (see deflate_finish_without_push.kz for the
+// unfed case). This test isolates the use-after-free specifically.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
 //
 // This is the proof that the streaming obligations actually bite. If this file
 // ever compiles, the resource-safety pillar has regressed.
@@ -15,11 +19,13 @@
 ~import std/io
 
 ~libs/gzip:deflate.init(level: .fast)
-| ok d |> libs/gzip:deflate.finish(d)
-    | done r |> libs/gzip:deflate.push(r.d, chunk: "use after free")
-        | ok d2 |> libs/gzip:deflate.finish(d2)
-            | done r2 |> libs/gzip:deflate.release(r2.d, r2.data)
-                | bytes _ |> std/io:print.ln("should never get here")
+| ok d |> libs/gzip:deflate.push(d, chunk: "real chunk")
+    | ok d1 |> libs/gzip:deflate.finish(d1)
+        | done r |> libs/gzip:deflate.push(r.d, chunk: "use after free")
+            | ok d2 |> libs/gzip:deflate.finish(d2)
+                | done r2 |> libs/gzip:deflate.release(r2.d, r2.data)
+                    | bytes _ |> std/io:print.ln("should never get here")
+                | err e |> std/io:print.ln(e)
             | err e |> std/io:print.ln(e)
         | err e |> std/io:print.ln(e)
     | err e |> std/io:print.ln(e)

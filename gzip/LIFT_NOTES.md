@@ -189,16 +189,30 @@ The caller holds no handle; the type system is idle.
 threads:
 
 ```
-deflate.init    mints  <open!>            (deflateInit2 ran; stream is live)
-deflate.push    needs  <!open>, re-mints  <open!>   (feed a chunk)
-deflate.finish  needs  <!open>, mints     <done!>   (deflateEnd ran)
-deflate.release needs  <!done>                      (frees the Deflater)
+deflate.init    mints  <open!>                       (deflateInit2 ran; live, nothing fed)
+deflate.push    needs  <!open|!fed>, mints  <fed!>   (feed a chunk)
+deflate.finish  needs  <!fed>,       mints  <done!>  (deflateEnd ran)
+deflate.release needs  <!done>                       (frees the Deflater)
 ```
 
-Because `finish` transitions the handle `<open!> → <done!>`, calling `push`
-(which requires `<!open>`) on a finished stream is a **build error**, not a
-use-after-free at runtime. That is the lift: a zlib footgun that only exists at
-runtime in C becomes uncompilable in Koru.
+The barrier is the distinct `fed` state, placed deliberately so that it is
+**not** the state `init` produces. Two build errors fall out of that one
+placement:
+
+1. **Finish an unfed stream** — `init → finish`, never a single `push` — is a
+   build error, because `finish` accepts only `<!fed>` and `init` hands you
+   `<open!>`. RAII / Rust's `Drop` guarantees a resource is *cleaned up* but
+   cannot force it to be *used*; the phantom obligation forces both, because
+   discharge means "reach the state real work produces," not "run cleanup." It
+   is the streaming twin of the enforced-lifecycle suite's transaction rule
+   (`commit` accepts only `<!active>`, reachable only through `exec`, so an
+   empty `BEGIN; COMMIT;` doesn't compile). An empty gzip stays expressible on
+   purpose — `push("")` still reaches `<fed!>` — so the barrier rejects the
+   *silent* no-op, never the intent.
+
+2. **Push a finished stream** — because `finish` moves the handle to `<done!>`,
+   calling `push` (which needs `<!open|!fed>`) afterwards is a build error too:
+   a zlib use-after-free that only exists at runtime in C, made uncompilable.
 
 ## The quadrifecta self-audit
 
@@ -217,12 +231,17 @@ runtime in C becomes uncompilable in Koru.
   baseline — I did not run a throughput benchmark, so I make no speed claim
   beyond "no runtime tax was added over a hand-written streaming loop."
 
-- **Correctness**: A finished stream is uncompilable to reuse. Proof:
-  `tests/deflate_use_after_finish.kz` fails to compile with
-  `error[KORU030]: Phantom state mismatch: expected 'libs.gzip:open' but got
-  'libs.gzip:done!' for argument 'd'`. Round-trip correctness is shown by
-  `tests/stream_roundtrip.kz` (streaming-compress → decompress recovers the
-  original text) and `tests/oneshot_roundtrip.kz`.
+- **Correctness**: Two misuses are uncompilable. An unfed stream cannot finish:
+  `tests/deflate_finish_without_push.kz` fails with
+  `error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed' but got
+  'libs.gzip:open!' for argument 'd'` (plus a second line naming the fix:
+  `Call: libs.gzip:deflate.push`). A finished stream cannot be reused:
+  `tests/deflate_use_after_finish.kz` fails with
+  `expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!'`.
+  Round-trip correctness is shown by `tests/stream_roundtrip.kz`
+  (streaming-compress → decompress recovers the original text),
+  `tests/deflate_empty_via_push.kz` (the `push("")` escape hatch round-trips
+  the empty string), and `tests/oneshot_roundtrip.kz`.
 
 - **Resource safety**: The **ordering / use-after-free** dimension is enforced
   by the compiler (the negative test above proves it bites). The **leak on a
@@ -303,8 +322,16 @@ The quick brown fox. The quick brown fox.
 $ koruc run gzip/tests/oneshot_roundtrip.kz
 hello hello hello world world world
 
+$ koruc build gzip/tests/deflate_finish_without_push.kz
+error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed' but got 'libs.gzip:open!' for argument 'd'
+error[KORU030]: Resource 'd' carries obligation <open!> was not discharged. Call: libs.gzip:deflate.push
+✗ Backend execution failed          # open-but-never-fed — the empty stream is uncompilable
+
 $ koruc build gzip/tests/deflate_use_after_finish.kz
-error[KORU030]: Phantom state mismatch: expected 'libs.gzip:open' but got 'libs.gzip:done!' for argument 'd'
-error[KORU030]: Resource 'd' <done!> was not discharged. Call: libs.gzip:deflate.release
-✗ Backend execution failed          # no executable built — the misuse is uncompilable
+error[KORU030]: Phantom state mismatch: expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
+error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call: libs.gzip:deflate.release
+✗ Backend execution failed          # no executable built — the use-after-free is uncompilable
+
+$ koruc run gzip/tests/deflate_empty_via_push.kz
+                                    # one blank line — empty gzip round-trips via push("")
 ```

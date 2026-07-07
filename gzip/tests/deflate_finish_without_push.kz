@@ -1,0 +1,35 @@
+// NEGATIVE (must FAIL to compile): finish a stream that was never fed.
+//
+// This is gzip's asymmetric barrier — the streaming twin of the transaction
+// showcase's "empty transaction" rejection (koru
+// tests/regression/900_EXAMPLES_SHOWCASE/910_LANGUAGE_SHOOTOUT/
+// 2104_09_empty_transaction). There, `commit` accepts only <!active>, and the
+// active state is reachable only through `exec`, so `begin -> commit` (an empty
+// BEGIN; COMMIT;) is a compile error. Here, `deflate.finish` accepts only
+// <!fed>, and the fed state is reachable only through `deflate.push`, so
+// `init -> finish` (open a Deflater, immediately close it, never feed a byte)
+// is a compile error.
+//
+// The point: RAII / Rust's Drop guarantees the resource is CLEANED UP, but it
+// cannot force the resource to be USED. The phantom obligation forces both.
+// Allocating a Deflater and throwing it away without compressing anything is
+// meaningless, and the type system says so before the program ever runs.
+//
+// If you genuinely want an empty gzip stream, that intent is expressible —
+// `push("")` reaches <fed!> and produces valid empty-payload gzip framing.
+// See tests/deflate_empty_via_push.kz. What this rejects is the SILENT no-op.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed'
+//           but got 'libs.gzip:open!' for argument 'd'
+
+~import libs/gzip
+~import std/io
+
+~libs/gzip:deflate.init(level: .fast)
+| ok d |> libs/gzip:deflate.finish(d)
+    | done r |> libs/gzip:deflate.release(r.d, r.data)
+        | bytes _ |> std/io:print.ln("should never get here")
+    | err e |> std/io:print.ln(e)
+| err e |> std/io:print.ln(e)
+
+pub fn main() void {}

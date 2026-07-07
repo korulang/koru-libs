@@ -1,0 +1,32 @@
+// POSITIVE: an empty gzip stream, produced ON PURPOSE.
+//
+// The asymmetric barrier (finish needs <!fed>, only push mints <fed!>) rejects
+// the SILENT no-op `init -> finish`, but it does NOT forbid empty output. A
+// zero-length push still transitions <open!> -> <fed!> (deflate.push's inner
+// loop is `while (avail_in > 0)`, which simply doesn't run for an empty chunk),
+// so `push("")` is the explicit way to say "yes, I really mean to gzip nothing."
+// The result is a valid ~20-byte empty-payload gzip member that decompresses
+// back to the empty string.
+//
+// This proves the barrier costs the legitimate case nothing: intent is
+// expressible, only the accidental allocate-and-discard is caught.
+//
+// Expected output: one blank line (the recovered empty string).
+
+~import libs/gzip
+~import std/io
+
+~libs/gzip:deflate.init(level: .fast)
+| ok d |> libs/gzip:deflate.push(d, chunk: "")
+    | ok d1 |> libs/gzip:deflate.finish(d1)
+        | done r |> libs/gzip:deflate.release(r.d, r.data)
+            | bytes gz |> libs/gzip:decompress(data: gz, allocator: std.heap.page_allocator)
+                | decompressed orig |> std/io:print.ln(orig)
+                | error e |> std/io:print.ln(e)
+        | err e |> std/io:print.ln(e)
+    | err e |> std/io:print.ln(e)
+| err e |> std/io:print.ln(e)
+
+const std = @import("std");
+
+pub fn main() void {}
