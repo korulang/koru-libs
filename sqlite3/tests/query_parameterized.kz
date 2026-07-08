@@ -1,19 +1,22 @@
 // Test: query.literal row iteration via the `! row` effect branch.
 //
-// Each row fires `! row`; the row handle is a borrow, auto-released per row by
-// the engine; the statement is finalized exactly once. Two rows inserted to
-// prove real per-row iteration.
+// STATUS: currently RED — query.literal's inlined effect-branch body references
+// the bare `Statement` type (index.kz), which is out of scope at the inline site
+// (the same module-scope gap pcre2 works around via a `px.` alias). Pending that
+// codegen fix; do NOT read the assertions below as passing. Once it lands, each
+// row fires `! row` (row handle a per-row borrow, statement finalized once); two
+// rows are inserted to exercise real per-row iteration.
 
 ~import libs/sqlite3
 ~import std/io
 
 ~libs/sqlite3:open(path: ":memory:")
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok d2 |> libs/sqlite3:exec(conn: d2, sql: "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
-        | ok d3 |> libs/sqlite3:query.literal(conn: d3, sql: "SELECT id FROM users ORDER BY id")
+    | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
+        | ok |> libs/sqlite3:query.literal(conn: d, sql: "SELECT id FROM users ORDER BY id")
             ! row r |> libs/sqlite3:col.int(stmt: r, index: 0): id |> std/io:print.ln("id={{ id:d }}")
             | done d4 |> libs/sqlite3:close(conn: d4) |> std/io:print.ln("done iterating")
             | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("query error")
-        | err e3 |> libs/sqlite3:close(e3.conn) |> std/io:print.ln("Insert error")
-    | err e2 |> libs/sqlite3:close(e2.conn) |> std/io:print.ln("Create error")
+        | err e3 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Insert error: {{ e3.msg:s }}")
+    | err e2 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Create error: {{ e2.msg:s }}")
 | err _ |> std/io:print.ln("Open error")

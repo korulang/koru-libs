@@ -69,9 +69,12 @@ pub const Statement = struct {
 // Query Execution
 // ============================================================================
 
-~pub event exec { conn: *Connection<!opened>, sql: []const u8 }
-| ok *Connection<opened!>
-| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
+// `exec` only READS the connection to run SQL — it never closes it — so it
+// BORROWS `<opened>` rather than consuming and re-minting. The caller keeps its
+// live `opened!` obligation across the call and still owes exactly one `close`.
+~pub event exec { conn: *Connection<opened>, sql: []const u8 }
+| ok
+| err { code: i32, msg: []const u8 }
 
 ~proc exec|zig {
     var errmsg: [*c]u8 = null;
@@ -79,9 +82,9 @@ pub const Statement = struct {
     if (rc != c.SQLITE_OK) {
         const msg = if (errmsg) |e| std.mem.span(e) else "unknown error";
         if (errmsg) |e| c.sqlite3_free(e);
-        return .{ .err = .{ .conn = conn, .code = rc, .msg = msg } };
+        return .{ .err = .{ .code = rc, .msg = msg } };
     }
-    return .{ .ok = conn };
+    return .{ .ok = .{} };
 }
 
 // Literal SQL query - takes a runtime SQL string

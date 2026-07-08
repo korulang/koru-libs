@@ -6,8 +6,8 @@
 // First open and setup the database, storing conn for later
 ~libs/sqlite3:open(path: ":memory:")
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok d2 |> libs/sqlite3:exec(conn: d2, sql: "INSERT INTO users VALUES (42, 'Alice')")
-        | ok d3 |> std/io:print.ln("Database setup complete") |> libs/sqlite3:close(conn: d3)
-        | err e3 |> libs/sqlite3:close(e3.conn) |> std/io:print.ln("Insert error")
-    | err e2 |> libs/sqlite3:close(e2.conn) |> std/io:print.ln("Create error")
+    | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO users VALUES (42, 'Alice')")
+        | ok |> std/io:print.ln("Database setup complete") |> libs/sqlite3:close(conn: d)
+        | err e3 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Insert error: {{ e3.msg:s }}")
+    | err e2 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Create error: {{ e2.msg:s }}")
 | err _ |> std/io:print.ln("Open error")

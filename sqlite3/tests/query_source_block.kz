@@ -8,13 +8,13 @@
 
 ~libs/sqlite3:open(path: ":memory:")
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok d2 |> libs/sqlite3:exec(conn: d2, sql: "INSERT INTO users VALUES (42, 'Alice')")
-        | ok d3 |> libs/sqlite3:query(conn: d3) [SQL]{
+    | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO users VALUES (42, 'Alice')")
+        | ok |> libs/sqlite3:query(conn: d) [SQL]{
                 SELECT * FROM users
             }
             | row r |> libs/sqlite3:finalize.stmt(r.stmt) |> libs/sqlite3:close(r.conn) |> std/io:print.ln("Found row via transform!")
             | empty e |> libs/sqlite3:close(conn: e) |> std/io:print.ln("No rows")
             | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("Query error")
-        | err e3 |> libs/sqlite3:close(e3.conn) |> std/io:print.ln("Insert error")
-    | err e2 |> libs/sqlite3:close(e2.conn) |> std/io:print.ln("Create error")
+        | err e3 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Insert error: {{ e3.msg:s }}")
+    | err e2 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Create error: {{ e2.msg:s }}")
 | err _ |> std/io:print.ln("Open error")
