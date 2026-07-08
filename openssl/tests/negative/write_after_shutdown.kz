@@ -6,9 +6,11 @@
 // ship. (Contrast the sqlite3/curl-style obligation footguns: this one is a
 // STATE wall, not a leak wall.)
 //
-// Reproduce:
-//   koruc --check openssl/tests/negative/write_after_shutdown.kz
-//     -> error: phantom state mismatch on `conn` (write wants <open>, has <closing>)
+// Reproduce (use `run`, not `--check`: `--check` only shape-checks and passes
+// this clean — phantom STATE mismatches surface in the full pipeline):
+//   koruc run openssl/tests/negative/write_after_shutdown.kz
+//     -> error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open'
+//        but got 'koru.openssl:closing!' for argument 'conn'
 
 ~import koru/openssl
 ~import std/io

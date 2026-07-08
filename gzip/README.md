@@ -22,9 +22,9 @@ Requires zlib installed on your system (available by default on macOS/Linux).
 ### Compression
 
 ```koru
-~import koru/gzip
+~import libs/gzip
 
-~koru/gzip:compress(data: my_content, allocator: allocator)
+~libs/gzip:compress(data: my_content, allocator: allocator)
 | compressed c |>
     // c.data contains gzipped bytes
     // c.original_size for compression ratio stats
@@ -35,7 +35,7 @@ Requires zlib installed on your system (available by default on macOS/Linux).
 ### With Compression Level
 
 ```koru
-~koru/gzip:compress(data: content, level: .best, allocator: allocator)
+~libs/gzip:compress(data: content, level: .best, allocator: allocator)
 | compressed c |> ...
 ```
 
@@ -47,7 +47,7 @@ Levels:
 ### Decompression
 
 ```koru
-~koru/gzip:decompress(data: gzipped_bytes, allocator: allocator)
+~libs/gzip:decompress(data: gzipped_bytes, allocator: allocator)
 | decompressed d |>
     // d is the []const u8 original content directly (not d.data)
 | error e |>
@@ -58,7 +58,7 @@ Levels:
 
 ```koru
 // In your route collector or build script
-~koru/gzip:compress-bytes(data: file_content, allocator: allocator)
+~libs/gzip:compress-bytes(data: file_content, allocator: allocator)
 | ok c |>
     // c is now gzipped bytes ([]const u8), embed into binary
     // Add Content-Encoding: gzip header
