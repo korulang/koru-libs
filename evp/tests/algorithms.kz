@@ -11,21 +11,17 @@
 ~import std/io
 
 ~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "abc")
-    | ok d2 |> libs/evp:final.hex(d: d2)
-        | digest h |> std/io:print.ln("sha256 = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "abc") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("sha256 = {{ h:s }}")
 
 ~libs/evp:sha512.init()
-| ctx d |> libs/evp:update(d, bytes: "abc")
-    | ok d2 |> libs/evp:final.hex(d: d2)
-        | digest h |> std/io:print.ln("sha512 = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "abc") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("sha512 = {{ h:s }}")
 
 ~libs/evp:sha1.init()
-| ctx d |> libs/evp:update(d, bytes: "abc")
-    | ok d2 |> libs/evp:final.hex(d: d2)
-        | digest h |> std/io:print.ln("sha1   = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "abc") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("sha1   = {{ h:s }}")
 
 ~libs/evp:md5.init()
-| ctx d |> libs/evp:update(d, bytes: "abc")
-    | ok d2 |> libs/evp:final.hex(d: d2)
-        | digest h |> std/io:print.ln("md5    = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "abc") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("md5    = {{ h:s }}")

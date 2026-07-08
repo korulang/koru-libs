@@ -103,18 +103,18 @@ fn hexEncode(bytes: []const u8) []const u8 {
 }
 
 // ============================================================================
-// Streaming — feed the digest in chunks. Consumes the obligation and re-grants
-// it, so you can call update in a loop (each call keeps the handle alive).
+// Streaming — feed the digest in chunks. BORROWS the handle (bare <hashing>):
+// the obligation stays with the caller, so `d` remains live after the call and
+// keeps flowing down the pipeline. Feed as many chunks as you like, then
+// finalise the same binding — no re-issued handle to thread.
 // ============================================================================
 
-~pub event update { d: *Digest<!hashing>, bytes: []const u8 }
-| ok *Digest<hashing!>
+~pub event update { d: *Digest<hashing>, bytes: []const u8 }
 
 ~proc update|zig {
     if (c.EVP_DigestUpdate(d.ctx, bytes.ptr, bytes.len) != 1) {
         @panic("openssl: EVP_DigestUpdate failed");
     }
-    return .{ .ok = d };
 }
 
 // ============================================================================

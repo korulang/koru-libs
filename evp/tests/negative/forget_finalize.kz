@@ -4,18 +4,18 @@
 // In raw OpenSSL C that is a silent EVP_MD_CTX leak on every hash. Here the
 // `hashing` obligation makes it a build error:
 //
-//   error[KORU030]: Resource 'd2' <hashing!> was not discharged.
+//   error[KORU030]: Resource 'd' <hashing!> was not discharged.
 //                   Call one of: final.bytes, final.hex
 //
-// Run it to see the obligation bite (expected to FAIL):
-//   koruc run openssl/tests/negative/forget_finalize.kz
+// update BORROWS the handle, so `d` still owes <hashing!> after it — the
+// forgotten finalize cannot slip past the compiler, and the error even names
+// the two events that would discharge it.
 //
-// The forgotten cleanup cannot slip past the compiler, and the error even
-// names the two events that would discharge it.
+// Run it to see the obligation bite (expected to FAIL):
+//   koruc run evp/tests/negative/forget_finalize.kz
 
 ~import libs/evp
 ~import std/io
 
 ~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "abc")
-    | ok d2 |> std/io:print.ln("BUG: reached here without finalizing d2")
+| ctx d |> libs/evp:update(d, bytes: "abc") |> std/io:print.ln("BUG: reached here without finalizing d")

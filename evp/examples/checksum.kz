@@ -6,7 +6,7 @@
 //                   time. The compiler tracks the open digest and refuses to
 //                   let you drop it without finalizing.
 //
-// Run:  koruc run openssl/examples/checksum.kz
+// Run:  koruc run evp/examples/checksum.kz
 
 ~import libs/evp
 ~import std/io
@@ -17,13 +17,10 @@
 
 // --- streaming: hash "hello world" as two chunks ----------------------------
 ~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "hello ")
-    | ok d2 |> libs/evp:update(d2, bytes: "world")
-        | ok d3 |> libs/evp:final.hex(d: d3)
-            | digest h |> std/io:print.ln("hello   sha256 = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "hello ") |> libs/evp:update(d, bytes: "world") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("hello   sha256 = {{ h:s }}")
 
 // --- a different algorithm, same shape --------------------------------------
 ~libs/evp:sha512.init()
-| ctx d |> libs/evp:update(d, bytes: "hello world")
-    | ok d2 |> libs/evp:final.hex(d: d2)
-        | digest h |> std/io:print.ln("hello   sha512 = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "hello world") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("hello   sha512 = {{ h:s }}")

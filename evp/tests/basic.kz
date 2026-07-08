@@ -10,8 +10,9 @@
 | digest h |> std/io:print.ln("oneshot  sha256(abc) = {{ h:s }}")
 
 // Streaming: init -> update -> final. The `hashing` obligation is created by
-// init and discharged by final; the compiler proved it was not dropped.
+// init and discharged by final; update BORROWS the handle, so the same `d`
+// binding flows down the whole pipeline and the compiler proves it was not
+// dropped.
 ~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "abc")
-    | ok d2 |> libs/evp:final.hex(d: d2)
-        | digest h |> std/io:print.ln("stream   sha256(abc) = {{ h:s }}")
+| ctx d |> libs/evp:update(d, bytes: "abc") |> libs/evp:final.hex(d)
+    | digest h |> std/io:print.ln("stream   sha256(abc) = {{ h:s }}")
