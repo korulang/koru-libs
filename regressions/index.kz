@@ -1,0 +1,222 @@
+// @korulang/regressions — a programmable, koru-native test/verification runner.
+//
+// v2 WALKING SKELETON — JSON-block DSL. A case is declared as:
+//
+//   koru/regressions:case(gzip round-trip) {
+//     "file": "gzip/tests/roundtrip.kz",
+//     "kind": "run"
+//   }
+//
+// where the label is an `expr: Expression` and the body is a `source: Source`
+// carrying a JSON object (the same idiom koru itself uses for `flag.declare` /
+// `command.declare` / `deps.requires`). The `test` command collects these at
+// COMPILE TIME (same [comptime|command] mechanism as koru/docker), parses each
+// block with std.json, runs each case through a `koruc` subprocess, and scores
+// it. Zero koru-toolchain changes — pure external orchestration.
+//
+// SCORING (v2):
+//   "kind": "run"          → koruc compiles the file (exit 0), then ./a.out exits 0.
+//   "kind": "compile_fail" → koruc must FAIL to compile the file (nonzero exit).
+// Next: diagnostic pinning, category/tags selection, post.sh / overridable `run`,
+// snapshots + regression tracking, general run-recipe (pytest/cargo).
+
+~import std/compiler
+
+const std = @import("std");
+
+~std/compiler:command.declare {
+    "name": "test",
+    "description": "Run the declared regression suite and print a pass/fail board"
+}
+
+~[comptime|command]pub event test {
+    program: *const Program,
+    allocator: __koru_std.mem.Allocator,
+    argv: []const []const u8,
+}
+
+~proc test|zig {
+    _ = argv;
+
+    // All per-run scratch (JSON arenas, brace-wraps, the case list) lives in one
+    // arena — a single deinit reclaims everything, so the runner never leaks.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const Case = struct { name: []const u8, file: []const u8, kind: []const u8 };
+
+    const stripQuotes = struct {
+        fn go(v: []const u8) []const u8 {
+            if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') return v[1 .. v.len - 1];
+            return v;
+        }
+    }.go;
+
+    // ---- collect declared cases from the AST ----
+    var cases = std.ArrayListUnmanaged(Case){};
+
+    for (program.items) |item| {
+        if (item != .flow) continue;
+        const flow = item.flow;
+        const mq = flow.inv().path.module_qualifier orelse continue;
+        if (!((std.mem.eql(u8, mq, "koru.regressions") or std.mem.eql(u8, mq, "regressions")) and
+            flow.inv().path.segments.len == 1 and
+            std.mem.eql(u8, flow.inv().path.segments[0], "case"))) continue;
+
+        // The label (expr) is the non-"source" arg; the JSON block is "source".
+        var label: []const u8 = "";
+        var json_text: []const u8 = "";
+        for (flow.inv().args) |arg| {
+            if (std.mem.eql(u8, arg.name, "source")) {
+                json_text = arg.value;
+            } else {
+                label = stripQuotes(arg.value);
+            }
+        }
+
+        // The block text arrives without its outer braces — wrap, then parse.
+        var jt = std.mem.trim(u8, json_text, " \t\r\n");
+        if (jt.len > 0 and jt[0] != '{') {
+            jt = std.fmt.allocPrint(a, "{{{s}}}", .{jt}) catch jt;
+        }
+
+        var file: []const u8 = "";
+        var kind: []const u8 = "run";
+        if (jt.len > 0) {
+            if (std.json.parseFromSlice(std.json.Value, a, jt, .{})) |parsed| {
+                // Owned by the arena `a`; strings stay valid until arena.deinit().
+                if (parsed.value == .object) {
+                    const obj = parsed.value.object;
+                    if (obj.get("file")) |v| {
+                        if (v == .string) file = v.string;
+                    }
+                    if (obj.get("kind")) |v| {
+                        if (v == .string) kind = v.string;
+                    }
+                }
+            } else |_| {
+                std.debug.print("  json parse failed for case '{s}': {s}\n", .{ label, jt });
+            }
+        }
+
+        const name = if (label.len > 0) label else file;
+        if (file.len > 0) {
+            cases.append(a, .{ .name = name, .file = file, .kind = kind }) catch {
+                std.debug.print("out of memory\n", .{});
+                return;
+            };
+        }
+    }
+
+    if (cases.items.len == 0) {
+        std.debug.print("No test cases declared.\n", .{});
+        return;
+    }
+
+    // ---- run + board ----
+    std.debug.print("\n═══ koru/regressions ═══\n", .{});
+    std.debug.print("Running {d} case(s)...\n\n", .{cases.items.len});
+
+    var passed: usize = 0;
+    var failed: usize = 0;
+    for (cases.items) |c| {
+        const dir = std.fs.path.dirname(c.file) orelse ".";
+        const base = std.fs.path.basename(c.file);
+        // Traverse via the overridable `run` seam — a user can swap this whole
+        // behavior with `~koru/regressions:run = <their flow>`.
+        const result = run_event.handler(.{
+            .dir = dir,
+            .base = base,
+            .kind = c.kind,
+            .allocator = a,
+        });
+        switch (result) {
+            .passed => {
+                passed += 1;
+                std.debug.print("  \x1b[32m✓\x1b[0m {s}\n", .{c.name});
+            },
+            .failed => |reason| {
+                failed += 1;
+                std.debug.print("  \x1b[31m✗\x1b[0m {s}  ({s})\n", .{ c.name, reason });
+            },
+        }
+    }
+
+    std.debug.print("\n────────────────────────\n", .{});
+    if (failed == 0) {
+        std.debug.print("\x1b[32mRESULTS: {d}/{d} passed\x1b[0m\n\n", .{ passed, cases.items.len });
+    } else {
+        std.debug.print("\x1b[31mRESULTS: {d}/{d} passed, {d} failed\x1b[0m\n\n", .{ passed, cases.items.len, failed });
+    }
+}
+
+// ============================================================================
+// `run` — the OVERRIDABLE runner seam (abstract event, same pattern as
+// compiler:coordinate). The default below scores a case by driving `koruc` as a
+// subprocess; a user swaps the entire behavior with `~koru/regressions:run = …`
+// (e.g. to run pytest/cargo, or to traverse a dependency graph). "Traverses
+// stuff" today = one case; the seam is what a future graph-runner plugs into.
+// ============================================================================
+
+~[comptime|abstract] pub event run {
+    dir: []const u8,
+    base: []const u8,
+    kind: []const u8,
+    allocator: __koru_std.mem.Allocator,
+}
+| passed
+| failed []const u8
+
+// Default = a FLOW that delegates to the zig executor and re-produces `run`'s
+// own branches. Using a flow default (not a bare `~proc run|zig`) is what makes
+// `run.default(...)` available to overrides — the compiler:coordinate idiom.
+~run = run-exec(dir, base, kind, allocator)
+| passed => passed
+| failed f => failed f
+
+// The actual subprocess executor (leaf zig work), behind the flow above.
+~[comptime] event run-exec {
+    dir: []const u8,
+    base: []const u8,
+    kind: []const u8,
+    allocator: __koru_std.mem.Allocator,
+}
+| passed
+| failed []const u8
+
+~proc run-exec|zig {
+    const compile = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "koruc", base },
+        .cwd = dir,
+    }) catch return .{ .failed = "koruc failed to spawn" };
+    defer allocator.free(compile.stdout);
+    defer allocator.free(compile.stderr);
+    const compiled_ok = compile.term == .Exited and compile.term.Exited == 0;
+
+    if (std.mem.eql(u8, kind, "compile_fail")) {
+        if (compiled_ok) return .{ .failed = "compiled, but a compile-failure was expected" };
+        return .{ .passed = .{} };
+    }
+
+    if (!compiled_ok) return .{ .failed = "compile error" };
+
+    const ran = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{"./a.out"},
+        .cwd = dir,
+    }) catch return .{ .failed = "built binary failed to spawn" };
+    defer allocator.free(ran.stdout);
+    defer allocator.free(ran.stderr);
+    if (ran.term == .Exited and ran.term.Exited == 0) return .{ .passed = .{} };
+    return .{ .failed = "runtime: nonzero exit" };
+}
+
+// The `case` marker: a declared test case, collected from the AST by `test`.
+// `expr` = the human label; `source` = a JSON object block. Void at runtime.
+~[comptime|norun]pub event case { expr: Expression, source: Source }
+
+~proc case|zig {
+    // Void — collected during AST walking by the `test` command.
+}
