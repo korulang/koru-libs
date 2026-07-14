@@ -38,6 +38,37 @@ routes to the walk — and every invariant encoded moves another class of gaps
 from the walk's queue to the machine's. Hold this telos under every phase that
 follows: when in doubt, the move that encodes beats the move that merely ships.
 
+## The membrane is the memory — READ it on startup, TEND it as you walk
+
+The developed method does not live in this file's summary or in an agent's chat
+habit — it lives in the project's **membrane belief garden** (the `membrane` skill:
+durable memory as a typed git log over OKF concept fragments, `concepts/frag-*.md`).
+That garden is the accumulated, versioned doctrine. Skip it and every session
+re-derives a thinner, wronger version of what a belief already settled — the failure
+mode where a lesson "sticks for two minutes then is lost." Guard against it
+structurally, not by willpower:
+
+- **BOOTSTRAP on every startup / re-entry (mandatory, not optional):** before you
+  act — before the first HyperFrame, the first route, the first design call — READ
+  the belief garden. `concepts/frag-*.md` (and the corpus's recent signals) load
+  alongside the baton in Phase 0. A belief that governs the surface you're about to
+  touch **already exists** more often than not; find it and obey it. Do NOT improvise
+  what a fragment settles. "I didn't read the design language before pushing" is the
+  same defect whether it's typography, geometry, or role doctrine.
+- **CONSULT before you improvise:** when a decision touches an area with a fragment
+  (`frag-<topic>`), the fragment is the spec — grep the garden first, quote the
+  belief, then act. The garden answers "what do we already believe about X" the way
+  the test suite answers "what does the language already do."
+- **TEND as a side-effect of working:** when a belief actually moves, **evolve** or
+  **correct** it forward (the membrane's lineage grammar), and prefer **evolving it
+  OUT into running code** (a test, a wall, an organ) leaving only a pointer — prose
+  drifts; code is the real memory. The git log fills itself, so this costs almost
+  nothing and compounds: every session leaves the memory higher-resolution.
+
+This makes context-bootstrapping a first-class step of the method, not a footnote.
+Mechanics live in the `membrane` skill; the tail of this file (hand-off) says how the
+corpus rides forward. If a project has no membrane yet, planting one is upstream work.
+
 ## Upstream first — fix the generator before anything downstream
 
 When a defect is traced to a generator — the methodology, a skill file, a
