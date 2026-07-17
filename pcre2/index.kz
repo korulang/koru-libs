@@ -135,36 +135,30 @@ pub const Match = struct {
 
 ~proc find.all|zig {
     // Effect-branch body: this proc is emitted at TWO sites — inlined into the
-    // consumer's frame (where this module's decls, INCLUDING the cimport `c`
-    // and the type `Match`, are out of scope) AND as this module's own handler
-    // (where `c`/`Match` ARE in scope). No spelling using the bare names or a
-    // local named `c` satisfies both: a local `const c = ...` shadows the
-    // module `c` at the handler site, and a bare `Match` is undeclared at the
-    // inlined site. So reach EVERY module decl through one non-colliding module
-    // alias, which resolves at both sites. See tests/TOOLCHAIN_REPRO_*.kz and
-    // the README's toolchain-findings section.
-    const px = @import("root").koru_libs.koru_pcre2;
-    const md = px.c.pcre2_match_data_create_from_pattern_8(re.code, null);
+    // consumer's frame AND as this module's own handler. `$mod.` is the
+    // compiler-provided spelling that resolves to this module's scope at BOTH
+    // sites (koru 400_155) — never reach through emitter-internal naming.
+    const md = $mod.c.pcre2_match_data_create_from_pattern_8(re.code, null);
     if (md == null) {
         return .{ .err = .{ .code = 0, .msg = "pcre2: failed to allocate match data" } };
     }
-    defer px.c.pcre2_match_data_free_8(md);
+    defer $mod.c.pcre2_match_data_free_8(md);
 
     // Named with `__` so it can't collide with the consumer's `! match <name>`
     // binding, whose body is inlined right here (same convention as sqlite3's
     // `__row`).
-    var __match = px.Match{ .subject = subject, .ovector = undefined, .count = 0 };
+    var __match = $mod.Match{ .subject = subject, .ovector = undefined, .count = 0 };
     var offset: usize = 0;
     while (offset <= subject.len) {
-        const rc = px.c.pcre2_match_8(re.code, subject.ptr, subject.len, offset, 0, md, null);
-        if (rc == px.c.PCRE2_ERROR_NOMATCH) break;
+        const rc = $mod.c.pcre2_match_8(re.code, subject.ptr, subject.len, offset, 0, md, null);
+        if (rc == $mod.c.PCRE2_ERROR_NOMATCH) break;
         if (rc <= 0) {
             var buf: [256]u8 = undefined;
-            _ = px.c.pcre2_get_error_message_8(rc, &buf, buf.len);
+            _ = $mod.c.pcre2_get_error_message_8(rc, &buf, buf.len);
             const dupmsg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&buf, 0)) catch "pcre2 match error";
             return .{ .err = .{ .code = rc, .msg = dupmsg } };
         }
-        const ov = px.c.pcre2_get_ovector_pointer_8(md);
+        const ov = $mod.c.pcre2_get_ovector_pointer_8(md);
         __match.ovector = ov;
         __match.count = @intCast(rc);
         match(&__match);

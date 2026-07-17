@@ -95,14 +95,14 @@ pub const Statement = struct {
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
 
 ~proc query.literal|zig {
-    // This is an effect-branch event, so its body inlines into the consumer's
-    // frame where the module-level `c` cimport isn't in scope — reach it via
-    // the lib's root path.
-    const c = @import("root").koru_libs.sqlite3.c;
-    var stmt: ?*c.sqlite3_stmt = null;
-    const rc = c.sqlite3_prepare_v2(conn.handle, sql.ptr, @intCast(sql.len), &stmt, null);
-    if (rc != c.SQLITE_OK) {
-        const msg = c.sqlite3_errmsg(conn.handle);
+    // Effect-branch proc: this body inlines into the consumer's frame, where
+    // the module's bare names (`c`, `Statement`) don't exist. `$mod.` is the
+    // compiler-provided spelling for the declaring module's own scope
+    // (koru 400_155) — never reach through emitter-internal naming.
+    var stmt: ?*$mod.c.sqlite3_stmt = null;
+    const rc = $mod.c.sqlite3_prepare_v2(conn.handle, sql.ptr, @intCast(sql.len), &stmt, null);
+    if (rc != $mod.c.SQLITE_OK) {
+        const msg = $mod.c.sqlite3_errmsg(conn.handle);
         return .{ .err = .{ .conn = conn, .code = rc, .msg = std.mem.span(msg) } };
     }
 
@@ -111,14 +111,14 @@ pub const Statement = struct {
     // row-body boundary; the statement is finalized exactly ONCE, below, by the
     // engine — so the user never finalizes and cannot leak it (safe by
     // construction, enforced by the phantom checker at compile time).
-    var __row = Statement{ .handle = stmt };
-    var __rc = c.sqlite3_step(stmt);
-    while (__rc == c.SQLITE_ROW) : (__rc = c.sqlite3_step(stmt)) {
+    var __row = $mod.Statement{ .handle = stmt };
+    var __rc = $mod.c.sqlite3_step(stmt);
+    while (__rc == $mod.c.SQLITE_ROW) : (__rc = $mod.c.sqlite3_step(stmt)) {
         row(&__row);
     }
-    _ = c.sqlite3_finalize(stmt);
-    if (__rc != c.SQLITE_DONE) {
-        const msg = c.sqlite3_errmsg(conn.handle);
+    _ = $mod.c.sqlite3_finalize(stmt);
+    if (__rc != $mod.c.SQLITE_DONE) {
+        const msg = $mod.c.sqlite3_errmsg(conn.handle);
         return .{ .err = .{ .conn = conn, .code = __rc, .msg = std.mem.span(msg) } };
     }
     return .{ .done = conn };
