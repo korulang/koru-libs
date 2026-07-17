@@ -22,6 +22,6 @@ import std/io
 
 libs/raylib:window.open.hidden(width: 320, height: 200, title: "leak")
 | win w |> libs/raylib:frames(win: w, count: 1)
-    ! frame f |> libs/raylib:draw.clear(f, r: 0, g: 0, b: 0)
+    ! frame f |> libs/raylib:color(r: 0, g: 0, b: 0): black |> libs/raylib:draw.clear(f, col: black)
     | done w2 |> std/io:print.ln("BUG: reached here without closing w2")
 | err e |> std/io:print.ln("init failed: {{ e:s }}")

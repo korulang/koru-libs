@@ -21,11 +21,6 @@
 //
 // House style follows evp/index.kz and sqlite3/index.kz: `<state!>` grants an
 // obligation, `<!state>` consumes it, bare `<state>` borrows.
-//
-// v0 keeps the surface scalar (r/g/b u8 params instead of raylib's by-value
-// Color struct). By-value C-struct params/returns across the koru->Zig event
-// boundary are an unprobed toolchain question — probing that is a deliberate
-// next step, not something this file works around.
 
 ~import std/build
 ~import std/deps
@@ -162,20 +157,109 @@ pub const Frame = struct {
 ~proc release.frame|zig { _ = &f; }
 
 // ============================================================================
-// Drawing — every draw call borrows the frame handle, so it can only appear
-// inside a `! frame` body. v0: scalar color components (see header note).
+// Colors — raylib's Color is a 4-byte by-value C struct, and it crosses the
+// koru event boundary BY VALUE in both directions (verified 2026-07-17:
+// constructor return + draw param, including inside an inlined ! frame
+// body). `color` constructs one at the koru level; draw events take it as a
+// value param.
 // ============================================================================
 
-~pub event draw.clear { f: *Frame<frame>, r: u8, g: u8, b: u8 }
+pub const Color = c.Color;
+
+~pub event color { r: u8, g: u8, b: u8 } -> Color
+
+~proc color|zig {
+    return $mod.Color{ .r = r, .g = g, .b = b, .a = 255 };
+}
+
+// ============================================================================
+// Textures — the second obligation. GPU texture memory must be unloaded
+// exactly once (UnloadTexture); in raw raylib forgetting it leaks VRAM
+// silently. Here `loaded!` makes the texture unleakable, and every loader
+// BORROWS the window (<opened|active>, 330_050 union-borrow) so loading a
+// texture without a live GL context is uncompilable — a dependency raylib's
+// own API leaves implicit and punishes at runtime.
+//
+// Textures stay SYMMETRIC (loaded -> unload), unlike the window's
+// asymmetric opened -> active -> close: the "first use" transition would
+// have to happen inside a `! frame` body, and a consume+re-mint there
+// cannot escape the frame borrow's scope to reach the unload site. The
+// asymmetric model needs the transition at flow level; draws are not
+// flow-level. (Loaded-never-drawn therefore auto-heals like any symmetric
+// obligation — a KORU030 under --auto-discharge=disable.)
+// ============================================================================
+
+pub const Texture = struct {
+    tex: c.Texture2D,
+};
+
+// Internal: wrap a validated GPU texture in a heap token.
+fn mintTexture(t: c.Texture2D) *Texture {
+    const h = std.heap.page_allocator.create(Texture) catch @panic("raylib: OOM allocating Texture token");
+    h.* = Texture{ .tex = t };
+    return h;
+}
+
+// Solid-color texture, generated on the GPU — no file dependency, the
+// deterministic path tests use.
+~pub event texture.gen.color { win: *Window<opened|active>, width: i32, height: i32, col: Color }
+| tex *Texture<loaded!>
+| err []const u8
+
+~proc texture.gen.color|zig {
+    _ = &win;
+    const img = c.GenImageColor(width, height, col);
+    const t = c.LoadTextureFromImage(img);
+    c.UnloadImage(img);
+    if (!c.IsTextureValid(t)) {
+        return .{ .err = "raylib: generated texture failed to upload" };
+    }
+    return .{ .tex = $mod.mintTexture(t) };
+}
+
+// Texture from an image file (png, bmp, ...).
+~pub event texture.load { win: *Window<opened|active>, path: []const u8 }
+| tex *Texture<loaded!>
+| err []const u8
+
+~proc texture.load|zig {
+    _ = &win;
+    const t = c.LoadTexture(path.ptr);
+    if (!c.IsTextureValid(t)) {
+        return .{ .err = "raylib: texture failed to load (missing file or bad format)" };
+    }
+    return .{ .tex = $mod.mintTexture(t) };
+}
+
+~pub event texture.unload { tex: *Texture<!loaded> }
+
+~proc texture.unload|zig {
+    c.UnloadTexture(tex.tex);
+    std.heap.page_allocator.destroy(tex);
+}
+
+// ============================================================================
+// Drawing — every draw call borrows the frame handle, so it can only appear
+// inside a `! frame` body.
+// ============================================================================
+
+~pub event draw.texture { f: *Frame<frame>, tex: *Texture<loaded>, x: i32, y: i32, tint: Color }
+
+~proc draw.texture|zig {
+    _ = &f;
+    c.DrawTexture(tex.tex, x, y, tint);
+}
+
+~pub event draw.clear { f: *Frame<frame>, col: Color }
 
 ~proc draw.clear|zig {
     _ = &f;
-    c.ClearBackground(c.Color{ .r = r, .g = g, .b = b, .a = 255 });
+    c.ClearBackground(col);
 }
 
-~pub event draw.text { f: *Frame<frame>, text: []const u8, x: i32, y: i32, size: i32, r: u8, g: u8, b: u8 }
+~pub event draw.text { f: *Frame<frame>, text: []const u8, x: i32, y: i32, size: i32, col: Color }
 
 ~proc draw.text|zig {
     _ = &f;
-    c.DrawText(text.ptr, x, y, size, c.Color{ .r = r, .g = g, .b = b, .a = 255 });
+    c.DrawText(text.ptr, x, y, size, col);
 }
