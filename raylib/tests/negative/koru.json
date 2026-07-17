@@ -1,0 +1,7 @@
+{
+  "name": "raylib-negative-tests",
+  "version": "0.1.0",
+  "paths": {
+    "libs": "../../.."
+  }
+}

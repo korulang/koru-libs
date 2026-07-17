@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/raylib",
+  "version": "0.0.1",
+  "description": "raylib for Koru — leak-proof windows, frame-loop-as-effect-branch, and drawing with phantom obligations",
+  "keywords": ["koru", "korulang", "raylib", "graphics", "gamedev", "window", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "raylib"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["raylib"]
+    }
+  }
+}

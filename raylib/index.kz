@@ -1,0 +1,181 @@
+// @korulang/raylib — raylib for Koru (v0: window + frame loop + basic drawing)
+//
+// Lifts raylib's window/drawing core behind phantom obligations. The C footguns
+// this compiles away:
+//
+//   1. InitWindow() must be paired with CloseWindow() — forget it and the GL
+//      context / window leaks. Here the window lifecycle is ASYMMETRIC
+//      (opened -> active -> closed, see the lifecycle section below): an
+//      active window's forgotten close is auto-healed (unique discharger) or
+//      a KORU030 under --auto-discharge=disable — and a window that is opened
+//      but NEVER RENDERED is a KORU030 outright, in both modes: allocate-
+//      without-use has no discharge path at all.
+//   2. Drawing outside a BeginDrawing()/EndDrawing() bracket is a silent no-op
+//      or corruption. Here every draw call borrows a *Frame<frame> handle that
+//      only exists inside the `! frame` effect-branch body — drawing outside a
+//      frame is not expressible.
+//   3. Forgetting EndDrawing() hangs the swap chain. Here the engine owns the
+//      bracket: the frame body inlines between Begin and End, so the user
+//      cannot omit it (same safe-by-construction shape as sqlite3's
+//      `! row` iteration, which owns sqlite3_finalize).
+//
+// House style follows evp/index.kz and sqlite3/index.kz: `<state!>` grants an
+// obligation, `<!state>` consumes it, bare `<state>` borrows.
+//
+// v0 keeps the surface scalar (r/g/b u8 params instead of raylib's by-value
+// Color struct). By-value C-struct params/returns across the koru->Zig event
+// boundary are an unprobed toolchain question — probing that is a deliberate
+// next step, not something this file works around.
+
+~import std/build
+~import std/deps
+
+~std/deps:requires.system {
+    "name": "raylib",
+    "check": "pkg-config --modversion raylib",
+    "brew": "raylib",
+    "apt": "libraylib-dev",
+    "dnf": "raylib-devel",
+    "pacman": "raylib",
+    "apk": "raylib-dev"
+}
+
+~std/build:requires {
+    exe.linkSystemLibrary("raylib");
+    exe.linkLibC();
+    // Homebrew locations (harmless on Linux, where system paths are searched).
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+}
+
+const std = @import("std");
+pub const c = @cImport({
+    @cInclude("raylib.h");
+});
+
+// The one raylib window. raylib's window is global C state with no handle of
+// its own — this token exists to carry the phantom obligation.
+pub const Window = struct {
+    _token: u8,
+};
+
+// A frame in flight — only ever handed out by `frames`' `! frame` branch, as a
+// scoped borrow released at the frame-body boundary. Drawing requires it.
+pub const Frame = struct {
+    _token: u8,
+};
+
+// ============================================================================
+// Window lifecycle — the ASYMMETRIC model (canonical fixture:
+// koru tests/regression/336_OBLIGATION_MATRIX/db.kz, connected -> active):
+//
+//   opened  — fresh from window.open, never rendered. NO disposer accepts
+//             this state, and `frames` takes a `count` param so the
+//             auto-discharge walk cannot route through it either: a window
+//             you open and never render is a KORU030 compile error, not a
+//             silent RAII autodrop.
+//   active  — has rendered at least once (`frames` consumes
+//             <!opened|!active> and re-mints <active!>).
+//   closed  — window.close accepts ONLY <!active>.
+//
+// raylib's InitWindow doesn't report failure; IsWindowReady() lifts the
+// invalid-window state into an honest `| err` branch instead of letting a dead
+// window limp on.
+// ============================================================================
+
+~pub event window.open { width: i32, height: i32, title: []const u8 }
+| win *Window<opened!>
+| err []const u8
+
+~proc window.open|zig {
+    c.InitWindow(width, height, title.ptr);
+    if (!c.IsWindowReady()) {
+        return .{ .err = "raylib: window failed to initialize" };
+    }
+    const w = std.heap.page_allocator.create(Window) catch @panic("raylib: OOM allocating Window token");
+    w.* = Window{ ._token = 0 };
+    return .{ .win = w };
+}
+
+// Hidden variant — same lifecycle, window never shown. This is what tests use:
+// the full init/draw/close path runs without flashing a window.
+~pub event window.open.hidden { width: i32, height: i32, title: []const u8 }
+| win *Window<opened!>
+| err []const u8
+
+~proc window.open.hidden|zig {
+    c.SetConfigFlags(c.FLAG_WINDOW_HIDDEN);
+    c.InitWindow(width, height, title.ptr);
+    if (!c.IsWindowReady()) {
+        return .{ .err = "raylib: hidden window failed to initialize" };
+    }
+    const w = std.heap.page_allocator.create(Window) catch @panic("raylib: OOM allocating Window token");
+    w.* = Window{ ._token = 0 };
+    return .{ .win = w };
+}
+
+~pub event window.close { win: *Window<!active> }
+
+~proc window.close|zig {
+    c.CloseWindow();
+    std.heap.page_allocator.destroy(win);
+}
+
+// ============================================================================
+// The frame loop — the heart of every raylib program, as an effect branch.
+// This is the `opened -> active` transition: it consumes either state
+// (<!opened|!active>, so repeated frame batches are fine, mirroring
+// tx.begin/tx.exec in the 336 fixture) and re-mints <active!> through
+// `| done`. Only a window that has been through here can be closed.
+//
+// `! frame` fires once per frame with the body inlined between BeginDrawing
+// and EndDrawing — the engine owns the bracket, exactly as sqlite3's `! row`
+// owns sqlite3_finalize. The loop ends after `count` frames or when the OS
+// asks the window to close, whichever comes first (bounded so tests halt).
+// ============================================================================
+
+~pub event frames { win: *Window<!opened|!active>, count: i32 }
+! frame *Frame<frame!>
+| done *Window<active!>
+
+~proc frames|zig {
+    // Effect-branch proc: this body inlines into the consumer's frame, where
+    // the module's bare names don't exist. `$mod.` is the compiler-provided
+    // spelling for the declaring module's own scope (koru 400_155) — never
+    // reach through emitter-internal naming.
+    var __f = $mod.Frame{ ._token = 0 };
+    var i: i32 = 0;
+    while (i < count and !$mod.c.WindowShouldClose()) : (i += 1) {
+        $mod.c.BeginDrawing();
+        frame(&__f);
+        $mod.c.EndDrawing();
+    }
+    return .{ .done = win };
+}
+
+// No-op consumer of the per-frame borrow. The compiler auto-inserts this to
+// release `<frame!>` at each frame-body boundary; the user never calls it.
+// (Mirror of sqlite3's release.row.)
+~pub event release.frame { f: *Frame<!frame> }
+~proc release.frame|zig { _ = &f; }
+
+// ============================================================================
+// Drawing — every draw call borrows the frame handle, so it can only appear
+// inside a `! frame` body. v0: scalar color components (see header note).
+// ============================================================================
+
+~pub event draw.clear { f: *Frame<frame>, r: u8, g: u8, b: u8 }
+
+~proc draw.clear|zig {
+    _ = &f;
+    c.ClearBackground(c.Color{ .r = r, .g = g, .b = b, .a = 255 });
+}
+
+~pub event draw.text { f: *Frame<frame>, text: []const u8, x: i32, y: i32, size: i32, r: u8, g: u8, b: u8 }
+
+~proc draw.text|zig {
+    _ = &f;
+    c.DrawText(text.ptr, x, y, size, c.Color{ .r = r, .g = g, .b = b, .a = 255 });
+}
