@@ -1,3 +1,5 @@
+//~ run
+
 // gzip round-trip test: compress then decompress and assert the bytes
 // come back byte-identical. This is the first real exercise of
 // @korulang/gzip anywhere in the repo (index.kz previously had zero

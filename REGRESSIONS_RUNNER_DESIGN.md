@@ -139,11 +139,176 @@ inside the *test program*, never inside the suite spec.)
 
 1. **The exact inline annotation syntax** — the editor's job. e.g. an obligation
    negative referencing two lines by name + a diagnostic ID. This is the thing to
-   sketch.
+   sketch. → **Concrete proposal below (2026-07-17), spiked in the runner.**
 2. **v1 scope** — which outcome-kinds + which superpowers ship first. Nominated
    headline three: staged must-not-compile · leak-gate · cross-backend parity.
+   → **Proposal below commits to exactly these three.**
 3. **Differential/property + shrinking**: v1 or v2? (Leans v2, but the parity seam
    should exist in v1.)
 4. **Fixture scope/caching vocabulary** (once-per-case / module / run).
 5. **Naming**: "regression" is one *mode* (the over-time green→red tracking); the
    whole thing is closer to a *verification/conformance runner*.
+
+---
+
+## v1 proposal (2026-07-17) — inline annotation syntax + scope. DRAFT for Lars's glance.
+
+### The sigil pair
+
+- **`//~ …`** — a runner directive. koru's own `~` sigil inside a comment: reads as
+  koru, greppable, can't collide with prose. The test file stays a plain koru
+  program (comment-carried expectations are the compiler-suite convergence:
+  Rust `//~`, Clang `expected-error`, Swift `#name` — and a frontend-parse-error
+  test *can't* carry typed declarations, so comments are structurally required
+  for the negative kinds anyway).
+- **`//#name`** — a named line marker (Swift-style), referenced from a pin as
+  `@name`. **Reserved in v1, not enforced** — see float F1 below.
+
+### Grammar
+
+```
+//~ run                                      positive: compiles, runs, exits 0, no leaks
+//~ compile_fail(frontend)                   negative, pinned to stage
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch   diagnostic pin: ID + message substring
+//~ error[KORU030]                           diagnostic pin: ID only
+//~ leaks: allow <reason>                    opt out of the leak gate — reason REQUIRED
+//~ backends: zig js                         parity declaration (grammar reserved, v1.1)
+```
+
+The `error[…]` pin deliberately mirrors the compiler's own diagnostic format —
+koruc prints `error[KORU030]: Phantom state mismatch: expected …` (SHOWN, this
+session) — so a pin is a prefix of the real diagnostic line. That makes future
+autoupdate Carbon-trivial: *write the diagnostic line into the file as-is*.
+
+### Semantics (enforced by the spike)
+
+- **Kind is declared in-file, explicitly.** `//~ run` is an assertion
+  ("expected-no-diagnostics"), distinct from "nobody wrote a check". The JSON
+  `"kind"` in suite.k is retired — declaring it is now a hard per-case error with
+  teaching. Expectations live in the test; the suite stays pure composition.
+- **An unpinned negative is itself a failure** (the `no-error-pin` keeper):
+  `compile_fail` requires ≥1 `error[…]` pin.
+- **All pins must match**: each pin must find a stderr line containing both
+  `[ID]` and the substring. Extra unexpected diagnostics are tolerated in v1
+  (lenient, Rust-style). Strict-set matching arrives together with autoupdate
+  (Carbon-style) — open fork below.
+- **Stage check** from koruc's phase markers: phase progress goes to stdout
+  (`→ ./backend.zig`, `Building executable...`), diagnostics to stderr, exit 1 on
+  failure (all SHOWN this session). Backend reached + pinned `frontend` → fail,
+  and vice versa. The full 4-stage vocabulary from koru's harness
+  (FRONTEND_COMPILE_ERROR / BACKEND_COMPILE_ERROR / BACKEND_RUNTIME_ERROR /
+  BACKEND_EXEC_ERROR) is the target; v1 scores the frontend/backend split only —
+  the finer stages aren't distinguishable from a single `koruc` invocation yet,
+  so the runner **rejects them with teaching** rather than silently accepting a
+  pin it can't score.
+- **Leak gate, default ON, overrides pass** — for positives AND negatives (the
+  harness gates both, `scripts/regression_lib.sh:663`). Two surfaces, two
+  detections (both grounded in-tree this session):
+  - *koruc's own compile-phase leaks*: stderr line matching `memory address …
+    leaked` (the Zig GPA report — the same grep `run_regression.sh` uses).
+  - *the produced program's leaks*: koru-generated `main()` already counts
+    `koru_allocator` alloc/free pairs and prints `KORU LEAK CHECK FAILED` +
+    `exit(1)` itself (SHOWN in `gzip/tests/output_emitted.zig:751-758`) — the
+    gate is koru-native at the program level; the runner recognizes the marker.
+  `//~ leaks: allow` requires a reason (reasoned-skip principle) and forgives
+  exactly the leak failure, never other nonzero exits.
+  *Honesty note: the gate's red path is wired but not yet SHOWN — none of the
+  three suite cases leaks, so no run has demonstrated a leak-failure end-to-end.*
+- **Unknown or unenforceable directives are hard errors** — a directive that
+  parses but isn't enforced is a label that lies (no-fallbacks). `backends:` and
+  `@marker` are rejected with teaching until their enforcement lands.
+
+### Real example — gzip/tests/deflate_use_after_finish.kz (annotated, in tree)
+
+```koru
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+//~ error[KORU030]: was not discharged
+```
+
+pins (SHOWN — actual koruc stderr, this session):
+
+```
+error[KORU030]: Phantom state mismatch: expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
+error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call: libs.gzip:deflate.release
+```
+
+The file's old prose `// EXPECTED: …` comment is replaced by the pins — the
+expectation is now machine-checked, so it can't drift into a doc-lie.
+
+### v1 scope — the headline three, committed
+
+1. **Staged must-not-compile** (frontend|backend + ID/substring pins) — SPIKED.
+2. **Leak gate** (default-on, overrides pass, reasoned opt-out) — SPIKED.
+3. **Cross-backend parity** — grammar reserved (`//~ backends: zig js`),
+   enforcement v1.1: needs the runner to drive the js target and diff outputs.
+   The overridable `run` seam is where it plugs in.
+
+### Toolchain floats (found while grounding — each might be me)
+
+- **F1 — backend diagnostics carry the checker's name and the WRONG source
+  line.** The phantom checker reports `--> phantom_semantic_check:25:0`: the
+  *checker's name* where the file should be. The line number IS source-relative
+  (SHOWN: adding 3 header lines moved the report 22→25 in lockstep) — but it
+  points at the *first* `deflate.push` (line 25), not the offending
+  use-after-finish push (line 27) that the message is actually about. Frontend
+  errors DO carry the real location (`--> frontend_err.kz:3:1`, SHOWN).
+  Consequence: named-line-marker pinning
+  (`//#use-site` / `@use-site`) — the steal-list's *structurally required*
+  feature for multi-line obligation errors — is blocked at the backend until
+  diagnostics carry real `file:line`. This is the koru-level-diagnostics lift
+  (the known systemic program), surfaced here as the concrete blocker.
+- **F2 — the raw Zig stack trace leaks into koruc stderr** after the KORU030
+  diagnostics (`backend.zig:95 … error.CompilerCoordinationFailed`). Known
+  intentional escape-hatch gap, not new — noted because the runner deliberately
+  surfaces koruc's stderr verbatim on failure, so this leak is now user-visible
+  in the board output too.
+
+### Aspiration — piggyback concurrent runs (Lars, 2026-07-17)
+
+The koru repo's harness pain: multiple runs of the same suite get fired in the
+same worktree (several agents, one tree) and race. Note this is a CORRECTNESS
+bug, not just waste: koruc writes generated artifacts (`backend.zig`,
+`output_emitted.zig`, `a.out`) into the test's own directory (SHOWN in
+gzip/tests), so concurrent runs clobber each other's verdicts.
+
+Design shape — **per-workdir run ledger + atomic case claims**:
+- Shared journal (`.koru-regressions/journal.jsonl`), one line per scored case,
+  written incrementally.
+- A run claims a case via `O_EXCL` create of `case-<id>.claim` (pid +
+  timestamp); the loser skips to the next unclaimed case and only at the end
+  streams/waits on sibling-claimed results. Stale claims (dead pid, past the
+  watchdog) are stealable.
+- Emergent property: concurrent invocations become cooperating workers — the
+  second run helps with the unclaimed tail, or degenerates to a viewer of the
+  sibling's board when everything is claimed (the literal piggyback).
+- Composes with the fingerprint result cache (steal-list keeper): key journal
+  entries by hash(test file + transitive import closure + koruc version) and
+  the ledger becomes a cross-time cache — unchanged cases never re-run.
+
+Staging: in-flight dedup first (claims + journal, case id = file path, no
+fingerprinting needed); fingerprint caching second (wants the import-closure
+hash). Claims alone also kill the artifact race without any koruc change; an
+out-of-tree output dir for koruc would be the toolchain-side alternative.
+
+### Open forks from this proposal (the glance)
+
+- (a) **Strict diagnostic-set matching + autoupdate** — RULED (Lars, 2026-07-17):
+  lenient in v1; strict matching and autoupdate land TOGETHER as one v2 feature,
+  never strict alone (strict without a promote flow punishes exactly the
+  error-message tuning we most want to encourage). Optional cheap belt if wanted
+  later: a `//~ diagnostics: N` count pin (the compiler already prints the count
+  in its `──── diagnostics (N) ────` summary).
+- (b) **Sigil bikeshed** — RULED (Lars, 2026-07-17): `//~` + `//#`/`@name` as
+  proposed and spiked. (Rust precedent noted through gritted teeth.)
+- (c) **`backends:` placement** — RULED (Lars, 2026-07-17): per-file
+  (`//~ backends: zig js` in the test itself). Parity participation is an
+  expectation, and expectations live inline; per-case in suite.k would recreate
+  the two-file drift that retiring JSON "kind" killed. Key split: the file
+  DECLARES which backends the test must hold on (standing contract); the
+  invocation SELECTS which declared backends a given run exercises (quick run =
+  zig only, full run = all declared, later a `--backends` sweep flag). No
+  directive = primary backend only, explicit on the board — absence reads as
+  "not claimed for js," never as silently-skipped green. (Matches koru's
+  per-test LANGUAGES marker, minus the marker-file bureaucracy.)

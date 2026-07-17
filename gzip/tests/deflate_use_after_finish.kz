@@ -1,16 +1,19 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+//~ error[KORU030]: was not discharged
+
 // NEGATIVE (must FAIL to compile): use-after-free of a finished stream.
 //
 // `deflate.finish` transitions the Deflater from <fed!> to <done!>. Pushing
 // to it afterwards (deflate.push requires <!open|!fed>) is a use-after-free:
 // the zlib z_stream has already had deflateEnd() called on it. The phantom
-// checker rejects this at compile time.
+// checker rejects this at compile time — the //~ pins above are the
+// machine-checked expectation (they replaced the old prose EXPECTED: note,
+// which could drift into a doc-lie).
 //
 // Note we push a real chunk BEFORE finishing — that is what reaches the <fed!>
 // state finish now demands (see deflate_finish_without_push.kz for the
 // unfed case). This test isolates the use-after-free specifically.
-//
-// EXPECTED: error[KORU030]: Phantom state mismatch: expected
-//           '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
 //
 // This is the proof that the streaming obligations actually bite. If this file
 // ever compiles, the resource-safety pillar has regressed.

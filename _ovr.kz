@@ -1,12 +1,10 @@
 ~import koru/regressions
 ~koru/regressions:case(gzip round-trip) {
-  "file": "gzip/tests/roundtrip.kz",
-  "kind": "run"
+  "file": "gzip/tests/roundtrip.kz"
 }
 ~koru/regressions:case(gzip use-after-finish) {
-  "file": "gzip/tests/deflate_use_after_finish.kz",
-  "kind": "compile_fail"
+  "file": "gzip/tests/deflate_use_after_finish.kz"
 }
-~koru/regressions:run = koru/regressions:run.default(dir, base, kind, allocator)
+~koru/regressions:run = koru/regressions:run.default(dir, base, allocator)
 | passed => failed "OVERRIDDEN (default said pass)"
 | failed _ => failed "OVERRIDDEN (default said fail)"

@@ -1,24 +1,33 @@
 // @korulang/regressions — a programmable, koru-native test/verification runner.
 //
-// v2 WALKING SKELETON — JSON-block DSL. A case is declared as:
+// v3 — SELF-DESCRIBING TESTS (inline `//~` annotations). A case is declared as:
 //
 //   koru/regressions:case(gzip round-trip) {
-//     "file": "gzip/tests/roundtrip.kz",
-//     "kind": "run"
+//     "file": "gzip/tests/roundtrip.kz"
 //   }
 //
 // where the label is an `expr: Expression` and the body is a `source: Source`
 // carrying a JSON object (the same idiom koru itself uses for `flag.declare` /
 // `command.declare` / `deps.requires`). The `test` command collects these at
-// COMPILE TIME (same [comptime|command] mechanism as koru/docker), parses each
-// block with std.json, runs each case through a `koruc` subprocess, and scores
-// it. Zero koru-toolchain changes — pure external orchestration.
+// COMPILE TIME (same [comptime|command] mechanism as koru/docker), runs each
+// case through a `koruc` subprocess, and scores it. Zero koru-toolchain
+// changes — pure external orchestration.
 //
-// SCORING (v2):
-//   "kind": "run"          → koruc compiles the file (exit 0), then ./a.out exits 0.
-//   "kind": "compile_fail" → koruc must FAIL to compile the file (nonzero exit).
-// Next: diagnostic pinning, category/tags selection, post.sh / overridable `run`,
-// snapshots + regression tracking, general run-recipe (pytest/cargo).
+// EXPECTATIONS live INLINE in the test file itself (resolved fork — see
+// REGRESSIONS_RUNNER_DESIGN.md "v1 proposal"), as `//~` directives:
+//
+//   //~ run                                      compile + run + exit 0 + no leaks
+//   //~ compile_fail(frontend|backend)           must fail, pinned to stage
+//   //~ error[KORU030]: Phantom state mismatch   pinned diagnostic (ID + substring)
+//   //~ leaks: allow <reason>                    opt out of the leak gate (reasoned)
+//
+// The suite stays pure composition (a case = a label + a file). A JSON "kind"
+// is retired and rejected with teaching. An unpinned compile_fail is itself a
+// failure. Leak gate is default-ON and overrides pass (same detection as
+// koru's run_regression.sh: the Zig GPA "memory address … leaked" report).
+// Next: named line markers (@marker — blocked on backend diagnostics carrying
+// real file:line), cross-backend parity (backends: zig js), category/tags
+// selection, snapshots + regression tracking, general run-recipe (pytest/cargo).
 
 ~import std/compiler
 
@@ -44,7 +53,10 @@ const std = @import("std");
     defer arena.deinit();
     const a = arena.allocator();
 
-    const Case = struct { name: []const u8, file: []const u8, kind: []const u8 };
+    // `legacy_kind` marks a case that still declares "kind" in its JSON block —
+    // retired in v3 (expectations moved into the test file); scored as a loud
+    // per-case failure with teaching, never silently honored.
+    const Case = struct { name: []const u8, file: []const u8, legacy_kind: bool };
 
     const stripQuotes = struct {
         fn go(v: []const u8) []const u8 {
@@ -82,7 +94,7 @@ const std = @import("std");
         }
 
         var file: []const u8 = "";
-        var kind: []const u8 = "run";
+        var legacy_kind = false;
         if (jt.len > 0) {
             if (std.json.parseFromSlice(std.json.Value, a, jt, .{})) |parsed| {
                 // Owned by the arena `a`; strings stay valid until arena.deinit().
@@ -91,9 +103,7 @@ const std = @import("std");
                     if (obj.get("file")) |v| {
                         if (v == .string) file = v.string;
                     }
-                    if (obj.get("kind")) |v| {
-                        if (v == .string) kind = v.string;
-                    }
+                    if (obj.get("kind") != null) legacy_kind = true;
                 }
             } else |_| {
                 std.debug.print("  json parse failed for case '{s}': {s}\n", .{ label, jt });
@@ -102,7 +112,7 @@ const std = @import("std");
 
         const name = if (label.len > 0) label else file;
         if (file.len > 0) {
-            cases.append(a, .{ .name = name, .file = file, .kind = kind }) catch {
+            cases.append(a, .{ .name = name, .file = file, .legacy_kind = legacy_kind }) catch {
                 std.debug.print("out of memory\n", .{});
                 return;
             };
@@ -125,10 +135,16 @@ const std = @import("std");
         const base = std.fs.path.basename(c.file);
         // Traverse via the overridable `run` seam — a user can swap this whole
         // behavior with `~koru/regressions:run = <their flow>`.
+        if (c.legacy_kind) {
+            failed += 1;
+            std.debug.print("  \x1b[31m✗\x1b[0m {s}\n", .{c.name});
+            std.debug.print("      \x1b[2msuite declares \"kind\" — retired in v3: expectations moved into the test file.\x1b[0m\n", .{});
+            std.debug.print("      \x1b[2mAnnotate it with //~ run or //~ compile_fail(frontend|backend) and delete \"kind\" from the case block.\x1b[0m\n", .{});
+            continue;
+        }
         const result = run_event.handler(.{
             .dir = dir,
             .base = base,
-            .kind = c.kind,
             .allocator = a,
         });
         switch (result) {
@@ -170,7 +186,6 @@ const std = @import("std");
 ~[comptime|abstract] pub event run {
     dir: []const u8,
     base: []const u8,
-    kind: []const u8,
     allocator: __koru_std.mem.Allocator,
 }
 | passed
@@ -179,21 +194,113 @@ const std = @import("std");
 // Default = a FLOW that delegates to the zig executor and re-produces `run`'s
 // own branches. Using a flow default (not a bare `~proc run|zig`) is what makes
 // `run.default(...)` available to overrides — the compiler:coordinate idiom.
-~run = run-exec(dir, base, kind, allocator)
+~run = run-exec(dir, base, allocator)
 | passed => passed
 | failed f => failed f
 
 // The actual subprocess executor (leaf zig work), behind the flow above.
+// Reads the test file's own `//~` directives (the test is self-describing),
+// then drives koruc and scores against them.
 ~[comptime] event run-exec {
     dir: []const u8,
     base: []const u8,
-    kind: []const u8,
     allocator: __koru_std.mem.Allocator,
 }
 | passed
 | failed []const u8
 
 ~proc run-exec|zig {
+    // ---- read the test file and parse its //~ directives ----
+    const path = std.fs.path.join(allocator, &.{ dir, base }) catch return .{ .failed = "out of memory" };
+    const source = std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024) catch
+        return .{ .failed = std.fmt.allocPrint(allocator, "cannot read test file '{s}'", .{path}) catch "cannot read test file" };
+
+    const Pin = struct { id: []const u8, substr: []const u8 };
+    const Kind = enum { unset, run, compile_fail };
+    const Stage = enum { frontend, backend };
+
+    var kind: Kind = .unset;
+    var stage: Stage = .backend;
+    var leaks_allowed = false;
+    var pins = std.ArrayListUnmanaged(Pin){};
+
+    var lines = std.mem.splitScalar(u8, source, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (!std.mem.startsWith(u8, line, "//~")) continue;
+        const d = std.mem.trim(u8, line[3..], " \t");
+        if (std.mem.eql(u8, d, "run")) {
+            if (kind != .unset) return .{ .failed = "conflicting //~ directives: kind declared twice" };
+            kind = .run;
+        } else if (std.mem.startsWith(u8, d, "compile_fail")) {
+            if (kind != .unset) return .{ .failed = "conflicting //~ directives: kind declared twice" };
+            kind = .compile_fail;
+            const rest = std.mem.trim(u8, d["compile_fail".len..], " \t");
+            if (std.mem.eql(u8, rest, "(frontend)")) {
+                stage = .frontend;
+            } else if (std.mem.eql(u8, rest, "(backend)")) {
+                stage = .backend;
+            } else if (rest.len == 0) {
+                return .{ .failed = "//~ compile_fail needs a stage pin: compile_fail(frontend) or compile_fail(backend)" };
+            } else {
+                return .{ .failed = std.fmt.allocPrint(allocator, "unscoreable compile_fail stage '{s}' — v1 scores (frontend) and (backend); the finer backend-compile/backend-runtime/backend-exec split needs per-stage driving and isn't enforced yet", .{rest}) catch "unscoreable compile_fail stage" };
+            }
+        } else if (std.mem.startsWith(u8, d, "error[")) {
+            const close = std.mem.indexOfScalar(u8, d, ']') orelse
+                return .{ .failed = "malformed //~ error[…] pin: missing ']'" };
+            const id = d["error[".len..close];
+            if (id.len == 0) return .{ .failed = "malformed //~ error[…] pin: empty diagnostic ID" };
+            const after = std.mem.trim(u8, d[close + 1 ..], " \t");
+            if (after.len > 0 and after[0] == '@')
+                return .{ .failed = "named line markers (@marker) are reserved but not enforced yet — backend diagnostics don't carry a real source file:line (see REGRESSIONS_RUNNER_DESIGN.md, float F1); pin by ID + message substring for now" };
+            var substr: []const u8 = "";
+            if (after.len > 0) {
+                if (after[0] != ':')
+                    return .{ .failed = std.fmt.allocPrint(allocator, "malformed //~ error[…] pin — expected ':' after error[{s}]", .{id}) catch "malformed //~ error[…] pin" };
+                substr = std.mem.trim(u8, after[1..], " \t");
+            }
+            pins.append(allocator, .{ .id = id, .substr = substr }) catch return .{ .failed = "out of memory" };
+        } else if (std.mem.startsWith(u8, d, "leaks:")) {
+            const rest = std.mem.trim(u8, d["leaks:".len..], " \t");
+            if (!std.mem.startsWith(u8, rest, "allow"))
+                return .{ .failed = std.fmt.allocPrint(allocator, "unknown //~ leaks: form '{s}' — only 'leaks: allow <reason>' exists (the gate is default-ON)", .{rest}) catch "unknown //~ leaks: form" };
+            const reason = std.mem.trim(u8, rest["allow".len..], " \t");
+            if (reason.len == 0)
+                return .{ .failed = "//~ leaks: allow requires a reason — a leak waiver without a why is a silent fallback" };
+            leaks_allowed = true;
+        } else if (std.mem.startsWith(u8, d, "backends:")) {
+            return .{ .failed = "//~ backends: is reserved for cross-backend parity (v1.1) and not enforced yet — remove it rather than carry a label that lies" };
+        } else {
+            return .{ .failed = std.fmt.allocPrint(allocator, "unknown //~ directive: '{s}'", .{d}) catch "unknown //~ directive" };
+        }
+    }
+
+    if (kind == .unset)
+        return .{ .failed = "no //~ kind directive — a test is self-describing: annotate it with //~ run or //~ compile_fail(frontend|backend)" };
+    if (kind == .compile_fail and pins.items.len == 0)
+        return .{ .failed = "unpinned negative — //~ compile_fail requires at least one //~ error[KORUnnn] pin (an unpinned negative is itself a failure)" };
+    if (kind == .run and pins.items.len > 0)
+        return .{ .failed = "//~ error[…] pins on a //~ run case — pins only score compile failures" };
+
+    // Two leak surfaces, two detections:
+    //   - koruc's own compile-phase leaks: the Zig GPA report line
+    //     "error(gpa): memory address 0x… leaked" (same grep as run_regression.sh).
+    //   - the produced program's leaks: koru-generated main() counts
+    //     koru_allocator alloc/free pairs and prints "KORU LEAK CHECK FAILED"
+    //     + exit(1) itself — the koru-native marker.
+    const hasLeak = struct {
+        fn go(text: []const u8) bool {
+            if (std.mem.indexOf(u8, text, "KORU LEAK CHECK FAILED") != null) return true;
+            var it = std.mem.splitScalar(u8, text, '\n');
+            while (it.next()) |l| {
+                if (std.mem.indexOf(u8, l, "memory address") != null and
+                    std.mem.indexOf(u8, l, "leaked") != null) return true;
+            }
+            return false;
+        }
+    }.go;
+
+    // ---- drive koruc ----
     const compile = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{ "koruc", base },
@@ -202,12 +309,39 @@ const std = @import("std");
     defer allocator.free(compile.stdout);
     defer allocator.free(compile.stderr);
     const compiled_ok = compile.term == .Exited and compile.term.Exited == 0;
+    // Phase progress goes to koruc's stdout; "backend reached" = the frontend
+    // handed off (generated backend.zig / started building the executable).
+    const backend_reached = std.mem.indexOf(u8, compile.stdout, "backend.zig") != null or
+        std.mem.indexOf(u8, compile.stdout, "Building executable") != null;
+    const leak_in_compile = hasLeak(compile.stderr);
 
-    if (std.mem.eql(u8, kind, "compile_fail")) {
-        if (compiled_ok) return .{ .failed = "compiled, but a compile-failure was expected" };
+    if (kind == .compile_fail) {
+        if (compiled_ok)
+            return .{ .failed = "compiled, but //~ compile_fail expected" };
+        if (!leaks_allowed and leak_in_compile)
+            return .{ .failed = "memory leak during compile — the leak gate overrides the expected failure" };
+        if (stage == .frontend and backend_reached)
+            return .{ .failed = std.fmt.allocPrint(allocator, "pinned compile_fail(frontend) but the failure happened at the backend stage\n{s}", .{std.mem.trim(u8, compile.stderr, " \t\r\n")}) catch "wrong failure stage (backend, pinned frontend)" };
+        if (stage == .backend and !backend_reached)
+            return .{ .failed = std.fmt.allocPrint(allocator, "pinned compile_fail(backend) but the failure happened at the frontend stage\n{s}", .{std.mem.trim(u8, compile.stderr, " \t\r\n")}) catch "wrong failure stage (frontend, pinned backend)" };
+        for (pins.items) |p| {
+            const needle = std.fmt.allocPrint(allocator, "[{s}]", .{p.id}) catch return .{ .failed = "out of memory" };
+            var found = false;
+            var it = std.mem.splitScalar(u8, compile.stderr, '\n');
+            while (it.next()) |l| {
+                if (std.mem.indexOf(u8, l, needle) == null) continue;
+                if (p.substr.len == 0 or std.mem.indexOf(u8, l, p.substr) != null) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                return .{ .failed = std.fmt.allocPrint(allocator, "missing pinned diagnostic error[{s}]{s}{s}\n--- actual koruc stderr ---\n{s}", .{ p.id, if (p.substr.len > 0) ": " else "", p.substr, std.mem.trim(u8, compile.stderr, " \t\r\n") }) catch "missing pinned diagnostic" };
+        }
         return .{ .passed = .{} };
     }
 
+    // kind == .run
     if (!compiled_ok) {
         // Hand back koruc's ACTUAL stderr (it owns the file:line + diagnostic id).
         // Duped into `allocator` (the run arena) so it outlives the `defer free`.
@@ -215,6 +349,8 @@ const std = @import("std");
         if (diag.len == 0) return .{ .failed = "compile error (koruc produced no stderr)" };
         return .{ .failed = std.fmt.allocPrint(allocator, "compile error:\n{s}", .{diag}) catch "compile error" };
     }
+    if (!leaks_allowed and leak_in_compile)
+        return .{ .failed = "memory leak during compile — the leak gate overrides pass" };
 
     const ran = std.process.Child.run(.{
         .allocator = allocator,
@@ -223,10 +359,19 @@ const std = @import("std");
     }) catch return .{ .failed = "built binary failed to spawn" };
     defer allocator.free(ran.stdout);
     defer allocator.free(ran.stderr);
-    if (ran.term == .Exited and ran.term.Exited == 0) return .{ .passed = .{} };
-    const rdiag = std.mem.trim(u8, ran.stderr, " \t\r\n");
-    if (rdiag.len == 0) return .{ .failed = "runtime: nonzero exit (no stderr)" };
-    return .{ .failed = std.fmt.allocPrint(allocator, "runtime: nonzero exit\n{s}", .{rdiag}) catch "runtime: nonzero exit" };
+    if (!(ran.term == .Exited and ran.term.Exited == 0)) {
+        // A leaking program exits 1 through koru's OWN leak check ("KORU LEAK
+        // CHECK FAILED"). With a reasoned waiver, that specific failure — and
+        // only that one — is forgiven; any other nonzero exit still fails.
+        if (leaks_allowed and std.mem.indexOf(u8, ran.stderr, "KORU LEAK CHECK FAILED") != null)
+            return .{ .passed = .{} };
+        const rdiag = std.mem.trim(u8, ran.stderr, " \t\r\n");
+        if (rdiag.len == 0) return .{ .failed = "runtime: nonzero exit (no stderr)" };
+        return .{ .failed = std.fmt.allocPrint(allocator, "runtime: nonzero exit\n{s}", .{rdiag}) catch "runtime: nonzero exit" };
+    }
+    if (!leaks_allowed and hasLeak(ran.stderr))
+        return .{ .failed = std.fmt.allocPrint(allocator, "exit 0 but memory leaked — the leak gate overrides pass\n{s}", .{std.mem.trim(u8, ran.stderr, " \t\r\n")}) catch "memory leaked — the leak gate overrides pass" };
+    return .{ .passed = .{} };
 }
 
 // The `case` marker: a declared test case, collected from the AST by `test`.
