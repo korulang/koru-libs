@@ -138,7 +138,15 @@ const std = @import("std");
             },
             .failed => |reason| {
                 failed += 1;
-                std.debug.print("  \x1b[31m✗\x1b[0m {s}  ({s})\n", .{ c.name, reason });
+                std.debug.print("  \x1b[31m✗\x1b[0m {s}\n", .{c.name});
+                // A verification runner that hides the compiler's own output is
+                // worse than no runner. Surface the real diagnostic (koruc's
+                // stderr / the failure reason), indented and dimmed, never
+                // swallowed into a bare "(compile error)".
+                var it = std.mem.splitScalar(u8, std.mem.trim(u8, reason, " \t\r\n"), '\n');
+                while (it.next()) |diag_line| {
+                    std.debug.print("      \x1b[2m{s}\x1b[0m\n", .{diag_line});
+                }
             },
         }
     }
@@ -200,7 +208,13 @@ const std = @import("std");
         return .{ .passed = .{} };
     }
 
-    if (!compiled_ok) return .{ .failed = "compile error" };
+    if (!compiled_ok) {
+        // Hand back koruc's ACTUAL stderr (it owns the file:line + diagnostic id).
+        // Duped into `allocator` (the run arena) so it outlives the `defer free`.
+        const diag = std.mem.trim(u8, compile.stderr, " \t\r\n");
+        if (diag.len == 0) return .{ .failed = "compile error (koruc produced no stderr)" };
+        return .{ .failed = std.fmt.allocPrint(allocator, "compile error:\n{s}", .{diag}) catch "compile error" };
+    }
 
     const ran = std.process.Child.run(.{
         .allocator = allocator,
@@ -210,7 +224,9 @@ const std = @import("std");
     defer allocator.free(ran.stdout);
     defer allocator.free(ran.stderr);
     if (ran.term == .Exited and ran.term.Exited == 0) return .{ .passed = .{} };
-    return .{ .failed = "runtime: nonzero exit" };
+    const rdiag = std.mem.trim(u8, ran.stderr, " \t\r\n");
+    if (rdiag.len == 0) return .{ .failed = "runtime: nonzero exit (no stderr)" };
+    return .{ .failed = std.fmt.allocPrint(allocator, "runtime: nonzero exit\n{s}", .{rdiag}) catch "runtime: nonzero exit" };
 }
 
 // The `case` marker: a declared test case, collected from the AST by `test`.

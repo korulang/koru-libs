@@ -74,32 +74,28 @@ fn hexEncode(bytes: []const u8) []const u8 {
 // name, so "unknown digest" is not a reachable state.
 // ============================================================================
 
-~pub event sha256.init {}
-| ctx *Digest<hashing!>
+~pub event sha256.init {} -> *Digest<hashing!>
 
 ~proc sha256.init|zig {
-    return .{ .ctx = begin(c.EVP_sha256()) };
+    return begin(c.EVP_sha256());
 }
 
-~pub event sha512.init {}
-| ctx *Digest<hashing!>
+~pub event sha512.init {} -> *Digest<hashing!>
 
 ~proc sha512.init|zig {
-    return .{ .ctx = begin(c.EVP_sha512()) };
+    return begin(c.EVP_sha512());
 }
 
-~pub event sha1.init {}
-| ctx *Digest<hashing!>
+~pub event sha1.init {} -> *Digest<hashing!>
 
 ~proc sha1.init|zig {
-    return .{ .ctx = begin(c.EVP_sha1()) };
+    return begin(c.EVP_sha1());
 }
 
-~pub event md5.init {}
-| ctx *Digest<hashing!>
+~pub event md5.init {} -> *Digest<hashing!>
 
 ~proc md5.init|zig {
-    return .{ .ctx = begin(c.EVP_md5()) };
+    return begin(c.EVP_md5());
 }
 
 // ============================================================================
@@ -123,8 +119,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
 // use of the handle after `final` is a compile error.
 // ============================================================================
 
-~pub event final.hex { d: *Digest<!hashing> }
-| digest []const u8
+~pub event final.hex { d: *Digest<!hashing> } -> []const u8
 
 ~proc final.hex|zig {
     var out: [c.EVP_MAX_MD_SIZE]u8 = undefined;
@@ -134,11 +129,10 @@ fn hexEncode(bytes: []const u8) []const u8 {
     }
     c.EVP_MD_CTX_free(d.ctx);
     std.heap.page_allocator.destroy(d);
-    return .{ .digest = hexEncode(out[0..outlen]) };
+    return hexEncode(out[0..outlen]);
 }
 
-~pub event final.bytes { d: *Digest<!hashing> }
-| digest []const u8
+~pub event final.bytes { d: *Digest<!hashing> } -> []const u8
 
 ~proc final.bytes|zig {
     var out: [c.EVP_MAX_MD_SIZE]u8 = undefined;
@@ -150,7 +144,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
     const buf = std.heap.page_allocator.alloc(u8, outlen) catch @panic("openssl: OOM");
     @memcpy(buf, out[0..outlen]);
     std.heap.page_allocator.destroy(d);
-    return .{ .digest = buf };
+    return buf;
 }
 
 // ============================================================================
@@ -158,8 +152,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
 // common "hash this buffer" case. No handle escapes, so nothing to forget.
 // ============================================================================
 
-~pub event sha256.hex { input: []const u8 }
-| digest []const u8
+~pub event sha256.hex { input: []const u8 } -> []const u8
 
 ~proc sha256.hex|zig {
     var out: [32]u8 = undefined;
@@ -167,5 +160,5 @@ fn hexEncode(bytes: []const u8) []const u8 {
     if (c.EVP_Digest(input.ptr, input.len, &out, &outlen, c.EVP_sha256(), null) != 1) {
         @panic("openssl: EVP_Digest failed");
     }
-    return .{ .digest = hexEncode(out[0..outlen]) };
+    return hexEncode(out[0..outlen]);
 }

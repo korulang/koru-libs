@@ -13,7 +13,6 @@
 ~import koru/curl
 ~import std/io
 
-~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null)
-| built req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "x-api-key", .value = "k" } })
+~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null): req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "x-api-key", .value = "k" } })
     | ok resp |> std/io:print.ln("status {{ resp.status:d }}") |> koru/curl:close(resp)
     | err e |> std/io:print.ln("err")

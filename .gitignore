@@ -18,6 +18,16 @@ backend_output_emitted.zig
 output_emitted.zig
 build_output.zig
 
+# Koru toolchain-generated build artifacts (regenerated on every build;
+# contain machine-local paths + compiler module graph — never commit)
+build.zig
+build_backend.zig
+compiler_env.zig
+program.ast.json
+
+# Agent worktrees (live git worktrees, not source)
+.claude/worktrees/
+
 # Node.js
 node_modules/
 npm-debug.log*

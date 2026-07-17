@@ -9,9 +9,6 @@
 ~import libs/evp
 ~import std/io
 
-~libs/evp:sha256.hex(input: "abc")
-| digest h |> std/io:print.ln("oneshot = {{ h:s }}")
+~libs/evp:sha256.hex(input: "abc"): h |> std/io:print.ln("oneshot = {{ h:s }}")
 
-~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "a") |> libs/evp:update(d, bytes: "bc") |> libs/evp:final.hex(d)
-    | digest h |> std/io:print.ln("chunked = {{ h:s }}")
+~libs/evp:sha256.init(): d |> libs/evp:update(d, bytes: "a") |> libs/evp:update(d, bytes: "bc") |> libs/evp:final.hex(d): h |> std/io:print.ln("chunked = {{ h:s }}")

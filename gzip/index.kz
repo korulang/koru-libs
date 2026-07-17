@@ -360,8 +360,7 @@ const Deflater = struct {
 // Discharge the <done!> obligation: copy the compressed bytes out into
 // caller-owned memory, then free the Deflater and its internal buffer.
 // After this call `data` (borrowed) is gone but `bytes` (owned) is yours.
-~pub event deflate.release { d: *Deflater<!done>, data: []const u8 }
-| bytes []const u8
+~pub event deflate.release { d: *Deflater<!done>, data: []const u8 } -> []const u8
 
 ~proc deflate.release|zig {
     const a = std.heap.page_allocator;
@@ -370,5 +369,5 @@ const Deflater = struct {
     const owned = a.dupe(u8, data) catch @panic("gzip: out of memory copying compressed bytes in deflate.release");
     d.out.deinit(a);
     std.heap.page_allocator.destroy(d);
-    return .{ .bytes = owned };
+    return owned;
 }

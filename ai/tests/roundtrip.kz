@@ -8,8 +8,7 @@
 ~import koru/curl
 ~import std/io
 
-~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null)
-| built req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "Content-Type", .value = "application/json" }, .{ .name = "x-api-key", .value = "sk-ant-invalid-test-key" }, .{ .name = "anthropic-version", .value = "2023-06-01" } })
+~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null): req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "Content-Type", .value = "application/json" }, .{ .name = "x-api-key", .value = "sk-ant-invalid-test-key" }, .{ .name = "anthropic-version", .value = "2023-06-01" } })
     | ok resp |> koru/ai:parse.anthropic(resp)
         | ok result |> std/io:print.ln("ok: {{ result.text:s }}") |> koru/curl:close(resp) |> koru/ai:free.request(req)
         | err e |> std/io:print.ln("API error [{{ e.code:d }}] from {{ e.provider:s }}") |> koru/curl:close(resp) |> koru/ai:free.request(req)

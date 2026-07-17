@@ -1,0 +1,32 @@
+// Example: an HTTPS GET whose request line is INTERPOLATED via std/fmt.
+//
+// The point: openssl (a koru-libs package) authors interpolated output by
+// depending on the standard formatting library — `~import std/fmt` — and
+// feeding the formatted text straight into `koru/openssl:write`. No hand-built
+// request string; the `{{ }}` half comes from std/fmt, the write stays openssl's.
+//
+// This is the proof-of-mechanism for authoring more of openssl in Koru itself.
+//
+// Run it:
+//   koruc run openssl/examples/02_interp_write.kz
+
+~import koru/openssl
+~import std/fmt
+~import std/io
+
+var buf: [8192]u8 = undefined;
+
+~event req-path {} -> []const u8
+~proc req-path|zig { return "/"; }
+
+~req-path(): p |> koru/openssl:connect(host: "example.com", port: 443)
+| ok conn |> std/fmt:ln("GET {{ p:s }} HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
+    | line req |> koru/openssl:write(conn, data: req.text)
+        | ok w |> koru/openssl:read(w.conn, buf: buf[0..])
+            | data d |> std/io:print.ln("--- {{ d.bytes.len:d }} bytes of TLS-protected response ---") |> koru/openssl:shutdown(d.conn)
+                | ok s |> koru/openssl:close(conn: s)
+                | err e |> koru/openssl:close(e.conn)
+            | eof ec |> koru/openssl:close(conn: ec)
+            | err re |> std/io:print.ln("read failed: {{ re.msg:s }}") |> koru/openssl:close(re.conn)
+        | err we |> std/io:print.ln("write failed: {{ we.msg:s }}") |> koru/openssl:close(we.conn)
+| err e |> std/io:print.ln("connect failed: {{ e.msg:s }}")

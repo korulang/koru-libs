@@ -151,8 +151,7 @@ pub const Statement = struct {
     item: *const Item,
     program: *const Program,
     allocator: std.mem.Allocator
-}
-| transformed SiteResult
+} -> SiteResult
 
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
@@ -169,7 +168,7 @@ pub const Statement = struct {
     const flow = if (item.* == .flow)
         &item.flow
     else
-        return .{ .transformed = .{} };
+        return .{};
 
     // CRITICAL: Use pointer comparison to identify if this is the top-level query
     // The `invocation` parameter tells us EXACTLY which query is being transformed
@@ -392,7 +391,7 @@ pub const Statement = struct {
         if (maybe_new_program) |new_program| {
             const result = allocator.create(ast.Program) catch unreachable;
             result.* = new_program;
-            return .{ .transformed = .{ .whole_program = result } };
+            return .{ .whole_program = result };
         }
         std.debug.print("ERROR: ~query transform (top-level) failed - flow not found\n", .{});
         @panic("query transform: flow not found");
@@ -549,7 +548,7 @@ pub const Statement = struct {
         if (maybe_new_program) |new_program| {
             const result = allocator.create(ast.Program) catch unreachable;
             result.* = new_program;
-            return .{ .transformed = .{ .whole_program = result } };
+            return .{ .whole_program = result };
         }
         std.debug.print("ERROR: ~query transform (nested) failed - flow not found in program\n", .{});
         @panic("query transform: flow not found");

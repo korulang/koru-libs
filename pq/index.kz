@@ -108,12 +108,11 @@ pub const Result = struct {
 }
 
 // Number of rows in a result.
-~pub event result.nrows { result: *Result<result> }
-| ok usize
+~pub event result.nrows { result: *Result<result> } -> usize
 
 ~proc result.nrows|zig {
     const n = c.PQntuples(result.handle);
-    return .{ .ok = @intCast(n) };
+    return @intCast(n);
 }
 
 // Get a column value by name. Returns the text representation (libpq's native form).

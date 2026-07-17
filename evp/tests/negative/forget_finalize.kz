@@ -17,5 +17,4 @@
 ~import libs/evp
 ~import std/io
 
-~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "abc") |> std/io:print.ln("BUG: reached here without finalizing d")
+~libs/evp:sha256.init(): d |> libs/evp:update(d, bytes: "abc") |> std/io:print.ln("BUG: reached here without finalizing d")

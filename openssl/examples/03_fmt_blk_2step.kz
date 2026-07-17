@@ -1,0 +1,19 @@
+// Natural format-block use from user space: NO new lib code, NO transform.
+// std/fmt interpolates the block -> string -> openssl writes it.
+~import koru/openssl
+~import std/fmt
+~import std/io
+
+~event req-path {} -> []const u8
+~proc req-path|zig { return "/"; }
+
+~req-path(): p |> koru/openssl:connect(host: "example.com", port: 443)
+| ok conn |> std/fmt:blk {
+GET {{ p:s }} HTTP/1.1
+Host: example.com
+Connection: close
+
+  } | formatted f |> koru/openssl:write(conn, data: f.text)
+    | ok w |> koru/openssl:close(w.conn)
+    | err e |> koru/openssl:close(e.conn)
+| err e |> std/io:print.ln("connect failed: {{ e.msg:s }}")

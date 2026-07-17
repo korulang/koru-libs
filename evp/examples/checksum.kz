@@ -12,15 +12,10 @@
 ~import std/io
 
 // --- one-shot: the 90% case -------------------------------------------------
-~libs/evp:sha256.hex(input: "The quick brown fox jumps over the lazy dog")
-| digest h |> std/io:print.ln("fox     sha256 = {{ h:s }}")
+~libs/evp:sha256.hex(input: "The quick brown fox jumps over the lazy dog"): h |> std/io:print.ln("fox     sha256 = {{ h:s }}")
 
 // --- streaming: hash "hello world" as two chunks ----------------------------
-~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "hello ") |> libs/evp:update(d, bytes: "world") |> libs/evp:final.hex(d)
-    | digest h |> std/io:print.ln("hello   sha256 = {{ h:s }}")
+~libs/evp:sha256.init(): d |> libs/evp:update(d, bytes: "hello ") |> libs/evp:update(d, bytes: "world") |> libs/evp:final.hex(d): h |> std/io:print.ln("hello   sha256 = {{ h:s }}")
 
 // --- a different algorithm, same shape --------------------------------------
-~libs/evp:sha512.init()
-| ctx d |> libs/evp:update(d, bytes: "hello world") |> libs/evp:final.hex(d)
-    | digest h |> std/io:print.ln("hello   sha512 = {{ h:s }}")
+~libs/evp:sha512.init(): d |> libs/evp:update(d, bytes: "hello world") |> libs/evp:final.hex(d): h |> std/io:print.ln("hello   sha512 = {{ h:s }}")

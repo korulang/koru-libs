@@ -1,0 +1,13 @@
+{
+  "name": "koru-libs",
+  "palette": {
+    "base": "#11111b",
+    "text": "#cdd6f4",
+    "surface": "#313244",
+    "accent": "#f2cdcd"
+  },
+  "background": null,
+  "sound": "C",
+  "glyph": "⬡",
+  "avatar": null
+}

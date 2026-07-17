@@ -1,0 +1,44 @@
+~import std/compiler
+
+const std = @import("std");
+
+~std/compiler:command.declare {
+    "name": "mini",
+    "description": "minimal abstract-override repro"
+}
+
+~[comptime|command] pub event mini {
+    program: *const Program,
+    allocator: __koru_std.mem.Allocator,
+    argv: []const []const u8,
+}
+
+~proc mini|zig {
+    _ = program;
+    _ = argv;
+    const r = greet_event.handler(.{ .who = "world", .allocator = allocator });
+    switch (r) {
+        .ok => |m| std.debug.print("greet => {s}\n", .{m}),
+    }
+}
+
+~[comptime|abstract] pub event greet {
+    who: []const u8,
+    allocator: __koru_std.mem.Allocator,
+}
+| ok []const u8
+
+~greet = greet-work(who, allocator)
+| ok o => ok o
+
+~[comptime] event greet-work {
+    who: []const u8,
+    allocator: __koru_std.mem.Allocator,
+}
+| ok []const u8
+
+~proc greet-work|zig {
+    _ = who;
+    _ = allocator;
+    return .{ .ok = "DEFAULT greeting" };
+}
