@@ -111,6 +111,22 @@ pub const Frame = struct {
     return .{ .win = w };
 }
 
+// Explicit opened -> active transition WITHOUT rendering — the error-path
+// exit. After window.open, if a later setup step fails, the <opened!> window
+// has no other legal route to close (close accepts only <!active>, and
+// that's the point: silent drop of an unused window must not compile).
+// `activate` is deliberately NON-VOID: the auto-discharge walk is depth-1
+// void-terminals-only, so it can never be auto-inserted — writing it is
+// always a visible, human decision. (Ruling 2026-07-17. NB for the
+// transition-chaining aspiration, koru 330_071: chaining must not route
+// through non-void transitions, or this guarantee dies — record kept with
+// the queued koru batch.)
+~pub event window.activate { win: *Window<!opened> } -> *Window<active!>
+
+~proc window.activate|zig {
+    return win;
+}
+
 ~pub event window.close { win: *Window<!active> }
 
 ~proc window.close|zig {

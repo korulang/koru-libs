@@ -16,8 +16,5 @@ libs/raylib:window.open.hidden(width: 320, height: 200, title: "leak vram")
     | tex t |> libs/raylib:frames(win: w, count: 1)
         ! frame f |> libs/raylib:draw.texture(f, tex: t, x: 0, y: 0, tint: green)
         | done w2 |> libs/raylib:window.close(win: w2) |> std/io:print.ln("BUG: reached here without unloading t")
-    // Zero-frame ceremony: see texture.k's DESIGN HOLE note (opened has no
-    // legal error-path exit under the asymmetric model, pending ruling).
-    | err e |> libs/raylib:frames(win: w, count: 0)
-        | done wx |> libs/raylib:window.close(win: wx) |> std/io:print.ln("texture failed: {{ e:s }}")
+    | err e |> libs/raylib:window.activate(win: w): wx |> libs/raylib:window.close(win: wx) |> std/io:print.ln("texture failed: {{ e:s }}")
 | err e2 |> std/io:print.ln("init failed: {{ e2:s }}")
