@@ -17,6 +17,15 @@
 //   ! resize _ |> koru/vaxis:render()
 //   | done _ |> _
 //   | err e |> _
+//
+// MODULE-SCOPE REACH-BACK ($mod.):
+//   `run` is an effect-branch event, so its |zig body is SPLICED into the
+//   consumer's frame (cut-1 inlining) — where this module's bare names don't
+//   exist. Every reference to this module's own state (the vars/consts below)
+//   from inside a proc body uses the sanctioned `$mod.` spelling so the
+//   emitter rewrites it to the right namespace on the splice path and strips
+//   it to bare names on the standalone-handler path. `std` is exempt (it
+//   auto-rewrites to @import("std")). See koru pin 400_155 for the contract.
 
 ~import std/build
 ~import std/deps
@@ -116,60 +125,60 @@ const VaxisEvent = union(enum) {
 
 ~proc run|zig {
     _ = title;  // title is accepted but not yet threaded into vaxis init
-    alloc = std.heap.page_allocator;
-    should_quit = false;
+    $mod.alloc = std.heap.page_allocator;
+    $mod.should_quit = false;
 
-    tty = libvaxis.Tty.init(&tty_buffer) catch |e| {
+    $mod.tty = $mod.libvaxis.Tty.init(&$mod.tty_buffer) catch |e| {
         return .{ .err = @errorName(e) };
     };
 
-    vx = libvaxis.init(alloc, .{}) catch |e| {
+    $mod.vx = $mod.libvaxis.init($mod.alloc, .{}) catch |e| {
         return .{ .err = @errorName(e) };
     };
 
-    event_loop = .{ .vaxis = &vx, .tty = &tty };
-    event_loop.init() catch |e| {
+    $mod.event_loop = .{ .vaxis = &$mod.vx, .tty = &$mod.tty };
+    $mod.event_loop.init() catch |e| {
         return .{ .err = @errorName(e) };
     };
-    event_loop.start() catch |e| {
+    $mod.event_loop.start() catch |e| {
         return .{ .err = @errorName(e) };
     };
 
-    vx.enterAltScreen(tty.writer()) catch {};
-    vx.queryTerminal(tty.writer(), 1 * std.time.ns_per_s) catch {};
+    $mod.vx.enterAltScreen($mod.tty.writer()) catch {};
+    $mod.vx.queryTerminal($mod.tty.writer(), 1 * std.time.ns_per_s) catch {};
 
     // Wait for initial resize so the window has dimensions before any
     // render call. Don't fire `! resize` yet — we'll do that as the first
     // event after `! ready` so consumers see a consistent ordering.
-    var initial_size: ?libvaxis.Winsize = null;
+    var initial_size: ?$mod.libvaxis.Winsize = null;
     while (initial_size == null) {
-        const ev = event_loop.nextEvent();
+        const ev = $mod.event_loop.nextEvent();
         switch (ev) {
             .winsize => |ws| {
-                vx.resize(alloc, tty.writer(), ws) catch {};
+                $mod.vx.resize($mod.alloc, $mod.tty.writer(), ws) catch {};
                 initial_size = ws;
             },
             else => {},
         }
     }
 
-    is_initialized = true;
+    $mod.is_initialized = true;
 
     // Fire ! ready — consumer's chance to draw initial state. Auto-render
     // after so consumers don't need to call render() themselves in the typical
     // "write some cells in ! ready" case.
     if (ready) |f| f();
-    vx.render(tty.writer()) catch {};
+    $mod.vx.render($mod.tty.writer()) catch {};
 
     // Fire initial ! resize so consumers that only redraw on resize get
     // triggered immediately. Auto-render after.
     const init_ws = initial_size.?;
     if (resize) |f| f(.{ .width = init_ws.cols, .height = init_ws.rows });
-    vx.render(tty.writer()) catch {};
+    $mod.vx.render($mod.tty.writer()) catch {};
 
     // Main event loop.
-    while (!should_quit) {
-        const ev = event_loop.nextEvent();
+    while (!$mod.should_quit) {
+        const ev = $mod.event_loop.nextEvent();
         switch (ev) {
             .key_press => |k| {
                 if (k.codepoint > 0x3000 or k.codepoint == 0) continue;
@@ -194,13 +203,13 @@ const VaxisEvent = union(enum) {
                 // screen buffer. Without dedupe, those spurious no-op resizes
                 // erase whatever the consumer drew in ! ready before the user
                 // ever sees it. Only resize when dimensions actually change.
-                if (vx.screen.width != ws.cols or vx.screen.height != ws.rows) {
-                    vx.resize(alloc, tty.writer(), ws) catch {};
+                if ($mod.vx.screen.width != ws.cols or $mod.vx.screen.height != ws.rows) {
+                    $mod.vx.resize($mod.alloc, $mod.tty.writer(), ws) catch {};
                     if (resize) |f| f(.{
                         .width = ws.cols,
                         .height = ws.rows,
                     });
-                    vx.render(tty.writer()) catch {};
+                    $mod.vx.render($mod.tty.writer()) catch {};
                 }
             },
             .focus_in => { if (focus_in) |f| f(); },
@@ -209,9 +218,9 @@ const VaxisEvent = union(enum) {
     }
 
     // Cleanup inside the producer body — no separate `cleanup` event needed.
-    vx.deinit(alloc, tty.writer());
-    tty.deinit();
-    is_initialized = false;
+    $mod.vx.deinit($mod.alloc, $mod.tty.writer());
+    $mod.tty.deinit();
+    $mod.is_initialized = false;
 
     return .{ .done = .{} };
 }
@@ -224,15 +233,15 @@ const VaxisEvent = union(enum) {
 ~pub event quit {}
 
 ~proc quit|zig {
-    should_quit = true;
+    $mod.should_quit = true;
 }
 
 // Render the current frame to the terminal.
 ~pub event render {}
 
 ~proc render|zig {
-    if (is_initialized) {
-        vx.render(tty.writer()) catch {};
+    if ($mod.is_initialized) {
+        $mod.vx.render($mod.tty.writer()) catch {};
     }
 }
 
@@ -240,8 +249,8 @@ const VaxisEvent = union(enum) {
 ~pub event clear {}
 
 ~proc clear|zig {
-    if (is_initialized) {
-        const win = vx.window();
+    if ($mod.is_initialized) {
+        const win = $mod.vx.window();
         win.clear();
     }
 }
@@ -250,8 +259,8 @@ const VaxisEvent = union(enum) {
 ~pub event write-at { x: u16, y: u16, text: string }
 
 ~proc write-at|zig {
-    if (is_initialized) {
-        const win = vx.window();
+    if ($mod.is_initialized) {
+        const win = $mod.vx.window();
         const child = win.child(.{ .x_off = x, .y_off = y });
         for (text, 0..) |_, i| {
             child.writeCell(@intCast(i), 0, .{
