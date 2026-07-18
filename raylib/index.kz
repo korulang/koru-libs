@@ -80,9 +80,9 @@ pub const Frame = struct {
 // window limp on.
 // ============================================================================
 
-~pub event window.open { width: i32, height: i32, title: []const u8 }
+~pub event window.open { width: i32, height: i32, title: string }
 | win *Window<opened!>
-| err []const u8
+| err string
 
 ~proc window.open|zig {
     c.InitWindow(width, height, title.ptr);
@@ -96,9 +96,9 @@ pub const Frame = struct {
 
 // Hidden variant — same lifecycle, window never shown. This is what tests use:
 // the full init/draw/close path runs without flashing a window.
-~pub event window.open.hidden { width: i32, height: i32, title: []const u8 }
+~pub event window.open.hidden { width: i32, height: i32, title: string }
 | win *Window<opened!>
-| err []const u8
+| err string
 
 ~proc window.open.hidden|zig {
     c.SetConfigFlags(c.FLAG_WINDOW_HIDDEN);
@@ -220,7 +220,7 @@ fn mintTexture(t: c.Texture2D) *Texture {
 // deterministic path tests use.
 ~pub event texture.gen.color { win: *Window<opened|active>, width: i32, height: i32, col: Color }
 | tex *Texture<loaded!>
-| err []const u8
+| err string
 
 ~proc texture.gen.color|zig {
     _ = &win;
@@ -234,9 +234,9 @@ fn mintTexture(t: c.Texture2D) *Texture {
 }
 
 // Texture from an image file (png, bmp, ...).
-~pub event texture.load { win: *Window<opened|active>, path: []const u8 }
+~pub event texture.load { win: *Window<opened|active>, path: string }
 | tex *Texture<loaded!>
-| err []const u8
+| err string
 
 ~proc texture.load|zig {
     _ = &win;
@@ -259,6 +259,13 @@ fn mintTexture(t: c.Texture2D) *Texture {
 // inside a `! frame` body.
 // ============================================================================
 
+~pub event draw.rect { f: *Frame<frame>, x: i32, y: i32, w: i32, h: i32, col: Color }
+
+~proc draw.rect|zig {
+    _ = &f;
+    c.DrawRectangle(x, y, w, h, col);
+}
+
 ~pub event draw.texture { f: *Frame<frame>, tex: *Texture<loaded>, x: i32, y: i32, tint: Color }
 
 ~proc draw.texture|zig {
@@ -273,7 +280,7 @@ fn mintTexture(t: c.Texture2D) *Texture {
     c.ClearBackground(col);
 }
 
-~pub event draw.text { f: *Frame<frame>, text: []const u8, x: i32, y: i32, size: i32, col: Color }
+~pub event draw.text { f: *Frame<frame>, text: string, x: i32, y: i32, size: i32, col: Color }
 
 ~proc draw.text|zig {
     _ = &f;
