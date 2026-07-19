@@ -167,13 +167,13 @@ const VaxisEvent = union(enum) {
     // Fire ! ready — consumer's chance to draw initial state. Auto-render
     // after so consumers don't need to call render() themselves in the typical
     // "write some cells in ! ready" case.
-    if (ready) |f| f();
+    ready();
     $mod.vx.render($mod.tty.writer()) catch {};
 
     // Fire initial ! resize so consumers that only redraw on resize get
     // triggered immediately. Auto-render after.
     const init_ws = initial_size.?;
-    if (resize) |f| f(.{ .width = init_ws.cols, .height = init_ws.rows });
+    resize(.{ .width = init_ws.cols, .height = init_ws.rows });
     $mod.vx.render($mod.tty.writer()) catch {};
 
     // Main event loop.
@@ -186,7 +186,7 @@ const VaxisEvent = union(enum) {
                     @intCast(k.codepoint)
                 else
                     0;
-                if (key) |f| f(.{
+                key(.{
                     .codepoint = k.codepoint,
                     .ch = ch_val,
                     .mods = .{
@@ -205,15 +205,15 @@ const VaxisEvent = union(enum) {
                 // ever sees it. Only resize when dimensions actually change.
                 if ($mod.vx.screen.width != ws.cols or $mod.vx.screen.height != ws.rows) {
                     $mod.vx.resize($mod.alloc, $mod.tty.writer(), ws) catch {};
-                    if (resize) |f| f(.{
+                    resize(.{
                         .width = ws.cols,
                         .height = ws.rows,
                     });
                     $mod.vx.render($mod.tty.writer()) catch {};
                 }
             },
-            .focus_in => { if (focus_in) |f| f(); },
-            .focus_out => { if (focus_out) |f| f(); },
+            .focus_in => { focus_in(); },
+            .focus_out => { focus_out(); },
         }
     }
 
