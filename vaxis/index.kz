@@ -9,11 +9,8 @@
 //   ~import koru/vaxis
 //
 //   ~koru/vaxis:run(title: "Hello")
-//   ! ready |>
-//       koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
-//       koru/vaxis:render()
+//   ! ready |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.") |> koru/vaxis:render()
 //   ! key k when k.ch == 'q' |> koru/vaxis:quit()
-//   ! key _ |> _
 //   ! resize _ |> koru/vaxis:render()
 //   | done _ |> _
 //   | err e |> _
