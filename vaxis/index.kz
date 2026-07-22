@@ -84,6 +84,12 @@ const Style = struct {
     strikethrough: bool = false,
 };
 
+// A window — a positioned, sized VIEW into the screen. Cheap value (offsets +
+// dims + a screen pointer), copied freely: no allocation, no obligation. koru
+// holds it opaquely and passes it around. Children position RELATIVE to their
+// parent, so moving a box moves its contents.
+const Window = libvaxis.Window;
+
 // Module-level runtime state. The whole library is single-instance per
 // program; `run` is the lifecycle owner.
 var vx: libvaxis.Vaxis = undefined;
@@ -305,6 +311,37 @@ const VaxisEvent = union(enum) {
             child.writeCell(@intCast(i), 0, .{
                 .char = .{ .grapheme = text[i .. i + 1] },
                 .style = cell_style,
+            });
+        }
+    }
+}
+
+// Open a child window (a positioned, sized region) of the root and return it as
+// a value. Bind it (`: win`) and downstream write-in calls pun `win` to paint
+// INTO it with box-relative coords. `border` draws a frame around the region.
+~pub event box { x: u16, y: u16, w: u16, h: u16, border: bool } -> koru/vaxis:Window
+
+~proc box|zig {
+    const root = $mod.vx.window();
+    return root.child(.{
+        .x_off = x,
+        .y_off = y,
+        .width = w,
+        .height = h,
+        .border = .{ .where = if (border) .all else .none },
+    });
+}
+
+// Write text INTO a window, at coords relative to that window's top-left. Moving
+// the window moves everything written into it — the retained-layout payoff.
+~pub event write-in { win: koru/vaxis:Window, x: u16, y: u16, text: string }
+
+~proc write-in|zig {
+    if ($mod.is_initialized) {
+        const child = win.child(.{ .x_off = x, .y_off = y });
+        for (text, 0..) |_, i| {
+            child.writeCell(@intCast(i), 0, .{
+                .char = .{ .grapheme = text[i .. i + 1] },
             });
         }
     }
