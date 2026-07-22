@@ -567,8 +567,15 @@ const VaxisEvent = union(enum) {
             const open_tag = "<text>";
             const close_tag = "</text>";
 
-            var el_is_prop = std.ArrayList(bool).initCapacity(a, 4) catch unreachable;
-            var el_text = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            // Per element: content + a kind. kind 0 = literal (no placeholder),
+            // 1 = pure single STRING placeholder (`{{ x:s }}` → passthrough,
+            // zero fmt), 2 = anything else with placeholders (typed/mixed/multi
+            // → route through fmt:ln). el_ident holds the passthrough ident for
+            // kind 1. Props (the event's typed input) are the union of every
+            // placeholder across all elements, deduped by name.
+            var el_content = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            var el_kind = std.ArrayList(u8).initCapacity(a, 4) catch unreachable;
+            var el_ident = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
             var prop_name = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
             var prop_type = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
 
@@ -579,33 +586,63 @@ const VaxisEvent = union(enum) {
                 const inner = std.mem.trim(u8, cmarkup[istart..rel_close], " \t\r\n");
                 scan = rel_close + close_tag.len;
 
-                if (inner.len >= 4 and std.mem.startsWith(u8, inner, "{{") and std.mem.endsWith(u8, inner, "}}")) {
-                    const ph = std.mem.trim(u8, inner[2 .. inner.len - 2], " \t");
+                // Extract every `{{ ident:type }}` in this element → props.
+                var ph_count: usize = 0;
+                var last_ident: []const u8 = "";
+                var last_is_string = false;
+                var pscan: usize = 0;
+                while (std.mem.indexOfPos(u8, inner, pscan, "{{")) |ps| {
+                    const pe = std.mem.indexOfPos(u8, inner, ps + 2, "}}") orelse break;
+                    const ph = std.mem.trim(u8, inner[ps + 2 .. pe], " \t");
+                    pscan = pe + 2;
                     var ident = ph;
                     var ktype: []const u8 = "string";
+                    var is_string = true;
                     if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
                         ident = std.mem.trim(u8, ph[0..cp], " \t");
-                        ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                        const tc = std.mem.trim(u8, ph[cp + 1 ..], " \t");
+                        ktype = mapType(tc);
+                        is_string = std.mem.eql(u8, ktype, "string");
                     }
-                    el_is_prop.append(a, true) catch unreachable;
-                    el_text.append(a, ident) catch unreachable;
-                    prop_name.append(a, ident) catch unreachable;
-                    prop_type.append(a, ktype) catch unreachable;
-                } else {
-                    el_is_prop.append(a, false) catch unreachable;
-                    el_text.append(a, inner) catch unreachable;
+                    ph_count += 1;
+                    last_ident = ident;
+                    last_is_string = is_string;
+                    // Dedupe: a prop named the same way across elements is one field.
+                    var seen = false;
+                    for (prop_name.items) |pn| {
+                        if (std.mem.eql(u8, pn, ident)) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) {
+                        prop_name.append(a, ident) catch unreachable;
+                        prop_type.append(a, ktype) catch unreachable;
+                    }
                 }
+
+                const is_pure = ph_count == 1 and std.mem.startsWith(u8, inner, "{{") and std.mem.endsWith(u8, inner, "}}");
+                if (ph_count == 0) {
+                    el_kind.append(a, 0) catch unreachable;
+                    el_ident.append(a, "") catch unreachable;
+                } else if (is_pure and last_is_string) {
+                    el_kind.append(a, 1) catch unreachable;
+                    el_ident.append(a, last_ident) catch unreachable;
+                } else {
+                    el_kind.append(a, 2) catch unreachable;
+                    el_ident.append(a, "") catch unreachable;
+                }
+                el_content.append(a, inner) catch unreachable;
             }
 
-            // (1) event decl: cname { <props> }
+            // (1) event decl: cname { <props> }. The path carries the CONSUMER's
+            // module qualifier — the key canonicalize stamps onto the bare call,
+            // so dead_strip's used-set matches and keeps it (synthesized events
+            // skip canonicalize, so we stamp it ourselves).
             const fields = a.alloc(ast.Field, prop_name.items.len) catch unreachable;
             for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
                 fields[i] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
             }
-            // The event path carries the CONSUMER's module qualifier — the same
-            // key canonicalize stamps onto the bare `greet(...)` call, so
-            // dead_strip's used-set (`<module>:greet`) matches and keeps it.
-            // Synthesized events skip canonicalize, so we stamp it ourselves.
             const event_item = ast.Item{ .event_decl = ast.EventDecl{
                 .path = mkPath(a, cmodule, cname),
                 .input = ast.Shape{ .fields = fields },
@@ -617,22 +654,42 @@ const VaxisEvent = union(enum) {
                 .module = a.dupe(u8, cmodule) catch unreachable,
             } };
 
-            // (2) impl flow: a write-at chain, impl_of = the event (same key).
-            const invs = a.alloc(ast.Invocation, el_text.items.len) catch unreachable;
-            for (el_text.items, 0..) |t, row| {
-                const args = a.alloc(ast.Arg, 3) catch unreachable;
-                args[0] = .{ .name = a.dupe(u8, "x") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
-                args[1] = .{ .name = a.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{row}) catch unreachable, .had_explicit_label = true };
-                const text_value = if (el_is_prop.items[row])
-                    a.dupe(u8, t) catch unreachable
-                else
-                    std.fmt.allocPrint(a, "\"{s}\"", .{t}) catch unreachable;
-                args[2] = .{ .name = a.dupe(u8, "text") catch unreachable, .value = text_value, .had_explicit_label = true };
-                invs[row] = .{ .path = mkPath(a, wa_qual, "write-at"), .args = args };
+            // (2) impl flow — a flat op chain. Each row is 1 op (write-at, for a
+            // literal or a string passthrough) or 2 ops (fmt:ln bound to a fresh
+            // name, then write-at painting that bind's `.text`). write-at now owns
+            // its bytes, so the fmt result's lifetime is a non-issue.
+            const mkWriteAt = struct {
+                fn call(al: std.mem.Allocator, waq: ?[]const u8, mkp: anytype, row: usize, text_val: []const u8) ast.Invocation {
+                    const args = al.alloc(ast.Arg, 3) catch unreachable;
+                    args[0] = .{ .name = al.dupe(u8, "x") catch unreachable, .value = al.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                    args[1] = .{ .name = al.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(al, "{d}", .{row}) catch unreachable, .had_explicit_label = true };
+                    args[2] = .{ .name = al.dupe(u8, "text") catch unreachable, .value = text_val, .had_explicit_label = true };
+                    return .{ .path = mkp(al, waq, "write-at"), .args = args };
+                }
+            }.call;
+
+            var ops = std.ArrayList(ast.Invocation).initCapacity(a, 8) catch unreachable;
+            var lctr: usize = 0;
+            for (el_content.items, el_kind.items, el_ident.items, 0..) |content, kind, ident, row| {
+                if (kind == 0) {
+                    ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
+                } else if (kind == 1) {
+                    ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, a.dupe(u8, ident) catch unreachable)) catch unreachable;
+                } else {
+                    const lname = std.fmt.allocPrint(a, "__view_l{d}", .{lctr}) catch unreachable;
+                    lctr += 1;
+                    // std/fmt:ln("<content>"): <lname>
+                    const ln_args = a.alloc(ast.Arg, 1) catch unreachable;
+                    ln_args[0] = .{ .name = a.dupe(u8, "expr") catch unreachable, .value = std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable };
+                    ops.append(a, .{ .path = mkPath(a, "std.fmt", "ln"), .args = ln_args, .return_binding = a.dupe(u8, lname) catch unreachable }) catch unreachable;
+                    // write-at(x:0, y:row, text: <lname>.text)
+                    ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "{s}.text", .{lname}) catch unreachable)) catch unreachable;
+                }
             }
 
+            // Chain the ops into a linear `|>` pipeline (nested continuations).
             var tail: []const ast.Continuation = &[_]ast.Continuation{};
-            var k: usize = invs.len;
+            var k: usize = ops.items.len;
             while (k > 1) {
                 k -= 1;
                 const link = a.alloc(ast.Continuation, 1) catch unreachable;
@@ -641,7 +698,7 @@ const VaxisEvent = union(enum) {
                     .binding = null,
                     .condition = null,
                     .kind = .terminal,
-                    .node = .{ .invocation = invs[k] },
+                    .node = .{ .invocation = ops.items[k] },
                     .indent = 0,
                     .continuations = tail,
                     .location = cloc,
@@ -650,7 +707,7 @@ const VaxisEvent = union(enum) {
             }
 
             const impl_item = ast.Item{ .flow = ast.Flow{
-                .body = ast.rootSite(invs[0], tail, cloc),
+                .body = ast.rootSite(ops.items[0], tail, cloc),
                 .impl_of = mkPath(a, cmodule, cname),
                 .is_pure = false,
                 .is_transitively_pure = false,
