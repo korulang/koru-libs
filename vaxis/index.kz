@@ -357,6 +357,23 @@ const VaxisEvent = union(enum) {
     });
 }
 
+// Slice a sub-window out of a GIVEN parent window (not the root) — the primitive
+// a layout container uses to carve its own region into child slots. Offsets are
+// parent-relative and cumulative (a sub of a sub composes), so moving the parent
+// moves the whole subtree. `w`/`h` of 0 mean FILL to the parent's edge (libvaxis
+// takes ?u16, null = fill) — a StackPanel row is `sub(parent, x:0, y:i, w:0, h:1)`:
+// full width, one row tall, at row i.
+~pub event sub { parent: koru/vaxis:Window, x: u16, y: u16, w: u16, h: u16 } -> koru/vaxis:Window
+
+~proc sub|zig {
+    return parent.child(.{
+        .x_off = x,
+        .y_off = y,
+        .width = if (w == 0) null else w,
+        .height = if (h == 0) null else h,
+    });
+}
+
 // Write text INTO a window, at coords relative to that window's top-left. Moving
 // the window moves everything written into it — the retained-layout payoff.
 ~pub event write-in { win: koru/vaxis:Window, x: u16, y: u16, text: string }
@@ -658,6 +675,10 @@ const VaxisEvent = union(enum) {
             // event invocation. Text elements carry an empty slice, to stay
             // index-aligned with el_content/el_kind/el_ident.
             var el_child_args = std.ArrayList([]const ast.Arg).initCapacity(a, 4) catch unreachable;
+            // Stack layout: for a kind-3 child, -1 = paint into the parent's own
+            // window (a bare nested child); >=0 = this child is a StackPanel row at
+            // that y-offset, so it gets a sliced sub-window instead. Index-aligned.
+            var el_stack_y = std.ArrayList(i64).initCapacity(a, 4) catch unreachable;
 
             // Walk the markup tag-by-tag, in source order. `<text>…</text>` is a
             // painted element (kinds 0/1/2, below); any OTHER tag `<name …/>` is a
@@ -675,8 +696,42 @@ const VaxisEvent = union(enum) {
                 }
                 const tag = cmarkup[lt + 1 .. ne];
 
+                if (std.mem.eql(u8, tag, "StackPanel")) {
+                    // Layout container: each inner child becomes a STACKED row — laid
+                    // out into a sliced sub-window at y = its position. The container
+                    // computes the layout; the children never know their y. This is
+                    // the first XAML-family container, expressed as koru: it slices
+                    // its window (`sub`) and invokes children with the slices.
+                    const open_gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
+                    const close_sp = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</StackPanel>") orelse break;
+                    const body = cmarkup[open_gt + 1 .. close_sp];
+                    scan = close_sp + "</StackPanel>".len;
+
+                    var stack_i: i64 = 0;
+                    var bscan: usize = 0;
+                    while (std.mem.indexOfScalarPos(u8, body, bscan, '<')) |blt| {
+                        var bne = blt + 1;
+                        while (bne < body.len) : (bne += 1) {
+                            const c = body[bne];
+                            if (c == ' ' or c == '\t' or c == '\r' or c == '\n' or c == '>' or c == '/') break;
+                        }
+                        const cn = body[blt + 1 .. bne];
+                        const bgt = std.mem.indexOfScalarPos(u8, body, bne, '>') orelse break;
+                        const cargs = parseAttrs(a, body[bne..bgt], &prop_name, &prop_type);
+                        bscan = bgt + 1;
+                        el_content.append(a, a.dupe(u8, cn) catch unreachable) catch unreachable;
+                        el_kind.append(a, 3) catch unreachable;
+                        el_ident.append(a, "") catch unreachable;
+                        el_child_args.append(a, cargs) catch unreachable;
+                        el_stack_y.append(a, stack_i) catch unreachable;
+                        stack_i += 1;
+                    }
+                    continue;
+                }
+
                 if (!std.mem.eql(u8, tag, "text")) {
                     // Child component: `<name attr="v" .../>` (self-closing this rung).
+                    // Bare (not in a container) → -1 = paints into the parent's window.
                     const gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
                     const cargs = parseAttrs(a, cmarkup[ne..gt], &prop_name, &prop_type);
                     scan = gt + 1;
@@ -684,6 +739,7 @@ const VaxisEvent = union(enum) {
                     el_kind.append(a, 3) catch unreachable;
                     el_ident.append(a, "") catch unreachable;
                     el_child_args.append(a, cargs) catch unreachable;
+                    el_stack_y.append(a, -1) catch unreachable;
                     continue;
                 }
 
@@ -741,6 +797,7 @@ const VaxisEvent = union(enum) {
                 }
                 el_content.append(a, inner) catch unreachable;
                 el_child_args.append(a, &[_]ast.Arg{}) catch unreachable;
+                el_stack_y.append(a, -1) catch unreachable;
             }
 
             // (1) event decl: cname { win: Window, <props> }. The path carries the
@@ -794,7 +851,8 @@ const VaxisEvent = union(enum) {
 
             var ops = std.ArrayList(ast.Invocation).initCapacity(a, 8) catch unreachable;
             var lctr: usize = 0;
-            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, 0..) |content, kind, ident, cargs, row| {
+            var sctr: usize = 0;
+            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, el_stack_y.items, 0..) |content, kind, ident, cargs, stack_y, row| {
                 if (kind == 0) {
                     ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
                 } else if (kind == 1) {
@@ -808,16 +866,33 @@ const VaxisEvent = union(enum) {
                     ops.append(a, .{ .path = mkPath(a, "std.fmt", "ln"), .args = ln_args, .return_binding = a.dupe(u8, lname) catch unreachable }) catch unreachable;
                     // write-in(win, x:0, y:row, text: <lname>.text)
                     ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "{s}.text", .{lname}) catch unreachable)) catch unreachable;
-                } else {
-                    // kind 3 — child component invocation. `content` is the child
-                    // NAME; `cargs` its parsed args. The path carries the CONSUMER's
-                    // module qualifier (cmodule), matching the child event's own decl
-                    // path so canonicalize/dead_strip resolve it. Forward this
-                    // component's OWN `win` to the child as its first arg — the child
-                    // paints into the same canvas for now; once a layout container
-                    // (StackPanel) slices the window, it passes a SUB-window instead.
+                } else if (stack_y < 0) {
+                    // kind 3, BARE — child component painting into the parent's OWN
+                    // window. `content` is the child NAME; `cargs` its parsed args.
+                    // The path carries the consumer module qualifier (cmodule),
+                    // matching the child event's own decl path so canonicalize/
+                    // dead_strip resolve it. Forward this component's `win` down.
                     const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
                     child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                    for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
+                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
+                } else {
+                    // kind 3, STACKED — a StackPanel row. The container slices its
+                    // `win` into a full-width, 1-row sub-window at y=stack_y, then
+                    // invokes the child INTO that slice. Two ops: `sub(parent: win,
+                    // x:0, y:stack_y, w:0, h:1): __row_N` then `child(win: __row_N, …)`.
+                    // The child never knows its y — layout is the container's job.
+                    const rname = std.fmt.allocPrint(a, "__row_{d}", .{sctr}) catch unreachable;
+                    sctr += 1;
+                    const sub_args = a.alloc(ast.Arg, 5) catch unreachable;
+                    sub_args[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                    sub_args[1] = .{ .name = a.dupe(u8, "x") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                    sub_args[2] = .{ .name = a.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{stack_y}) catch unreachable, .had_explicit_label = true };
+                    sub_args[3] = .{ .name = a.dupe(u8, "w") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                    sub_args[4] = .{ .name = a.dupe(u8, "h") catch unreachable, .value = a.dupe(u8, "1") catch unreachable, .had_explicit_label = true };
+                    ops.append(a, .{ .path = mkPath(a, wa_qual, "sub"), .args = sub_args, .return_binding = a.dupe(u8, rname) catch unreachable }) catch unreachable;
+                    const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
+                    child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
                     for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
                     ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
                 }
