@@ -346,3 +346,100 @@ const VaxisEvent = union(enum) {
         }
     }
 }
+
+// ============================================================================
+// VIEW — markup → flow (Svelte-for-terminal). TRACER: a single <text> element.
+// ============================================================================
+//
+// `view { <text>hi</text> }` lowers AT COMPILE TIME to a real koru write-at
+// invocation — it COMPOSES OUT OF the existing `write-at` event, it does not
+// reimplement vaxis internals. Every other koru transform (fmt.blk, ln,
+// sqlite3:query) generates an inline Zig body; `view` instead generates a real
+// event invocation and hands it back for normal codegen. That's the koru-native
+// path that lets markup lower to composable flow.
+//
+// Tracer scope: one `<text>…</text>` → `write-at(x: 0, y: 0, text: "…")`. The
+// multi-element continuation chain, nesting, {{ }} interpolation, and <box>
+// come next — each an increment on this proven spine.
+~[comptime|transform]pub event view {
+    source: Source,
+    invocation: *const Invocation,  // the specific invocation being transformed
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~proc view|zig {
+    const ast = @import("ast");
+
+    // Already transformed — don't re-run (mirrors fmt.blk / ln guard).
+    if (invocation.inline_body != null) {
+        return .{};
+    }
+
+    const flow = if (item.* == .flow)
+        &item.flow
+    else
+        return .{};
+
+    _ = program;
+
+    // Tracer parse: extract the inner text of a single <text>…</text>.
+    const content = source.text;
+    const open_tag = "<text>";
+    const close_tag = "</text>";
+    const open_idx = std.mem.indexOf(u8, content, open_tag) orelse return .{};
+    const inner_start = open_idx + open_tag.len;
+    const rel_close = std.mem.indexOf(u8, content[inner_start..], close_tag) orelse return .{};
+    const inner = content[inner_start .. inner_start + rel_close];
+
+    // Build write-at(x: 0, y: 0, text: "<inner>") as a REAL invocation in this
+    // same module, so it flows through write-at's own shape-check + codegen.
+    const args = allocator.alloc(ast.Arg, 3) catch unreachable;
+    args[0] = .{
+        .name = allocator.dupe(u8, "x") catch unreachable,
+        .value = allocator.dupe(u8, "0") catch unreachable,
+        .had_explicit_label = true,
+    };
+    args[1] = .{
+        .name = allocator.dupe(u8, "y") catch unreachable,
+        .value = allocator.dupe(u8, "0") catch unreachable,
+        .had_explicit_label = true,
+    };
+    args[2] = .{
+        .name = allocator.dupe(u8, "text") catch unreachable,
+        .value = std.fmt.allocPrint(allocator, "\"{s}\"", .{inner}) catch unreachable,
+        .had_explicit_label = true,
+    };
+
+    const segments = allocator.alloc([]const u8, 1) catch unreachable;
+    segments[0] = allocator.dupe(u8, "write-at") catch unreachable;
+    const wa_path = ast.DottedPath{
+        .module_qualifier = flow.inv().path.module_qualifier,
+        .segments = segments,
+    };
+
+    const new_invocation = ast.Invocation{
+        .path = wa_path,
+        .args = args,
+        .annotations = flow.inv().annotations,
+        .inserted_by_tap = flow.inv().inserted_by_tap,
+        .from_opaque_tap = flow.inv().from_opaque_tap,
+        // Preserve the site's continuations (e.g. `|> render()`) and any bind.
+        .return_binding = flow.inv().return_binding,
+    };
+
+    const transformed_flow = ast.Flow{
+        .body = ast.rootSite(new_invocation, flow.body.continuations, flow.location),
+        .annotations = flow.annotations,
+        .pre_label = flow.pre_label,
+        .super_shape = flow.super_shape,
+        .is_pure = flow.is_pure,
+        .is_transitively_pure = flow.is_transitively_pure,
+        .impl_of = flow.impl_of,
+        .location = flow.location,
+        .module = flow.module,
+    };
+
+    return .{ .replacement = ast.Item{ .flow = transformed_flow } };
+}
