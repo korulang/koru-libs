@@ -551,6 +551,76 @@ const VaxisEvent = union(enum) {
         }
     }.call;
 
+    // Parse a child tag's attribute region (`name="World" who={{ n:s }}`, maybe
+    // a trailing `/`) into event args. Two value shapes:
+    //   name="World"     → arg `name: "World"` — a string LITERAL (quotes kept).
+    //   name={{ who:s }} → arg `name: who` — FORWARDS the parent's `who` prop
+    //                      (bare ident, no quotes), and registers `who:type` as a
+    //                      PROP of the parent component (dedup against prop_name).
+    // Forwarding is what makes the graph carry DATA: `page(who:"Lars")` flows
+    // into `greet(name: who)`. Typed props pass straight through — the child's
+    // param type is the contract; no fmt (that's only for text interpolation).
+    const parseAttrs = struct {
+        fn call(a: std.mem.Allocator, region: []const u8, prop_name: *std.ArrayList([]const u8), prop_type: *std.ArrayList([]const u8)) []const ast.Arg {
+            var list = std.ArrayList(ast.Arg).initCapacity(a, 2) catch unreachable;
+            const n = region.len;
+            var i: usize = 0;
+            while (i < n) {
+                while (i < n and (region[i] == ' ' or region[i] == '\t' or region[i] == '\r' or region[i] == '\n' or region[i] == '/')) : (i += 1) {}
+                if (i >= n) break;
+                const id0 = i;
+                while (i < n and region[i] != '=' and region[i] != ' ' and region[i] != '\t' and region[i] != '\r' and region[i] != '\n') : (i += 1) {}
+                const aname = region[id0..i];
+                if (aname.len == 0) break;
+                while (i < n and (region[i] == ' ' or region[i] == '\t' or region[i] == '\r' or region[i] == '\n')) : (i += 1) {}
+                if (i >= n or region[i] != '=') break;
+                i += 1;
+                while (i < n and (region[i] == ' ' or region[i] == '\t')) : (i += 1) {}
+                if (i >= n) break;
+                if (region[i] == '"') {
+                    const v0 = i;
+                    i += 1;
+                    while (i < n and region[i] != '"') : (i += 1) {}
+                    if (i < n) i += 1; // include closing quote
+                    list.append(a, .{
+                        .name = a.dupe(u8, aname) catch unreachable,
+                        .value = a.dupe(u8, region[v0..i]) catch unreachable,
+                        .had_explicit_label = true,
+                    }) catch unreachable;
+                } else if (i + 1 < n and region[i] == '{' and region[i + 1] == '{') {
+                    const pe = std.mem.indexOfPos(u8, region, i + 2, "}}") orelse break;
+                    const ph = std.mem.trim(u8, region[i + 2 .. pe], " \t");
+                    i = pe + 2;
+                    var ident = ph;
+                    var ktype: []const u8 = "string";
+                    if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
+                        ident = std.mem.trim(u8, ph[0..cp], " \t");
+                        ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                    }
+                    // Register the forwarded prop on the parent (deduped by name).
+                    var seen = false;
+                    for (prop_name.items) |pn| {
+                        if (std.mem.eql(u8, pn, ident)) {
+                            seen = true;
+                            break;
+                        }
+                    }
+                    if (!seen) {
+                        prop_name.append(a, a.dupe(u8, ident) catch unreachable) catch unreachable;
+                        prop_type.append(a, a.dupe(u8, ktype) catch unreachable) catch unreachable;
+                    }
+                    // Arg value is the bare ident — the parent's input field.
+                    list.append(a, .{
+                        .name = a.dupe(u8, aname) catch unreachable,
+                        .value = a.dupe(u8, ident) catch unreachable,
+                        .had_explicit_label = true,
+                    }) catch unreachable;
+                } else break;
+            }
+            return list.toOwnedSlice(a) catch unreachable;
+        }
+    }.call;
+
     // Synthesize a component's event + impl from its name + markup. The event's
     // typed input shape is READ OFF the {{ ident:type }} placeholders; the markup
     // becomes a write-at chain (impl_of = the event) that composes out of the
@@ -564,7 +634,6 @@ const VaxisEvent = union(enum) {
             cmodule: []const u8,
             cloc: anytype,
         ) [2]ast.Item {
-            const open_tag = "<text>";
             const close_tag = "</text>";
 
             // Per element: content + a kind. kind 0 = literal (no placeholder),
@@ -578,10 +647,41 @@ const VaxisEvent = union(enum) {
             var el_ident = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
             var prop_name = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
             var prop_type = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            // Child-component elements (kind 3): the parsed args for that child's
+            // event invocation. Text elements carry an empty slice, to stay
+            // index-aligned with el_content/el_kind/el_ident.
+            var el_child_args = std.ArrayList([]const ast.Arg).initCapacity(a, 4) catch unreachable;
 
+            // Walk the markup tag-by-tag, in source order. `<text>…</text>` is a
+            // painted element (kinds 0/1/2, below); any OTHER tag `<name …/>` is a
+            // CHILD COMPONENT — a call to that component's synthesized event (kind
+            // 3). Composition is a real invocation graph in the AST, not template
+            // text: `<greet name="World"/>` inside `page` becomes `page`'s impl
+            // invoking `greet(name: "World")`.
             var scan: usize = 0;
-            while (std.mem.indexOfPos(u8, cmarkup, scan, open_tag)) |op| {
-                const istart = op + open_tag.len;
+            while (std.mem.indexOfScalarPos(u8, cmarkup, scan, '<')) |lt| {
+                // Tag name: up to whitespace, `>`, or `/`.
+                var ne = lt + 1;
+                while (ne < cmarkup.len) : (ne += 1) {
+                    const c = cmarkup[ne];
+                    if (c == ' ' or c == '\t' or c == '\r' or c == '\n' or c == '>' or c == '/') break;
+                }
+                const tag = cmarkup[lt + 1 .. ne];
+
+                if (!std.mem.eql(u8, tag, "text")) {
+                    // Child component: `<name attr="v" .../>` (self-closing this rung).
+                    const gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
+                    const cargs = parseAttrs(a, cmarkup[ne..gt], &prop_name, &prop_type);
+                    scan = gt + 1;
+                    el_content.append(a, a.dupe(u8, tag) catch unreachable) catch unreachable;
+                    el_kind.append(a, 3) catch unreachable;
+                    el_ident.append(a, "") catch unreachable;
+                    el_child_args.append(a, cargs) catch unreachable;
+                    continue;
+                }
+
+                const gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
+                const istart = gt + 1;
                 const rel_close = std.mem.indexOfPos(u8, cmarkup, istart, close_tag) orelse break;
                 const inner = std.mem.trim(u8, cmarkup[istart..rel_close], " \t\r\n");
                 scan = rel_close + close_tag.len;
@@ -633,6 +733,7 @@ const VaxisEvent = union(enum) {
                     el_ident.append(a, "") catch unreachable;
                 }
                 el_content.append(a, inner) catch unreachable;
+                el_child_args.append(a, &[_]ast.Arg{}) catch unreachable;
             }
 
             // (1) event decl: cname { <props> }. The path carries the CONSUMER's
@@ -670,12 +771,12 @@ const VaxisEvent = union(enum) {
 
             var ops = std.ArrayList(ast.Invocation).initCapacity(a, 8) catch unreachable;
             var lctr: usize = 0;
-            for (el_content.items, el_kind.items, el_ident.items, 0..) |content, kind, ident, row| {
+            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, 0..) |content, kind, ident, cargs, row| {
                 if (kind == 0) {
                     ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
                 } else if (kind == 1) {
                     ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, a.dupe(u8, ident) catch unreachable)) catch unreachable;
-                } else {
+                } else if (kind == 2) {
                     const lname = std.fmt.allocPrint(a, "__view_l{d}", .{lctr}) catch unreachable;
                     lctr += 1;
                     // std/fmt:ln("<content>"): <lname>
@@ -684,6 +785,14 @@ const VaxisEvent = union(enum) {
                     ops.append(a, .{ .path = mkPath(a, "std.fmt", "ln"), .args = ln_args, .return_binding = a.dupe(u8, lname) catch unreachable }) catch unreachable;
                     // write-at(x:0, y:row, text: <lname>.text)
                     ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "{s}.text", .{lname}) catch unreachable)) catch unreachable;
+                } else {
+                    // kind 3 — child component invocation. `content` is the child
+                    // NAME; `cargs` its parsed args. The path carries the CONSUMER's
+                    // module qualifier (cmodule), matching the child event's own decl
+                    // path so canonicalize/dead_strip resolve it. No x/y — the child
+                    // paints at its own coords (its impl's y:0). Layout offset for
+                    // stacked children is the next rung.
+                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = cargs }) catch unreachable;
                 }
             }
 
