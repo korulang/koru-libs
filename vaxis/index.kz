@@ -103,6 +103,15 @@ var should_quit: bool = false;
 var alloc: std.mem.Allocator = undefined;
 var tty_buffer: [4096]u8 = undefined;
 
+// Frame text arena. libvaxis's Screen.writeCell stores a BORROW of the grapheme
+// slice (Screen.zig: `self.buf[i] = cell`, Cell.grapheme is []const u8 — no byte
+// copy), read only at the deferred render(). So the bytes must outlive the
+// producing flow. write-* copy their text HERE, into vaxis-owned storage, so an
+// ephemeral `string<allocated!>` (fmt output) can discharge immediately after
+// the copy — the lifetime tension is vaxis's to own, not the caller's. Reset on
+// clear() (a full-redraw's "new frame" boundary).
+var text_arena: std.heap.ArenaAllocator = undefined;
+
 // Internal event type for vaxis loop
 const VaxisEvent = union(enum) {
     key_press: libvaxis.Key,
@@ -138,6 +147,7 @@ const VaxisEvent = union(enum) {
 ~proc run|zig {
     _ = title;  // title is accepted but not yet threaded into vaxis init
     $mod.alloc = std.heap.page_allocator;
+    $mod.text_arena = std.heap.ArenaAllocator.init($mod.alloc);
     $mod.should_quit = false;
 
     $mod.tty = $mod.libvaxis.Tty.init(&$mod.tty_buffer) catch |e| {
@@ -232,6 +242,7 @@ const VaxisEvent = union(enum) {
     // Cleanup inside the producer body — no separate `cleanup` event needed.
     $mod.vx.deinit($mod.alloc, $mod.tty.writer());
     $mod.tty.deinit();
+    $mod.text_arena.deinit();
     $mod.is_initialized = false;
 
     return .{ .done = .{} };
@@ -264,6 +275,9 @@ const VaxisEvent = union(enum) {
     if ($mod.is_initialized) {
         const win = $mod.vx.window();
         win.clear();
+        // A full redraw starts here — every cell is blanked, so no cell borrows
+        // last frame's text. Reclaim the frame arena for the redraw's writes.
+        _ = $mod.text_arena.reset(.retain_capacity);
     }
 }
 
@@ -274,9 +288,12 @@ const VaxisEvent = union(enum) {
     if ($mod.is_initialized) {
         const win = $mod.vx.window();
         const child = win.child(.{ .x_off = x, .y_off = y });
-        for (text, 0..) |_, i| {
+        // Own the bytes for the frame — the caller's `text` (a literal, a store
+        // value, or an ephemeral fmt result) is not ours to keep alive.
+        const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
+        for (owned, 0..) |_, i| {
             child.writeCell(@intCast(i), 0, .{
-                .char = .{ .grapheme = text[i .. i + 1] },
+                .char = .{ .grapheme = owned[i .. i + 1] },
             });
         }
     }
@@ -307,9 +324,10 @@ const VaxisEvent = union(enum) {
             .italic = style.italic,
             .strikethrough = style.strikethrough,
         };
-        for (text, 0..) |_, i| {
+        const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
+        for (owned, 0..) |_, i| {
             child.writeCell(@intCast(i), 0, .{
-                .char = .{ .grapheme = text[i .. i + 1] },
+                .char = .{ .grapheme = owned[i .. i + 1] },
                 .style = cell_style,
             });
         }
@@ -339,9 +357,10 @@ const VaxisEvent = union(enum) {
 ~proc write-in|zig {
     if ($mod.is_initialized) {
         const child = win.child(.{ .x_off = x, .y_off = y });
-        for (text, 0..) |_, i| {
+        const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
+        for (owned, 0..) |_, i| {
             child.writeCell(@intCast(i), 0, .{
-                .char = .{ .grapheme = text[i .. i + 1] },
+                .char = .{ .grapheme = owned[i .. i + 1] },
             });
         }
     }
