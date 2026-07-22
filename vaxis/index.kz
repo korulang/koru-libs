@@ -276,6 +276,16 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Construct a reusable Style value. Bind it once (`: style`) and it puns into
+// every downstream write-styled's `style:` param; or pass it explicitly. No
+// param defaults yet, so all attrs are named here — partial specs ride the
+// struct defaults via an inline `{ … }` record literal instead.
+~pub event style { bold: bool, dim: bool, italic: bool, strikethrough: bool } -> koru/vaxis:Style
+
+~proc style|zig {
+    return .{ .bold = bold, .dim = dim, .italic = italic, .strikethrough = strikethrough };
+}
+
 // Write text at position WITH a style. `style` is a reusable Style value —
 // bind it once, apply to many writes. The koru Style maps field-for-field
 // onto libvaxis Cell.Style.
