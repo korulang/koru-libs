@@ -374,6 +374,42 @@ const VaxisEvent = union(enum) {
     });
 }
 
+// Dock a child of height `h` at the BOTTOM edge of the parent, `up` rows up from
+// that edge (up = this child's height plus everything already docked below it).
+// The parent's RUNTIME height is read here — bottom-pinning is the one thing that
+// cannot be comptime-folded, because the terminal height changes on resize. This
+// is precisely the primitive StackPanel never needed: fixed top rows never touch
+// the far edge, so they stay pure arithmetic; the bottom edge does not.
+~pub event sub-from-bottom { parent: koru/vaxis:Window, up: u16, h: u16 } -> koru/vaxis:Window
+
+~proc sub-from-bottom|zig {
+    var y: i32 = @as(i32, parent.height) - @as(i32, up);
+    if (y < 0) y = 0;
+    return parent.child(.{
+        .x_off = 0,
+        .y_off = @as(i17, @intCast(y)),
+        .width = null,
+        .height = h,
+    });
+}
+
+// The FILL slot: the middle band between the top-docked rows (`top`) and the
+// bottom-docked rows (`bottom`). Height = parent.height - top - bottom, resolved
+// at runtime so the fill grows and shrinks with the terminal — classic Dock's
+// last-child-fill, expressed as a koru Window value.
+~pub event sub-fill { parent: koru/vaxis:Window, top: u16, bottom: u16 } -> koru/vaxis:Window
+
+~proc sub-fill|zig {
+    var hh: i32 = @as(i32, parent.height) - @as(i32, top) - @as(i32, bottom);
+    if (hh < 0) hh = 0;
+    return parent.child(.{
+        .x_off = 0,
+        .y_off = @as(i17, @intCast(top)),
+        .width = null,
+        .height = @as(u16, @intCast(hh)),
+    });
+}
+
 // Write text INTO a window, at coords relative to that window's top-left. Moving
 // the window moves everything written into it — the retained-layout payoff.
 ~pub event write-in { win: koru/vaxis:Window, x: u16, y: u16, text: string }
@@ -679,6 +715,12 @@ const VaxisEvent = union(enum) {
             // window (a bare nested child); >=0 = this child is a StackPanel row at
             // that y-offset, so it gets a sliced sub-window instead. Index-aligned.
             var el_stack_y = std.ArrayList(i64).initCapacity(a, 4) catch unreachable;
+            // Dock layout — independent of el_stack_y (a child is EITHER a stack
+            // row OR a dock slot). mode 0 = not a dock child (use the stack_y path);
+            // 1 = top (p = y offset, q = height); 2 = bottom (p = `up` from the
+            // bottom edge, q = height); 3 = fill (p = total top band, q = total
+            // bottom band). Index-aligned with el_content.
+            var el_dock = std.ArrayList(struct { mode: u8, p: i64, q: i64 }).initCapacity(a, 4) catch unreachable;
 
             // Walk the markup tag-by-tag, in source order. `<text>…</text>` is a
             // painted element (kinds 0/1/2, below); any OTHER tag `<name …/>` is a
@@ -724,7 +766,101 @@ const VaxisEvent = union(enum) {
                         el_ident.append(a, "") catch unreachable;
                         el_child_args.append(a, cargs) catch unreachable;
                         el_stack_y.append(a, stack_i) catch unreachable;
+                        el_dock.append(a, .{ .mode = 0, .p = 0, .q = 0 }) catch unreachable;
                         stack_i += 1;
+                    }
+                    continue;
+                }
+
+                if (std.mem.eql(u8, tag, "Dock")) {
+                    // Dock container: each child pins to the TOP or BOTTOM edge at
+                    // a fixed height; a fill child takes the middle band. Directives
+                    // ride as attrs: dock="top" / dock="bottom" / dock="fill"
+                    // (default fill), h="N" rows. The container computes each slot
+                    // from the running top/bottom bands plus the parent's runtime
+                    // height; children never learn where they land. Two passes:
+                    // classify + sum the bands, then emit each child's slot.
+                    const open_gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
+                    const close_d = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</Dock>") orelse break;
+                    const body = cmarkup[open_gt + 1 .. close_d];
+                    scan = close_d + "</Dock>".len;
+
+                    var d_name = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+                    var d_args = std.ArrayList([]const ast.Arg).initCapacity(a, 4) catch unreachable;
+                    var d_mode = std.ArrayList(u8).initCapacity(a, 4) catch unreachable; // 1 top, 2 bottom, 3 fill
+                    var d_h = std.ArrayList(i64).initCapacity(a, 4) catch unreachable;
+                    var total_top: i64 = 0;
+                    var total_bottom: i64 = 0;
+
+                    // Pass 1 — classify every inner child, split the dock/h layout
+                    // directives out of its real props, and sum the two edge bands.
+                    var bscan: usize = 0;
+                    while (std.mem.indexOfScalarPos(u8, body, bscan, '<')) |blt| {
+                        var bne = blt + 1;
+                        while (bne < body.len) : (bne += 1) {
+                            const c = body[bne];
+                            if (c == ' ' or c == '\t' or c == '\r' or c == '\n' or c == '>' or c == '/') break;
+                        }
+                        const cn = body[blt + 1 .. bne];
+                        const bgt = std.mem.indexOfScalarPos(u8, body, bne, '>') orelse break;
+                        const all_args = parseAttrs(a, body[bne..bgt], &prop_name, &prop_type);
+                        bscan = bgt + 1;
+
+                        var mode: u8 = 3; // default = fill
+                        var hval: i64 = 0;
+                        var kept = std.ArrayList(ast.Arg).initCapacity(a, 2) catch unreachable;
+                        for (all_args) |arg| {
+                            if (std.mem.eql(u8, arg.name, "dock")) {
+                                const v = std.mem.trim(u8, arg.value, "\"");
+                                if (std.mem.eql(u8, v, "top")) {
+                                    mode = 1;
+                                } else if (std.mem.eql(u8, v, "bottom")) {
+                                    mode = 2;
+                                } else {
+                                    mode = 3;
+                                }
+                            } else if (std.mem.eql(u8, arg.name, "h")) {
+                                const v = std.mem.trim(u8, arg.value, "\"");
+                                hval = std.fmt.parseInt(i64, v, 10) catch 0;
+                            } else {
+                                kept.append(a, arg) catch unreachable;
+                            }
+                        }
+                        d_name.append(a, a.dupe(u8, cn) catch unreachable) catch unreachable;
+                        d_args.append(a, kept.toOwnedSlice(a) catch unreachable) catch unreachable;
+                        d_mode.append(a, mode) catch unreachable;
+                        d_h.append(a, hval) catch unreachable;
+                        if (mode == 1) total_top += hval;
+                        if (mode == 2) total_bottom += hval;
+                    }
+
+                    // Pass 2 — emit each child as a dock slot. Top rows accumulate
+                    // downward from y=0; bottom rows accumulate UP from the bottom
+                    // edge (first bottom child sits lowest); the fill child carries
+                    // both band totals so it spans the middle at runtime.
+                    var run_top: i64 = 0;
+                    var run_bottom: i64 = 0;
+                    for (d_name.items, d_args.items, d_mode.items, d_h.items) |cn, cargs, mode, hval| {
+                        var p: i64 = 0;
+                        var q: i64 = 0;
+                        if (mode == 1) {
+                            p = run_top;
+                            q = hval;
+                            run_top += hval;
+                        } else if (mode == 2) {
+                            run_bottom += hval;
+                            p = run_bottom;
+                            q = hval;
+                        } else {
+                            p = total_top;
+                            q = total_bottom;
+                        }
+                        el_content.append(a, cn) catch unreachable;
+                        el_kind.append(a, 3) catch unreachable;
+                        el_ident.append(a, "") catch unreachable;
+                        el_child_args.append(a, cargs) catch unreachable;
+                        el_stack_y.append(a, -1) catch unreachable;
+                        el_dock.append(a, .{ .mode = mode, .p = p, .q = q }) catch unreachable;
                     }
                     continue;
                 }
@@ -740,6 +876,7 @@ const VaxisEvent = union(enum) {
                     el_ident.append(a, "") catch unreachable;
                     el_child_args.append(a, cargs) catch unreachable;
                     el_stack_y.append(a, -1) catch unreachable;
+                    el_dock.append(a, .{ .mode = 0, .p = 0, .q = 0 }) catch unreachable;
                     continue;
                 }
 
@@ -798,6 +935,7 @@ const VaxisEvent = union(enum) {
                 el_content.append(a, inner) catch unreachable;
                 el_child_args.append(a, &[_]ast.Arg{}) catch unreachable;
                 el_stack_y.append(a, -1) catch unreachable;
+                el_dock.append(a, .{ .mode = 0, .p = 0, .q = 0 }) catch unreachable;
             }
 
             // (1) event decl: cname { win: Window, <props> }. The path carries the
@@ -852,7 +990,7 @@ const VaxisEvent = union(enum) {
             var ops = std.ArrayList(ast.Invocation).initCapacity(a, 8) catch unreachable;
             var lctr: usize = 0;
             var sctr: usize = 0;
-            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, el_stack_y.items, 0..) |content, kind, ident, cargs, stack_y, row| {
+            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, el_stack_y.items, el_dock.items, 0..) |content, kind, ident, cargs, stack_y, dock, row| {
                 if (kind == 0) {
                     ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
                 } else if (kind == 1) {
@@ -866,6 +1004,43 @@ const VaxisEvent = union(enum) {
                     ops.append(a, .{ .path = mkPath(a, "std.fmt", "ln"), .args = ln_args, .return_binding = a.dupe(u8, lname) catch unreachable }) catch unreachable;
                     // write-in(win, x:0, y:row, text: <lname>.text)
                     ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "{s}.text", .{lname}) catch unreachable)) catch unreachable;
+                } else if (dock.mode > 0) {
+                    // kind 3, DOCK slot — the container carves a sub-window per
+                    // child by mode, then invokes the child INTO that slice. Same
+                    // two-op shape as a StackPanel row; only the slicing primitive
+                    // and its args differ:
+                    //   1 top    -> sub(parent, x:0, y:p, w:0, h:q)   fixed top rows
+                    //   2 bottom -> sub-from-bottom(parent, up:p, h:q) pinned to edge
+                    //   3 fill   -> sub-fill(parent, top:p, bottom:q)  runtime middle
+                    const rname = std.fmt.allocPrint(a, "__row_{d}", .{sctr}) catch unreachable;
+                    sctr += 1;
+                    var slot: ast.Invocation = undefined;
+                    if (dock.mode == 1) {
+                        const sa = a.alloc(ast.Arg, 5) catch unreachable;
+                        sa[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                        sa[1] = .{ .name = a.dupe(u8, "x") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                        sa[2] = .{ .name = a.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{dock.p}) catch unreachable, .had_explicit_label = true };
+                        sa[3] = .{ .name = a.dupe(u8, "w") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                        sa[4] = .{ .name = a.dupe(u8, "h") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{dock.q}) catch unreachable, .had_explicit_label = true };
+                        slot = .{ .path = mkPath(a, wa_qual, "sub"), .args = sa, .return_binding = a.dupe(u8, rname) catch unreachable };
+                    } else if (dock.mode == 2) {
+                        const sa = a.alloc(ast.Arg, 3) catch unreachable;
+                        sa[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                        sa[1] = .{ .name = a.dupe(u8, "up") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{dock.p}) catch unreachable, .had_explicit_label = true };
+                        sa[2] = .{ .name = a.dupe(u8, "h") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{dock.q}) catch unreachable, .had_explicit_label = true };
+                        slot = .{ .path = mkPath(a, wa_qual, "sub-from-bottom"), .args = sa, .return_binding = a.dupe(u8, rname) catch unreachable };
+                    } else {
+                        const sa = a.alloc(ast.Arg, 3) catch unreachable;
+                        sa[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                        sa[1] = .{ .name = a.dupe(u8, "top") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{dock.p}) catch unreachable, .had_explicit_label = true };
+                        sa[2] = .{ .name = a.dupe(u8, "bottom") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{dock.q}) catch unreachable, .had_explicit_label = true };
+                        slot = .{ .path = mkPath(a, wa_qual, "sub-fill"), .args = sa, .return_binding = a.dupe(u8, rname) catch unreachable };
+                    }
+                    ops.append(a, slot) catch unreachable;
+                    const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
+                    child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
+                    for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
+                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
                 } else if (stack_y < 0) {
                     // kind 3, BARE — child component painting into the parent's OWN
                     // window. `content` is the child NAME; `cargs` its parsed args.
