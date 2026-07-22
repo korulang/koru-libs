@@ -477,3 +477,240 @@ const VaxisEvent = union(enum) {
 
     return .{ .replacement = ast.Item{ .flow = transformed_flow } };
 }
+
+// ============================================================================
+// COMPONENT — a named, reusable view that SYNTHESIZES a koru event.
+// ============================================================================
+//
+// `component(greet) { <text>{{ name:s }}</text> }` is a DECLARATION. It doesn't
+// rewrite a flow — it synthesizes a whole koru event, exactly the way `store`
+// synthesizes its insert/query family (store.kz): the `{{ name:s }}` placeholders
+// BECOME the event's typed input shape, and the markup becomes an implementing
+// flow that paints it. The declaration is consumed; a new `greet { name: string }`
+// event + its impl are appended.
+//
+// The payoff: `greet` is then a NORMAL koru event. You call it, branch on it with
+// koru `if`, loop it with `for`, nest it — composition is koru flow, not template
+// syntax. This proof does string props (`:s`, zero-alloc passthrough into write-at);
+// typed/formatted props (`:d`, `:b`) ride the fmt rail next.
+~[comptime|transform|pre]pub event component {
+    expr: Expression,
+    source: Source,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~proc component|zig {
+    const ast = @import("ast");
+    _ = expr;
+    _ = source;
+    _ = invocation;
+    _ = item;
+
+    // s→string / d→i64 / f→f64 / b→bool. Only string passes through to write-at
+    // as-is this rung; the rest are declared but await the fmt rail.
+    const mapType = struct {
+        fn call(tc: []const u8) []const u8 {
+            if (std.mem.eql(u8, tc, "d")) return "i64";
+            if (std.mem.eql(u8, tc, "f")) return "f64";
+            if (std.mem.eql(u8, tc, "b")) return "bool";
+            return "string";
+        }
+    }.call;
+
+    // Helper: a fresh DottedPath dupe (deinit frees paths, so nothing is shared).
+    const mkPath = struct {
+        fn call(a: std.mem.Allocator, qual: ?[]const u8, seg0: []const u8) ast.DottedPath {
+            const segs = a.alloc([]const u8, 1) catch unreachable;
+            segs[0] = a.dupe(u8, seg0) catch unreachable;
+            return .{
+                .module_qualifier = if (qual) |q| a.dupe(u8, q) catch unreachable else null,
+                .segments = segs,
+            };
+        }
+    }.call;
+
+    // Synthesize a component's event + impl from its name + markup. The event's
+    // typed input shape is READ OFF the {{ ident:type }} placeholders; the markup
+    // becomes a write-at chain (impl_of = the event) that composes out of the
+    // existing write-at event. Returns { event_decl, impl_flow }.
+    const synth = struct {
+        fn call(
+            a: std.mem.Allocator,
+            cname: []const u8,
+            cmarkup: []const u8,
+            wa_qual: ?[]const u8,
+            cmodule: []const u8,
+            cloc: anytype,
+        ) [2]ast.Item {
+            const open_tag = "<text>";
+            const close_tag = "</text>";
+
+            var el_is_prop = std.ArrayList(bool).initCapacity(a, 4) catch unreachable;
+            var el_text = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            var prop_name = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            var prop_type = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+
+            var scan: usize = 0;
+            while (std.mem.indexOfPos(u8, cmarkup, scan, open_tag)) |op| {
+                const istart = op + open_tag.len;
+                const rel_close = std.mem.indexOfPos(u8, cmarkup, istart, close_tag) orelse break;
+                const inner = std.mem.trim(u8, cmarkup[istart..rel_close], " \t\r\n");
+                scan = rel_close + close_tag.len;
+
+                if (inner.len >= 4 and std.mem.startsWith(u8, inner, "{{") and std.mem.endsWith(u8, inner, "}}")) {
+                    const ph = std.mem.trim(u8, inner[2 .. inner.len - 2], " \t");
+                    var ident = ph;
+                    var ktype: []const u8 = "string";
+                    if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
+                        ident = std.mem.trim(u8, ph[0..cp], " \t");
+                        ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                    }
+                    el_is_prop.append(a, true) catch unreachable;
+                    el_text.append(a, ident) catch unreachable;
+                    prop_name.append(a, ident) catch unreachable;
+                    prop_type.append(a, ktype) catch unreachable;
+                } else {
+                    el_is_prop.append(a, false) catch unreachable;
+                    el_text.append(a, inner) catch unreachable;
+                }
+            }
+
+            // (1) event decl: cname { <props> }
+            const fields = a.alloc(ast.Field, prop_name.items.len) catch unreachable;
+            for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
+                fields[i] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
+            }
+            // The event path carries the CONSUMER's module qualifier — the same
+            // key canonicalize stamps onto the bare `greet(...)` call, so
+            // dead_strip's used-set (`<module>:greet`) matches and keeps it.
+            // Synthesized events skip canonicalize, so we stamp it ourselves.
+            const event_item = ast.Item{ .event_decl = ast.EventDecl{
+                .path = mkPath(a, cmodule, cname),
+                .input = ast.Shape{ .fields = fields },
+                .branches = &[_]ast.Branch{},
+                .is_public = false,
+                .is_implicit_flow = false,
+                .annotations = &[_][]const u8{},
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+
+            // (2) impl flow: a write-at chain, impl_of = the event (same key).
+            const invs = a.alloc(ast.Invocation, el_text.items.len) catch unreachable;
+            for (el_text.items, 0..) |t, row| {
+                const args = a.alloc(ast.Arg, 3) catch unreachable;
+                args[0] = .{ .name = a.dupe(u8, "x") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                args[1] = .{ .name = a.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{row}) catch unreachable, .had_explicit_label = true };
+                const text_value = if (el_is_prop.items[row])
+                    a.dupe(u8, t) catch unreachable
+                else
+                    std.fmt.allocPrint(a, "\"{s}\"", .{t}) catch unreachable;
+                args[2] = .{ .name = a.dupe(u8, "text") catch unreachable, .value = text_value, .had_explicit_label = true };
+                invs[row] = .{ .path = mkPath(a, wa_qual, "write-at"), .args = args };
+            }
+
+            var tail: []const ast.Continuation = &[_]ast.Continuation{};
+            var k: usize = invs.len;
+            while (k > 1) {
+                k -= 1;
+                const link = a.alloc(ast.Continuation, 1) catch unreachable;
+                link[0] = .{
+                    .branch = a.dupe(u8, "") catch unreachable,
+                    .binding = null,
+                    .condition = null,
+                    .kind = .terminal,
+                    .node = .{ .invocation = invs[k] },
+                    .indent = 0,
+                    .continuations = tail,
+                    .location = cloc,
+                };
+                tail = link;
+            }
+
+            const impl_item = ast.Item{ .flow = ast.Flow{
+                .body = ast.rootSite(invs[0], tail, cloc),
+                .impl_of = mkPath(a, cmodule, cname),
+                .is_pure = false,
+                .is_transitively_pure = false,
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+
+            return .{ event_item, impl_item };
+        }
+    }.call;
+
+    // WHOLE-PROGRAM WALK (Lars 2026-07-22): a library transform holds the whole
+    // AST, so `component` walks it, finds EVERY `component(name){…}` declaration,
+    // synthesizes each event + impl, consumes the declarations, and hands back the
+    // fully-rewritten program. Returning `whole_program` (vs per-site `.appended`)
+    // is what makes the synthesized events visible to downstream passes — the
+    // shape checker builds its event set from `program.items`, so the events must
+    // BE there before it runs. No language or pipeline change; just the whole-
+    // program-transform capability koru already gives library-level transforms.
+    var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len + 8) catch unreachable;
+    var synthed = std.ArrayList(ast.Item).initCapacity(allocator, 8) catch unreachable;
+    var found = false;
+
+    for (program.items) |pi| {
+        const is_component = pi == .flow and blk: {
+            const segs = pi.flow.inv().path.segments;
+            break :blk segs.len > 0 and std.mem.eql(u8, segs[segs.len - 1], "component");
+        };
+        if (!is_component) {
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+
+        // Read the name + markup off the declaration. The markup rides the
+        // `source` arg; the name is the positional expr arg — which at this
+        // pre-mapping stage carries its own value as its name (not yet "expr").
+        const cinv = pi.flow.inv();
+        var name: []const u8 = "";
+        var markup: []const u8 = "";
+        for (cinv.args) |arg| {
+            if (std.mem.eql(u8, arg.name, "source")) {
+                markup = arg.value;
+            } else {
+                name = arg.value;
+                if (name.len >= 2 and name[0] == '"' and name[name.len - 1] == '"') name = name[1 .. name.len - 1];
+            }
+        }
+        if (name.len == 0) {
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+
+        found = true;
+        const pair = synth(allocator, name, markup, cinv.path.module_qualifier, pi.flow.module, pi.flow.location);
+        synthed.append(allocator, pair[0]) catch unreachable;
+        synthed.append(allocator, pair[1]) catch unreachable;
+
+        // Consume the declaration → a host-line comment in its place.
+        const consumed = std.fmt.allocPrint(allocator, "// koru/vaxis: component '{s}' synthesized → event + write-at impl", .{name}) catch unreachable;
+        new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
+            .content = consumed,
+            .location = pi.flow.location,
+            .module = allocator.dupe(u8, pi.flow.module) catch unreachable,
+        } }) catch unreachable;
+    }
+
+    if (!found) return .{};
+
+    for (synthed.items) |si| {
+        new_items.append(allocator, si) catch unreachable;
+    }
+
+    const new_prog = allocator.create(ast.Program) catch unreachable;
+    new_prog.* = .{
+        .items = new_items.toOwnedSlice(allocator) catch unreachable,
+        .module_annotations = program.module_annotations,
+        .main_module_name = program.main_module_name,
+        .allocator = program.allocator,
+        .type_registry = program.type_registry,
+    };
+    return .{ .whole_program = new_prog };
+}
