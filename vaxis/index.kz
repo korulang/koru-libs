@@ -348,19 +348,21 @@ const VaxisEvent = union(enum) {
 }
 
 // ============================================================================
-// VIEW — markup → flow (Svelte-for-terminal). TRACER: a single <text> element.
+// VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
 //
-// `view { <text>hi</text> }` lowers AT COMPILE TIME to a real koru write-at
-// invocation — it COMPOSES OUT OF the existing `write-at` event, it does not
-// reimplement vaxis internals. Every other koru transform (fmt.blk, ln,
-// sqlite3:query) generates an inline Zig body; `view` instead generates a real
-// event invocation and hands it back for normal codegen. That's the koru-native
-// path that lets markup lower to composable flow.
+// `view { <text>hi</text> <text>bye</text> }` lowers AT COMPILE TIME to a CHAIN
+// of real koru write-at invocations — it COMPOSES OUT OF the existing `write-at`
+// event, it does not reimplement vaxis internals. Every other koru transform
+// (fmt.blk, ln, sqlite3:query) generates an inline Zig body; `view` instead
+// generates real event invocations and hands them back for normal codegen.
+// That's the koru-native path that lets markup lower to composable flow.
 //
-// Tracer scope: one `<text>…</text>` → `write-at(x: 0, y: 0, text: "…")`. The
-// multi-element continuation chain, nesting, {{ }} interpolation, and <box>
-// come next — each an increment on this proven spine.
+// Each `<text>…</text>` becomes `write-at(x: 0, y: <row>, text: "…")`, stacked
+// one per row, wired as a linear `|>` pipeline (a nested continuation chain —
+// the exact shape the parser builds for `a |> b |> c`). The site's own trailing
+// continuations (a `|> render()`, branch handlers) ride on the LAST link.
+// Nesting, {{ }} interpolation, and <box> come next — each an increment on this.
 ~[comptime|transform]pub event view {
     source: Source,
     invocation: *const Invocation,  // the specific invocation being transformed
@@ -384,53 +386,85 @@ const VaxisEvent = union(enum) {
 
     _ = program;
 
-    // Tracer parse: extract the inner text of a single <text>…</text>.
+    // Parse: collect the inner text of every <text>…</text>, in source order.
     const content = source.text;
     const open_tag = "<text>";
     const close_tag = "</text>";
-    const open_idx = std.mem.indexOf(u8, content, open_tag) orelse return .{};
-    const inner_start = open_idx + open_tag.len;
-    const rel_close = std.mem.indexOf(u8, content[inner_start..], close_tag) orelse return .{};
-    const inner = content[inner_start .. inner_start + rel_close];
 
-    // Build write-at(x: 0, y: 0, text: "<inner>") as a REAL invocation in this
-    // same module, so it flows through write-at's own shape-check + codegen.
-    const args = allocator.alloc(ast.Arg, 3) catch unreachable;
-    args[0] = .{
-        .name = allocator.dupe(u8, "x") catch unreachable,
-        .value = allocator.dupe(u8, "0") catch unreachable,
-        .had_explicit_label = true,
-    };
-    args[1] = .{
-        .name = allocator.dupe(u8, "y") catch unreachable,
-        .value = allocator.dupe(u8, "0") catch unreachable,
-        .had_explicit_label = true,
-    };
-    args[2] = .{
-        .name = allocator.dupe(u8, "text") catch unreachable,
-        .value = std.fmt.allocPrint(allocator, "\"{s}\"", .{inner}) catch unreachable,
-        .had_explicit_label = true,
-    };
+    var texts = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
+    var scan: usize = 0;
+    while (std.mem.indexOfPos(u8, content, scan, open_tag)) |op| {
+        const istart = op + open_tag.len;
+        const rel_close = std.mem.indexOfPos(u8, content, istart, close_tag) orelse break;
+        texts.append(allocator, content[istart..rel_close]) catch unreachable;
+        scan = rel_close + close_tag.len;
+    }
+    if (texts.items.len == 0) return .{};
 
-    const segments = allocator.alloc([]const u8, 1) catch unreachable;
-    segments[0] = allocator.dupe(u8, "write-at") catch unreachable;
-    const wa_path = ast.DottedPath{
-        .module_qualifier = flow.inv().path.module_qualifier,
-        .segments = segments,
-    };
+    // Build one REAL write-at(x: 0, y: <row>, text: "<t>") invocation per element,
+    // in the SAME module (so each flows through write-at's own codegen). Each owns
+    // its module_qualifier dupe (deinit frees it — no sharing/double-free). Only
+    // the last inherits the site's `return_binding` (a bind after the whole view).
+    const last = texts.items.len - 1;
+    const invs = allocator.alloc(ast.Invocation, texts.items.len) catch unreachable;
+    for (texts.items, 0..) |t, row| {
+        const args = allocator.alloc(ast.Arg, 3) catch unreachable;
+        args[0] = .{
+            .name = allocator.dupe(u8, "x") catch unreachable,
+            .value = allocator.dupe(u8, "0") catch unreachable,
+            .had_explicit_label = true,
+        };
+        args[1] = .{
+            .name = allocator.dupe(u8, "y") catch unreachable,
+            .value = std.fmt.allocPrint(allocator, "{d}", .{row}) catch unreachable,
+            .had_explicit_label = true,
+        };
+        args[2] = .{
+            .name = allocator.dupe(u8, "text") catch unreachable,
+            .value = std.fmt.allocPrint(allocator, "\"{s}\"", .{t}) catch unreachable,
+            .had_explicit_label = true,
+        };
 
-    const new_invocation = ast.Invocation{
-        .path = wa_path,
-        .args = args,
-        .annotations = flow.inv().annotations,
-        .inserted_by_tap = flow.inv().inserted_by_tap,
-        .from_opaque_tap = flow.inv().from_opaque_tap,
-        // Preserve the site's continuations (e.g. `|> render()`) and any bind.
-        .return_binding = flow.inv().return_binding,
-    };
+        const segments = allocator.alloc([]const u8, 1) catch unreachable;
+        segments[0] = allocator.dupe(u8, "write-at") catch unreachable;
+
+        invs[row] = .{
+            .path = ast.DottedPath{
+                .module_qualifier = if (flow.inv().path.module_qualifier) |m|
+                    allocator.dupe(u8, m) catch unreachable
+                else
+                    null,
+                .segments = segments,
+            },
+            .args = args,
+            .return_binding = if (row == last) flow.inv().return_binding else null,
+        };
+    }
+
+    // Wire the invocations into a linear `|>` pipeline: each link is a
+    // branch="" / kind=terminal continuation whose node is the next write-at.
+    // Build from the tail backwards; the innermost link inherits the site's own
+    // trailing continuations, so a `|> render()` after `view { … }` still fires.
+    var tail: []const ast.Continuation = flow.body.continuations;
+    var k: usize = invs.len;
+    while (k > 1) {
+        k -= 1;
+        const link = allocator.alloc(ast.Continuation, 1) catch unreachable;
+        link[0] = .{
+            .branch = allocator.dupe(u8, "") catch unreachable,
+            .binding = null,
+            .condition = null,
+            .kind = .terminal,
+            .node = .{ .invocation = invs[k] },
+            .indent = 0,
+            .continuations = tail,
+            .location = flow.location,
+        };
+        tail = link;
+    }
 
     const transformed_flow = ast.Flow{
-        .body = ast.rootSite(new_invocation, flow.body.continuations, flow.location),
+        .body = ast.rootSite(invs[0], tail, flow.location),
         .annotations = flow.annotations,
         .pre_label = flow.pre_label,
         .super_shape = flow.super_shape,
