@@ -75,6 +75,15 @@ const SizeData = struct {
     height: u16,
 };
 
+// A text style — a reusable value (option B). Boolean attrs only for now;
+// colors (fg/bg/ul) are the next decision. Maps 1:1 onto libvaxis Cell.Style.
+const Style = struct {
+    bold: bool = false,
+    dim: bool = false,
+    italic: bool = false,
+    strikethrough: bool = false,
+};
+
 // Module-level runtime state. The whole library is single-instance per
 // program; `run` is the lifecycle owner.
 var vx: libvaxis.Vaxis = undefined;
@@ -262,6 +271,30 @@ const VaxisEvent = union(enum) {
         for (text, 0..) |_, i| {
             child.writeCell(@intCast(i), 0, .{
                 .char = .{ .grapheme = text[i .. i + 1] },
+            });
+        }
+    }
+}
+
+// Write text at position WITH a style. `style` is a reusable Style value —
+// bind it once, apply to many writes. The koru Style maps field-for-field
+// onto libvaxis Cell.Style.
+~pub event write-styled { x: u16, y: u16, text: string, style: koru/vaxis:Style }
+
+~proc write-styled|zig {
+    if ($mod.is_initialized) {
+        const win = $mod.vx.window();
+        const child = win.child(.{ .x_off = x, .y_off = y });
+        const cell_style: $mod.libvaxis.Cell.Style = .{
+            .bold = style.bold,
+            .dim = style.dim,
+            .italic = style.italic,
+            .strikethrough = style.strikethrough,
+        };
+        for (text, 0..) |_, i| {
+            child.writeCell(@intCast(i), 0, .{
+                .char = .{ .grapheme = text[i .. i + 1] },
+                .style = cell_style,
             });
         }
     }
