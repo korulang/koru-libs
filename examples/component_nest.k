@@ -22,6 +22,6 @@ koru/vaxis:component(page) {
 }
 
 koru/vaxis:run(title: "component nest")
-! ready |> page()
+! draw w |> page(win: w)
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

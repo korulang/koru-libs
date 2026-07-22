@@ -16,6 +16,6 @@ koru/vaxis:component(counter) {
 }
 
 koru/vaxis:run(title: "component counter")
-! ready |> counter(n: 42)
+! draw w |> counter(win: w, n: 42)
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

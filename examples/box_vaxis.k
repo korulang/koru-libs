@@ -12,7 +12,7 @@ import std/io
 import koru/vaxis
 
 koru/vaxis:run(title: "boxes")
-! ready |> koru/vaxis:box(x: 3, y: 1, w: 34, h: 6, border: true): a
+! draw _ |> koru/vaxis:box(x: 3, y: 1, w: 34, h: 6, border: true): a
     |> koru/vaxis:write-in(win: a, x: 1, y: 0, text: "panel A")
     |> koru/vaxis:write-in(win: a, x: 1, y: 2, text: "text at A-local (1,2)")
     |> koru/vaxis:box(x: 42, y: 9, w: 30, h: 5, border: true): b

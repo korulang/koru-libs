@@ -11,7 +11,7 @@ import std/io
 import koru/vaxis
 
 koru/vaxis:run(title: "view chain")
-! ready |> koru/vaxis:view {
+! draw _ |> koru/vaxis:view {
     <text>first line</text>
     <text>second line</text>
     <text>third line</text>

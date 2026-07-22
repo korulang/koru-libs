@@ -11,6 +11,6 @@ import std/io
 import koru/vaxis
 
 koru/vaxis:run(title: "view tracer")
-! ready |> koru/vaxis:view { <text>hi</text> }
+! draw _ |> koru/vaxis:view { <text>hi</text> }
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

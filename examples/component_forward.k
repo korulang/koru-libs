@@ -22,6 +22,6 @@ koru/vaxis:component(page) {
 }
 
 koru/vaxis:run(title: "prop forward")
-! ready |> page(who: "Lars")
+! draw w |> page(win: w, who: "Lars")
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

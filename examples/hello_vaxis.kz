@@ -5,6 +5,6 @@
 ~import koru/vaxis
 
 ~koru/vaxis:run(title: "Hello")
-! ready |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
+! draw _ |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err _ |> std/io:print.ln("Failed to start vaxis")

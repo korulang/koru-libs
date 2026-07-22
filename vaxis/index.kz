@@ -136,7 +136,7 @@ const VaxisEvent = union(enum) {
 //   | err []const u8 — init failure
 
 ~pub event run { title: string }
-! ?ready
+! ?draw koru/vaxis:Window
 ! ?key koru/vaxis:KeyData
 ! ?resize koru/vaxis:SizeData
 ! ?focus-in
@@ -186,10 +186,12 @@ const VaxisEvent = union(enum) {
 
     $mod.is_initialized = true;
 
-    // Fire ! ready — consumer's chance to draw initial state. Auto-render
-    // after so consumers don't need to call render() themselves in the typical
-    // "write some cells in ! ready" case.
-    ready();
+    // Fire ! draw, handing the consumer the ROOT WINDOW as the payload — the
+    // canvas to paint into (`! draw w |> app(win: w)`). This is the RETAINED-view
+    // hook: it fires here on MOUNT, and again on every resize (below), so the
+    // scene is declared once and repainted on damage. Auto-render after so
+    // consumers don't call render() themselves.
+    draw($mod.vx.window());
     $mod.vx.render($mod.tty.writer()) catch {};
 
     // Fire initial ! resize so consumers that only redraw on resize get
@@ -231,6 +233,11 @@ const VaxisEvent = union(enum) {
                         .width = ws.cols,
                         .height = ws.rows,
                     });
+                    // vx.resize just WIPED the buffer. Repaint the retained scene
+                    // into the fresh root window — this is what keeps a resize (or
+                    // the terminal's focus-driven resize quirk) from leaving the
+                    // screen blank. Same hook as mount; the consumer declared it once.
+                    draw($mod.vx.window());
                     $mod.vx.render($mod.tty.writer()) catch {};
                 }
             },
@@ -736,13 +743,25 @@ const VaxisEvent = union(enum) {
                 el_child_args.append(a, &[_]ast.Arg{}) catch unreachable;
             }
 
-            // (1) event decl: cname { <props> }. The path carries the CONSUMER's
-            // module qualifier — the key canonicalize stamps onto the bare call,
-            // so dead_strip's used-set matches and keeps it (synthesized events
-            // skip canonicalize, so we stamp it ourselves).
-            const fields = a.alloc(ast.Field, prop_name.items.len) catch unreachable;
+            // (1) event decl: cname { win: Window, <props> }. The path carries the
+            // CONSUMER's module qualifier — the key canonicalize stamps onto the bare
+            // call, so dead_strip's used-set matches and keeps it (synthesized events
+            // skip canonicalize, so we stamp it ourselves). Every component takes a
+            // `win` FIRST — the Window it paints into (its canvas). A leaf paints into
+            // it (write-in); a parent forwards it (or a sub-window) to its children.
+            // A cross-module type ref carries its qualifier in the SEPARATE
+            // `module_path` slot (bare `type` + `module_path`), the way the parser
+            // splits `koru/vaxis:Window`. Jamming it into `type` as one string skips
+            // the resolver and emits invalid Zig (`koru.vaxis:Window`). writeModulePath
+            // mangles the slash form → `koru_koru.koru_vaxis.Window`.
+            const fields = a.alloc(ast.Field, prop_name.items.len + 1) catch unreachable;
+            fields[0] = .{
+                .name = a.dupe(u8, "win") catch unreachable,
+                .type = a.dupe(u8, "Window") catch unreachable,
+                .module_path = a.dupe(u8, wa_qual orelse "koru/vaxis") catch unreachable,
+            };
             for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
-                fields[i] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
+                fields[i + 1] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
             }
             const event_item = ast.Item{ .event_decl = ast.EventDecl{
                 .path = mkPath(a, cmodule, cname),
@@ -755,17 +774,21 @@ const VaxisEvent = union(enum) {
                 .module = a.dupe(u8, cmodule) catch unreachable,
             } };
 
-            // (2) impl flow — a flat op chain. Each row is 1 op (write-at, for a
+            // (2) impl flow — a flat op chain. Each row is 1 op (write-in, for a
             // literal or a string passthrough) or 2 ops (fmt:ln bound to a fresh
-            // name, then write-at painting that bind's `.text`). write-at now owns
-            // its bytes, so the fmt result's lifetime is a non-issue.
-            const mkWriteAt = struct {
+            // name, then write-in painting that bind's `.text`). write-in paints
+            // into the component's `win` canvas at win-LOCAL coords (x:0, y:row) —
+            // so where the component lands is decided by WHOEVER handed it the
+            // window, not by absolute screen position. That's what kills the
+            // overlap: two invocations into two windows land in two places.
+            const mkWriteIn = struct {
                 fn call(al: std.mem.Allocator, waq: ?[]const u8, mkp: anytype, row: usize, text_val: []const u8) ast.Invocation {
-                    const args = al.alloc(ast.Arg, 3) catch unreachable;
-                    args[0] = .{ .name = al.dupe(u8, "x") catch unreachable, .value = al.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
-                    args[1] = .{ .name = al.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(al, "{d}", .{row}) catch unreachable, .had_explicit_label = true };
-                    args[2] = .{ .name = al.dupe(u8, "text") catch unreachable, .value = text_val, .had_explicit_label = true };
-                    return .{ .path = mkp(al, waq, "write-at"), .args = args };
+                    const args = al.alloc(ast.Arg, 4) catch unreachable;
+                    args[0] = .{ .name = al.dupe(u8, "win") catch unreachable, .value = al.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                    args[1] = .{ .name = al.dupe(u8, "x") catch unreachable, .value = al.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                    args[2] = .{ .name = al.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(al, "{d}", .{row}) catch unreachable, .had_explicit_label = true };
+                    args[3] = .{ .name = al.dupe(u8, "text") catch unreachable, .value = text_val, .had_explicit_label = true };
+                    return .{ .path = mkp(al, waq, "write-in"), .args = args };
                 }
             }.call;
 
@@ -773,9 +796,9 @@ const VaxisEvent = union(enum) {
             var lctr: usize = 0;
             for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, 0..) |content, kind, ident, cargs, row| {
                 if (kind == 0) {
-                    ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
+                    ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
                 } else if (kind == 1) {
-                    ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, a.dupe(u8, ident) catch unreachable)) catch unreachable;
+                    ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, a.dupe(u8, ident) catch unreachable)) catch unreachable;
                 } else if (kind == 2) {
                     const lname = std.fmt.allocPrint(a, "__view_l{d}", .{lctr}) catch unreachable;
                     lctr += 1;
@@ -783,16 +806,20 @@ const VaxisEvent = union(enum) {
                     const ln_args = a.alloc(ast.Arg, 1) catch unreachable;
                     ln_args[0] = .{ .name = a.dupe(u8, "expr") catch unreachable, .value = std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable };
                     ops.append(a, .{ .path = mkPath(a, "std.fmt", "ln"), .args = ln_args, .return_binding = a.dupe(u8, lname) catch unreachable }) catch unreachable;
-                    // write-at(x:0, y:row, text: <lname>.text)
-                    ops.append(a, mkWriteAt(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "{s}.text", .{lname}) catch unreachable)) catch unreachable;
+                    // write-in(win, x:0, y:row, text: <lname>.text)
+                    ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "{s}.text", .{lname}) catch unreachable)) catch unreachable;
                 } else {
                     // kind 3 — child component invocation. `content` is the child
                     // NAME; `cargs` its parsed args. The path carries the CONSUMER's
                     // module qualifier (cmodule), matching the child event's own decl
-                    // path so canonicalize/dead_strip resolve it. No x/y — the child
-                    // paints at its own coords (its impl's y:0). Layout offset for
-                    // stacked children is the next rung.
-                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = cargs }) catch unreachable;
+                    // path so canonicalize/dead_strip resolve it. Forward this
+                    // component's OWN `win` to the child as its first arg — the child
+                    // paints into the same canvas for now; once a layout container
+                    // (StackPanel) slices the window, it passes a SUB-window instead.
+                    const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
+                    child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
+                    for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
+                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
                 }
             }
 

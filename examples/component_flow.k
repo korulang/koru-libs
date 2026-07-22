@@ -4,7 +4,7 @@
 // control flow should compose them with ZERO new machinery — `if` picks which
 // component to invoke, exactly as it would pick between any two events.
 //
-//   ! ready |> if(show_hello)
+//   ! draw _ |> if(show_hello)
 //       | then |> hello()
 //       | else |> bye()
 //
@@ -29,8 +29,8 @@ const {
 }
 
 koru/vaxis:run(title: "flow over components")
-! ready |> if(show_hello)
-    | then |> hello()
-    | else |> bye()
+! draw w |> if(show_hello)
+    | then |> hello(win: w)
+    | else |> bye(win: w)
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

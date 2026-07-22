@@ -19,7 +19,7 @@ import std/list
 import koru/vaxis
 
 koru/vaxis:run(title: "list")
-! ready |> std/list:new(i64)
+! draw _ |> std/list:new(i64)
     | list xs |> std/list:push(xs, v: 10)
         |> std/list:push(xs, v: 20)
         |> std/list:push(xs, v: 30)

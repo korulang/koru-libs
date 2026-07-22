@@ -18,6 +18,6 @@ koru/vaxis:component(greet) {
 }
 
 koru/vaxis:run(title: "component")
-! ready |> greet(name: "Lars")
+! draw w |> greet(win: w, name: "Lars")
 ! key k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

@@ -11,7 +11,7 @@ import std/io
 import koru/vaxis
 
 koru/vaxis:run(title: "styles")
-! ready |> koru/vaxis:write-styled(x: 2, y: 2, text: "TODO", style: { bold: true })
+! draw _ |> koru/vaxis:write-styled(x: 2, y: 2, text: "TODO", style: { bold: true })
     |> koru/vaxis:write-at(x: 2, y: 4, text: "buy milk")
     |> koru/vaxis:write-styled(x: 2, y: 5, text: "walk the dog", style: { dim: true, strikethrough: true })
     |> koru/vaxis:write-at(x: 2, y: 7, text: "q to quit")
