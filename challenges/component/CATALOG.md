@@ -26,5 +26,9 @@ a scored replay (scored entries need a reusable markup-tag widget boundary).
 
 ## Replays
 
-*(empty — replay 01 `selection-list` evaporated at taste-gate 2026-07-23: app-shaped
+| Demo | Tag | Thesis | Outcome |
+|------|-----|--------|---------|
+| `examples/component_progress_bar.k` | `progress-bar` | Drop-in meter owns label + value/max stack layout; host passes reactive props | Bridge |
+
+*(replay 01 `selection-list` evaporated at taste-gate 2026-07-23: app-shaped
 draw/key pipeline, not a reusable `<selection-list/>` widget)*
