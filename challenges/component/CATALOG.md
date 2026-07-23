@@ -12,7 +12,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **progress** | In flight — Charm-class meter (fill, empty/full runes, %, color blend, width from win; spring when substrate allows). Not cataloged until taste-gate clears. |
+| **progress** | In flight — Charm-class meter. Replay 03 **Frontier**. Walls 1–2 fixed on substrate (`Style` fg/bg, grapheme `printSegment`). **Wall 3 open:** fill math inside component boundary (meter primitive). Replays empty until polish clears. |
 
 ### Port queue (do not skip)
 
@@ -55,3 +55,9 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 |--------|-----|-----|
 | 01 · 2026-07-23 | `selection-list` | App-shaped `! draw`/`! key`; not a reusable tag boundary |
 | 02 · 2026-07-23 | `progress-bar` | Boundary clean; Charm name without meter craft (label + value/max text) |
+
+### Frontiers (same active target)
+
+| Replay | Outcome | Walls |
+|--------|---------|-------|
+| 03 · 2026-07-23 | Frontier | Color on Style; grapheme write; fill math in component — see `vaxis/tests/frontier/charm_progress_walls.md`. Pin `800_003` (unknown Style field → Stage D). Walls 1–2 since fixed; wall 3 remains. |

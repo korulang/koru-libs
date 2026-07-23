@@ -75,13 +75,17 @@ const SizeData = struct {
     height: u16,
 };
 
-// A text style — a reusable value (option B). Boolean attrs only for now;
-// colors (fg/bg/ul) are the next decision. Maps 1:1 onto libvaxis Cell.Style.
+// A text style — a reusable value (option B). Boolean attrs + packed RGB
+// colors (0 = terminal default; otherwise 0xRRGGBB → libvaxis Color.rgb).
+// Maps onto libvaxis Cell.Style (ul / underline style still deferred).
+// Floated Charm progress wall (COMPONENT replay 03): Style had no Color.
 const Style = struct {
     bold: bool = false,
     dim: bool = false,
     italic: bool = false,
     strikethrough: bool = false,
+    fg: u32 = 0,
+    bg: u32 = 0,
 };
 
 // A window — a positioned, sized VIEW into the screen. Cheap value (offsets +
@@ -322,11 +326,9 @@ const VaxisEvent = union(enum) {
         // Own the bytes for the frame — the caller's `text` (a literal, a store
         // value, or an ephemeral fmt result) is not ours to keep alive.
         const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
-        for (owned, 0..) |_, i| {
-            child.writeCell(@intCast(i), 0, .{
-                .char = .{ .grapheme = owned[i .. i + 1] },
-            });
-        }
+        // Grapheme walk via libvaxis print — byte-sliced writeCell shattered
+        // UTF-8 meter runes (▌/░/█). Charm progress wall 2.
+        _ = child.printSegment(.{ .text = owned }, .{});
     }
 }
 
@@ -337,12 +339,12 @@ const VaxisEvent = union(enum) {
 ~pub event style { bold: bool, dim: bool, italic: bool, strikethrough: bool } -> koru/vaxis:Style
 
 ~proc style|zig {
-    return .{ .bold = bold, .dim = dim, .italic = italic, .strikethrough = strikethrough };
+    return .{ .bold = bold, .dim = dim, .italic = italic, .strikethrough = strikethrough, .fg = 0, .bg = 0 };
 }
 
 // Write text at position WITH a style. `style` is a reusable Style value —
-// bind it once, apply to many writes. The koru Style maps field-for-field
-// onto libvaxis Cell.Style.
+// bind it once, apply to many writes. The koru Style maps onto libvaxis
+// Cell.Style (bools + fg/bg RGB; 0 color = .default).
 ~pub event write-styled { x: u16, y: u16, text: string, style: koru/vaxis:Style }
 
 ~proc write-styled|zig {
@@ -354,14 +356,11 @@ const VaxisEvent = union(enum) {
             .dim = style.dim,
             .italic = style.italic,
             .strikethrough = style.strikethrough,
+            .fg = if (style.fg == 0) .default else $mod.libvaxis.Color.rgbFromUint(@intCast(style.fg)),
+            .bg = if (style.bg == 0) .default else $mod.libvaxis.Color.rgbFromUint(@intCast(style.bg)),
         };
         const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
-        for (owned, 0..) |_, i| {
-            child.writeCell(@intCast(i), 0, .{
-                .char = .{ .grapheme = owned[i .. i + 1] },
-                .style = cell_style,
-            });
-        }
+        _ = child.printSegment(.{ .text = owned, .style = cell_style }, .{});
     }
 }
 
@@ -471,11 +470,7 @@ const VaxisEvent = union(enum) {
     if ($mod.is_initialized) {
         const child = win.child(.{ .x_off = x, .y_off = y });
         const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
-        for (owned, 0..) |_, i| {
-            child.writeCell(@intCast(i), 0, .{
-                .char = .{ .grapheme = owned[i .. i + 1] },
-            });
-        }
+        _ = child.printSegment(.{ .text = owned }, .{});
     }
 }
 

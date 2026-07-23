@@ -1,9 +1,7 @@
 // Skunkworks — vaxis styling (option B: a reusable Style value).
 //
-// Static text, boolean attrs only — deliberately sidesteps both the Color
-// union (next decision) and the allocation-lifetime bug (literals live
-// forever). The question this probe answers: does a Style value attach to a
-// write, and does an inline record literal `{ dim: true, ... }` fill it?
+// Boolean attrs + packed RGB fg/bg (0xRRGGBB; 0 = default). See also
+// examples/style_color.k for Charm-ish meter runes + color.
 //
 //   koruc run examples/style_vaxis.k       (q to quit)
 
