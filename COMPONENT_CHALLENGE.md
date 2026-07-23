@@ -48,10 +48,10 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `help`** — sole focus until cataloged as Charm-class.
-(`paginator` Bridge cataloged same day — Dots + Arabic status chrome.)
+**Charm `table`** — sole focus until cataloged as Charm-class.
+(`help` Bridge cataloged 2026-07-24 — width-aware short + column full, `?` toggle.)
 
-Queue (after help clears; do not skip ahead):
+Queue (after table clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
@@ -59,8 +59,8 @@ Queue (after help clears; do not skip ahead):
 4. list (simple) ← cataloged
 5. viewport ← cataloged
 6. paginator ← cataloged
-7. help ← **here**
-8. table
+7. help ← cataloged
+8. table ← **here**
 9. textarea
 10. timer / stopwatch
 11. filepicker
@@ -177,6 +177,14 @@ Governed like `SCENE.md`.
 - 2026-07-23 · **paginator Bridge cataloged** (replay 09, hy3) — standalone
   Dots + Arabic status chrome; host owns page/total; h/l navigate. Active
   advances to **help**.
+- 2026-07-24 · **help Bridge cataloged** (replay 10, hy3) — bubbles/help:
+  width-aware SHORT help (` • ` join, `…` truncation SHOWN at 100 & 46 cols)
+  + column-aligned single-column FULL help; `?` toggles via host-store `mode`
+  int; muted-key/soft-desc/dim-sep Charm palette; bottom-anchored. Bindings as
+  a `key:desc`-per-line `string` payload. Holes floated: structured `[]Binding`
+  + separate short/full lists + multi-column full help deferred (flat payload
+  can't express column groups); rune width = 1 col/codepoint (wide CJK edge).
+  Active advances to **table**.
 
 ## Zero-friction append
 
