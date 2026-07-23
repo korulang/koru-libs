@@ -90,6 +90,16 @@ const Style = struct {
 // parent, so moving a box moves its contents.
 const Window = libvaxis.Window;
 
+// Live StackPanel cursor — parent window plus the next row y the container will
+// hand out. The VALUE carries the parent (so stack-row knows what to slice);
+// next_y rides module state because koru passes structs by value and a
+// sweep's many stack-row calls must share one advancing cursor for the frame.
+// Single live stack per frame (vaxis is single-instance); `stack` resets it.
+const Stack = struct {
+    parent: Window,
+};
+var stack_next_y: u16 = 0;
+
 // Module-level runtime state. The whole library is single-instance per
 // program; `run` is the lifecycle owner.
 var vx: libvaxis.Vaxis = undefined;
@@ -421,6 +431,35 @@ const VaxisEvent = union(enum) {
         .y_off = @as(i17, @intCast(top)),
         .width = null,
         .height = @as(u16, @intCast(hh)),
+    });
+}
+
+// Live StackPanel — runtime cursor over a parent window. Static markup
+// `<StackPanel>` still comptime-folds fixed children; this is the draw-time
+// twin for store-driven rows (sweep pushes children; they never pass `y:`).
+//
+//   |> stack(parent: body): panel
+//   |> sweep(todos)
+//   ! sweep … |> stack-row(stack: panel): rw |> todo-row(win: rw, …)
+~pub event stack { parent: koru/vaxis:Window } -> koru/vaxis:Stack
+
+~proc stack|zig {
+    $mod.stack_next_y = 0;
+    return .{ .parent = parent };
+}
+
+// Next 1-line full-width slice of the stack's parent. Advances the frame cursor.
+// Layout stays the container's job — the child paints into the returned window.
+~pub event stack-row { stack: koru/vaxis:Stack } -> koru/vaxis:Window
+
+~proc stack-row|zig {
+    const y = $mod.stack_next_y;
+    $mod.stack_next_y = y + 1;
+    return stack.parent.child(.{
+        .x_off = 0,
+        .y_off = @as(i17, @intCast(y)),
+        .width = null,
+        .height = 1,
     });
 }
 

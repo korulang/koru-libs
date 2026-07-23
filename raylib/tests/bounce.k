@@ -14,7 +14,7 @@ import libs/raylib
 import std/io
 import std/store
 
-std/store:new(sprites) { x: i64, y: i64, vx: i64, vy: i64 }
+std/store:new(sprites, capacity: 64) { x: i64, y: i64, vx: i64, vy: i64 }
 
 std/store:insert(sprites) { x: 10, y: 10, vx: 3, vy: 2 }
 | row _ |> _
