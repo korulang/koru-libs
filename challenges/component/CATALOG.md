@@ -12,7 +12,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **progress** | In flight — Charm-class meter. Replay 03 **Frontier**. Walls 1–2 fixed on substrate (`Style` fg/bg, grapheme `printSegment`). **Wall 3 open:** fill math inside component boundary (meter primitive). Replays empty until polish clears. |
+| **progress** | Substrate unblocked (walls 1–3). Proof demo `examples/component_progress.k` — Charm defaults (▌░, purple→pink, %). Awaiting taste-gate / contestant replay for Replays credit. Spring animation still deferred. |
 
 ### Port queue (do not skip)
 
@@ -60,4 +60,4 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 
 | Replay | Outcome | Walls |
 |--------|---------|-------|
-| 03 · 2026-07-23 | Frontier | Color on Style; grapheme write; fill math in component — see `vaxis/tests/frontier/charm_progress_walls.md`. Pin `800_003` (unknown Style field → Stage D). Walls 1–2 since fixed; wall 3 remains. |
+| 03 · 2026-07-23 | Frontier | Color; grapheme write; fill math — floated. Mom/dad fixed all three; see `vaxis/tests/frontier/charm_progress_walls.md` + `examples/component_progress.k`. |

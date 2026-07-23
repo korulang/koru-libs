@@ -474,6 +474,88 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Charm-class progress meter — fill math + per-cell color blend live HERE
+// (COMPONENT wall 3). Defaults match bubbles/progress: ▌ filled (half-block
+// dual-color blend), ░ empty, purple→pink (#5A56E0→#EE6FF8), empty #606060,
+// trailing " N%". Width = win.width (stack/dock rows hand a slice). Component
+// markup tags `<progress-bar …/>` resolve to this event (builtin path), so the
+// widget boundary owns the meter.
+~pub event progress-bar { win: koru/vaxis:Window, value: i64, max: i64 }
+
+~proc progress-bar|zig {
+    if (!$mod.is_initialized) return;
+
+    const max_v: i64 = if (max <= 0) 1 else max;
+    var v: i64 = value;
+    if (v < 0) v = 0;
+    if (v > max_v) v = max_v;
+    const pct: f64 = @as(f64, @floatFromInt(v)) / @as(f64, @floatFromInt(max_v));
+
+    // Charm defaults
+    const blend_start: u32 = 0x5A56E0;
+    const blend_end: u32 = 0xEE6FF8;
+    const empty_color: u32 = 0x606060;
+    const full_g = "▌";
+    const empty_g = "░";
+
+    var pct_buf: [8]u8 = undefined;
+    const pct_text = std.fmt.bufPrint(&pct_buf, " {d}%", .{@as(u32, @intFromFloat(@round(pct * 100.0)))}) catch " ?%";
+    const pct_w: u16 = @intCast(pct_text.len);
+
+    var total_w: u16 = win.width;
+    if (total_w < pct_w + 1) total_w = pct_w + 1;
+    const bar_w: u16 = total_w - pct_w;
+    var filled: u16 = @intFromFloat(@round(pct * @as(f64, @floatFromInt(bar_w))));
+    if (filled > bar_w) filled = bar_w;
+
+    const lerp = struct {
+        fn call(a: u32, b: u32, t: f64) u32 {
+            const ar: f64 = @floatFromInt((a >> 16) & 0xff);
+            const ag: f64 = @floatFromInt((a >> 8) & 0xff);
+            const ab: f64 = @floatFromInt(a & 0xff);
+            const br: f64 = @floatFromInt((b >> 16) & 0xff);
+            const bg: f64 = @floatFromInt((b >> 8) & 0xff);
+            const bb: f64 = @floatFromInt(b & 0xff);
+            const r: u32 = @intFromFloat(ar + (br - ar) * t);
+            const g: u32 = @intFromFloat(ag + (bg - ag) * t);
+            const bl: u32 = @intFromFloat(ab + (bb - ab) * t);
+            return (r << 16) | (g << 8) | bl;
+        }
+    }.call;
+
+    // Half-block: each cell's fg/bg are adjacent samples on a 2× denser blend
+    // across the full bar width (Charm WithDefaultBlend + ▌).
+    const samples: u32 = if (bar_w == 0) 1 else @as(u32, bar_w) * 2;
+    const denom: f64 = @floatFromInt(if (samples <= 1) @as(u32, 1) else samples - 1);
+    var col: u16 = 0;
+    while (col < filled) : (col += 1) {
+        const sample0: u32 = @as(u32, col) * 2;
+        const t0: f64 = @as(f64, @floatFromInt(sample0)) / denom;
+        const t1: f64 = @as(f64, @floatFromInt(sample0 + 1)) / denom;
+        const c0 = lerp(blend_start, blend_end, t0);
+        const c1 = lerp(blend_start, blend_end, t1);
+        win.writeCell(col, 0, .{
+            .char = .{ .grapheme = full_g, .width = 1 },
+            .style = .{
+                .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(c0)),
+                .bg = $mod.libvaxis.Color.rgbFromUint(@intCast(c1)),
+            },
+        });
+    }
+    while (col < bar_w) : (col += 1) {
+        win.writeCell(col, 0, .{
+            .char = .{ .grapheme = empty_g, .width = 1 },
+            .style = .{
+                .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(empty_color)),
+            },
+        });
+    }
+
+    const pct_owned = $mod.text_arena.allocator().dupe(u8, pct_text) catch pct_text;
+    const pct_child = win.child(.{ .x_off = bar_w, .y_off = 0 });
+    _ = pct_child.printSegment(.{ .text = pct_owned }, .{});
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1033,6 +1115,15 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
+    // Builtin meter tags resolve to koru/vaxis events (not consumer-module
+    // components). Progress wall 3: `<progress-bar/>` → wa_qual path.
+    const childQual = struct {
+        fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
+            if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
+            return cmod;
+        }
+    }.call;
+
             // (1)+(2) build ops first — a live empty StackPanel fill may set
             // return_type on the event (returns Stack for draw-time rows).
             const mkWriteIn = struct {
@@ -1122,25 +1213,24 @@ const VaxisEvent = union(enum) {
                                 const child_args = a.alloc(ast.Arg, kid.args.len + 1) catch unreachable;
                                 child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, krname) catch unreachable, .had_explicit_label = true };
                                 for (kid.args, 0..) |ca, ci| child_args[ci + 1] = ca;
-                                ops.append(a, .{ .path = mkPath(a, cmodule, kid.name), .args = child_args }) catch unreachable;
+                                ops.append(a, .{ .path = mkPath(a, childQual(kid.name, wa_qual, cmodule), kid.name), .args = child_args }) catch unreachable;
                             }
                         }
                     } else {
                         const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
                         child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
                         for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
-                        ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
+                        ops.append(a, .{ .path = mkPath(a, childQual(content, wa_qual, cmodule), content), .args = child_args }) catch unreachable;
                     }
                 } else if (stack_y < 0) {
                     // kind 3, BARE — child component painting into the parent's OWN
                     // window. `content` is the child NAME; `cargs` its parsed args.
-                    // The path carries the consumer module qualifier (cmodule),
-                    // matching the child event's own decl path so canonicalize/
-                    // dead_strip resolve it. Forward this component's `win` down.
+                    // Builtin meters (`progress-bar`) resolve via wa_qual; user
+                    // components via cmodule. Forward this component's `win` down.
                     const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
                     child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
                     for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
-                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
+                    ops.append(a, .{ .path = mkPath(a, childQual(content, wa_qual, cmodule), content), .args = child_args }) catch unreachable;
                 } else {
                     // kind 3, STACKED — a StackPanel row. The container slices its
                     // `win` into a full-width, 1-row sub-window at y=stack_y, then
@@ -1159,7 +1249,7 @@ const VaxisEvent = union(enum) {
                     const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
                     child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
                     for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
-                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
+                    ops.append(a, .{ .path = mkPath(a, childQual(content, wa_qual, cmodule), content), .args = child_args }) catch unreachable;
                 }
             }
 

@@ -89,6 +89,9 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-23 · **Charm progress walls 1–3 cleared** — Style fg/bg, grapheme
+  printSegment, `progress-bar` meter primitive + `<progress-bar/>` builtin path.
+  Proof: `examples/component_progress.k`. Spring animation still deferred.
 - 2026-07-23 · **COMPONENT_CHALLENGE → Charm depth-first** — replay 02
   (`progress-bar` text dump) evaporated. Generator is now a Charm Bubbles port
   queue with **max polish before next widget**; active = Charm `progress`
