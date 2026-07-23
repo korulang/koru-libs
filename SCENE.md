@@ -88,6 +88,9 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-23 · **COMPONENT_CHALLENGE retuned** — first replay (`selection-list`)
+  evaporated at taste-gate: mini-app with leaf chrome, not a reusable markup-tag
+  widget. Brief now requires THE BAR (widget boundary). Catalog struck.
 - 2026-07-23 · **COMPONENT_CHALLENGE planted** — third organ beside LIFT: grow the
   vaxis component catalog (singular contestant default; retune after test runs).
   Brief: `COMPONENT_CHALLENGE.md`; catalog: `challenges/component/CATALOG.md`.

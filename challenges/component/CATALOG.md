@@ -1,15 +1,16 @@
 # COMPONENT_CHALLENGE catalog
 
-Finished widgets / composition theses from `COMPONENT_CHALLENGE.md` (repo root).
-Each entry is a runnable `examples/component_*.k` (or noted path); the line names
-what it proves and any toolchain gaps it floated.
+Finished **reusable widgets** from `COMPONENT_CHALLENGE.md` (repo root).
+Each entry is a runnable `examples/component_*.k`; the line names the widget
+tag, the thesis, and any toolchain gaps floated.
 
 The catalog is the long-running artifact; each replay is one slice through it.
 
 ## Seed — pre-challenge substrate (not scored replays)
 
 These existed before the generator; contestants **read** them to diverge. Do not
-clone them.
+clone them. Most are layout/composition demos — useful ground, not the bar for
+a scored replay (scored entries need a reusable markup-tag widget boundary).
 
 | Demo | Thesis |
 |------|--------|
@@ -25,4 +26,5 @@ clone them.
 
 ## Replays
 
-| `examples/component_selection_list.k` | live dock fill + store sweep branches on `row == ui.sel` into two row components; keys mutate sibling-store cursor, vaxis damage-repaint |
+*(empty — replay 01 `selection-list` evaporated at taste-gate 2026-07-23: app-shaped
+draw/key pipeline, not a reusable `<selection-list/>` widget)*
