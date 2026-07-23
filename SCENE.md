@@ -70,6 +70,9 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 - **Per-library beds (nested).** A specific lift in flight — `curl`, `pq`,
   `vaxis`, … — is its own named bed: it inherits the quadrifecta but has its own
   feeling and its own gap. Split one out when a library gets real focus.
+- **The component bed.** Grow the vaxis component catalog via
+  `COMPONENT_CHALLENGE.md` — widgets and composition theses, singular contestant
+  default. Sibling organ to LIFT (packages) and to examples' APP_CHALLENGE (apps).
 
 ## What it says NO to (rejected on sight)
 
@@ -85,6 +88,9 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-23 · **COMPONENT_CHALLENGE planted** — third organ beside LIFT: grow the
+  vaxis component catalog (singular contestant default; retune after test runs).
+  Brief: `COMPONENT_CHALLENGE.md`; catalog: `challenges/component/CATALOG.md`.
 - 2026-06-29 · **planted** (arbiters-init first walk, dictated by Lars). North star,
   feeling, beds, and the no-list are his words sharpened.
 - 2026-06-29 · **reframed** — dropped the "ideal user" persona (felt enterprise-y);
