@@ -1,16 +1,37 @@
 # COMPONENT_CHALLENGE catalog
 
-Finished **reusable widgets** from `COMPONENT_CHALLENGE.md` (repo root).
+Finished **Charm-class** reusable widgets from `COMPONENT_CHALLENGE.md`.
 Each entry is a runnable `examples/component_*.k`; the line names the widget
 tag, the thesis, and any toolchain gaps floated.
 
 The catalog is the long-running artifact; each replay is one slice through it.
+**Depth-first:** the active Charm target is polished to max before the queue
+advances. Thin boundary-only demos do not enter Replays.
+
+## Active target
+
+| Charm | Status |
+|-------|--------|
+| **progress** | In flight — Charm-class meter (fill, empty/full runes, %, color blend, width from win; spring when substrate allows). Not cataloged until taste-gate clears. |
+
+### Port queue (do not skip)
+
+1. progress ← active
+2. spinner
+3. textinput
+4. list (simple)
+5. viewport
+6. paginator
+7. help
+8. table
+9. textarea
+10. timer / stopwatch
+11. filepicker
 
 ## Seed — pre-challenge substrate (not scored replays)
 
 These existed before the generator; contestants **read** them to diverge. Do not
-clone them. Most are layout/composition demos — useful ground, not the bar for
-a scored replay (scored entries need a reusable markup-tag widget boundary).
+clone them. Most are layout/composition demos — useful ground, not Charm polish.
 
 | Demo | Thesis |
 |------|--------|
@@ -26,9 +47,11 @@ a scored replay (scored entries need a reusable markup-tag widget boundary).
 
 ## Replays
 
-| Demo | Tag | Thesis | Outcome |
-|------|-----|--------|---------|
-| `examples/component_progress_bar.k` | `progress-bar` | Drop-in meter owns label + value/max stack layout; host passes reactive props | Bridge |
+*(empty — no Charm-class survivor yet)*
 
-*(replay 01 `selection-list` evaporated at taste-gate 2026-07-23: app-shaped
-draw/key pipeline, not a reusable `<selection-list/>` widget)*
+### Evaporated (taste-gate)
+
+| Replay | Tag | Why |
+|--------|-----|-----|
+| 01 · 2026-07-23 | `selection-list` | App-shaped `! draw`/`! key`; not a reusable tag boundary |
+| 02 · 2026-07-23 | `progress-bar` | Boundary clean; Charm name without meter craft (label + value/max text) |

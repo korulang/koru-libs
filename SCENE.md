@@ -71,8 +71,9 @@ feeling. A walk **names the bed it's walking**. Standing beds:
   `vaxis`, … — is its own named bed: it inherits the quadrifecta but has its own
   feeling and its own gap. Split one out when a library gets real focus.
 - **The component bed.** Grow the vaxis component catalog via
-  `COMPONENT_CHALLENGE.md` — widgets and composition theses, singular contestant
-  default. Sibling organ to LIFT (packages) and to examples' APP_CHALLENGE (apps).
+  `COMPONENT_CHALLENGE.md` — Charm Bubbles as craft reference, depth-first max
+  polish on the active widget (now **progress**), singular contestant default.
+  Sibling organ to LIFT (packages) and to examples' APP_CHALLENGE (apps).
 
 ## What it says NO to (rejected on sight)
 
@@ -88,6 +89,11 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-23 · **COMPONENT_CHALLENGE → Charm depth-first** — replay 02
+  (`progress-bar` text dump) evaporated. Generator is now a Charm Bubbles port
+  queue with **max polish before next widget**; active = Charm `progress`
+  (fill, runes, %, color blend, width; spring when substrate allows). Known
+  wall already in sight: `Style` is boolean-only — no fg/bg yet.
 - 2026-07-23 · **COMPONENT_CHALLENGE retuned** — first replay (`selection-list`)
   evaporated at taste-gate: mini-app with leaf chrome, not a reusable markup-tag
   widget. Brief now requires THE BAR (widget boundary). Catalog struck.
