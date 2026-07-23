@@ -48,15 +48,15 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `textinput`** — sole focus until cataloged as Charm-class.
-(`spinner` Bridge cataloged same day — MiniDot + tick ms; optional fg/kind deferred.)
+**Charm `list` (simple)** — sole focus until cataloged as Charm-class.
+(`textinput` Bridge cataloged same day — prompt + placeholder + blink cursor.)
 
-Queue (after textinput clears; do not skip ahead):
+Queue (after list clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
-3. textinput ← **here**
-4. list (simple — not Glow-fancy)
+3. textinput ← cataloged
+4. list (simple — not Glow-fancy) ← **here**
 5. viewport
 6. paginator
 7. help
@@ -163,6 +163,8 @@ Governed like `SCENE.md`.
   `%`). Active advances to **spinner**. Spring deferred (needs ticks).
 - 2026-07-23 · **spinner Bridge cataloged** — MiniDot + `! tick` ms + purple.
   Active advances to **textinput**.
+- 2026-07-23 · **text-input Bridge cataloged** — prompt, placeholder, blink
+  block cursor, scroll; append-char/pop-char. Active advances to **list**.
 
 ## Zero-friction append
 

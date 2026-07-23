@@ -612,6 +612,129 @@ const VaxisEvent = union(enum) {
     _ = win.printSegment(.{ .text = owned, .style = cell_style }, .{});
 }
 
+// Charm-class textinput — prompt + value/placeholder + blink block cursor +
+// horizontal scroll live HERE (COMPONENT textinput). Defaults match Bubbles:
+// Prompt "> ", placeholder when empty, focused purple prompt, dim placeholder,
+// blink ~530ms from `ms` tick. Cursor always at end (append-char/pop-char
+// path — no mid-buffer caret yet). Markup `<text-input …/>` via wa_qual.
+~pub event text-input { win: koru/vaxis:Window, value: string, ms: i64 }
+
+~proc text-input|zig {
+    if (!$mod.is_initialized) return;
+
+    const prompt = "> ";
+    const placeholder = "Type something...";
+    const prompt_fg: u32 = 0x5A56E0; // Charm purple
+    const text_fg: u32 = 0xE0DEF4;
+    const placeholder_fg: u32 = 0x606060;
+    const cursor_bg: u32 = 0x5A56E0;
+    const cursor_fg: u32 = 0xFFFFFF;
+    // bubbles/cursor default blink cadence (~530ms)
+    const t: i64 = if (ms < 0) 0 else ms;
+    const blink_on: bool = @mod(@divTrunc(t, 530), 2) == 0;
+
+    const arena = $mod.text_arena.allocator();
+    const prompt_owned = arena.dupe(u8, prompt) catch prompt;
+    const prompt_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(prompt_fg)),
+        .bold = true,
+    };
+    _ = win.printSegment(.{ .text = prompt_owned, .style = prompt_style }, .{});
+
+    const prompt_w: u16 = @intCast(prompt.len);
+    const total_w: u16 = win.width;
+    if (total_w <= prompt_w) return;
+    const avail: u16 = total_w - prompt_w;
+
+    const empty = value.len == 0;
+    // Horizontal viewport: one cell reserved for the end cursor (Charm scroll).
+    const view_w: usize = if (avail == 0) 0 else @as(usize, avail);
+    var offset: usize = 0;
+    if (!empty) {
+        const need: usize = value.len + 1; // text + cursor cell
+        if (need > view_w and view_w > 0) {
+            offset = need - view_w;
+            if (offset > value.len) offset = value.len;
+        }
+    }
+
+    var col: u16 = prompt_w;
+    if (empty) {
+        // Placeholder: first cell is the blink cursor (Charm placeholderView).
+        const ph = placeholder;
+        if (ph.len > 0 and col < total_w) {
+            const first = arena.dupe(u8, ph[0..1]) catch ph[0..1];
+            if (blink_on) {
+                win.writeCell(col, 0, .{
+                    .char = .{ .grapheme = first, .width = 1 },
+                    .style = .{
+                        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_fg)),
+                        .bg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_bg)),
+                    },
+                });
+            } else {
+                win.writeCell(col, 0, .{
+                    .char = .{ .grapheme = first, .width = 1 },
+                    .style = .{
+                        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(placeholder_fg)),
+                    },
+                });
+            }
+            col += 1;
+        }
+        if (ph.len > 1 and col < total_w) {
+            const rest_end: usize = @min(ph.len, @as(usize, avail));
+            if (rest_end > 1) {
+                const rest = arena.dupe(u8, ph[1..rest_end]) catch ph[1..rest_end];
+                const child = win.child(.{ .x_off = col, .y_off = 0 });
+                const ph_style: $mod.libvaxis.Cell.Style = .{
+                    .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(placeholder_fg)),
+                };
+                _ = child.printSegment(.{ .text = rest, .style = ph_style }, .{});
+            }
+        }
+        return;
+    }
+
+    // Visible slice of value (ASCII — append-char feeds u8).
+    const vis = value[offset..];
+    const text_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(text_fg)),
+    };
+    if (vis.len > 0 and col < total_w) {
+        const max_chars: usize = @min(vis.len, @as(usize, total_w - col));
+        // Leave room for cursor cell when it fits.
+        const paint_n: usize = if (max_chars + col < total_w)
+            max_chars
+        else if (max_chars > 0) max_chars - 1 else 0;
+        if (paint_n > 0) {
+            const owned = arena.dupe(u8, vis[0..paint_n]) catch vis[0..paint_n];
+            const child = win.child(.{ .x_off = col, .y_off = 0 });
+            _ = child.printSegment(.{ .text = owned, .style = text_style }, .{});
+            col += @intCast(paint_n);
+        }
+    }
+
+    // End cursor — blink block (Charm virtual cursor at EOL).
+    if (col < total_w) {
+        const cursor_ch = arena.dupe(u8, " ") catch " ";
+        if (blink_on) {
+            win.writeCell(col, 0, .{
+                .char = .{ .grapheme = cursor_ch, .width = 1 },
+                .style = .{
+                    .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_fg)),
+                    .bg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_bg)),
+                },
+            });
+        } else {
+            win.writeCell(col, 0, .{
+                .char = .{ .grapheme = cursor_ch, .width = 1 },
+                .style = text_style,
+            });
+        }
+    }
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1171,12 +1294,13 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner tags resolve to koru/vaxis events (not consumer-
-    // module components). Progress wall 3 + spinner: wa_qual path.
+    // Builtin meter/spinner/textinput tags resolve to koru/vaxis events (not
+    // consumer-module components). Progress wall 3 + spinner + textinput: wa_qual.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "spinner")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "text-input")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
@@ -1282,9 +1406,9 @@ const VaxisEvent = union(enum) {
                 } else if (stack_y < 0) {
                     // kind 3, BARE — child component painting into the parent's OWN
                     // window. `content` is the child NAME; `cargs` its parsed args.
-                    // Builtin widgets (`progress-bar`, `spinner`) resolve via
-                    // wa_qual; user components via cmodule. Forward this
-                    // component's `win` down.
+                    // Builtin widgets (`progress-bar`, `spinner`, `text-input`)
+                    // resolve via wa_qual; user components via cmodule. Forward
+                    // this component's `win` down.
                     const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
                     child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
                     for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
