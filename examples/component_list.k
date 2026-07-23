@@ -42,12 +42,14 @@ koru/vaxis:component(hint) {
     <text>j/k navigate  |  q quit</text>
 }
 
-// Thin host chrome around the catalog tag — the widget is list.
+// Thin host chrome around the catalog tag — the widget is list. The list
+// needs a tall multi-row window (title + rows + paginator), so `<dock>`'s
+// fill slot carries it; the hint is pinned to the bottom edge.
 koru/vaxis:component(app) {
-    <stack-panel>
-        <list title={{ title:s }} items={{ items:s }} selected={{ selected:d }}/>
-        <hint/>
-    </stack-panel>
+    <dock>
+        <list dock="fill" title={{ title:s }} items={{ items:s }} selected={{ selected:d }}/>
+        <hint dock="bottom" h="1"/>
+    </dock>
 }
 
 koru/vaxis:run(title: "list")
