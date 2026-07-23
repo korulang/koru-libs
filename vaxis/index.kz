@@ -917,6 +917,66 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Charm-class viewport — a scrollable content window (COMPONENT viewport).
+// Matches bubbles/viewport's job: content taller than the window, paint ONLY
+// the visible slice starting at `offset` (YOffset). Content is a newline-
+// delimited string (same payload path as list/text-input); each visible line
+// paints into its own 1-row child window so long lines hard-clip at the right
+// edge instead of wrapping (bubbles' no-soft-wrap default). The widget is
+// chromeless like bubbles' — content renders in the terminal default style;
+// scroll position lives in the HOST store and arrives as a prop. Offset is
+// clamped to [0, count-1]: the last line can scroll to the top (less/vim
+// max-scroll). Bubbles clamps at count-height instead, but the host cannot
+// see the window height to mirror that guard — clamping the paint at
+// count-height here would leave a key-press dead zone where the host offset
+// moves and nothing changes on screen. Floated, not routed around.
+// Markup tag `<viewport …/>` resolves via builtin wa_qual path.
+~pub event viewport { win: koru/vaxis:Window, content: string, offset: i64 }
+
+~proc viewport|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h == 0) return;
+
+    // Trim trailing newlines so splitScalar yields exactly the content lines.
+    var src: []const u8 = content;
+    while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
+    if (src.len == 0) return;
+
+    // Split into arena-owned line slices (same shape as list).
+    var lines = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |l| lines.append(arena, l) catch unreachable;
+    const count: u16 = @intCast(lines.items.len);
+    if (count == 0) return;
+
+    // Clamp offset into [0, count-1].
+    var off: i64 = offset;
+    if (off < 0) off = 0;
+    if (off > @as(i64, @intCast(count)) - 1) off = @as(i64, @intCast(count)) - 1;
+    const first: u16 = @intCast(off);
+
+    // Paint the visible slice — one 1-row child per line (hard-clip, no wrap).
+    var r: u16 = 0;
+    while (r < h) : (r += 1) {
+        const idx: u16 = first + r;
+        if (idx >= count) break;
+        const line = lines.items[idx];
+        if (line.len == 0) continue;
+        const owned = arena.dupe(u8, line) catch line;
+        const lchild = win.child(.{
+            .x_off = 0,
+            .y_off = r,
+            .width = w,
+            .height = 1,
+        });
+        _ = lchild.printSegment(.{ .text = owned }, .{});
+    }
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1476,14 +1536,16 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list tags resolve to koru/vaxis events (not
-    // consumer-module components). Progress wall 3 + spinner + textinput + list: wa_qual.
+    // Builtin meter/spinner/textinput/list/viewport tags resolve to koru/vaxis
+    // events (not consumer-module components). Progress wall 3 + spinner +
+    // textinput + list + viewport: wa_qual.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "spinner")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "text-input")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "list")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "viewport")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;

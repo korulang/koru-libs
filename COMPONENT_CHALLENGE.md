@@ -48,17 +48,17 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `viewport`** — sole focus until cataloged as Charm-class.
-(`list` Bridge cataloged same day — title + paginated rows + ● paginator.)
+**Charm `paginator`** — sole focus until cataloged as Charm-class.
+(`viewport` Bridge cataloged same day — visible-slice scroll window.)
 
-Queue (after viewport clears; do not skip ahead):
+Queue (after paginator clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
 3. textinput ← cataloged
 4. list (simple) ← cataloged
-5. viewport ← **here**
-6. paginator
+5. viewport ← cataloged
+6. paginator ← **here**
 7. help
 8. table
 9. textarea
@@ -169,6 +169,11 @@ Governed like `SCENE.md`.
   simple delegate: title + paginated rows + ● ○ paginator, page-aligned
   scroll, "> " cursor + pink selected row. Items are a newline `string`
   payload (same path as text-input). Active advances to **viewport**.
+- 2026-07-23 · **viewport Bridge cataloged** (replay 08, hy3) — visible-slice
+  scroll window, host-owned offset, hard-clip, chromeless (pager chrome is
+  host markup). Walls floated: arrows unreachable (0x3000 key filter vs kitty
+  PUA); host can't see win height (max scroll = count-1, not count-height).
+  Active advances to **paginator**.
 
 ## Zero-friction append
 
