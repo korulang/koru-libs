@@ -25,4 +25,4 @@ clone them.
 
 ## Replays
 
-*(empty — first contestant appends here)*
+| `examples/component_selection_list.k` | live dock fill + store sweep branches on `row == ui.sel` into two row components; keys mutate sibling-store cursor, vaxis damage-repaint |
