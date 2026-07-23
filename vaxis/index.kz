@@ -1058,6 +1058,184 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Charm-class help — keybinding hints (COMPONENT help). Matches bubbles/help:
+//   SHORT mode (mode=0, default) — a single line "key desc • key desc • …",
+//     muted keys (#626262), softer descs (#4A4A4A), dim " • " separators
+//     (#3C3C3C); truncated with a trailing "…" when the content is wider than
+//     the window (bubbles' width-aware ShortHelpView + ansi.Truncate).
+//   FULL mode (mode!=0) — one "key  desc" row per binding, keys right-padded
+//     into an aligned column (bubbles' single-column FullHelpView).
+// Both anchor to the BOTTOM of the given window (help sits at the screen bottom
+// in a real app). Bindings arrive as a host-owned "key:desc\nkey:desc" payload
+// (the list/viewport string path — a real structured []Binding with separate
+// short/full lists is the deferred hole); `mode` is a host store int the app's
+// `?` key toggles — the widget OWNS the paint, NOT the `! key` pipeline.
+// Markup tag `<help …/>` resolves via builtin wa_qual path.
+~pub event help { win: koru/vaxis:Window, bindings: string, mode: i64 }
+
+~proc help|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h == 0) return;
+
+    // bubbles/help DefaultStyles (dark) — muted key, softer desc, dim separator.
+    const key_fg:  u32 = 0x626262;
+    const desc_fg: u32 = 0x4A4A4A;
+    const sep_fg:  u32 = 0x3C3C3C;
+
+    // Display width = UTF-8 rune count (arrows / • / … are one column each; wide
+    // CJK is not special-cased — an honest edge, keys are ascii/arrow in Charm).
+    const dispW = struct {
+        fn call(s: []const u8) usize {
+            var n: usize = 0;
+            var i: usize = 0;
+            while (i < s.len) {
+                const cl = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+                i += cl;
+                n += 1;
+            }
+            return n;
+        }
+    }.call;
+    // First `take` runes of s as a byte slice (rune-safe truncation).
+    const takeRunes = struct {
+        fn call(s: []const u8, take: usize) []const u8 {
+            var i: usize = 0;
+            var cnt: usize = 0;
+            while (i < s.len and cnt < take) {
+                const cl = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+                i += cl;
+                cnt += 1;
+            }
+            return s[0..i];
+        }
+    }.call;
+
+    // Trim trailing newlines, then split "key:desc" lines (list/viewport path).
+    var src: []const u8 = bindings;
+    while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
+    if (src.len == 0) return;
+
+    var keys = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+    var descs = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |ln| {
+        if (ln.len == 0) continue;
+        if (std.mem.indexOfScalar(u8, ln, ':')) |cp| {
+            keys.append(arena, ln[0..cp]) catch unreachable;
+            descs.append(arena, ln[cp + 1 ..]) catch unreachable;
+        } else {
+            keys.append(arena, ln) catch unreachable;
+            descs.append(arena, "") catch unreachable;
+        }
+    }
+    const n: usize = keys.items.len;
+    if (n == 0) return;
+
+    const key_style: $mod.libvaxis.Cell.Style = .{ .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(key_fg)) };
+    const desc_style: $mod.libvaxis.Cell.Style = .{ .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(desc_fg)) };
+    const sep_style: $mod.libvaxis.Cell.Style = .{ .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(sep_fg)) };
+
+    // ---- FULL mode — one "key  desc" row per binding, key column aligned. ----
+    if (mode != 0) {
+        var kw: usize = 0;
+        for (keys.items) |k| {
+            const d = dispW(k);
+            if (d > kw) kw = d;
+        }
+        const gap: usize = 3; // bubbles FullSeparator gap between key & desc cols
+        const rows: u16 = @intCast(n);
+        // Bottom-anchor the block (help hugs the screen bottom, grows upward).
+        const start_y: u16 = if (h > rows) h - rows else 0;
+        var r: u16 = 0;
+        while (r < rows) : (r += 1) {
+            const y: u16 = start_y + r;
+            if (y >= h) break;
+            const k = keys.items[r];
+            const d = descs.items[r];
+            if (k.len > 0) {
+                const ko = arena.dupe(u8, k) catch k;
+                const kc = win.child(.{ .x_off = 0, .y_off = y, .width = w, .height = 1 });
+                _ = kc.printSegment(.{ .text = ko, .style = key_style }, .{});
+            }
+            const dx: u16 = @intCast(kw + gap);
+            if (d.len > 0 and dx < w) {
+                const dorig = arena.dupe(u8, d) catch d;
+                const dc = win.child(.{ .x_off = dx, .y_off = y, .width = w - dx, .height = 1 });
+                _ = dc.printSegment(.{ .text = dorig, .style = desc_style }, .{});
+            }
+        }
+        return;
+    }
+
+    // ---- SHORT mode — single line, " • "-joined, width-truncated with "…". ----
+    // Build the styled runs, measure, then paint left→right; when the content is
+    // wider than the window, reserve the last column and cap it with "…".
+    const Run = struct { text: []const u8, style: $mod.libvaxis.Cell.Style };
+    var runs = std.ArrayList(Run).initCapacity(arena, n * 4) catch unreachable;
+    var total: usize = 0;
+    var bi: usize = 0;
+    while (bi < n) : (bi += 1) {
+        if (bi > 0) {
+            runs.append(arena, .{ .text = " • ", .style = sep_style }) catch unreachable;
+            total += 3;
+        }
+        const k = keys.items[bi];
+        const d = descs.items[bi];
+        if (k.len > 0) {
+            runs.append(arena, .{ .text = k, .style = key_style }) catch unreachable;
+            total += dispW(k);
+        }
+        runs.append(arena, .{ .text = " ", .style = desc_style }) catch unreachable;
+        total += 1;
+        if (d.len > 0) {
+            runs.append(arena, .{ .text = d, .style = desc_style }) catch unreachable;
+            total += dispW(d);
+        }
+    }
+
+    const y0: u16 = h - 1; // bottom row (short help hugs the bottom edge)
+    var col: u16 = 0;
+
+    if (total <= @as(usize, w)) {
+        for (runs.items) |run| {
+            if (col >= w) break;
+            const owned = arena.dupe(u8, run.text) catch run.text;
+            const c = win.child(.{ .x_off = col, .y_off = y0, .width = w - col, .height = 1 });
+            _ = c.printSegment(.{ .text = owned, .style = run.style }, .{});
+            col += @intCast(dispW(run.text));
+        }
+        return;
+    }
+
+    const budget: u16 = w - 1; // reserve the last column for "…"
+    for (runs.items) |run| {
+        const rw: u16 = @intCast(dispW(run.text));
+        if (col + rw <= budget) {
+            const owned = arena.dupe(u8, run.text) catch run.text;
+            const c = win.child(.{ .x_off = col, .y_off = y0, .width = w - col, .height = 1 });
+            _ = c.printSegment(.{ .text = owned, .style = run.style }, .{});
+            col += rw;
+        } else {
+            const remaining: u16 = budget - col;
+            if (remaining > 0) {
+                const part = takeRunes(run.text, remaining);
+                const owned = arena.dupe(u8, part) catch part;
+                const c = win.child(.{ .x_off = col, .y_off = y0, .width = w - col, .height = 1 });
+                _ = c.printSegment(.{ .text = owned, .style = run.style }, .{});
+                col += remaining;
+            }
+            break;
+        }
+    }
+    const ell = arena.dupe(u8, "…") catch "…";
+    const ec = win.child(.{ .x_off = col, .y_off = y0, .width = w - col, .height = 1 });
+    _ = ec.printSegment(.{ .text = ell, .style = sep_style }, .{});
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1617,8 +1795,8 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list/viewport/paginator tags resolve to
-    // koru/vaxis events (not consumer-module components). wa_qual path.
+    // Builtin meter/spinner/textinput/list/viewport/paginator/help tags resolve
+    // to koru/vaxis events (not consumer-module components). wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
@@ -1627,6 +1805,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "list")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "viewport")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "paginator")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "help")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
