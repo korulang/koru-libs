@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **paginator** | Next — viewport Bridge cleared. |
+| **help** | Next — paginator Bridge cleared. |
 
 ### Port queue (do not skip)
 
@@ -24,8 +24,8 @@ advances. Thin boundary-only demos do not enter Replays.
 3. textinput ← **cataloged** (Bridge, 2026-07-23)
 4. list (simple) ← **cataloged** (Bridge, 2026-07-23, replay 07 glm)
 5. viewport ← **cataloged** (Bridge, 2026-07-23, replay 08 hy3)
-6. paginator ← **active**
-7. help
+6. paginator ← **cataloged** (Bridge, 2026-07-23, replay 09 hy3)
+7. help ← **active**
 8. table
 9. textarea
 10. timer / stopwatch
@@ -58,6 +58,7 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | `examples/component_list.k` · eyes: `koru-examples/gallery` | `list` | Charm bubbles/list simple delegate — bold purple title (marginLeft 2), `<N>. <title>` rows with paddingLeft 4, selected row swaps to paddingLeft 2 + `'> '` prefix (label still starts at column 4); pink `#EE6FF8` + bold selected, soft contrast unselected. Pagination footer one ●/○ per page — current ● pink `#EE6FF8`, others dim (capped to a 20-wide window around the current page); page-aligned scroll keeps the selection visible. Items are a single newline-delimited `string` payload (same `string` path text-input uses); the host store owns only `selected` + `count` — paint/chrome live in the widget, NOT the `! key` pipeline. Public: `koru/vaxis:list { win, title, items, selected }` (palette/runes hardcoded to Bubbles default taste; same pattern as progress-bar). Real `[]string` payload deferred (would beat the newline encoding). Witnessed-but-non-blocking hole: the store-reject `@compileError` embeds a user string literal UNESCAPED → a leaked Zig `expected ',' after argument` instead of the koru-level message (only fires under that misuse). | Bridge |
 
 | `examples/component_viewport.k` · eyes: `koru-examples/gallery` | `viewport` | Charm bubbles/viewport — a scrollable content window: content taller than the `win`, the widget paints ONLY the visible slice starting at the host-owned offset; long lines hard-clip at the right edge (bubbles' no-soft-wrap default); chromeless like bubbles' (pager title/status are host markup, the bubbletea pager shape). Store owns `y` + `count`; keys (j/k line, d/u half-page, g/G ends) mutate state, the widget owns paint — NOT a `! draw`/`! key` mini-app. Public: `koru/vaxis:viewport { win, content, offset }`. SHOWN on a 16×72 pty: slice moves, clamps hold at both ends, status tracks `line N of 41`. Holes floated: host can't see win height → max scroll is last-line-at-top (count-1), not bubbles' count-height clamp; **arrow keys structurally can't reach `! key`** (run's dispatcher drops codepoint > 0x3000; kitty arrows are PUA 57352+, libvaxis Key.zig:177); soft-wrap deferred; real `[]string` payload deferred (same as list). | Bridge |
+| `examples/component_paginator.k` | `paginator` | Charm bubbles/paginator — pagination **status chrome only** (not page content): Dots mode (●/○, ActiveDot pink `#EE6FF8` + bold, InactiveDot dim) and Arabic mode (`N/M`, current pink). Host store owns `page` + `total`; widget owns paint; h/l mutate page (arrows unreachable — same 0x3000 wall). Public: `koru/vaxis:paginator { win, page, total, kind }`. Demo drives two tags from one store. | Bridge |
 
 ### Evaporated (taste-gate)
 
@@ -76,3 +77,4 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 06 · 2026-07-23 | Bridge | `text-input` prompt + placeholder + blink cursor + scroll — see Replays |
 | 07 · 2026-07-23 (glm probe) | Bridge | `list` simple delegate — title + paginated rows + ● ○ paginator — see Replays |
 | 08 · 2026-07-23 (hy3) | Bridge | `viewport` scroll window — visible-slice paint + host offset — walls floated: arrow keys unreachable past the 0x3000 key filter; host can't see win height for bubbles' count-height clamp |
+| 09 · 2026-07-23 (hy3) | Bridge | `paginator` Dots + Arabic status chrome — see Replays |

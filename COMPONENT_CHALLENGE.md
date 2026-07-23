@@ -48,18 +48,18 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `paginator`** — sole focus until cataloged as Charm-class.
-(`viewport` Bridge cataloged same day — visible-slice scroll window.)
+**Charm `help`** — sole focus until cataloged as Charm-class.
+(`paginator` Bridge cataloged same day — Dots + Arabic status chrome.)
 
-Queue (after paginator clears; do not skip ahead):
+Queue (after help clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
 3. textinput ← cataloged
 4. list (simple) ← cataloged
 5. viewport ← cataloged
-6. paginator ← **here**
-7. help
+6. paginator ← cataloged
+7. help ← **here**
 8. table
 9. textarea
 10. timer / stopwatch
@@ -174,6 +174,9 @@ Governed like `SCENE.md`.
   host markup). Walls floated: arrows unreachable (0x3000 key filter vs kitty
   PUA); host can't see win height (max scroll = count-1, not count-height).
   Active advances to **paginator**.
+- 2026-07-23 · **paginator Bridge cataloged** (replay 09, hy3) — standalone
+  Dots + Arabic status chrome; host owns page/total; h/l navigate. Active
+  advances to **help**.
 
 ## Zero-friction append
 

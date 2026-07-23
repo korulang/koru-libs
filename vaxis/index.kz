@@ -977,6 +977,87 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Charm-class paginator — pagination STATUS CHROME (COMPONENT paginator).
+// Charm's own note: this widget does NOT render page content; it paints the
+// page indicator and does the page math. Two display modes matching bubbles/
+// paginator's Type:
+//   Dots   (default) — one ● per page, the current page's dot pink #EE6FF8 +
+//                       bold (Charm ActiveDot), the rest dim ○ (InactiveDot).
+//                       Same taste as list's embedded footer; spaced "● ○ ○".
+//   Arabic ("kind=arabic") — "N/M" (1-based current / total), current number
+//                       pink + bold, "/M" dim (Charm defaults to "%d/%d").
+// Both modes center on the widget's row. Page state (current page + total
+// pages) lives in the HOST store and arrives as props — the widget OWNS the
+// paint, NOT the `! key` pipeline (host keys mutate `page`). The row is
+// usually 1 tall (a status row); it paints at y=0 of whatever window it is
+// handed. Markup tag `<paginator …/>` resolves via builtin wa_qual path.
+~pub event paginator { win: koru/vaxis:Window, page: i64, total: i64, kind: string }
+
+~proc paginator|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h == 0) return;
+
+    // Charm paginator palette — pink ActiveDot / current, dim for the rest.
+    const active_fg: u32 = 0xEE6FF8; // Charm pink — ActiveDot / current page
+    const dim_fg:    u32 = 0x606060; // dim — InactiveDot / total
+
+    // Page math (Charm owns this in the widget). Clamp page into [0, total-1].
+    var total_pages: i64 = total;
+    if (total_pages < 1) total_pages = 1;
+    var pg: i64 = page;
+    if (pg < 0) pg = 0;
+    if (pg > total_pages - 1) pg = total_pages - 1;
+    const cur: u16 = @intCast(pg);
+    const tp: u16 = @intCast(total_pages);
+
+    const active_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(active_fg)),
+        .bold = true,
+    };
+    const dim_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(dim_fg)),
+    };
+
+    // Arabic mode — "N/M", current 1-based pink+bold, "/M" dim, centered.
+    if (std.mem.eql(u8, kind, "arabic")) {
+        const num = std.fmt.allocPrint(arena, "{d}", .{cur + 1}) catch return;
+        const rest = std.fmt.allocPrint(arena, "/{d}", .{tp}) catch return;
+        const total_w: u16 = @intCast(num.len + rest.len);
+        var x: u16 = if (w > total_w) (w - total_w) / 2 else 0;
+        const c1 = win.child(.{ .x_off = x, .y_off = 0, .width = w - x, .height = 1 });
+        _ = c1.printSegment(.{ .text = num, .style = active_style }, .{});
+        x +%= @intCast(num.len);
+        if (x < w) {
+            const c2 = win.child(.{ .x_off = x, .y_off = 0, .width = w - x, .height = 1 });
+            _ = c2.printSegment(.{ .text = rest, .style = dim_style }, .{});
+        }
+        return;
+    }
+
+    // Dots mode (default) — one ●/○ per page, current pink+bold, rest dim.
+    // Spaced ("● ○ ○" — list-footer taste) and centered. One printSegment per
+    // glyph so each dot carries its own style (a segment holds a single style).
+    const display_w: u16 = if (tp > 1) tp * 2 - 1 else 1;
+    var col: u16 = if (w > display_w) (w - display_w) / 2 else 0;
+    var p: u16 = 0;
+    while (p < tp) : (p += 1) {
+        if (col >= w) break;
+        const is_cur = (p == cur);
+        const glyph: []const u8 = if (is_cur) "●" else "○";
+        const g_owned = arena.dupe(u8, glyph) catch glyph;
+        const gchild = win.child(.{ .x_off = col, .y_off = 0, .width = w - col, .height = 1 });
+        _ = gchild.printSegment(.{
+            .text = g_owned,
+            .style = if (is_cur) active_style else dim_style,
+        }, .{});
+        col +%= 2; // glyph + trailing gap (Charm "● ")
+    }
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1536,9 +1617,8 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list/viewport tags resolve to koru/vaxis
-    // events (not consumer-module components). Progress wall 3 + spinner +
-    // textinput + list + viewport: wa_qual.
+    // Builtin meter/spinner/textinput/list/viewport/paginator tags resolve to
+    // koru/vaxis events (not consumer-module components). wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
@@ -1546,6 +1626,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "text-input")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "list")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "viewport")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "paginator")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
