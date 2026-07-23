@@ -774,6 +774,12 @@ const VaxisEvent = union(enum) {
             // bottom edge, q = height); 3 = fill (p = total top band, q = total
             // bottom band). Index-aligned with el_content.
             var el_dock = std.ArrayList(struct { mode: u8, p: i64, q: i64 }).initCapacity(a, 4) catch unreachable;
+            // Nested `<StackPanel dock="fill">` inside Dock: null = ordinary
+            // component fill; non-null = StackPanel (empty slice = LIVE stack
+            // cursor returned from the component; non-empty = static children
+            // flattened into the fill window). Index-aligned.
+            const NestKid = struct { name: []const u8, args: []const ast.Arg };
+            var el_nest = std.ArrayList(?[]const NestKid).initCapacity(a, 4) catch unreachable;
 
             // Walk the markup tag-by-tag, in source order. `<text>…</text>` is a
             // painted element (kinds 0/1/2, below); any OTHER tag `<name …/>` is a
@@ -820,6 +826,7 @@ const VaxisEvent = union(enum) {
                         el_child_args.append(a, cargs) catch unreachable;
                         el_stack_y.append(a, stack_i) catch unreachable;
                         el_dock.append(a, .{ .mode = 0, .p = 0, .q = 0 }) catch unreachable;
+                        el_nest.append(a, null) catch unreachable;
                         stack_i += 1;
                     }
                     continue;
@@ -829,10 +836,10 @@ const VaxisEvent = union(enum) {
                     // Dock container: each child pins to the TOP or BOTTOM edge at
                     // a fixed height; a fill child takes the middle band. Directives
                     // ride as attrs: dock="top" / dock="bottom" / dock="fill"
-                    // (default fill), h="N" rows. The container computes each slot
-                    // from the running top/bottom bands plus the parent's runtime
-                    // height; children never learn where they land. Two passes:
-                    // classify + sum the bands, then emit each child's slot.
+                    // (default fill), h="N" rows. Nested `<StackPanel dock="fill">`
+                    // is a LAYOUT child (not a component name): static kids flatten
+                    // into the fill window; an empty StackPanel is the LIVE fill —
+                    // the component returns a `Stack` cursor for draw-time rows.
                     const open_gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
                     const close_d = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</Dock>") orelse break;
                     const body = cmarkup[open_gt + 1 .. close_d];
@@ -842,11 +849,13 @@ const VaxisEvent = union(enum) {
                     var d_args = std.ArrayList([]const ast.Arg).initCapacity(a, 4) catch unreachable;
                     var d_mode = std.ArrayList(u8).initCapacity(a, 4) catch unreachable; // 1 top, 2 bottom, 3 fill
                     var d_h = std.ArrayList(i64).initCapacity(a, 4) catch unreachable;
+                    var d_nest = std.ArrayList(?[]const NestKid).initCapacity(a, 4) catch unreachable;
                     var total_top: i64 = 0;
                     var total_bottom: i64 = 0;
 
                     // Pass 1 — classify every inner child, split the dock/h layout
                     // directives out of its real props, and sum the two edge bands.
+                    // StackPanel is consumed through its close tag (or self-close).
                     var bscan: usize = 0;
                     while (std.mem.indexOfScalarPos(u8, body, bscan, '<')) |blt| {
                         var bne = blt + 1;
@@ -856,8 +865,8 @@ const VaxisEvent = union(enum) {
                         }
                         const cn = body[blt + 1 .. bne];
                         const bgt = std.mem.indexOfScalarPos(u8, body, bne, '>') orelse break;
+                        const self_close = bgt > 0 and body[bgt - 1] == '/';
                         const all_args = parseAttrs(a, body[bne..bgt], &prop_name, &prop_type);
-                        bscan = bgt + 1;
 
                         var mode: u8 = 3; // default = fill
                         var hval: i64 = 0;
@@ -879,10 +888,43 @@ const VaxisEvent = union(enum) {
                                 kept.append(a, arg) catch unreachable;
                             }
                         }
-                        d_name.append(a, a.dupe(u8, cn) catch unreachable) catch unreachable;
-                        d_args.append(a, kept.toOwnedSlice(a) catch unreachable) catch unreachable;
-                        d_mode.append(a, mode) catch unreachable;
-                        d_h.append(a, hval) catch unreachable;
+
+                        if (std.mem.eql(u8, cn, "StackPanel")) {
+                            // Nested layout container — parse static children (if any).
+                            var kids = std.ArrayList(NestKid).initCapacity(a, 4) catch unreachable;
+                            if (self_close) {
+                                bscan = bgt + 1;
+                            } else {
+                                const close_sp = std.mem.indexOfPos(u8, body, bgt + 1, "</StackPanel>") orelse break;
+                                const sp_body = body[bgt + 1 .. close_sp];
+                                bscan = close_sp + "</StackPanel>".len;
+                                var sscan: usize = 0;
+                                while (std.mem.indexOfScalarPos(u8, sp_body, sscan, '<')) |slt| {
+                                    var sne = slt + 1;
+                                    while (sne < sp_body.len) : (sne += 1) {
+                                        const c = sp_body[sne];
+                                        if (c == ' ' or c == '\t' or c == '\r' or c == '\n' or c == '>' or c == '/') break;
+                                    }
+                                    const kn = sp_body[slt + 1 .. sne];
+                                    const sgt = std.mem.indexOfScalarPos(u8, sp_body, sne, '>') orelse break;
+                                    const kargs = parseAttrs(a, sp_body[sne..sgt], &prop_name, &prop_type);
+                                    sscan = sgt + 1;
+                                    kids.append(a, .{ .name = a.dupe(u8, kn) catch unreachable, .args = kargs }) catch unreachable;
+                                }
+                            }
+                            d_name.append(a, a.dupe(u8, "__StackPanel__") catch unreachable) catch unreachable;
+                            d_args.append(a, kept.toOwnedSlice(a) catch unreachable) catch unreachable;
+                            d_mode.append(a, mode) catch unreachable;
+                            d_h.append(a, hval) catch unreachable;
+                            d_nest.append(a, kids.toOwnedSlice(a) catch unreachable) catch unreachable;
+                        } else {
+                            bscan = bgt + 1;
+                            d_name.append(a, a.dupe(u8, cn) catch unreachable) catch unreachable;
+                            d_args.append(a, kept.toOwnedSlice(a) catch unreachable) catch unreachable;
+                            d_mode.append(a, mode) catch unreachable;
+                            d_h.append(a, hval) catch unreachable;
+                            d_nest.append(a, null) catch unreachable;
+                        }
                         if (mode == 1) total_top += hval;
                         if (mode == 2) total_bottom += hval;
                     }
@@ -893,7 +935,7 @@ const VaxisEvent = union(enum) {
                     // both band totals so it spans the middle at runtime.
                     var run_top: i64 = 0;
                     var run_bottom: i64 = 0;
-                    for (d_name.items, d_args.items, d_mode.items, d_h.items) |cn, cargs, mode, hval| {
+                    for (d_name.items, d_args.items, d_mode.items, d_h.items, d_nest.items) |cn, cargs, mode, hval, nest| {
                         var p: i64 = 0;
                         var q: i64 = 0;
                         if (mode == 1) {
@@ -914,6 +956,7 @@ const VaxisEvent = union(enum) {
                         el_child_args.append(a, cargs) catch unreachable;
                         el_stack_y.append(a, -1) catch unreachable;
                         el_dock.append(a, .{ .mode = mode, .p = p, .q = q }) catch unreachable;
+                        el_nest.append(a, nest) catch unreachable;
                     }
                     continue;
                 }
@@ -930,6 +973,7 @@ const VaxisEvent = union(enum) {
                     el_child_args.append(a, cargs) catch unreachable;
                     el_stack_y.append(a, -1) catch unreachable;
                     el_dock.append(a, .{ .mode = 0, .p = 0, .q = 0 }) catch unreachable;
+                    el_nest.append(a, null) catch unreachable;
                     continue;
                 }
 
@@ -989,46 +1033,11 @@ const VaxisEvent = union(enum) {
                 el_child_args.append(a, &[_]ast.Arg{}) catch unreachable;
                 el_stack_y.append(a, -1) catch unreachable;
                 el_dock.append(a, .{ .mode = 0, .p = 0, .q = 0 }) catch unreachable;
+                el_nest.append(a, null) catch unreachable;
             }
 
-            // (1) event decl: cname { win: Window, <props> }. The path carries the
-            // CONSUMER's module qualifier — the key canonicalize stamps onto the bare
-            // call, so dead_strip's used-set matches and keeps it (synthesized events
-            // skip canonicalize, so we stamp it ourselves). Every component takes a
-            // `win` FIRST — the Window it paints into (its canvas). A leaf paints into
-            // it (write-in); a parent forwards it (or a sub-window) to its children.
-            // A cross-module type ref carries its qualifier in the SEPARATE
-            // `module_path` slot (bare `type` + `module_path`), the way the parser
-            // splits `koru/vaxis:Window`. Jamming it into `type` as one string skips
-            // the resolver and emits invalid Zig (`koru.vaxis:Window`). writeModulePath
-            // mangles the slash form → `koru_koru.koru_vaxis.Window`.
-            const fields = a.alloc(ast.Field, prop_name.items.len + 1) catch unreachable;
-            fields[0] = .{
-                .name = a.dupe(u8, "win") catch unreachable,
-                .type = a.dupe(u8, "Window") catch unreachable,
-                .module_path = a.dupe(u8, wa_qual orelse "koru/vaxis") catch unreachable,
-            };
-            for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
-                fields[i + 1] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
-            }
-            const event_item = ast.Item{ .event_decl = ast.EventDecl{
-                .path = mkPath(a, cmodule, cname),
-                .input = ast.Shape{ .fields = fields },
-                .branches = &[_]ast.Branch{},
-                .is_public = false,
-                .is_implicit_flow = false,
-                .annotations = &[_][]const u8{},
-                .location = cloc,
-                .module = a.dupe(u8, cmodule) catch unreachable,
-            } };
-
-            // (2) impl flow — a flat op chain. Each row is 1 op (write-in, for a
-            // literal or a string passthrough) or 2 ops (fmt:ln bound to a fresh
-            // name, then write-in painting that bind's `.text`). write-in paints
-            // into the component's `win` canvas at win-LOCAL coords (x:0, y:row) —
-            // so where the component lands is decided by WHOEVER handed it the
-            // window, not by absolute screen position. That's what kills the
-            // overlap: two invocations into two windows land in two places.
+            // (1)+(2) build ops first — a live empty StackPanel fill may set
+            // return_type on the event (returns Stack for draw-time rows).
             const mkWriteIn = struct {
                 fn call(al: std.mem.Allocator, waq: ?[]const u8, mkp: anytype, row: usize, text_val: []const u8) ast.Invocation {
                     const args = al.alloc(ast.Arg, 4) catch unreachable;
@@ -1043,7 +1052,8 @@ const VaxisEvent = union(enum) {
             var ops = std.ArrayList(ast.Invocation).initCapacity(a, 8) catch unreachable;
             var lctr: usize = 0;
             var sctr: usize = 0;
-            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, el_stack_y.items, el_dock.items, 0..) |content, kind, ident, cargs, stack_y, dock, row| {
+            var live_stack_bind: ?[]const u8 = null;
+            for (el_content.items, el_kind.items, el_ident.items, el_child_args.items, el_stack_y.items, el_dock.items, el_nest.items, 0..) |content, kind, ident, cargs, stack_y, dock, nest, row| {
                 if (kind == 0) {
                     ops.append(a, mkWriteIn(a, wa_qual, mkPath, row, std.fmt.allocPrint(a, "\"{s}\"", .{content}) catch unreachable)) catch unreachable;
                 } else if (kind == 1) {
@@ -1065,6 +1075,8 @@ const VaxisEvent = union(enum) {
                     //   1 top    -> sub(parent, x:0, y:p, w:0, h:q)   fixed top rows
                     //   2 bottom -> sub-from-bottom(parent, up:p, h:q) pinned to edge
                     //   3 fill   -> sub-fill(parent, top:p, bottom:q)  runtime middle
+                    // Nested StackPanel fill: carve, then either flatten static
+                    // children into the fill window or return a live Stack cursor.
                     const rname = std.fmt.allocPrint(a, "__row_{d}", .{sctr}) catch unreachable;
                     sctr += 1;
                     var slot: ast.Invocation = undefined;
@@ -1090,10 +1102,38 @@ const VaxisEvent = union(enum) {
                         slot = .{ .path = mkPath(a, wa_qual, "sub-fill"), .args = sa, .return_binding = a.dupe(u8, rname) catch unreachable };
                     }
                     ops.append(a, slot) catch unreachable;
-                    const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
-                    child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
-                    for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
-                    ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
+                    if (nest) |kids| {
+                        if (kids.len == 0) {
+                            // LIVE fill — stack cursor over the carved window;
+                            // component returns it for draw-time stack-row.
+                            const lname = std.fmt.allocPrint(a, "__live_stack", .{}) catch unreachable;
+                            const sa = a.alloc(ast.Arg, 1) catch unreachable;
+                            sa[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
+                            ops.append(a, .{ .path = mkPath(a, wa_qual, "stack"), .args = sa, .return_binding = a.dupe(u8, lname) catch unreachable }) catch unreachable;
+                            live_stack_bind = lname;
+                        } else {
+                            for (kids, 0..) |kid, ki| {
+                                const krname = std.fmt.allocPrint(a, "__row_{d}", .{sctr}) catch unreachable;
+                                sctr += 1;
+                                const sub_args = a.alloc(ast.Arg, 5) catch unreachable;
+                                sub_args[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
+                                sub_args[1] = .{ .name = a.dupe(u8, "x") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                                sub_args[2] = .{ .name = a.dupe(u8, "y") catch unreachable, .value = std.fmt.allocPrint(a, "{d}", .{ki}) catch unreachable, .had_explicit_label = true };
+                                sub_args[3] = .{ .name = a.dupe(u8, "w") catch unreachable, .value = a.dupe(u8, "0") catch unreachable, .had_explicit_label = true };
+                                sub_args[4] = .{ .name = a.dupe(u8, "h") catch unreachable, .value = a.dupe(u8, "1") catch unreachable, .had_explicit_label = true };
+                                ops.append(a, .{ .path = mkPath(a, wa_qual, "sub"), .args = sub_args, .return_binding = a.dupe(u8, krname) catch unreachable }) catch unreachable;
+                                const child_args = a.alloc(ast.Arg, kid.args.len + 1) catch unreachable;
+                                child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, krname) catch unreachable, .had_explicit_label = true };
+                                for (kid.args, 0..) |ca, ci| child_args[ci + 1] = ca;
+                                ops.append(a, .{ .path = mkPath(a, cmodule, kid.name), .args = child_args }) catch unreachable;
+                            }
+                        }
+                    } else {
+                        const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
+                        child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, rname) catch unreachable, .had_explicit_label = true };
+                        for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;
+                        ops.append(a, .{ .path = mkPath(a, cmodule, content), .args = child_args }) catch unreachable;
+                    }
                 } else if (stack_y < 0) {
                     // kind 3, BARE — child component painting into the parent's OWN
                     // window. `content` is the child NAME; `cargs` its parsed args.
@@ -1126,8 +1166,49 @@ const VaxisEvent = union(enum) {
                 }
             }
 
+            // Event decl: cname { win: Window, <props> } [-> Stack when live fill].
+            const fields = a.alloc(ast.Field, prop_name.items.len + 1) catch unreachable;
+            fields[0] = .{
+                .name = a.dupe(u8, "win") catch unreachable,
+                .type = a.dupe(u8, "Window") catch unreachable,
+                .module_path = a.dupe(u8, wa_qual orelse "koru/vaxis") catch unreachable,
+            };
+            for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
+                fields[i + 1] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
+            }
+            const event_item = ast.Item{ .event_decl = ast.EventDecl{
+                .path = mkPath(a, cmodule, cname),
+                .input = ast.Shape{ .fields = fields },
+                .branches = &[_]ast.Branch{},
+                .return_type = if (live_stack_bind != null) a.dupe(u8, "koru/vaxis:Stack") catch unreachable else null,
+                .is_public = false,
+                .is_implicit_flow = false,
+                .annotations = &[_][]const u8{},
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+
             // Chain the ops into a linear `|>` pipeline (nested continuations).
-            var tail: []const ast.Continuation = &[_]ast.Continuation{};
+            // Live StackPanel fill ends with `-> __live_stack` bare return.
+            var tail: []const ast.Continuation = if (live_stack_bind) |lsb| blk: {
+                const br = a.alloc(ast.Continuation, 1) catch unreachable;
+                br[0] = .{
+                    .branch = a.dupe(u8, "") catch unreachable,
+                    .binding = null,
+                    .condition = null,
+                    .kind = .terminal,
+                    .node = .{ .branch_constructor = .{
+                        .branch_name = a.dupe(u8, "") catch unreachable,
+                        .fields = &[_]ast.Field{},
+                        .plain_value = a.dupe(u8, lsb) catch unreachable,
+                        .is_bare_return = true,
+                    } },
+                    .indent = 0,
+                    .continuations = &[_]ast.Continuation{},
+                    .location = cloc,
+                };
+                break :blk br;
+            } else &[_]ast.Continuation{};
             var k: usize = ops.items.len;
             while (k > 1) {
                 k -= 1;
