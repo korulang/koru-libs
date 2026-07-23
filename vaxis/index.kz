@@ -587,6 +587,31 @@ const VaxisEvent = union(enum) {
     _ = pct_child.printSegment(.{ .text = pct_owned }, .{});
 }
 
+// Charm-class spinner — glyph cycling + Style fg + MiniDot FPS live HERE
+// (COMPONENT spinner). Defaults match bubbles/spinner MiniDot + Charm purple
+// #5A56E0. `ms` is monotonic tick payload; widget owns frame index + period.
+// Markup tag `<spinner …/>` resolves via builtin wa_qual path.
+~pub event spinner { win: koru/vaxis:Window, ms: i64 }
+
+~proc spinner|zig {
+    if (!$mod.is_initialized) return;
+
+    // bubbles/spinner MiniDot — 10 frames @ time.Second/12
+    const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+    const period_ms: i64 = @divTrunc(1000, 12);
+    const t: i64 = if (ms < 0) 0 else ms;
+    const idx: usize = @intCast(@mod(@divTrunc(t, period_ms), @as(i64, @intCast(frames.len))));
+    const glyph = frames[idx];
+
+    // Charm progress purple — same taste floor as the meter
+    const fg: u32 = 0x5A56E0;
+    const owned = $mod.text_arena.allocator().dupe(u8, glyph) catch glyph;
+    const cell_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(fg)),
+    };
+    _ = win.printSegment(.{ .text = owned, .style = cell_style }, .{});
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1146,11 +1171,12 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter tags resolve to koru/vaxis events (not consumer-module
-    // components). Progress wall 3: `<progress-bar/>` → wa_qual path.
+    // Builtin meter/spinner tags resolve to koru/vaxis events (not consumer-
+    // module components). Progress wall 3 + spinner: wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "spinner")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
@@ -1256,8 +1282,9 @@ const VaxisEvent = union(enum) {
                 } else if (stack_y < 0) {
                     // kind 3, BARE — child component painting into the parent's OWN
                     // window. `content` is the child NAME; `cargs` its parsed args.
-                    // Builtin meters (`progress-bar`) resolve via wa_qual; user
-                    // components via cmodule. Forward this component's `win` down.
+                    // Builtin widgets (`progress-bar`, `spinner`) resolve via
+                    // wa_qual; user components via cmodule. Forward this
+                    // component's `win` down.
                     const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;
                     child_args[0] = .{ .name = a.dupe(u8, "win") catch unreachable, .value = a.dupe(u8, "win") catch unreachable, .had_explicit_label = true };
                     for (cargs, 0..) |ca, ci| child_args[ci + 1] = ca;

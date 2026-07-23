@@ -15,13 +15,13 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **spinner** | Tick substrate **fixed** (`! ?tick i64`). Widget craft still open — next contestant / mom-dad ships `<spinner/>`. |
+| **textinput** | Next — spinner Bridge cleared. |
 
 ### Port queue (do not skip)
 
 1. progress ← **cataloged** (Bridge, 2026-07-23)
-2. spinner ← active
-3. textinput
+2. spinner ← **cataloged** (Bridge, 2026-07-23)
+3. textinput ← **active**
 4. list (simple)
 5. viewport
 6. paginator
@@ -53,6 +53,7 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | Demo | Tag | Thesis | Outcome |
 |------|-----|--------|---------|
 | `examples/component_progress.k` · eyes: `koru-examples/gallery` | `progress-bar` | Charm defaults meter — proportional ▌/░, purple→pink half-block blend, trailing `%`; width from `win`; drop-in `<progress-bar value max/>` in dock/stack. Public surface: `koru/vaxis:progress-bar { win, value, max }` (colors/runes/% hardcoded to Bubbles defaults). Spring deferred. | Bridge |
+| `examples/component_spinner.k` | `spinner` | Charm MiniDot braille cycle + purple `#5A56E0`; MiniDot FPS owned inside widget from `! tick` ms; drop-in `<spinner ms/>`. Public: `koru/vaxis:spinner { win, ms }`. Optional fg/kind props deferred (same hardcode pattern as progress-bar). | Bridge |
 
 ### Evaporated (taste-gate)
 
@@ -66,4 +67,5 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | Replay | Outcome | Walls |
 |--------|---------|-------|
 | 03 · 2026-07-23 | Frontier → Bridge | Color; grapheme; fill math → `progress-bar` |
-| 04 · 2026-07-23 | Frontier | No `! tick` on `run` (KORU021). Pin `800_004`. **Tick substrate since fixed** — spinner widget still to build. |
+| 04 · 2026-07-23 | Frontier → Bridge | No `! tick` on `run` (KORU021). Pin `800_004`. Tick fixed; spinner shipped replay 05. |
+| 05 · 2026-07-23 | Bridge | `spinner` MiniDot + tick ms + purple — see Replays |

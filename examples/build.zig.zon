@@ -1,7 +1,7 @@
 .{
-    .name = .component_stack_live,
+    .name = .component_spinner,
     .version = "0.0.0",
-    .fingerprint = 0x432dfea7beeb4629,
+    .fingerprint = 0x50d165f4ee235488,
     .dependencies = .{
         .vaxis = .{
             .url = "git+https://github.com/rockorager/libvaxis.git#75035b169e91a51c233f3742161f8eb8eafca659",

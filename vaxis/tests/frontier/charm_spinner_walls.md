@@ -1,4 +1,4 @@
-# FRONTIER — Charm Bubbles `spinner` (COMPONENT_CHALLENGE replay 04)
+# FRONTIER — Charm Bubbles `spinner` (COMPONENT_CHALLENGE replay 04→05)
 
 Charm-class spinner needs: animated glyph cycling, Style fg, drop-in tag,
 **frame ticks** so the frame index advances on a timer.
@@ -12,13 +12,14 @@ blocking `nextEvent` (no timer tax on non-animated apps).
 Pin `800_004` remains (self-contained run mirror *without* tick → KORU021).
 That is the historical wall shape, not the live vaxis surface.
 
-Probe: `examples/probe_tick.k` (or any `! tick _ |> …` consumer).
+Probe: `examples/tick.k` (or any `! tick _ |> …` consumer).
 
-## Still open — Charm spinner widget
+## Spinner widget — SHIPPED (replay 05 Bridge)
 
-- Builtin / component `spinner` with Charm frame tables + Style fg
-- Wire into gallery
-- Progress spring can drink the same tick substrate
+- Builtin `koru/vaxis:spinner { win, ms }` — MiniDot frames + purple fg +
+  MiniDot period (`1000/12` ms) inside the zig boundary
+- Markup `<spinner ms={{ ms:d }}/>` via wa_qual (same path as progress-bar)
+- Demo: `examples/component_spinner.k`
 
-Natural aspirational program (needs `<spinner/>` next):
-`vaxis/tests/frontier/charm_spinner_natural.k`
+Surface `i64 /` still emits Zig `/` (needs `@divTrunc`) — FPS math stays in
+the zig builtin (honest float, not a library dodge of a koru expression).
