@@ -8,6 +8,9 @@ The catalog is the long-running artifact; each replay is one slice through it.
 **Depth-first:** the active Charm target is polished to max before the queue
 advances. Thin boundary-only demos do not enter Replays.
 
+**Eyes:** `koru-examples/gallery` — sit-and-look TTY surface for cleared exhibits
+(`koruc run gallery.k` from that dir).
+
 ## Active target
 
 | Charm | Status |
