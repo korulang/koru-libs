@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **spinner** | Next — needs frame-tick substrate (also unlocks progress spring). |
+| **spinner** | Tick substrate **fixed** (`! ?tick i64`). Widget craft still open — next contestant / mom-dad ships `<spinner/>`. |
 
 ### Port queue (do not skip)
 
@@ -61,8 +61,9 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 01 · 2026-07-23 | `selection-list` | App-shaped `! draw`/`! key`; not a reusable tag boundary |
 | 02 · 2026-07-23 | `progress-bar` | Boundary clean; Charm name without meter craft (label + value/max text) |
 
-### Frontiers (resolved into Bridge)
+### Frontiers
 
 | Replay | Outcome | Walls |
 |--------|---------|-------|
-| 03 · 2026-07-23 | Frontier → Bridge | Color; grapheme write; fill math — mom/dad fixed; cataloged as `progress-bar` |
+| 03 · 2026-07-23 | Frontier → Bridge | Color; grapheme; fill math → `progress-bar` |
+| 04 · 2026-07-23 | Frontier | No `! tick` on `run` (KORU021). Pin `800_004`. **Tick substrate since fixed** — spinner widget still to build. |

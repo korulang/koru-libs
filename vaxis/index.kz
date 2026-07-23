@@ -139,15 +139,19 @@ const VaxisEvent = union(enum) {
 // ============================================================================
 //
 // Effect branches:
-//   ! ready          — fires once after init, before the event loop starts
-//   ! key KeyData    — every key press
-//   ! resize SizeData — every terminal resize (including initial)
-//   ! ?focus-in      — terminal got focus (optional)
-//   ! ?focus-out     — terminal lost focus (optional)
+//   ! ?draw Window     — mount + damage redraw (retained view)
+//   ! ?key KeyData     — every key press
+//   ! ?resize SizeData — every terminal resize (including initial)
+//   ! ?focus-in        — terminal got focus (optional)
+//   ! ?focus-out       — terminal lost focus (optional)
+//   ! ?tick i64        — animation frame pulse; payload = monotonic ms.
+//                        Optional: omitting keeps blocking nextEvent (no
+//                        timer wake tax). Installing `! tick` switches to
+//                        tryEvent + ~60 Hz ticks (Charm spinner / spring).
 //
 // Terminals:
-//   | done usize     — clean exit; payload is total event count
-//   | err []const u8 — init failure
+//   | done             — clean exit
+//   | err string       — init failure
 
 ~pub event run { title: string }
 ! ?draw koru/vaxis:Window
@@ -155,6 +159,7 @@ const VaxisEvent = union(enum) {
 ! ?resize koru/vaxis:SizeData
 ! ?focus-in
 ! ?focus-out
+! ?tick i64
 | ?done
 | err string
 
@@ -185,7 +190,7 @@ const VaxisEvent = union(enum) {
 
     // Wait for initial resize so the window has dimensions before any
     // render call. Don't fire `! resize` yet — we'll do that as the first
-    // event after `! ready` so consumers see a consistent ordering.
+    // event after mount so consumers see a consistent ordering.
     var initial_size: ?$mod.libvaxis.Winsize = null;
     while (initial_size == null) {
         const ev = $mod.event_loop.nextEvent();
@@ -214,63 +219,89 @@ const VaxisEvent = union(enum) {
     resize(.{ .width = init_ws.cols, .height = init_ws.rows });
     $mod.vx.render($mod.tty.writer()) catch {};
 
-    // Main event loop.
-    while (!$mod.should_quit) {
-        const ev = $mod.event_loop.nextEvent();
-        switch (ev) {
-            .key_press => |k| {
-                if (k.codepoint > 0x3000 or k.codepoint == 0) continue;
-                const ch_val: u8 = if (k.codepoint < 128 and k.codepoint > 0)
-                    @intCast(k.codepoint)
-                else
-                    0;
-                key(.{
-                    .codepoint = k.codepoint,
-                    .ch = ch_val,
-                    .mods = .{
-                        .ctrl = k.mods.ctrl,
-                        .alt = k.mods.alt,
-                        .shift = k.mods.shift,
-                        .super_key = k.mods.super,
-                    },
-                });
-                // The `! key` handler may have changed state (a store write, a
-                // toggled flag). Repaint the retained scene so the change is
-                // visible: clear the root window (removed content must not
-                // linger), reclaim the frame arena, re-fire `! draw`, render.
-                // This is the reactive loop's "request redraw" — full-repaint-
-                // on-damage, where a keypress is potential damage. (Skip if the
-                // handler asked to quit.)
-                if (!$mod.should_quit) {
-                    const win = $mod.vx.window();
-                    win.clear();
-                    _ = $mod.text_arena.reset(.retain_capacity);
-                    draw(win);
-                    $mod.vx.render($mod.tty.writer()) catch {};
-                }
-            },
-            .winsize => |ws| {
-                // libvaxis re-emits winsize during startup (loop.start() + in-band
-                // resize replies from queryTerminal), and `vx.resize` wipes the
-                // screen buffer. Without dedupe, those spurious no-op resizes
-                // erase whatever the consumer drew in ! ready before the user
-                // ever sees it. Only resize when dimensions actually change.
-                if ($mod.vx.screen.width != ws.cols or $mod.vx.screen.height != ws.rows) {
-                    $mod.vx.resize($mod.alloc, $mod.tty.writer(), ws) catch {};
-                    resize(.{
-                        .width = ws.cols,
-                        .height = ws.rows,
+    const repaint = struct {
+        fn call() void {
+            if ($mod.should_quit) return;
+            const win = $mod.vx.window();
+            win.clear();
+            _ = $mod.text_arena.reset(.retain_capacity);
+            draw(win);
+            $mod.vx.render($mod.tty.writer()) catch {};
+        }
+    }.call;
+
+    const handle = struct {
+        fn call(ev: $mod.VaxisEvent) void {
+            switch (ev) {
+                .key_press => |k| {
+                    if (k.codepoint > 0x3000 or k.codepoint == 0) return;
+                    const ch_val: u8 = if (k.codepoint < 128 and k.codepoint > 0)
+                        @intCast(k.codepoint)
+                    else
+                        0;
+                    key(.{
+                        .codepoint = k.codepoint,
+                        .ch = ch_val,
+                        .mods = .{
+                            .ctrl = k.mods.ctrl,
+                            .alt = k.mods.alt,
+                            .shift = k.mods.shift,
+                            .super_key = k.mods.super,
+                        },
                     });
-                    // vx.resize just WIPED the buffer. Repaint the retained scene
-                    // into the fresh root window — this is what keeps a resize (or
-                    // the terminal's focus-driven resize quirk) from leaving the
-                    // screen blank. Same hook as mount; the consumer declared it once.
-                    draw($mod.vx.window());
-                    $mod.vx.render($mod.tty.writer()) catch {};
-                }
-            },
-            .focus_in => { focus_in(); },
-            .focus_out => { focus_out(); },
+                    repaint();
+                },
+                .winsize => |ws| {
+                    // Dedup: libvaxis re-emits winsize during startup; vx.resize
+                    // wipes the buffer — only act on real dimension changes.
+                    if ($mod.vx.screen.width != ws.cols or $mod.vx.screen.height != ws.rows) {
+                        $mod.vx.resize($mod.alloc, $mod.tty.writer(), ws) catch {};
+                        resize(.{
+                            .width = ws.cols,
+                            .height = ws.rows,
+                        });
+                        draw($mod.vx.window());
+                        $mod.vx.render($mod.tty.writer()) catch {};
+                    }
+                },
+                .focus_in => {
+                    focus_in();
+                },
+                .focus_out => {
+                    focus_out();
+                },
+            }
+        }
+    }.call;
+
+    // Presence-gated loop: `@hasDecl(__H, "tick")` — void optional arms get
+    // noop stand-ins (not nullable fns; 400_148 is for value-resuming arms).
+    // With a real `! tick` handler → tryEvent + ~60 Hz; without → blocking
+    // nextEvent (no timer wake tax on todo/gallery-without-animation).
+    if (@hasDecl(__H, "tick")) {
+        const tick_period_ns: i128 = 16 * std.time.ns_per_ms;
+        var next_tick: i128 = std.time.nanoTimestamp() + tick_period_ns;
+        while (!$mod.should_quit) {
+            while ($mod.event_loop.tryEvent()) |ev| {
+                handle(ev);
+                if ($mod.should_quit) break;
+            }
+            if ($mod.should_quit) break;
+            const now: i128 = std.time.nanoTimestamp();
+            if (now >= next_tick) {
+                next_tick = now + tick_period_ns;
+                const ms: i64 = @intCast(@divTrunc(now, std.time.ns_per_ms));
+                tick(ms);
+                repaint();
+            } else {
+                const remain: i128 = next_tick - now;
+                const sleep_ns: u64 = if (remain <= 0) 0 else @intCast(@min(remain, tick_period_ns));
+                if (sleep_ns > 0) std.Thread.sleep(sleep_ns);
+            }
+        }
+    } else {
+        while (!$mod.should_quit) {
+            handle($mod.event_loop.nextEvent());
         }
     }
 
