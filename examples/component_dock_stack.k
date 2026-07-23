@@ -1,4 +1,4 @@
-// <Dock> with nested <StackPanel dock="fill"> — chrome + list in ONE markup tree.
+// <dock> with nested <stack-panel dock="fill"> — chrome + list in ONE markup tree.
 // Static children flatten into the fill window (container still owns y).
 //
 //   koruc run examples/component_dock_stack.k
@@ -19,14 +19,14 @@ koru/vaxis:component(row) {
 }
 
 koru/vaxis:component(app) {
-    <Dock>
+    <dock>
         <topbar dock="top" h="1" title="== dock + stack =="/>
         <statusbar dock="bottom" h="1" hint="q to quit"/>
-        <StackPanel dock="fill">
+        <stack-panel dock="fill">
             <row label="buy milk"/>
             <row label="ship StackPanel-as-fill"/>
-        </StackPanel>
-    </Dock>
+        </stack-panel>
+    </dock>
 }
 
 koru/vaxis:run(title: "dock-stack")

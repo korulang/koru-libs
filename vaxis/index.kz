@@ -434,8 +434,8 @@ const VaxisEvent = union(enum) {
     });
 }
 
-// Live StackPanel — runtime cursor over a parent window. Static markup
-// `<StackPanel>` still comptime-folds fixed children; this is the draw-time
+// Live stack-panel — runtime cursor over a parent window. Static markup
+// `<stack-panel>` still comptime-folds fixed children; this is the draw-time
 // twin for store-driven rows (sweep pushes children; they never pass `y:`).
 //
 //   |> stack(parent: body): panel
@@ -774,8 +774,8 @@ const VaxisEvent = union(enum) {
             // bottom edge, q = height); 3 = fill (p = total top band, q = total
             // bottom band). Index-aligned with el_content.
             var el_dock = std.ArrayList(struct { mode: u8, p: i64, q: i64 }).initCapacity(a, 4) catch unreachable;
-            // Nested `<StackPanel dock="fill">` inside Dock: null = ordinary
-            // component fill; non-null = StackPanel (empty slice = LIVE stack
+            // Nested `<stack-panel dock="fill">` inside dock: null = ordinary
+            // component fill; non-null = stack-panel (empty slice = LIVE stack
             // cursor returned from the component; non-empty = static children
             // flattened into the fill window). Index-aligned.
             const NestKid = struct { name: []const u8, args: []const ast.Arg };
@@ -797,16 +797,18 @@ const VaxisEvent = union(enum) {
                 }
                 const tag = cmarkup[lt + 1 .. ne];
 
-                if (std.mem.eql(u8, tag, "StackPanel")) {
+                if (std.mem.eql(u8, tag, "stack-panel")) {
                     // Layout container: each inner child becomes a STACKED row — laid
                     // out into a sliced sub-window at y = its position. The container
-                    // computes the layout; the children never know their y. This is
-                    // the first XAML-family container, expressed as koru: it slices
-                    // its window (`sub`) and invokes children with the slices.
+                    // computes the layout; the children never know their y. Markup
+                    // tags are lowercase kebab, matching event/component names
+                    // (`stack-panel`, `dock`, `todo-row`) — XAML's name-match rule,
+                    // koru spelling. Pascal `<StackPanel>` is dead; it looks up a
+                    // missing component and fails loud.
                     const open_gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
-                    const close_sp = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</StackPanel>") orelse break;
+                    const close_sp = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</stack-panel>") orelse break;
                     const body = cmarkup[open_gt + 1 .. close_sp];
-                    scan = close_sp + "</StackPanel>".len;
+                    scan = close_sp + "</stack-panel>".len;
 
                     var stack_i: i64 = 0;
                     var bscan: usize = 0;
@@ -832,18 +834,18 @@ const VaxisEvent = union(enum) {
                     continue;
                 }
 
-                if (std.mem.eql(u8, tag, "Dock")) {
+                if (std.mem.eql(u8, tag, "dock")) {
                     // Dock container: each child pins to the TOP or BOTTOM edge at
                     // a fixed height; a fill child takes the middle band. Directives
                     // ride as attrs: dock="top" / dock="bottom" / dock="fill"
-                    // (default fill), h="N" rows. Nested `<StackPanel dock="fill">`
+                    // (default fill), h="N" rows. Nested `<stack-panel dock="fill">`
                     // is a LAYOUT child (not a component name): static kids flatten
-                    // into the fill window; an empty StackPanel is the LIVE fill —
+                    // into the fill window; an empty stack-panel is the LIVE fill —
                     // the component returns a `Stack` cursor for draw-time rows.
                     const open_gt = std.mem.indexOfScalarPos(u8, cmarkup, ne, '>') orelse break;
-                    const close_d = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</Dock>") orelse break;
+                    const close_d = std.mem.indexOfPos(u8, cmarkup, open_gt + 1, "</dock>") orelse break;
                     const body = cmarkup[open_gt + 1 .. close_d];
-                    scan = close_d + "</Dock>".len;
+                    scan = close_d + "</dock>".len;
 
                     var d_name = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
                     var d_args = std.ArrayList([]const ast.Arg).initCapacity(a, 4) catch unreachable;
@@ -855,7 +857,7 @@ const VaxisEvent = union(enum) {
 
                     // Pass 1 — classify every inner child, split the dock/h layout
                     // directives out of its real props, and sum the two edge bands.
-                    // StackPanel is consumed through its close tag (or self-close).
+                    // stack-panel is consumed through its close tag (or self-close).
                     var bscan: usize = 0;
                     while (std.mem.indexOfScalarPos(u8, body, bscan, '<')) |blt| {
                         var bne = blt + 1;
@@ -889,15 +891,15 @@ const VaxisEvent = union(enum) {
                             }
                         }
 
-                        if (std.mem.eql(u8, cn, "StackPanel")) {
+                        if (std.mem.eql(u8, cn, "stack-panel")) {
                             // Nested layout container — parse static children (if any).
                             var kids = std.ArrayList(NestKid).initCapacity(a, 4) catch unreachable;
                             if (self_close) {
                                 bscan = bgt + 1;
                             } else {
-                                const close_sp = std.mem.indexOfPos(u8, body, bgt + 1, "</StackPanel>") orelse break;
+                                const close_sp = std.mem.indexOfPos(u8, body, bgt + 1, "</stack-panel>") orelse break;
                                 const sp_body = body[bgt + 1 .. close_sp];
-                                bscan = close_sp + "</StackPanel>".len;
+                                bscan = close_sp + "</stack-panel>".len;
                                 var sscan: usize = 0;
                                 while (std.mem.indexOfScalarPos(u8, sp_body, sscan, '<')) |slt| {
                                     var sne = slt + 1;
@@ -912,7 +914,7 @@ const VaxisEvent = union(enum) {
                                     kids.append(a, .{ .name = a.dupe(u8, kn) catch unreachable, .args = kargs }) catch unreachable;
                                 }
                             }
-                            d_name.append(a, a.dupe(u8, "__StackPanel__") catch unreachable) catch unreachable;
+                            d_name.append(a, a.dupe(u8, "__stack-panel__") catch unreachable) catch unreachable;
                             d_args.append(a, kept.toOwnedSlice(a) catch unreachable) catch unreachable;
                             d_mode.append(a, mode) catch unreachable;
                             d_h.append(a, hval) catch unreachable;

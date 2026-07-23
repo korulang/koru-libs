@@ -1,4 +1,4 @@
-// Live StackPanel as Dock fill — empty <StackPanel dock="fill"/> returns a
+// Live StackPanel as Dock fill — empty <stack-panel dock="fill"/> returns a
 // Stack cursor; draw-time sweep pushes rows via stack-row.
 //
 //   koruc run examples/component_dock_stack_live.k
@@ -27,11 +27,11 @@ koru/vaxis:component(statusbar) {
 }
 
 koru/vaxis:component(app) {
-    <Dock>
+    <dock>
         <topbar dock="top" h="1" title="== live fill =="/>
         <statusbar dock="bottom" h="1" hint="q quit"/>
-        <StackPanel dock="fill"/>
-    </Dock>
+        <stack-panel dock="fill"/>
+    </dock>
 }
 
 std/string:from-page(text: "buy milk")

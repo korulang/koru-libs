@@ -1,4 +1,4 @@
-// <Dock> — the second LAYOUT CONTAINER, and the one that earns its keep: it can
+// <dock> — the second LAYOUT CONTAINER, and the one that earns its keep: it can
 // PIN a child to the bottom edge of the screen without any manual math. Each
 // child declares an edge + height (dock="top"/"bottom", h="N"); a fill child
 // takes the middle band. The container computes every slot from the running
@@ -6,11 +6,11 @@
 // glued to the last row and the body grows/shrinks as the terminal resizes.
 //
 //   component(app) {
-//       <Dock>
+//       <dock>
 //           <topbar    dock="top"    h="1"/>  → sub(win, y:0, h:1): r0 |> topbar(win: r0)
 //           <statusbar dock="bottom" h="1"/>  → sub-from-bottom(win, up:1, h:1): r1 |> statusbar(win: r1)
 //           <body      dock="fill"/>          → sub-fill(win, top:1, bottom:1): r2 |> body(win: r2)
-//       </Dock>
+//       </dock>
 //   }
 //
 // Top rows are pure comptime offsets (like StackPanel); the bottom edge and the
@@ -36,11 +36,11 @@ koru/vaxis:component(body) {
 }
 
 koru/vaxis:component(app) {
-    <Dock>
+    <dock>
         <topbar dock="top" h="1" title="== koru dock =="/>
         <statusbar dock="bottom" h="1" hint="q to quit  |  status pinned to the bottom row"/>
         <body dock="fill" msg="the body fills the middle band and resizes with the terminal"/>
-    </Dock>
+    </dock>
 }
 
 koru/vaxis:run(title: "dock")

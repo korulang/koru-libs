@@ -1,6 +1,6 @@
 // Live StackPanel — runtime stack cursor for store-driven rows.
 //
-// Static `<StackPanel>` comptime-folds fixed children. Live rows arrive from
+// Static `<stack-panel>` comptime-folds fixed children. Live rows arrive from
 // `sweep` at draw time; `stack` / `stack-row` make layout the container's job
 // (children never pass `y:`). Same thesis as markup StackPanel, draw-time twin.
 //
