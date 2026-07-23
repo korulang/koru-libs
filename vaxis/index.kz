@@ -745,6 +745,152 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Charm-class simple list — title + paginated items + selection cursor live
+// HERE (COMPONENT list). Matches bubbles/list simple delegate: bold purple
+// title (marginLeft 2), each row "<N>. <title>" with paddingLeft 4 (selected
+// swaps to paddingLeft 2 + "> " prefix, so the title column stays at x=4 on
+// every row). Selected row in Charm pink + bold; unselected in soft contrast.
+// Pagination footer at bottom: one dot per page (Charm paginator), current
+// page filled ● in pink, others dim ○. Page-aligned scroll keeps the selection
+// on the visible page. State (items newlstring + selected index) lives in a
+// host store and is fed as props — the widget OWNS paint/chrome, NOT the key
+// pipeline. Markup tag `<list …/>` resolves via builtin wa_qual path.
+~pub event list { win: koru/vaxis:Window, title: string, items: string, selected: i64 }
+
+~proc list|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+
+    // Charm list-simple palette — project purple/pink family (matching the
+    // other Bubbles ports; lipgloss "170" ≈ magenta, rounded to #EE6FF8).
+    const title_fg: u32 = 0x5A56E0; // Charm purple — title
+    const sel_fg:   u32 = 0xEE6FF8; // Charm pink   — selected row
+    const item_fg:  u32 = 0xC8C8D0; // soft contrast — unselected row
+    const dot_dim:  u32 = 0x606060; // paginator off-dot
+
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h < 4) return;
+
+    // Title row — bold purple, marginLeft 2 (bubbletea list-simple Title style).
+    if (title.len > 0) {
+        const tbuf = arena.dupe(u8, title) catch title;
+        const ts: $mod.libvaxis.Cell.Style = .{
+            .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(title_fg)),
+            .bold = true,
+        };
+        const tchild = win.child(.{
+            .x_off = 2,
+            .y_off = 0,
+            .width = if (w > 2) w - 2 else 1,
+            .height = 1,
+        });
+        _ = tchild.printSegment(.{ .text = tbuf, .style = ts }, .{});
+    }
+
+    // Items region: y=[2, h-2); paginator row at y=h-1.
+    const region_top: u16 = 2;
+    const footer_y:   u16 = h - 1;
+    const visible_rows: u16 = if (footer_y > region_top) footer_y - region_top else 1;
+
+    // Trim a trailing newline so splitScalar yields exactly the item lines.
+    var src: []const u8 = items;
+    while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
+    if (src.len == 0) return;
+
+    // Split into arena-owned line slices.
+    var lines = std.ArrayList([]const u8).initCapacity(arena, 4) catch unreachable;
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |l| lines.append(arena, l) catch unreachable;
+    const count: u16 = @intCast(lines.items.len);
+    if (count == 0) return;
+
+    // Clamp selected into [0, count-1].
+    var sel: i64 = selected;
+    if (sel < 0) sel = 0;
+    if (sel > @as(i64, @intCast(count)) - 1) sel = @as(i64, @intCast(count)) - 1;
+    const sel_idx: u16 = @intCast(sel);
+
+    // Page-aligned scroll (selection kept inside the visible page).
+    const page: u16 = if (count > visible_rows) @divTrunc(sel_idx, visible_rows) else 0;
+    const first: u16 = page * visible_rows;
+
+    // Render visible rows — one printSegment per row with the merged style.
+    var r: u16 = 0;
+    while (r < visible_rows) : (r += 1) {
+        const idx: u16 = first + r;
+        if (idx >= count) break;
+        const row_y: u16 = region_top + r;
+        const is_sel = (idx == sel_idx);
+
+        const line = lines.items[idx];
+        // Charm shape: "<N>. <title>" — N is the 1-based overall index.
+        const label = std.fmt.allocPrint(arena, "{d}. {s}", .{ idx + 1, line }) catch continue;
+        // paddingLeft 4 unselected; paddingLeft 2 + "> " selected (label still
+        // starts at column 4 — matches list-simple's Render).
+        const row_text = if (is_sel)
+            (std.fmt.allocPrint(arena, "  > {s}", .{label}) catch label)
+        else
+            (std.fmt.allocPrint(arena, "    {s}", .{label}) catch label);
+
+        const row_style: $mod.libvaxis.Cell.Style = .{
+            .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(if (is_sel) sel_fg else item_fg)),
+            .bold = is_sel,
+        };
+        const row_owned = arena.dupe(u8, row_text) catch row_text;
+        const rchild = win.child(.{
+            .x_off = 0,
+            .y_off = row_y,
+            .width = w,
+            .height = 1,
+        });
+        _ = rchild.printSegment(.{ .text = row_owned, .style = row_style }, .{});
+    }
+
+    // Pagination footer — one dot per page (Charm paginator). Hidden on a
+    // single page (no chrome to draw then). Capped at 20 visible dots with a
+    // window around the current page so a huge list keeps a tidy footer.
+    if (count <= visible_rows) return; // one page, no paginator.
+
+    const total_pages: u16 = @divTrunc(count + visible_rows - 1, visible_rows);
+    const max_dots: u16 = 20;
+    var dot_start: u16 = 0;
+    var dot_end:   u16 = total_pages;
+    if (total_pages > max_dots) {
+        // Window around the current page (clamped to [0, total_pages]).
+        const half: u16 = @divTrunc(max_dots, 2);
+        dot_start = if (page > half) page - half else 0;
+        dot_end = dot_start + max_dots;
+        if (dot_end > total_pages) {
+            dot_end = total_pages;
+            dot_start = if (total_pages > max_dots) total_pages - max_dots else 0;
+        }
+    }
+
+    var dots = std.ArrayList(u8).initCapacity(arena, max_dots * 3) catch return;
+    dots.appendSlice(arena, "    ") catch return; // paddingLeft 4 — matches items
+    var p: u16 = dot_start;
+    while (p < dot_end) : (p += 1) {
+        const glyph: []const u8 = if (p == page) "● " else "○ ";
+        dots.appendSlice(arena, glyph) catch return;
+    }
+    if (dot_start > 0) dots.appendSlice(arena, "…") catch return;
+    if (dot_end < total_pages) dots.appendSlice(arena, "…") catch return;
+
+    const dots_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(dot_dim)),
+    };
+    const dots_owned = arena.dupe(u8, dots.items) catch dots.items;
+    const dchild = win.child(.{
+        .x_off = 0,
+        .y_off = footer_y,
+        .width = w,
+        .height = 1,
+    });
+    _ = dchild.printSegment(.{ .text = dots_owned, .style = dots_style }, .{});
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1304,13 +1450,14 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput tags resolve to koru/vaxis events (not
-    // consumer-module components). Progress wall 3 + spinner + textinput: wa_qual.
+    // Builtin meter/spinner/textinput/list tags resolve to koru/vaxis events (not
+    // consumer-module components). Progress wall 3 + spinner + textinput + list: wa_qual.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "spinner")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "text-input")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "list")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
@@ -1416,7 +1563,7 @@ const VaxisEvent = union(enum) {
                 } else if (stack_y < 0) {
                     // kind 3, BARE — child component painting into the parent's OWN
                     // window. `content` is the child NAME; `cargs` its parsed args.
-                    // Builtin widgets (`progress-bar`, `spinner`, `text-input`)
+                    // Builtin widgets (`progress-bar`, `spinner`, `text-input`, `list`)
                     // resolve via wa_qual; user components via cmodule. Forward
                     // this component's `win` down.
                     const child_args = a.alloc(ast.Arg, cargs.len + 1) catch unreachable;

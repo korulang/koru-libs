@@ -48,16 +48,16 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `list` (simple)** — sole focus until cataloged as Charm-class.
-(`textinput` Bridge cataloged same day — prompt + placeholder + blink cursor.)
+**Charm `viewport`** — sole focus until cataloged as Charm-class.
+(`list` Bridge cataloged same day — title + paginated rows + ● paginator.)
 
-Queue (after list clears; do not skip ahead):
+Queue (after viewport clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
 3. textinput ← cataloged
-4. list (simple — not Glow-fancy) ← **here**
-5. viewport
+4. list (simple) ← cataloged
+5. viewport ← **here**
 6. paginator
 7. help
 8. table
@@ -165,6 +165,10 @@ Governed like `SCENE.md`.
   Active advances to **textinput**.
 - 2026-07-23 · **text-input Bridge cataloged** — prompt, placeholder, blink
   block cursor, scroll; append-char/pop-char. Active advances to **list**.
+- 2026-07-23 · **list Bridge cataloged** (replay 07, glm probe) — bubbles/list
+  simple delegate: title + paginated rows + ● ○ paginator, page-aligned
+  scroll, "> " cursor + pink selected row. Items are a newline `string`
+  payload (same path as text-input). Active advances to **viewport**.
 
 ## Zero-friction append
 
