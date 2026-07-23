@@ -72,7 +72,8 @@ Queue (after textarea clears; do not skip ahead):
 
 You ARE the contestant. Do **not** ask which widget. The active target is
 above. Build **that** widget to the polish bar, or Frontier the wall. Asking
-negates the design. Lars judges *after* you ship.
+negates the design. Lars judges *after* you ship — in the **gallery**, not a pre-merge taste
+gate. Merge briskly; cast out the bad stuff later. Simpler.
 
 ## THE BAR — widget boundary (non-negotiable)
 
