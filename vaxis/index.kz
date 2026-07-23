@@ -1236,6 +1236,203 @@ const VaxisEvent = union(enum) {
     _ = ec.printSegment(.{ .text = ell, .style = sep_style }, .{});
 }
 
+// Charm-class table — columns, header row, selectable rows (COMPONENT table).
+// Matches bubbles/table: a header row (bold) over data rows; the SELECTED row
+// paints in Charm pink #EE6FF8 + bold (bubbles DefaultStyles Selected = bold +
+// lipgloss "212"); a dim border line under the header (bubbles' Header
+// BorderBottom). Columns carry fixed widths; cell text wider than its column
+// truncates with a trailing "…" (bubbles' ansi.Truncate). Cells pad 1 col on
+// each side (bubbles' Cell/Header Padding(0,1)).
+//
+// Payload (the list/viewport/help string path — real typed []Column/[]Row is
+// the deferred hole):
+//   headers — "Rank|City|Country|Population" — `|`-separated column titles
+//   widths  — "4|16|16|10"                   — `|`-separated column widths
+//   rows    — one row per line, `|`-separated fields (bubbles FromValues)
+// Selection state (cursor index) lives in the HOST store and arrives as a
+// prop; host keys (j/k/g/G) mutate it — the widget OWNS the paint, NOT the
+// `! key` pipeline. Scroll: page-aligned visible window keeps the selected
+// row on screen (same stateless shape as list — bubbles' offset-tracking
+// viewport needs widget-owned scroll state the prop rail can't hold yet;
+// floated, not routed around).
+// Markup tag `<table …/>` resolves via builtin wa_qual path.
+~pub event table { win: koru/vaxis:Window, headers: string, widths: string, rows: string, selected: i64 }
+
+~proc table|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h < 3) return;
+
+    // bubbles/table default taste — bold header over a dim border; selected
+    // row bold + Charm pink (lipgloss "212" ≈ project pink #EE6FF8).
+    const sel_fg:    u32 = 0xEE6FF8; // Charm pink — selected row
+    const cell_fg:   u32 = 0xC8C8D0; // soft contrast — unselected cells
+    const border_fg: u32 = 0x3C3C3C; // dim — header underline
+
+    // Display width = UTF-8 rune count (help's dispW; wide CJK not special-cased).
+    const dispW = struct {
+        fn call(s: []const u8) usize {
+            var n: usize = 0;
+            var i: usize = 0;
+            while (i < s.len) {
+                const cl = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+                i += cl;
+                n += 1;
+            }
+            return n;
+        }
+    }.call;
+    // First `take` runes of s as a byte slice (rune-safe truncation).
+    const takeRunes = struct {
+        fn call(s: []const u8, take: usize) []const u8 {
+            var i: usize = 0;
+            var cnt: usize = 0;
+            while (i < s.len and cnt < take) {
+                const cl = std.unicode.utf8ByteSequenceLength(s[i]) catch 1;
+                i += cl;
+                cnt += 1;
+            }
+            return s[0..i];
+        }
+    }.call;
+
+    // Split a `|`-separated line into arena-owned field slices.
+    const splitFields = struct {
+        fn call(a: std.mem.Allocator, line: []const u8) []const []const u8 {
+            var fs = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            var fit = std.mem.splitScalar(u8, line, '|');
+            while (fit.next()) |f| fs.append(a, f) catch unreachable;
+            return fs.toOwnedSlice(a) catch unreachable;
+        }
+    }.call;
+
+    // Columns: titles + widths (zip; extra of either side is ignored).
+    const titles = splitFields(arena, std.mem.trim(u8, headers, "\n"));
+    const wfields = splitFields(arena, std.mem.trim(u8, widths, "\n"));
+    var ncols: usize = titles.len;
+    if (wfields.len < ncols) ncols = wfields.len;
+    if (ncols == 0) return;
+    var col_w = std.ArrayList(u16).initCapacity(arena, ncols) catch unreachable;
+    for (wfields[0..ncols]) |wf| {
+        const v = std.fmt.parseInt(u16, std.mem.trim(u8, wf, " "), 10) catch 0;
+        col_w.append(arena, if (v == 0) 1 else v) catch unreachable;
+    }
+
+    // One cell: truncate to the column width with "…" (ansi.Truncate), pad
+    // left 1 (bubbles Padding(0,1)); the right pad is the column gap.
+    const paintCell = struct {
+        fn call(
+            a: std.mem.Allocator,
+            window: anytype,
+            x: u16,
+            y: u16,
+            width_avail: u16,
+            cw: u16,
+            text: []const u8,
+            style: anytype,
+            dw: anytype,
+            tr: anytype,
+        ) void {
+            if (x >= width_avail) return;
+            const d = dw(text);
+            var out: []const u8 = text;
+            if (d > cw) {
+                if (cw <= 1) {
+                    out = "…";
+                } else {
+                    out = std.fmt.allocPrint(a, "{s}…", .{tr(text, cw - 1)}) catch text;
+                }
+            }
+            const owned = a.dupe(u8, out) catch out;
+            const c = window.child(.{ .x_off = x, .y_off = y, .width = width_avail - x, .height = 1 });
+            _ = c.printSegment(.{ .text = owned, .style = style }, .{});
+        }
+    }.call;
+
+    const header_style: $mod.libvaxis.Cell.Style = .{ .bold = true };
+    const cell_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(cell_fg)),
+    };
+    const sel_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(sel_fg)),
+        .bold = true,
+    };
+    const border_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(border_fg)),
+    };
+
+    // Header row (y=0) — bold titles, each in its own column slot.
+    {
+        var x: u16 = 0;
+        for (titles[0..ncols], col_w.items) |t, cw| {
+            paintCell(arena, win, x +% 1, 0, w, cw, std.mem.trim(u8, t, " "), header_style, dispW, takeRunes);
+            x +%= cw + 2; // 1 pad each side (bubbles Padding(0,1))
+            if (x >= w) break;
+        }
+    }
+
+    // Header underline (y=1) — dim ─ across the used table width (bubbles'
+    // Header BorderBottom(true)).
+    {
+        var used: usize = 0;
+        for (col_w.items) |cw| used += @as(usize, cw) + 2;
+        if (used > @as(usize, w)) used = @as(usize, w);
+        var line = std.ArrayList(u8).initCapacity(arena, used * 3) catch unreachable;
+        var i: usize = 0;
+        while (i < used) : (i += 1) line.appendSlice(arena, "─") catch unreachable;
+        const bc = win.child(.{ .x_off = 0, .y_off = 1, .width = w, .height = 1 });
+        _ = bc.printSegment(.{ .text = line.items, .style = border_style }, .{});
+    }
+
+    // Data rows — split the newline payload (list/viewport path).
+    var src: []const u8 = rows;
+    while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
+    if (src.len == 0) return;
+    var lines = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |l| lines.append(arena, l) catch unreachable;
+    const count: u16 = @intCast(lines.items.len);
+    if (count == 0) return;
+
+    // Clamp selected into [0, count-1].
+    var sel: i64 = selected;
+    if (sel < 0) sel = 0;
+    if (sel > @as(i64, @intCast(count)) - 1) sel = @as(i64, @intCast(count)) - 1;
+    const sel_idx: u16 = @intCast(sel);
+
+    // Visible window: rows fill y=[2, h). Page-aligned scroll keeps the
+    // selected row on the visible page (list's stateless shape).
+    const region_top: u16 = 2;
+    const visible_rows: u16 = h - region_top;
+    const page: u16 = if (count > visible_rows) @divTrunc(sel_idx, visible_rows) else 0;
+    const first: u16 = page * visible_rows;
+
+    var r: u16 = 0;
+    while (r < visible_rows) : (r += 1) {
+        const idx: u16 = first + r;
+        if (idx >= count) break;
+        const y: u16 = region_top + r;
+        const is_sel = (idx == sel_idx);
+        const row_style = if (is_sel) sel_style else cell_style;
+
+        // Selected row cursor gutter — bubbles paints the whole row in the
+        // Selected style; the pink+bold row IS the cursor.
+        const fields = splitFields(arena, lines.items[idx]);
+        var x: u16 = 0;
+        var ci: usize = 0;
+        while (ci < ncols) : (ci += 1) {
+            const cw = col_w.items[ci];
+            const ftext = if (ci < fields.len) std.mem.trim(u8, fields[ci], " ") else "";
+            if (ftext.len > 0) paintCell(arena, win, x +% 1, y, w, cw, ftext, row_style, dispW, takeRunes);
+            x +%= cw + 2;
+            if (x >= w) break;
+        }
+    }
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1795,7 +1992,7 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list/viewport/paginator/help tags resolve
+    // Builtin meter/spinner/textinput/list/viewport/paginator/help/table tags resolve
     // to koru/vaxis events (not consumer-module components). wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
@@ -1806,6 +2003,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "viewport")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "paginator")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "help")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "table")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;

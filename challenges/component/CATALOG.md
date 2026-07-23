@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **table** | Next — help Bridge cleared. |
+| **textarea** | Next — table Bridge cleared. |
 
 ### Port queue (do not skip)
 
@@ -26,8 +26,8 @@ advances. Thin boundary-only demos do not enter Replays.
 5. viewport ← **cataloged** (Bridge, 2026-07-23, replay 08 hy3)
 6. paginator ← **cataloged** (Bridge, 2026-07-23, replay 09 hy3)
 7. help ← **cataloged** (Bridge, 2026-07-24, replay 10 hy3)
-8. table ← **active**
-9. textarea
+8. table ← **cataloged** (Bridge, 2026-07-24, replay 11 hy3)
+9. textarea ← **active**
 10. timer / stopwatch
 11. filepicker
 
@@ -61,6 +61,8 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | `examples/component_paginator.k` · eyes: `koru-examples/gallery` | `paginator` | Charm bubbles/paginator — pagination **status chrome only** (not page content): Dots mode (●/○, ActiveDot pink `#EE6FF8` + bold, InactiveDot dim) and Arabic mode (`N/M`, current pink). Host store owns `page` + `total`; widget owns paint; h/l mutate page (arrows unreachable — same 0x3000 wall). Public: `koru/vaxis:paginator { win, page, total, kind }`. Demo drives two tags from one store. | Bridge |
 | `examples/component_help.k` · eyes: `koru-examples/gallery` | `help` | Charm bubbles/help — keybinding hints. SHORT mode (default): one bottom line `key desc • key desc • …`, muted keys `#626262`, softer descs `#4A4A4A`, dim ` • ` separators `#3C3C3C`, **width-aware truncation with a trailing `…`** when wider than `win` (bubbles' ShortHelpView + ansi.Truncate — SHOWN truncating at both 100- and 46-col widths on a pty). FULL mode: one `key  desc` row per binding, keys right-padded into an aligned column (bubbles' single-column FullHelpView); both modes bottom-anchor (help hugs the screen bottom). Toggle short↔full with `?` — host store owns the `mode` int, the widget owns the paint (NOT the `! key` pipeline). Bindings arrive as a host-owned `key:desc`-per-line `string` payload (list/viewport path); keys carry arrow glyphs (↑/k) safely because they are painted, not typed. Public: `koru/vaxis:help { win, bindings: string, mode: i64 }` (palette/separators hardcoded to Bubbles defaults; same pattern as progress-bar). Holes: a real structured `[]Binding` with separate short/full lists — and multi-column full help — is deferred (the flat newline payload can't express column groups, so full help is one column); rune display-width counts each codepoint as 1 col (arrows/•/… correct; wide CJK not special-cased). | Bridge |
 
+| `examples/component_table.k` · eyes: `koru-examples/gallery` | `table` | Charm bubbles/table — columns + header + selectable rows. Bold header row over a dim `─` underline (Header BorderBottom); fixed-width columns with 1-col padding each side (Padding(0,1)); cell text wider than its column truncates with a trailing `…` (ansi.Truncate — SHOWN on `Banglad…`/`Argenti…`/`Philipp…` at Country width 8); the SELECTED row paints whole-row bold + Charm pink `#EE6FF8` (DefaultStyles Selected = bold + lipgloss "212"). Host store owns the cursor index; j/k move, g/G jump ends — widget OWNS paint, NOT the `! key` pipeline. Page-aligned visible window keeps the selection on screen (SHOWN: j across the page boundary flips to rows 12–20 with the cursor on 12; G/g land on last/first page). Payload is host-owned strings (bubbles FromValues): `headers`/`widths` `\|`-separated, `rows` newline-delimited with `\|` fields. Public: `koru/vaxis:table { win, headers, widths, rows: string, selected: i64 }` (palette hardcoded to Bubbles defaults; same pattern as progress-bar). Holes: real typed `[]Column`/`[]Row` payload deferred (flat-string upgrade list/help flagged); bubbles' smooth offset viewport deferred — needs widget-owned scroll state the stateless prop rail can't hold (page-aligned window instead, list's shape); rune width = 1 col/codepoint (wide CJK edge). | Bridge |
+
 ### Evaporated (taste-gate)
 
 | Replay | Tag | Why |
@@ -80,3 +82,4 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 08 · 2026-07-23 (hy3) | Bridge | `viewport` scroll window — visible-slice paint + host offset — walls floated: arrow keys unreachable past the 0x3000 key filter; host can't see win height for bubbles' count-height clamp |
 | 09 · 2026-07-23 (hy3) | Bridge | `paginator` Dots + Arabic status chrome — see Replays |
 | 10 · 2026-07-24 (hy3) | Bridge | `help` keybinding hints — width-aware short help (` • ` join + `…` truncation) + column-aligned full help, `?` toggle; muted-key/soft-desc/dim-sep Charm palette — see Replays |
+| 11 · 2026-07-24 (hy3) | Bridge | `table` columns + header + pink selected row + `…` cell truncation + page-aligned scroll — walls floated: widget-owned scroll state (bubbles' smooth offset) inexpressible on the stateless prop rail; typed `[]Column`/`[]Row` payload deferred |

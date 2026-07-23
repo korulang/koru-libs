@@ -48,10 +48,11 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `table`** — sole focus until cataloged as Charm-class.
-(`help` Bridge cataloged 2026-07-24 — width-aware short + column full, `?` toggle.)
+**Charm `textarea`** — sole focus until cataloged as Charm-class.
+(`table` Bridge cataloged 2026-07-24 — header + pink selected row + `…` cell
+truncation + page-aligned scroll.)
 
-Queue (after table clears; do not skip ahead):
+Queue (after textarea clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
@@ -60,8 +61,8 @@ Queue (after table clears; do not skip ahead):
 5. viewport ← cataloged
 6. paginator ← cataloged
 7. help ← cataloged
-8. table ← **here**
-9. textarea
+8. table ← cataloged
+9. textarea ← **here**
 10. timer / stopwatch
 11. filepicker
 
@@ -185,6 +186,14 @@ Governed like `SCENE.md`.
   + separate short/full lists + multi-column full help deferred (flat payload
   can't express column groups); rune width = 1 col/codepoint (wide CJK edge).
   Active advances to **table**.
+- 2026-07-24 · **table Bridge cataloged** (replay 11, hy3) — bubbles/table:
+  fixed-width columns (Padding(0,1)), bold header + dim `─` underline
+  (BorderBottom), whole-row bold + pink `#EE6FF8` selected (DefaultStyles
+  Selected = lipgloss "212"), `…` cell truncation (ansi.Truncate), page-aligned
+  scroll keeps the cursor visible; host store owns cursor, j/k/g/G mutate.
+  Holes floated: widget-owned scroll state (bubbles' smooth offset viewport)
+  inexpressible on the stateless prop rail; typed `[]Column`/`[]Row` payload
+  deferred. Active advances to **textarea**.
 
 ## Zero-friction append
 
