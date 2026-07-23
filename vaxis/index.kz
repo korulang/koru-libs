@@ -220,6 +220,20 @@ const VaxisEvent = union(enum) {
                         .super_key = k.mods.super,
                     },
                 });
+                // The `! key` handler may have changed state (a store write, a
+                // toggled flag). Repaint the retained scene so the change is
+                // visible: clear the root window (removed content must not
+                // linger), reclaim the frame arena, re-fire `! draw`, render.
+                // This is the reactive loop's "request redraw" — full-repaint-
+                // on-damage, where a keypress is potential damage. (Skip if the
+                // handler asked to quit.)
+                if (!$mod.should_quit) {
+                    const win = $mod.vx.window();
+                    win.clear();
+                    _ = $mod.text_arena.reset(.retain_capacity);
+                    draw(win);
+                    $mod.vx.render($mod.tty.writer()) catch {};
+                }
             },
             .winsize => |ws| {
                 // libvaxis re-emits winsize during startup (loop.start() + in-band
