@@ -89,6 +89,8 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-23 · **progress-bar Bridge cataloged** — Charm static meter in Replays;
+  active target → **spinner**. Gallery is the eyes (`koru-examples/gallery`).
 - 2026-07-23 · **Charm progress walls 1–3 cleared** — Style fg/bg, grapheme
   printSegment, `progress-bar` meter primitive + `<progress-bar/>` builtin path.
   Proof: `examples/component_progress.k`. Spring animation still deferred.

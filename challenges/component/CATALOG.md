@@ -15,12 +15,12 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **progress** | Substrate unblocked (walls 1–3). Proof demo `examples/component_progress.k` — Charm defaults (▌░, purple→pink, %). Awaiting taste-gate / contestant replay for Replays credit. Spring animation still deferred. |
+| **spinner** | Next — needs frame-tick substrate (also unlocks progress spring). |
 
 ### Port queue (do not skip)
 
-1. progress ← active
-2. spinner
+1. progress ← **cataloged** (Bridge, 2026-07-23)
+2. spinner ← active
 3. textinput
 4. list (simple)
 5. viewport
@@ -50,7 +50,9 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 
 ## Replays
 
-*(empty — no Charm-class survivor yet)*
+| Demo | Tag | Thesis | Outcome |
+|------|-----|--------|---------|
+| `examples/component_progress.k` · eyes: `koru-examples/gallery` | `progress-bar` | Charm defaults meter — proportional ▌/░, purple→pink half-block blend, trailing `%`; width from `win`; drop-in `<progress-bar value max/>` in dock/stack. Public surface: `koru/vaxis:progress-bar { win, value, max }` (colors/runes/% hardcoded to Bubbles defaults). Spring deferred. | Bridge |
 
 ### Evaporated (taste-gate)
 
@@ -59,8 +61,8 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 01 · 2026-07-23 | `selection-list` | App-shaped `! draw`/`! key`; not a reusable tag boundary |
 | 02 · 2026-07-23 | `progress-bar` | Boundary clean; Charm name without meter craft (label + value/max text) |
 
-### Frontiers (same active target)
+### Frontiers (resolved into Bridge)
 
 | Replay | Outcome | Walls |
 |--------|---------|-------|
-| 03 · 2026-07-23 | Frontier | Color; grapheme write; fill math — floated. Mom/dad fixed all three; see `vaxis/tests/frontier/charm_progress_walls.md` + `examples/component_progress.k`. |
+| 03 · 2026-07-23 | Frontier → Bridge | Color; grapheme write; fill math — mom/dad fixed; cataloged as `progress-bar` |

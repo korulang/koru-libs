@@ -48,12 +48,14 @@ Only then does the queue move.
 
 ## Active target (2026-07-23)
 
-**Charm `progress`** — sole focus until cataloged as Charm-class.
+**Charm `spinner`** — sole focus until cataloged as Charm-class.
+(`progress-bar` Bridge cataloged same day — static Charm meter; spring deferred
+to the tick substrate spinner will force.)
 
-Queue (after progress clears; do not skip ahead):
+Queue (after spinner clears; do not skip ahead):
 
-1. progress ← **here**
-2. spinner
+1. progress ← cataloged
+2. spinner ← **here**
 3. textinput
 4. list (simple — not Glow-fancy)
 5. viewport
@@ -157,7 +159,9 @@ Governed like `SCENE.md`.
 
 - 2026-07-23 · replay 01 evaporated (app-shaped); THE BAR = widget boundary.
 - 2026-07-23 · replay 02 evaporated (Charm name, no meter); generator retuned
-  to **Charm port queue + depth-first max polish**; active = **progress**.
+  to **Charm port queue + depth-first max polish**; active was **progress**.
+- 2026-07-23 · **progress-bar Bridge cataloged** — Charm static meter (blend +
+  `%`). Active advances to **spinner**. Spring deferred (needs ticks).
 
 ## Zero-friction append
 
