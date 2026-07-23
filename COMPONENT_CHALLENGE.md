@@ -203,6 +203,9 @@ Governed like `SCENE.md`.
   and `\n` as hard breaks. Hit no new wall. Holes: mid-buffer caret / arrows
   (append/pop end-only + 0x3000 filter), soft-wrap, line numbers / char limit /
   focus chrome deferred. Active advances to **timer / stopwatch**.
+- 2026-07-24 · **timer + stopwatch Bridge cataloged** (replay 13, hy3) — bubbles
+  countdown + count-up; Duration.String() paint; host tick deltas; space/s toggle,
+  r reset. Active advances to **filepicker**.
 
 ## Zero-friction append
 
