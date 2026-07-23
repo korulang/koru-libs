@@ -1,7 +1,7 @@
 .{
-    .name = .examples,
+    .name = .component_list,
     .version = "0.0.0",
-    .fingerprint = 0x7bd0ad45568d5623,
+    .fingerprint = 0xf8e84f2e052a6fb3,
     .dependencies = .{
         .vaxis = .{
             .url = "git+https://github.com/rockorager/libvaxis.git#75035b169e91a51c233f3742161f8eb8eafca659",

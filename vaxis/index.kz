@@ -868,27 +868,53 @@ const VaxisEvent = union(enum) {
         }
     }
 
-    var dots = std.ArrayList(u8).initCapacity(arena, max_dots * 3) catch return;
-    dots.appendSlice(arena, "    ") catch return; // paddingLeft 4 — matches items
-    var p: u16 = dot_start;
-    while (p < dot_end) : (p += 1) {
-        const glyph: []const u8 = if (p == page) "● " else "○ ";
-        dots.appendSlice(arena, glyph) catch return;
-    }
-    if (dot_start > 0) dots.appendSlice(arena, "…") catch return;
-    if (dot_end < total_pages) dots.appendSlice(arena, "…") catch return;
-
-    const dots_style: $mod.libvaxis.Cell.Style = .{
+    // One printSegment per glyph so the current page can be pink (Charm
+    // paginator ActiveDot) while the rest stay dim. A single segment can
+    // only carry one style — that was the deferred hole.
+    var col: u16 = 4; // paddingLeft 4 — matches item rows
+    const dim_style: $mod.libvaxis.Cell.Style = .{
         .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(dot_dim)),
     };
-    const dots_owned = arena.dupe(u8, dots.items) catch dots.items;
-    const dchild = win.child(.{
-        .x_off = 0,
-        .y_off = footer_y,
-        .width = w,
-        .height = 1,
-    });
-    _ = dchild.printSegment(.{ .text = dots_owned, .style = dots_style }, .{});
+    if (dot_start > 0 and col < w) {
+        const ell = arena.dupe(u8, "…") catch "…";
+        const echild = win.child(.{
+            .x_off = col,
+            .y_off = footer_y,
+            .width = w - col,
+            .height = 1,
+        });
+        _ = echild.printSegment(.{ .text = ell, .style = dim_style }, .{});
+        col +%= 2;
+    }
+    var p: u16 = dot_start;
+    while (p < dot_end) : (p += 1) {
+        if (col >= w) break;
+        const is_cur = (p == page);
+        const glyph: []const u8 = if (is_cur) "●" else "○";
+        const ds: $mod.libvaxis.Cell.Style = .{
+            .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(if (is_cur) sel_fg else dot_dim)),
+            .bold = is_cur,
+        };
+        const g_owned = arena.dupe(u8, glyph) catch glyph;
+        const gchild = win.child(.{
+            .x_off = col,
+            .y_off = footer_y,
+            .width = w - col,
+            .height = 1,
+        });
+        _ = gchild.printSegment(.{ .text = g_owned, .style = ds }, .{});
+        col +%= 2; // glyph + trailing gap (Charm "● ")
+    }
+    if (dot_end < total_pages and col < w) {
+        const ell = arena.dupe(u8, "…") catch "…";
+        const echild = win.child(.{
+            .x_off = col,
+            .y_off = footer_y,
+            .width = w - col,
+            .height = 1,
+        });
+        _ = echild.printSegment(.{ .text = ell, .style = dim_style }, .{});
+    }
 }
 
 // ============================================================================
