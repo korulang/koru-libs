@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **textarea** | Next — table Bridge cleared. |
+| **timer / stopwatch** | Next — textarea Bridge cleared. |
 
 ### Port queue (do not skip)
 
@@ -27,8 +27,8 @@ advances. Thin boundary-only demos do not enter Replays.
 6. paginator ← **cataloged** (Bridge, 2026-07-23, replay 09 hy3)
 7. help ← **cataloged** (Bridge, 2026-07-24, replay 10 hy3)
 8. table ← **cataloged** (Bridge, 2026-07-24, replay 11 hy3)
-9. textarea ← **active**
-10. timer / stopwatch
+9. textarea ← **cataloged** (Bridge, 2026-07-24, replay 12 hy3)
+10. timer / stopwatch ← **active**
 11. filepicker
 
 ## Seed — pre-challenge substrate (not scored replays)
@@ -63,6 +63,8 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 
 | `examples/component_table.k` · eyes: `koru-examples/gallery` | `table` | Charm bubbles/table — columns + header + selectable rows. Bold header row over a dim `─` underline (Header BorderBottom); fixed-width columns with 1-col padding each side (Padding(0,1)); cell text wider than its column truncates with a trailing `…` (ansi.Truncate — SHOWN on `Banglad…`/`Argenti…`/`Philipp…` at Country width 8); the SELECTED row paints whole-row bold + Charm pink `#EE6FF8` (DefaultStyles Selected = bold + lipgloss "212"). Host store owns the cursor index; j/k move, g/G jump ends — widget OWNS paint, NOT the `! key` pipeline. Page-aligned visible window keeps the selection on screen (SHOWN: j across the page boundary flips to rows 12–20 with the cursor on 12; G/g land on last/first page). Payload is host-owned strings (bubbles FromValues): `headers`/`widths` `\|`-separated, `rows` newline-delimited with `\|` fields. Public: `koru/vaxis:table { win, headers, widths, rows: string, selected: i64 }` (palette hardcoded to Bubbles defaults; same pattern as progress-bar). Holes: real typed `[]Column`/`[]Row` payload deferred (flat-string upgrade list/help flagged); bubbles' smooth offset viewport deferred — needs widget-owned scroll state the stateless prop rail can't hold (page-aligned window instead, list's shape); rune width = 1 col/codepoint (wide CJK edge). | Bridge |
 
+| `examples/component_textarea.k` · eyes: `koru-examples/gallery` | `textarea` | Charm bubbles/textarea — multi-line input filling a tall `<dock>` fill window: purple `#5A56E0` `┃ ` prompt gutter down the FULL input height (bubbles' per-row Prompt); muted placeholder when empty with the blink cursor over its first char (text-input's placeholderView shape); purple blink block cursor (~530ms from `! tick` ms — SHOWN alternating on a pty) at the END of the value (append/pop path); bottom-anchored vertical follow when content outgrows the window (SHOWN: 16 lines in a 13-row fill shows d…p with the cursor line parked on the last row — the widget sees its own height, so no page-aligned compromise); long lines hard-clip (viewport's no-wrap) EXCEPT the cursor line, which horizontally scrolls like text-input (both SHOWN at 72 cols). Enter inserts a line break through the proven `append-char(s, k.ch)` path — raw ch 13 lands in the buffer and the widget treats `'\r'` and `'\n'` both as hard breaks; backspace pops across breaks (SHOWN rejoining lines). Host store owns the buffer; widget OWNS paint/chrome, NOT the `! key` pipeline. Public: `koru/vaxis:textarea { win, value: string, ms: i64 }` (palette/prompt/placeholder hardcoded to Bubbles-ish defaults; same pattern as progress-bar). Holes: mid-buffer caret / arrow navigation deferred (append/pop end-only — text-input's hole; arrows also unreachable, the 0x3000 wall); soft-wrap deferred (honest hard-clip); line numbers / char limit / focused-blurred chrome deferred. | Bridge |
+
 ### Evaporated (taste-gate)
 
 | Replay | Tag | Why |
@@ -83,3 +85,4 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 09 · 2026-07-23 (hy3) | Bridge | `paginator` Dots + Arabic status chrome — see Replays |
 | 10 · 2026-07-24 (hy3) | Bridge | `help` keybinding hints — width-aware short help (` • ` join + `…` truncation) + column-aligned full help, `?` toggle; muted-key/soft-desc/dim-sep Charm palette — see Replays |
 | 11 · 2026-07-24 (hy3) | Bridge | `table` columns + header + pink selected row + `…` cell truncation + page-aligned scroll — walls floated: widget-owned scroll state (bubbles' smooth offset) inexpressible on the stateless prop rail; typed `[]Column`/`[]Row` payload deferred |
+| 12 · 2026-07-24 (hy3) | Bridge | `textarea` multi-line input — `┃ ` gutter + placeholder + blink cursor + bottom-anchored follow + hard-clip/cursor-line scroll — hit no new wall (Enter rides `append-char(s, k.ch)` as raw ch 13; widget treats `\r`/`\n` as breaks) |

@@ -1433,6 +1433,176 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Charm-class textarea — multi-line text input (COMPONENT textarea). Matches
+// bubbles/textarea's job: the value fills a TALL window, one line per row,
+// behind a "┃ " prompt gutter painted down the full input height (bubbles'
+// default Prompt on every row). Placeholder when empty (muted, blink cursor
+// over the first char — text-input's placeholderView shape). Blink block
+// cursor (~530ms from `ms`) sits at the END of the value (append-char/
+// pop-char path — no mid-buffer caret yet, text-input's hole). Vertical
+// follow: when the value has more lines than the window, the visible slice
+// bottom-anchors so the cursor line stays on screen (the widget CAN see its
+// own height here — no page-aligned compromise needed). Long lines hard-clip
+// at the right edge (viewport's honest no-soft-wrap), except the CURSOR line
+// which horizontally scrolls like text-input so the cursor stays visible.
+// The value splits on '\n' OR '\r': Enter reaches the host as raw ch 13 and
+// is appended verbatim through the proven append-char path — both bytes mean
+// a hard line break. Host store owns the buffer; the widget OWNS paint/
+// chrome, NOT the `! key` pipeline.
+// Markup tag `<textarea …/>` resolves via builtin wa_qual path.
+~pub event textarea { win: koru/vaxis:Window, value: string, ms: i64 }
+
+~proc textarea|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h == 0) return;
+
+    const prompt = "┃ ";
+    const prompt_cols: u16 = 2;
+    const placeholder = "Once upon a time...";
+    const prompt_fg: u32 = 0x5A56E0;      // Charm purple — focused prompt gutter
+    const text_fg: u32 = 0xE0DEF4;
+    const placeholder_fg: u32 = 0x606060;
+    const cursor_bg: u32 = 0x5A56E0;
+    const cursor_fg: u32 = 0xFFFFFF;
+    // bubbles/cursor default blink cadence (~530ms) — text-input's clock.
+    const t: i64 = if (ms < 0) 0 else ms;
+    const blink_on: bool = @mod(@divTrunc(t, 530), 2) == 0;
+
+    const prompt_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(prompt_fg)),
+    };
+    const text_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(text_fg)),
+    };
+    const ph_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(placeholder_fg)),
+    };
+
+    // Prompt gutter — "┃ " on EVERY row of the input's height, content or
+    // not (bubbles paints style.Prompt down the whole textarea).
+    var gr: u16 = 0;
+    while (gr < h) : (gr += 1) {
+        const gowned = arena.dupe(u8, prompt) catch prompt;
+        const gc = win.child(.{ .x_off = 0, .y_off = gr, .width = w, .height = 1 });
+        _ = gc.printSegment(.{ .text = gowned, .style = prompt_style }, .{});
+    }
+
+    if (w <= prompt_cols) return;
+    const avail: u16 = w - prompt_cols;
+
+    // Empty — placeholder on row 0: blink cursor over the first char, the
+    // rest muted (text-input's placeholderView shape).
+    if (value.len == 0) {
+        var col: u16 = prompt_cols;
+        const first_ch = arena.dupe(u8, placeholder[0..1]) catch placeholder[0..1];
+        if (blink_on) {
+            win.writeCell(col, 0, .{
+                .char = .{ .grapheme = first_ch, .width = 1 },
+                .style = .{
+                    .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_fg)),
+                    .bg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_bg)),
+                },
+            });
+        } else {
+            win.writeCell(col, 0, .{
+                .char = .{ .grapheme = first_ch, .width = 1 },
+                .style = ph_style,
+            });
+        }
+        col += 1;
+        if (placeholder.len > 1 and col < w) {
+            const rest_end: usize = @min(placeholder.len, @as(usize, avail));
+            if (rest_end > 1) {
+                const rest = arena.dupe(u8, placeholder[1..rest_end]) catch placeholder[1..rest_end];
+                const child = win.child(.{ .x_off = col, .y_off = 0, .width = w - col, .height = 1 });
+                _ = child.printSegment(.{ .text = rest, .style = ph_style }, .{});
+            }
+        }
+        return;
+    }
+
+    // Split into lines on '\n' OR '\r' (Enter's raw ch — see header). The
+    // final slice is the CURSOR line, empty right after an Enter.
+    var lines = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+    {
+        var start: usize = 0;
+        var i: usize = 0;
+        while (i < value.len) : (i += 1) {
+            const c = value[i];
+            if (c == '\n' or c == '\r') {
+                lines.append(arena, value[start..i]) catch unreachable;
+                start = i + 1;
+            }
+        }
+        lines.append(arena, value[start..]) catch unreachable;
+    }
+    const count: u16 = @intCast(lines.items.len);
+
+    // Vertical follow — cursor lives on the LAST line; bottom-anchor the
+    // slice so it stays visible when the content is taller than the window.
+    const first: u16 = if (count > h) count - h else 0;
+
+    var r: u16 = 0;
+    while (r < h) : (r += 1) {
+        const idx: u16 = first + r;
+        if (idx >= count) break;
+        const line = lines.items[idx];
+        const is_cursor_line = (idx == count - 1);
+
+        if (!is_cursor_line) {
+            // Hard-clip into a 1-row child right of the gutter (viewport's
+            // no-wrap default) — text never re-flows under your eyes.
+            if (line.len == 0) continue;
+            const owned = arena.dupe(u8, line) catch line;
+            const lchild = win.child(.{ .x_off = prompt_cols, .y_off = r, .width = avail, .height = 1 });
+            _ = lchild.printSegment(.{ .text = owned, .style = text_style }, .{});
+            continue;
+        }
+
+        // Cursor line — horizontal viewport with one cell reserved for the
+        // end cursor (text-input's scroll), then the blink block cursor.
+        const view_w: usize = @as(usize, avail);
+        var offset: usize = 0;
+        const need: usize = line.len + 1; // text + cursor cell
+        if (need > view_w) {
+            offset = need - view_w;
+            if (offset > line.len) offset = line.len;
+        }
+        const vis = line[offset..];
+        var col: u16 = prompt_cols;
+        if (vis.len > 0) {
+            const paint_n: usize = @min(vis.len, @as(usize, avail) - 1);
+            if (paint_n > 0) {
+                const owned = arena.dupe(u8, vis[0..paint_n]) catch vis[0..paint_n];
+                const cchild = win.child(.{ .x_off = col, .y_off = r, .width = avail, .height = 1 });
+                _ = cchild.printSegment(.{ .text = owned, .style = text_style }, .{});
+                col += @intCast(paint_n);
+            }
+        }
+        if (col < w) {
+            const cursor_ch = arena.dupe(u8, " ") catch " ";
+            if (blink_on) {
+                win.writeCell(col, r, .{
+                    .char = .{ .grapheme = cursor_ch, .width = 1 },
+                    .style = .{
+                        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_fg)),
+                        .bg = $mod.libvaxis.Color.rgbFromUint(@intCast(cursor_bg)),
+                    },
+                });
+            } else {
+                win.writeCell(col, r, .{
+                    .char = .{ .grapheme = cursor_ch, .width = 1 },
+                    .style = text_style,
+                });
+            }
+        }
+    }
+}
+
 // ============================================================================
 // VIEW — markup → flow (Svelte-for-terminal). N sibling <text> elements.
 // ============================================================================
@@ -1992,8 +2162,8 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list/viewport/paginator/help/table tags resolve
-    // to koru/vaxis events (not consumer-module components). wa_qual path.
+    // Builtin meter/spinner/textinput/list/viewport/paginator/help/table/textarea
+    // tags resolve to koru/vaxis events (not consumer-module components). wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
@@ -2004,6 +2174,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "paginator")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "help")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "table")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "textarea")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;

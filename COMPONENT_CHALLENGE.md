@@ -46,13 +46,13 @@ toolchain; the next replay retries the **same** widget until it clears.
 
 Only then does the queue move.
 
-## Active target (2026-07-23)
+## Active target (2026-07-24)
 
-**Charm `textarea`** — sole focus until cataloged as Charm-class.
-(`table` Bridge cataloged 2026-07-24 — header + pink selected row + `…` cell
-truncation + page-aligned scroll.)
+**Charm `timer` / `stopwatch`** — sole focus until cataloged as Charm-class.
+(`textarea` Bridge cataloged 2026-07-24 — gutter + placeholder + blink cursor
++ bottom-anchored follow + hard-clip.)
 
-Queue (after textarea clears; do not skip ahead):
+Queue (after timer/stopwatch clears; do not skip ahead):
 
 1. progress ← cataloged
 2. spinner ← cataloged
@@ -62,8 +62,8 @@ Queue (after textarea clears; do not skip ahead):
 6. paginator ← cataloged
 7. help ← cataloged
 8. table ← cataloged
-9. textarea ← **here**
-10. timer / stopwatch
+9. textarea ← cataloged
+10. timer / stopwatch ← **here**
 11. filepicker
 
 (`key` is non-visual — fold into help later, not a markup widget.)
@@ -195,6 +195,15 @@ Governed like `SCENE.md`.
   Holes floated: widget-owned scroll state (bubbles' smooth offset viewport)
   inexpressible on the stateless prop rail; typed `[]Column`/`[]Row` payload
   deferred. Active advances to **textarea**.
+- 2026-07-24 · **textarea Bridge cataloged** (replay 12, hy3) — bubbles/textarea:
+  multi-line input in a `<dock>` fill window; purple `┃ ` prompt gutter down the
+  full height; placeholder when empty; ~530ms blink block cursor at value end;
+  bottom-anchored vertical follow (widget sees its own height — no page-aligned
+  compromise); hard-clip except the horizontally-scrolling cursor line. Enter =
+  raw ch 13 through the proven `append-char(s, k.ch)` path; widget treats `\r`
+  and `\n` as hard breaks. Hit no new wall. Holes: mid-buffer caret / arrows
+  (append/pop end-only + 0x3000 filter), soft-wrap, line numbers / char limit /
+  focus chrome deferred. Active advances to **timer / stopwatch**.
 
 ## Zero-friction append
 
