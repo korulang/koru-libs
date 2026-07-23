@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **timer / stopwatch** | Next — textarea Bridge cleared. |
+| **filepicker** | Next — timer/stopwatch Bridge cleared. |
 
 ### Port queue (do not skip)
 
@@ -28,8 +28,8 @@ advances. Thin boundary-only demos do not enter Replays.
 7. help ← **cataloged** (Bridge, 2026-07-24, replay 10 hy3)
 8. table ← **cataloged** (Bridge, 2026-07-24, replay 11 hy3)
 9. textarea ← **cataloged** (Bridge, 2026-07-24, replay 12 hy3)
-10. timer / stopwatch ← **active**
-11. filepicker
+10. timer / stopwatch ← **cataloged** (Bridge, 2026-07-24, replay 13 hy3)
+11. filepicker ← **active**
 
 ## Seed — pre-challenge substrate (not scored replays)
 
@@ -65,6 +65,9 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 
 | `examples/component_textarea.k` · eyes: `koru-examples/gallery` | `textarea` | Charm bubbles/textarea — multi-line input filling a tall `<dock>` fill window: purple `#5A56E0` `┃ ` prompt gutter down the FULL input height (bubbles' per-row Prompt); muted placeholder when empty with the blink cursor over its first char (text-input's placeholderView shape); purple blink block cursor (~530ms from `! tick` ms — SHOWN alternating on a pty) at the END of the value (append/pop path); bottom-anchored vertical follow when content outgrows the window (SHOWN: 16 lines in a 13-row fill shows d…p with the cursor line parked on the last row — the widget sees its own height, so no page-aligned compromise); long lines hard-clip (viewport's no-wrap) EXCEPT the cursor line, which horizontally scrolls like text-input (both SHOWN at 72 cols). Enter inserts a line break through the proven `append-char(s, k.ch)` path — raw ch 13 lands in the buffer and the widget treats `'\r'` and `'\n'` both as hard breaks; backspace pops across breaks (SHOWN rejoining lines). Host store owns the buffer; widget OWNS paint/chrome, NOT the `! key` pipeline. Public: `koru/vaxis:textarea { win, value: string, ms: i64 }` (palette/prompt/placeholder hardcoded to Bubbles-ish defaults; same pattern as progress-bar). Holes: mid-buffer caret / arrow navigation deferred (append/pop end-only — text-input's hole; arrows also unreachable, the 0x3000 wall); soft-wrap deferred (honest hard-clip); line numbers / char limit / focused-blurred chrome deferred. | Bridge |
 
+| `examples/component_timer.k` · eyes: `koru-examples/gallery` | `timer` | Charm bubbles/timer — countdown. Paints remaining as Go `Duration.String()` taste (`1m2s` / `500ms` / `0s`); purple `#5A56E0` while running, dim when paused, timed-out `0s` bold pink `#EE6FF8`. Host store owns `remaining_ms` + `running` (0/1); decrements on `! tick` wall delta. Public: `koru/vaxis:timer { win, remaining_ms, running }`. | Bridge |
+| `examples/component_stopwatch.k` · eyes: `koru-examples/gallery` | `stopwatch` | Charm bubbles/stopwatch — count-up. Elapsed `Duration.String()` taste; purple running / dim paused. Host owns `elapsed_ms` + `running`; increments on `! tick` wall delta; `r` resets. Public: `koru/vaxis:stopwatch { win, elapsed_ms, running }`. | Bridge |
+
 ### Evaporated (taste-gate)
 
 | Replay | Tag | Why |
@@ -86,3 +89,4 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 10 · 2026-07-24 (hy3) | Bridge | `help` keybinding hints — width-aware short help (` • ` join + `…` truncation) + column-aligned full help, `?` toggle; muted-key/soft-desc/dim-sep Charm palette — see Replays |
 | 11 · 2026-07-24 (hy3) | Bridge | `table` columns + header + pink selected row + `…` cell truncation + page-aligned scroll — walls floated: widget-owned scroll state (bubbles' smooth offset) inexpressible on the stateless prop rail; typed `[]Column`/`[]Row` payload deferred |
 | 12 · 2026-07-24 (hy3) | Bridge | `textarea` multi-line input — `┃ ` gutter + placeholder + blink cursor + bottom-anchored follow + hard-clip/cursor-line scroll — hit no new wall (Enter rides `append-char(s, k.ch)` as raw ch 13; widget treats `\r`/`\n` as breaks) |
+| 13 · 2026-07-24 (hy3) | Bridge | `timer` + `stopwatch` — countdown/count-up Duration paint + tick-driven host state — see Replays |

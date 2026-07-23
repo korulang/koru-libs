@@ -622,6 +622,133 @@ const VaxisEvent = union(enum) {
     _ = win.printSegment(.{ .text = owned, .style = cell_style }, .{});
 }
 
+// Charm-class timer — a COUNTDOWN clock (COMPONENT timer). Ports bubbles/timer:
+// the widget paints the remaining duration string (Go time.Duration.String() —
+// "1m2s" / "500ms" / "0s" taste) and OWNS all chrome; the host store owns the
+// remaining ms + running flag and decrements on `! tick` (same host-owned model
+// as spinner). Purple #5A56E0 running, dim #606060 paused; when remaining ≤ 0 the
+// timer is TIMED OUT → "0s" painted in Charm pink #EE6FF8. `running` is 0/1 (the
+// store rail is i64, same as paginator/list). Markup `<timer …/>` via wa_qual.
+~pub event timer { win: koru/vaxis:Window, remaining_ms: i64, running: i64 }
+
+~proc timer|zig {
+    if (!$mod.is_initialized) return;
+
+    // Go time.Duration.String() over a non-negative millisecond magnitude.
+    const fmtDur = struct {
+        fn call(buf: []u8, total_ms_in: i64) []const u8 {
+            const total_ms: i64 = if (total_ms_in < 0) 0 else total_ms_in;
+            if (total_ms == 0) return "0s";
+            if (total_ms < 1000) return std.fmt.bufPrint(buf, "{d}ms", .{total_ms}) catch "?";
+            const secs_whole: i64 = @divTrunc(total_ms, 1000);
+            const frac_ms: i64 = @mod(total_ms, 1000);
+            const h: i64 = @divTrunc(secs_whole, 3600);
+            const m: i64 = @divTrunc(@mod(secs_whole, 3600), 60);
+            const s: i64 = @mod(secs_whole, 60);
+            var idx: usize = 0;
+            if (h > 0) {
+                const p = std.fmt.bufPrint(buf[idx..], "{d}h", .{h}) catch return buf[0..idx];
+                idx += p.len;
+            }
+            if (h > 0 or m > 0) {
+                const p = std.fmt.bufPrint(buf[idx..], "{d}m", .{m}) catch return buf[0..idx];
+                idx += p.len;
+            }
+            if (frac_ms > 0) {
+                var f: [3]u8 = .{ '0', '0', '0' };
+                f[0] = @intCast(@as(i64, '0') + @divTrunc(frac_ms, 100));
+                f[1] = @intCast(@as(i64, '0') + @divTrunc(@mod(frac_ms, 100), 10));
+                f[2] = @intCast(@as(i64, '0') + @mod(frac_ms, 10));
+                var flen: usize = 3;
+                while (flen > 0 and f[flen - 1] == '0') : (flen -= 1) {}
+                const p = std.fmt.bufPrint(buf[idx..], "{d}.{s}s", .{ s, f[0..flen] }) catch return buf[0..idx];
+                idx += p.len;
+            } else {
+                const p = std.fmt.bufPrint(buf[idx..], "{d}s", .{s}) catch return buf[0..idx];
+                idx += p.len;
+            }
+            return buf[0..idx];
+        }
+    }.call;
+
+    const purple: u32 = 0x5A56E0;
+    const pink: u32 = 0xEE6FF8;
+    const dim: u32 = 0x606060;
+
+    const timed_out: bool = remaining_ms <= 0;
+    var buf: [32]u8 = undefined;
+    const text = if (timed_out) "0s" else fmtDur(&buf, remaining_ms);
+    const fg: u32 = if (timed_out) pink else if (running != 0) purple else dim;
+
+    const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
+    const cell_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(fg)),
+        .bold = timed_out,
+    };
+    _ = win.printSegment(.{ .text = owned, .style = cell_style }, .{});
+}
+
+// Charm-class stopwatch — a COUNT-UP clock (COMPONENT stopwatch). Ports
+// bubbles/stopwatch: the widget paints the elapsed duration string (Go
+// time.Duration.String() taste) and OWNS its chrome; the host store owns the
+// elapsed ms + running flag and increments on `! tick`, reset zeroes it. Purple
+// #5A56E0 running, dim #606060 paused. `running` is 0/1 (i64 store rail). Markup
+// `<stopwatch …/>` resolves via the builtin wa_qual path.
+~pub event stopwatch { win: koru/vaxis:Window, elapsed_ms: i64, running: i64 }
+
+~proc stopwatch|zig {
+    if (!$mod.is_initialized) return;
+
+    const fmtDur = struct {
+        fn call(buf: []u8, total_ms_in: i64) []const u8 {
+            const total_ms: i64 = if (total_ms_in < 0) 0 else total_ms_in;
+            if (total_ms == 0) return "0s";
+            if (total_ms < 1000) return std.fmt.bufPrint(buf, "{d}ms", .{total_ms}) catch "?";
+            const secs_whole: i64 = @divTrunc(total_ms, 1000);
+            const frac_ms: i64 = @mod(total_ms, 1000);
+            const h: i64 = @divTrunc(secs_whole, 3600);
+            const m: i64 = @divTrunc(@mod(secs_whole, 3600), 60);
+            const s: i64 = @mod(secs_whole, 60);
+            var idx: usize = 0;
+            if (h > 0) {
+                const p = std.fmt.bufPrint(buf[idx..], "{d}h", .{h}) catch return buf[0..idx];
+                idx += p.len;
+            }
+            if (h > 0 or m > 0) {
+                const p = std.fmt.bufPrint(buf[idx..], "{d}m", .{m}) catch return buf[0..idx];
+                idx += p.len;
+            }
+            if (frac_ms > 0) {
+                var f: [3]u8 = .{ '0', '0', '0' };
+                f[0] = @intCast(@as(i64, '0') + @divTrunc(frac_ms, 100));
+                f[1] = @intCast(@as(i64, '0') + @divTrunc(@mod(frac_ms, 100), 10));
+                f[2] = @intCast(@as(i64, '0') + @mod(frac_ms, 10));
+                var flen: usize = 3;
+                while (flen > 0 and f[flen - 1] == '0') : (flen -= 1) {}
+                const p = std.fmt.bufPrint(buf[idx..], "{d}.{s}s", .{ s, f[0..flen] }) catch return buf[0..idx];
+                idx += p.len;
+            } else {
+                const p = std.fmt.bufPrint(buf[idx..], "{d}s", .{s}) catch return buf[0..idx];
+                idx += p.len;
+            }
+            return buf[0..idx];
+        }
+    }.call;
+
+    const purple: u32 = 0x5A56E0;
+    const dim: u32 = 0x606060;
+
+    var buf: [32]u8 = undefined;
+    const text = fmtDur(&buf, elapsed_ms);
+    const fg: u32 = if (running != 0) purple else dim;
+
+    const owned = $mod.text_arena.allocator().dupe(u8, text) catch text;
+    const cell_style: $mod.libvaxis.Cell.Style = .{
+        .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(fg)),
+    };
+    _ = win.printSegment(.{ .text = owned, .style = cell_style }, .{});
+}
+
 // Charm-class textinput — prompt + value/placeholder + blink block cursor +
 // horizontal scroll live HERE (COMPONENT textinput). Defaults match Bubbles:
 // Prompt "> ", placeholder when empty, focused purple prompt, dim placeholder,
@@ -2175,6 +2302,8 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "help")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "table")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "textarea")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "timer")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "stopwatch")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
