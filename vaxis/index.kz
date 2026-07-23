@@ -235,10 +235,20 @@ const VaxisEvent = union(enum) {
             switch (ev) {
                 .key_press => |k| {
                     if (k.codepoint > 0x3000 or k.codepoint == 0) return;
-                    const ch_val: u8 = if (k.codepoint < 128 and k.codepoint > 0)
-                        @intCast(k.codepoint)
-                    else
-                        0;
+                    // Prefer libvaxis `text` (what the terminal typed — Shift/
+                    // Caps aware). Fall back to shifted_codepoint, then the
+                    // base codepoint. Old path used only codepoint → lowercase
+                    // forever (text-input gallery bug, 2026-07-23).
+                    const ch_val: u8 = blk: {
+                        if (k.text) |t| {
+                            if (t.len >= 1 and t[0] < 128) break :blk t[0];
+                        }
+                        if (k.shifted_codepoint) |scp| {
+                            if (scp > 0 and scp < 128) break :blk @intCast(scp);
+                        }
+                        if (k.codepoint > 0 and k.codepoint < 128) break :blk @intCast(k.codepoint);
+                        break :blk 0;
+                    };
                     key(.{
                         .codepoint = k.codepoint,
                         .ch = ch_val,
