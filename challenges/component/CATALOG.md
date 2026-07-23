@@ -54,7 +54,7 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 |------|-----|--------|---------|
 | `examples/component_progress.k` · eyes: `koru-examples/gallery` | `progress-bar` | Charm defaults meter — proportional ▌/░, purple→pink half-block blend, trailing `%`; width from `win`; drop-in `<progress-bar value max/>` in dock/stack. Public surface: `koru/vaxis:progress-bar { win, value, max }` (colors/runes/% hardcoded to Bubbles defaults). Spring deferred. | Bridge |
 | `examples/component_spinner.k` · eyes: `koru-examples/gallery` | `spinner` | Charm MiniDot braille cycle + purple `#5A56E0`; MiniDot FPS owned inside widget from `! tick` ms; drop-in `<spinner ms/>`. Public: `koru/vaxis:spinner { win, ms }`. Optional fg/kind props deferred (same hardcode pattern as progress-bar). | Bridge |
-| `examples/component_text_input.k` | `text-input` | Charm field — prompt `> `, placeholder when empty, purple blink block cursor (~530ms from `! tick` ms), horizontal scroll on overflow; typing via `append-char`/`pop-char` (610_022). Public: `koru/vaxis:text-input { win, value, ms }`. Mid-buffer caret / optional placeholder·fg props deferred. | Bridge |
+| `examples/component_text_input.k` · eyes: `koru-examples/gallery` | `text-input` | Charm field — prompt `> `, placeholder when empty, purple blink block cursor (~530ms from `! tick` ms), horizontal scroll on overflow; typing via `append-char`/`pop-char` (610_022). Public: `koru/vaxis:text-input { win, value, ms }`. Mid-buffer caret / optional placeholder·fg props deferred. | Bridge |
 
 ### Evaporated (taste-gate)
 
