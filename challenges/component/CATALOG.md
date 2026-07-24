@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| — | filepicker Bridge cleared (replay 14 hy3); queue exhausted — retune generator or replay for depth. |
+| — | leaf queue exhausted (filepicker, replay 14 hy3). Composition organ active → `COMPOSITION_CHALLENGE.md` (**pager**). |
 
 ### Port queue (do not skip)
 

@@ -49,9 +49,9 @@ Only then does the queue move.
 ## Active target (2026-07-24)
 
 **Queue exhausted** — Charm port queue cleared (filepicker Bridge 2026-07-24).
-Next generator move is mom/dad: composition challenge, depth replay, or retune.
+Composition organ is live: see `COMPOSITION_CHALLENGE.md` (active **pager**).
 
-Last cleared queue:
+Last cleared leaf queue:
 
 1. progress ← cataloged
 2. spinner ← cataloged
@@ -210,6 +210,8 @@ Governed like `SCENE.md`.
 - 2026-07-24 · **filepicker Bridge cataloged** (replay 14, hy3) — bubbles
   directory browser; path header + pink `>` + purple dirs; N-fixed-listings
   via `if(dir)` in draw. Queue exhausted.
+- 2026-07-24 · **composition organ planted** — `COMPOSITION_CHALLENGE.md` +
+  `challenges/composition/CATALOG.md`; active composition = **pager**.
 
 ## Zero-friction append
 

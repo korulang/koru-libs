@@ -70,10 +70,14 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 - **Per-library beds (nested).** A specific lift in flight — `curl`, `pq`,
   `vaxis`, … — is its own named bed: it inherits the quadrifecta but has its own
   feeling and its own gap. Split one out when a library gets real focus.
-- **The component bed.** Grow the vaxis component catalog via
+- **The component bed.** Grow the vaxis **leaf** catalog via
   `COMPONENT_CHALLENGE.md` — Charm Bubbles as craft reference, depth-first max
-  polish on the active widget (now **progress**), singular contestant default.
-  Sibling organ to LIFT (packages) and to examples' APP_CHALLENGE (apps).
+  polish; leaf queue cleared through **filepicker** (2026-07-24). Singular
+  contestant default. Sibling organ to LIFT (packages) and to examples'
+  APP_CHALLENGE (apps).
+- **The composition bed.** Prove leaves hold when wired — 
+  `COMPOSITION_CHALLENGE.md` + `challenges/composition/CATALOG.md`. Active
+  composition **pager** (viewport + paginator). Same sealed-contestant format.
 
 ## What it says NO to (rejected on sight)
 
@@ -89,6 +93,9 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-24 · **COMPOSITION_CHALLENGE planted** — leaf queue exhausted; new
+  organ asks whether catalog tags compose. Active = **pager**. Brief:
+  `COMPOSITION_CHALLENGE.md`; catalog: `challenges/composition/CATALOG.md`.
 - 2026-07-23 · **progress-bar Bridge cataloged** — Charm static meter in Replays;
   active target → **spinner**. Gallery is the eyes (`koru-examples/gallery`).
 - 2026-07-23 · **Charm progress walls 1–3 cleared** — Style fg/bg, grapheme
