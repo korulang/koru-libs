@@ -633,8 +633,8 @@ const VaxisEvent = union(enum) {
 //
 // Under UI by layout: dock `<pulse dock="fill" t={{ t:d }}/>` under a topbar —
 // separate Window slots, chrome never fights the field. Stack later = paint
-// order. Declaration surface `shader(name) { frag = … }` is the next rung;
-// this event is the paint substrate that surface will lower onto.
+// order. Prefer `koru/vaxis:shader(name) { frag = … }` for authored fills;
+// `pulse` stays the hard-coded builtin twin.
 //
 // Markup `<pulse …/>` resolves via the builtin wa_qual path.
 ~pub event pulse { win: koru/vaxis:Window, t: i64 }
@@ -2255,6 +2255,366 @@ const VaxisEvent = union(enum) {
         .type_registry = program.type_registry,
     };
     return .{ .transformed = .{ .whole_program = new_prog } };
+}
+
+// ============================================================================
+// SHADER — named fragment fill with a tiny `frag =` expression language
+// ============================================================================
+//
+//   koru/vaxis:shader(ambient) {
+//       frag = 0.3 + 0.2 * sin(u * 6.28 + t) * cos(v * 6.28 - t * 0.4)
+//   }
+//
+// Declaration (like `component`): synthesizes `ambient { win, t }` + |zig that
+// walks the window's cells. Bindings in frag: `u`/`v` in [0,1], `t` = seconds
+// from tick ms. Ops: + - * / , sin(), cos(), parens, number literals.
+// Frag yields a float; clamped to [0,1] for glyph/color intensity.
+//
+// Dock it: `<ambient dock="fill" t={{ t:d }}/>` (consumer-module event).
+// Empty body / missing `frag =` → loud compileError. Samplers/tables = next grill.
+~[comptime|transform|pre]pub event shader {
+    expr: Expression,
+    source: Source,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~proc shader|zig {
+    const ast = @import("ast");
+    _ = expr;
+    _ = source;
+    _ = invocation;
+    _ = item;
+
+    const mkPath = struct {
+        fn call(a: std.mem.Allocator, qual: ?[]const u8, seg0: []const u8) ast.DottedPath {
+            const segs = a.alloc([]const u8, 1) catch unreachable;
+            segs[0] = a.dupe(u8, seg0) catch unreachable;
+            return .{
+                .module_qualifier = if (qual) |q| a.dupe(u8, q) catch unreachable else null,
+                .segments = segs,
+            };
+        }
+    }.call;
+
+    const errItem = struct {
+        fn call(a: std.mem.Allocator, loc: anytype, module: []const u8, comptime fmt: []const u8, args: anytype) ast.Item {
+            const inner = std.fmt.allocPrint(a, fmt, args) catch unreachable;
+            const msg = std.fmt.allocPrint(a, "comptime {{ @compileError(\"{s}\"); }}", .{inner}) catch unreachable;
+            return ast.Item{ .inline_code = ast.InlineCode{ .code = msg, .location = loc, .module = module } };
+        }
+    }.call;
+
+    // frag expr → Zig float expression. Bindings u,v,t already in scope as f64.
+    const fragToZig = struct {
+        fn skipWs(s: []const u8, i: *usize) void {
+            while (i.* < s.len and (s[i.*] == ' ' or s[i.*] == '\t' or s[i.*] == '\n' or s[i.*] == '\r')) i.* += 1;
+        }
+        fn isIdentStart(c: u8) bool {
+            return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+        }
+        fn isIdent(c: u8) bool {
+            return isIdentStart(c) or (c >= '0' and c <= '9');
+        }
+        fn fail(a: std.mem.Allocator, msg: []const u8) []const u8 {
+            return std.fmt.allocPrint(a, "__FRAG_ERR__{s}", .{msg}) catch "__FRAG_ERR__";
+        }
+        fn parseExpr(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+            skipWs(s, i);
+            var left = parseTerm(a, s, i);
+            if (std.mem.startsWith(u8, left, "__FRAG_ERR__")) return left;
+            while (true) {
+                skipWs(s, i);
+                if (i.* >= s.len) break;
+                const op = s[i.*];
+                if (op != '+' and op != '-') break;
+                i.* += 1;
+                const right = parseTerm(a, s, i);
+                if (std.mem.startsWith(u8, right, "__FRAG_ERR__")) return right;
+                left = std.fmt.allocPrint(a, "({s} {c} {s})", .{ left, op, right }) catch unreachable;
+            }
+            return left;
+        }
+        fn parseTerm(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+            skipWs(s, i);
+            var left = parseUnary(a, s, i);
+            if (std.mem.startsWith(u8, left, "__FRAG_ERR__")) return left;
+            while (true) {
+                skipWs(s, i);
+                if (i.* >= s.len) break;
+                const op = s[i.*];
+                if (op != '*' and op != '/') break;
+                i.* += 1;
+                const right = parseUnary(a, s, i);
+                if (std.mem.startsWith(u8, right, "__FRAG_ERR__")) return right;
+                left = std.fmt.allocPrint(a, "({s} {c} {s})", .{ left, op, right }) catch unreachable;
+            }
+            return left;
+        }
+        fn parseUnary(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+            skipWs(s, i);
+            if (i.* < s.len and s[i.*] == '-') {
+                i.* += 1;
+                const inner = parseUnary(a, s, i);
+                if (std.mem.startsWith(u8, inner, "__FRAG_ERR__")) return inner;
+                return std.fmt.allocPrint(a, "(-({s}))", .{inner}) catch unreachable;
+            }
+            return parsePrimary(a, s, i);
+        }
+        fn parsePrimary(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+            skipWs(s, i);
+            if (i.* >= s.len) return fail(a, "unexpected end of frag expression");
+            if (s[i.*] == '(') {
+                i.* += 1;
+                const inner = parseExpr(a, s, i);
+                if (std.mem.startsWith(u8, inner, "__FRAG_ERR__")) return inner;
+                skipWs(s, i);
+                if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' in frag expression");
+                i.* += 1;
+                return std.fmt.allocPrint(a, "({s})", .{inner}) catch unreachable;
+            }
+            if (s[i.*] >= '0' and s[i.*] <= '9' or s[i.*] == '.') {
+                const start = i.*;
+                while (i.* < s.len and ((s[i.*] >= '0' and s[i.*] <= '9') or s[i.*] == '.')) i.* += 1;
+                const lit = s[start..i.*];
+                // Force f64 literal so `0.3 + …` stays float in Zig.
+                if (std.mem.indexOfScalar(u8, lit, '.') == null) {
+                    return std.fmt.allocPrint(a, "{s}.0", .{lit}) catch unreachable;
+                }
+                return a.dupe(u8, lit) catch unreachable;
+            }
+            if (isIdentStart(s[i.*])) {
+                const start = i.*;
+                while (i.* < s.len and isIdent(s[i.*])) i.* += 1;
+                const id = s[start..i.*];
+                skipWs(s, i);
+                if (i.* < s.len and s[i.*] == '(') {
+                    i.* += 1;
+                    const arg = parseExpr(a, s, i);
+                    if (std.mem.startsWith(u8, arg, "__FRAG_ERR__")) return arg;
+                    skipWs(s, i);
+                    if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after function arg");
+                    i.* += 1;
+                    if (std.mem.eql(u8, id, "sin")) return std.fmt.allocPrint(a, "@sin({s})", .{arg}) catch unreachable;
+                    if (std.mem.eql(u8, id, "cos")) return std.fmt.allocPrint(a, "@cos({s})", .{arg}) catch unreachable;
+                    return fail(a, "unknown frag function (rung one: sin, cos)");
+                }
+                if (std.mem.eql(u8, id, "u") or std.mem.eql(u8, id, "v")) {
+                    return a.dupe(u8, id) catch unreachable;
+                }
+                if (std.mem.eql(u8, id, "t")) {
+                    return a.dupe(u8, "t_sec") catch unreachable;
+                }
+                return fail(a, "unknown frag binding (rung one: u, v, t)");
+            }
+            return fail(a, "unexpected character in frag expression");
+        }
+        fn call(a: std.mem.Allocator, src: []const u8) []const u8 {
+            var i: usize = 0;
+            const out = parseExpr(a, src, &i);
+            if (std.mem.startsWith(u8, out, "__FRAG_ERR__")) return out;
+            skipWs(src, &i);
+            if (i < src.len) return fail(a, "trailing junk after frag expression");
+            return out;
+        }
+    }.call;
+
+    const extractFrag = struct {
+        fn call(a: std.mem.Allocator, text: []const u8) ?[]const u8 {
+            // Find `frag` then `=` then rest of non-empty line / to end.
+            var i: usize = 0;
+            while (i < text.len) : (i += 1) {
+                if (i + 4 <= text.len and std.mem.eql(u8, text[i .. i + 4], "frag")) {
+                    const after = i + 4;
+                    if (after < text.len and ((text[after] >= 'a' and text[after] <= 'z') or (text[after] >= 'A' and text[after] <= 'Z') or text[after] == '_' or (text[after] >= '0' and text[after] <= '9'))) {
+                        continue;
+                    }
+                    var j = after;
+                    while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
+                    if (j >= text.len or text[j] != '=') continue;
+                    j += 1;
+                    while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
+                    var end = j;
+                    while (end < text.len and text[end] != '\n' and text[end] != '\r') end += 1;
+                    const raw = text[j..end];
+                    // trim trailing ws
+                    var e = raw.len;
+                    while (e > 0 and (raw[e - 1] == ' ' or raw[e - 1] == '\t')) e -= 1;
+                    if (e == 0) return null;
+                    return a.dupe(u8, raw[0..e]) catch unreachable;
+                }
+            }
+            return null;
+        }
+    }.call;
+
+    const synth = struct {
+        fn call(a: std.mem.Allocator, sname: []const u8, frag_zig: []const u8, qual: ?[]const u8, cmodule: []const u8, cloc: anytype) [2]ast.Item {
+            const fields = a.alloc(ast.Field, 2) catch unreachable;
+            fields[0] = .{
+                .name = a.dupe(u8, "win") catch unreachable,
+                .type = a.dupe(u8, "Window") catch unreachable,
+                .module_path = a.dupe(u8, qual orelse "koru/vaxis") catch unreachable,
+            };
+            fields[1] = .{
+                .name = a.dupe(u8, "t") catch unreachable,
+                .type = a.dupe(u8, "i64") catch unreachable,
+            };
+            const event_item = ast.Item{ .event_decl = ast.EventDecl{
+                .path = mkPath(a, cmodule, sname),
+                .input = ast.Shape{ .fields = fields },
+                .branches = &[_]ast.Branch{},
+                .is_public = false,
+                .is_implicit_flow = false,
+                .annotations = &[_][]const u8{},
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+
+            // Zig body in the CONSUMER module (like component events). Do not
+            // use $mod — that is the consumer, not koru/vaxis. libvaxis is a
+            // package dep of the output binary; import it directly.
+            const body = std.fmt.allocPrint(a,
+                \\const __vx = @import("vaxis");
+                \\const w: u16 = win.width;
+                \\const h: u16 = win.height;
+                \\if (w == 0 or h == 0) return;
+                \\const ms: i64 = if (t < 0) 0 else t;
+                \\const t_sec: f64 = @as(f64, @floatFromInt(ms)) * 0.001;
+                \\const glyphs = [_][]const u8{{ " ", "·", "•", "░", "▒" }};
+                \\const space = glyphs[0];
+                \\var row: u16 = 0;
+                \\while (row < h) : (row += 1) {{
+                \\    const v: f64 = @as(f64, @floatFromInt(row)) / @as(f64, @floatFromInt(h));
+                \\    var col: u16 = 0;
+                \\    while (col < w) : (col += 1) {{
+                \\        const u: f64 = @as(f64, @floatFromInt(col)) / @as(f64, @floatFromInt(w));
+                \\        // `+ 0*u + 0*v` keeps bindings live when the authored frag omits them.
+                \\        const __frag: f64 = ({s}) + (u * 0.0) + (v * 0.0);
+                \\        const n: f64 = @max(0.0, @min(1.0, __frag));
+                \\        const gi: usize = @intFromFloat(@min(4.0, n * 5.0));
+                \\        const glyph = glyphs[gi];
+                \\        const r: u32 = @intFromFloat(0x5A + n * (0xEE - 0x5A));
+                \\        const g: u32 = @intFromFloat(0x56 + n * (0x6F - 0x56));
+                \\        const b: u32 = @intFromFloat(0xE0 + n * (0xF8 - 0xE0));
+                \\        const rgb: u32 = (r << 16) | (g << 8) | b;
+                \\        const g_use = if (gi == 0) space else glyph;
+                \\        win.writeCell(col, row, .{{
+                \\            .char = .{{ .grapheme = g_use, .width = 1 }},
+                \\            .style = .{{
+                \\                .fg = __vx.Color.rgbFromUint(@intCast(rgb)),
+                \\                .bg = __vx.Color.rgbFromUint(@intCast(rgb / 4)),
+                \\            }},
+                \\        }});
+                \\    }}
+                \\}}
+            , .{frag_zig}) catch unreachable;
+
+            const proc_item = ast.Item{ .proc_decl = ast.ProcDecl{
+                .path = mkPath(a, cmodule, sname),
+                .body = ast.Source{ .text = body, .location = cloc, .scope = .{ .bindings = &[_]ast.ScopeBinding{} }, .phantom_type = null },
+                .annotations = &[_][]const u8{},
+                .target = a.dupe(u8, "zig") catch unreachable,
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+            return .{ event_item, proc_item };
+        }
+    }.call;
+
+    var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len + 4) catch unreachable;
+    var synthed = std.ArrayList(ast.Item).initCapacity(allocator, 4) catch unreachable;
+    var found = false;
+
+    for (program.items) |pi| {
+        const is_shader = pi == .flow and blk: {
+            const segs = pi.flow.inv().path.segments;
+            break :blk segs.len > 0 and std.mem.eql(u8, segs[segs.len - 1], "shader");
+        };
+        if (!is_shader) {
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+
+        const sinv = pi.flow.inv();
+        var name: []const u8 = "";
+        var markup: []const u8 = "";
+        for (sinv.args) |arg| {
+            if (std.mem.eql(u8, arg.name, "source")) {
+                markup = arg.value;
+            } else {
+                name = arg.value;
+                if (name.len >= 2 and name[0] == '"' and name[name.len - 1] == '"') name = name[1 .. name.len - 1];
+            }
+        }
+        if (name.len == 0) {
+            new_items.append(allocator, errItem(allocator, pi.flow.location, pi.flow.module, "koru/vaxis:shader(name): needs a name", .{})) catch unreachable;
+            continue;
+        }
+
+        const frag_src = extractFrag(allocator, markup) orelse {
+            new_items.append(allocator, errItem(allocator, pi.flow.location, pi.flow.module, "koru/vaxis:shader({s}): needs `frag = <expr>` (bindings u, v, t; sin/cos)", .{name})) catch unreachable;
+            continue;
+        };
+        const frag_zig = fragToZig(allocator, frag_src);
+        if (std.mem.startsWith(u8, frag_zig, "__FRAG_ERR__")) {
+            const why = frag_zig["__FRAG_ERR__".len..];
+            new_items.append(allocator, errItem(allocator, pi.flow.location, pi.flow.module, "koru/vaxis:shader({s}): {s}", .{ name, why })) catch unreachable;
+            continue;
+        }
+
+        found = true;
+        const pair = synth(allocator, name, frag_zig, sinv.path.module_qualifier, pi.flow.module, pi.flow.location);
+        synthed.append(allocator, pair[0]) catch unreachable;
+        synthed.append(allocator, pair[1]) catch unreachable;
+
+        const consumed = std.fmt.allocPrint(allocator, "// koru/vaxis: shader '{s}' synthesized → event + frag fill", .{name}) catch unreachable;
+        new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
+            .content = consumed,
+            .location = pi.flow.location,
+            .module = allocator.dupe(u8, pi.flow.module) catch unreachable,
+        } }) catch unreachable;
+    }
+
+    if (!found) {
+        // No successful synth — still return program if we only injected errors
+        if (synthed.items.len == 0) {
+            // Check whether we replaced any shader site with errors
+            var touched = false;
+            for (new_items.items) |ni| {
+                if (ni == .inline_code) {
+                    touched = true;
+                    break;
+                }
+            }
+            if (!touched) return .{};
+            const new_prog = allocator.create(ast.Program) catch unreachable;
+            new_prog.* = .{
+                .items = new_items.toOwnedSlice(allocator) catch unreachable,
+                .module_annotations = program.module_annotations,
+                .main_module_name = program.main_module_name,
+                .allocator = program.allocator,
+                .type_registry = program.type_registry,
+            };
+            return .{ .whole_program = new_prog };
+        }
+    }
+
+    for (synthed.items) |si| {
+        new_items.append(allocator, si) catch unreachable;
+    }
+
+    const new_prog = allocator.create(ast.Program) catch unreachable;
+    new_prog.* = .{
+        .items = new_items.toOwnedSlice(allocator) catch unreachable,
+        .module_annotations = program.module_annotations,
+        .main_module_name = program.main_module_name,
+        .allocator = program.allocator,
+        .type_registry = program.type_registry,
+    };
+    return .{ .whole_program = new_prog };
 }
 
 // ============================================================================
