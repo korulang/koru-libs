@@ -1555,8 +1555,130 @@ const VaxisEvent = union(enum) {
             const ftext = if (ci < fields.len) std.mem.trim(u8, fields[ci], " ") else "";
             if (ftext.len > 0) paintCell(arena, win, x +% 1, y, w, cw, ftext, row_style, dispW, takeRunes);
             x +%= cw + 2;
-            if (x >= w) break;
+             if (x >= w) break;
         }
+    }
+}
+
+// Charm-class filepicker — a directory browser (COMPONENT filepicker). Matches
+// bubbles/filepicker's job: a current-path header over a listing of entries, a
+// ">" cursor (Charm pink #EE6FF8) on the selected row, DIRECTORIES in Charm
+// purple #5A56E0 (bubbles Directory style, lipgloss "99"), files in a soft
+// contrast. The selected row wins: bold pink cursor + name (bubbles Cursor +
+// Selected). Directories carry a trailing "/" (ls -F taste) so kind reads even
+// where color is unavailable. Page-aligned scroll keeps the cursor visible
+// (same stateless shape as list/table — bubbles' offset viewport needs
+// widget-owned scroll state the prop rail can't hold yet; floated, not routed
+// around).
+//
+// Payload (the list/table string path — real typed []DirEntry is the deferred
+// hole):
+//   path    — current directory label, painted muted+bold in the header
+//   entries — one entry per line, "<kind>\t<name>" (bubbles ReadDir output):
+//             kind D = directory, F = file (tab-separated; missing tab = file)
+//   selected — cursor index; lives in the HOST store and arrives as a prop.
+// Host keys (j/k move, g/G ends, l/enter open, h back) mutate the store — the
+// widget OWNS the paint, NOT the `! key` pipeline. For navigation the host can
+// keep N fixed entry strings and flip an i64 dir index (a valid Bridge — real
+// mutable-string ReadDir is a stretch hole).
+// Markup tag `<filepicker …/>` resolves via builtin wa_qual path.
+~pub event filepicker { win: koru/vaxis:Window, path: string, entries: string, selected: i64 }
+
+~proc filepicker|zig {
+    if (!$mod.is_initialized) return;
+
+    const arena = $mod.text_arena.allocator();
+
+    // Charm filepicker palette — project purple/pink family (bubbles Cursor =
+    // pink "212" ≈ #EE6FF8; Directory = purple "99" ≈ #5A56E0).
+    const cursor_fg: u32 = 0xEE6FF8; // Charm pink   — cursor + selected row
+    const dir_fg:    u32 = 0x5A56E0; // Charm purple — directories
+    const file_fg:   u32 = 0xC8C8D0; // soft contrast — files
+    const path_fg:   u32 = 0x808088; // muted        — path header
+
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h < 3) return;
+
+    // Path header (y=0) — muted + bold, marginLeft 2 (bubbles' current dir).
+    if (path.len > 0) {
+        const ptext = std.fmt.allocPrint(arena, "  {s}", .{path}) catch path;
+        const ps: $mod.libvaxis.Cell.Style = .{
+            .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(path_fg)),
+            .bold = true,
+        };
+        const pchild = win.child(.{ .x_off = 0, .y_off = 0, .width = w, .height = 1 });
+        _ = pchild.printSegment(.{ .text = ptext, .style = ps }, .{});
+    }
+
+    // Entries region: y=[2, h).
+    const region_top: u16 = 2;
+    const visible_rows: u16 = if (h > region_top) h - region_top else 1;
+
+    // Trim a trailing newline, split into entry lines (list/table path).
+    var src: []const u8 = entries;
+    while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
+    if (src.len == 0) return;
+    var lines = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+    var it = std.mem.splitScalar(u8, src, '\n');
+    while (it.next()) |l| lines.append(arena, l) catch unreachable;
+    const count: u16 = @intCast(lines.items.len);
+    if (count == 0) return;
+
+    // Clamp selected into [0, count-1].
+    var sel: i64 = selected;
+    if (sel < 0) sel = 0;
+    if (sel > @as(i64, @intCast(count)) - 1) sel = @as(i64, @intCast(count)) - 1;
+    const sel_idx: u16 = @intCast(sel);
+
+    // Page-aligned scroll (selection kept on the visible page — list's shape).
+    const page: u16 = if (count > visible_rows) @divTrunc(sel_idx, visible_rows) else 0;
+    const first: u16 = page * visible_rows;
+
+    var r: u16 = 0;
+    while (r < visible_rows) : (r += 1) {
+        const idx: u16 = first + r;
+        if (idx >= count) break;
+        const row_y: u16 = region_top + r;
+        const is_sel = (idx == sel_idx);
+
+        // Each entry line is "<kind>\t<name>" — kind D = dir, F = file.
+        const raw = lines.items[idx];
+        var is_dir = false;
+        var name: []const u8 = raw;
+        if (std.mem.indexOfScalar(u8, raw, '\t')) |ti| {
+            const kind = raw[0..ti];
+            name = raw[ti + 1 ..];
+            is_dir = (kind.len > 0 and (kind[0] == 'D' or kind[0] == 'd'));
+        }
+
+        // Directories get a trailing "/" (ls -F) so kind reads in monochrome.
+        const shown = if (is_dir)
+            (std.fmt.allocPrint(arena, "{s}/", .{name}) catch name)
+        else
+            name;
+
+        // Cursor "> " on the selected row (bubbles Cursor); "  " otherwise.
+        // The label column stays at x=4 on every row (list-simple's Render).
+        const row_text = if (is_sel)
+            (std.fmt.allocPrint(arena, "  > {s}", .{shown}) catch shown)
+        else
+            (std.fmt.allocPrint(arena, "    {s}", .{shown}) catch shown);
+
+        // Selected wins pink+bold; else purple dir / soft file.
+        const fg: u32 = if (is_sel) cursor_fg else (if (is_dir) dir_fg else file_fg);
+        const row_style: $mod.libvaxis.Cell.Style = .{
+            .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(fg)),
+            .bold = is_sel,
+        };
+        const row_owned = arena.dupe(u8, row_text) catch row_text;
+        const rchild = win.child(.{
+            .x_off = 0,
+            .y_off = row_y,
+            .width = w,
+            .height = 1,
+        });
+        _ = rchild.printSegment(.{ .text = row_owned, .style = row_style }, .{});
     }
 }
 
@@ -2289,8 +2411,9 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list/viewport/paginator/help/table/textarea
-    // tags resolve to koru/vaxis events (not consumer-module components). wa_qual path.
+    // Builtin meter/spinner/textinput/list/viewport/paginator/help/table/textarea/
+    // timer/stopwatch/filepicker tags resolve to koru/vaxis events (not consumer-
+    // module components). wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
@@ -2304,6 +2427,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "textarea")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "timer")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "stopwatch")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "filepicker")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;

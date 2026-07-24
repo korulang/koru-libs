@@ -15,7 +15,7 @@ advances. Thin boundary-only demos do not enter Replays.
 
 | Charm | Status |
 |-------|--------|
-| **filepicker** | Next — timer/stopwatch Bridge cleared. |
+| — | filepicker Bridge cleared (replay 14 hy3); queue exhausted — retune generator or replay for depth. |
 
 ### Port queue (do not skip)
 
@@ -29,7 +29,7 @@ advances. Thin boundary-only demos do not enter Replays.
 8. table ← **cataloged** (Bridge, 2026-07-24, replay 11 hy3)
 9. textarea ← **cataloged** (Bridge, 2026-07-24, replay 12 hy3)
 10. timer / stopwatch ← **cataloged** (Bridge, 2026-07-24, replay 13 hy3)
-11. filepicker ← **active**
+11. filepicker ← **cataloged** (Bridge, 2026-07-24, replay 14 hy3)
 
 ## Seed — pre-challenge substrate (not scored replays)
 
@@ -68,6 +68,8 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | `examples/component_timer.k` · eyes: `koru-examples/gallery` | `timer` | Charm bubbles/timer — countdown. Paints remaining as Go `Duration.String()` taste (`1m2s` / `500ms` / `0s`); purple `#5A56E0` while running, dim when paused, timed-out `0s` bold pink `#EE6FF8`. Host store owns `remaining_ms` + `running` (0/1); decrements on `! tick` wall delta. Public: `koru/vaxis:timer { win, remaining_ms, running }`. Gallery hole floated: a bare `! tick` installs alone and drops later when-ticks — clocks must share the host tick store with `ms`. | Bridge |
 | `examples/component_stopwatch.k` · eyes: `koru-examples/gallery` | `stopwatch` | Charm bubbles/stopwatch — count-up. Elapsed `Duration.String()` taste; purple running / dim paused. Host owns `elapsed_ms` + `running`; increments on `! tick` wall delta; `r` resets. Public: `koru/vaxis:stopwatch { win, elapsed_ms, running }`. | Bridge |
 
+| `examples/component_filepicker.k` · eyes: `koru-examples/gallery` | `filepicker` | Charm bubbles/filepicker — a directory browser: a muted+bold current-path header over an entry listing, a `> ` cursor on the selected row in Charm pink `#EE6FF8` + bold, DIRECTORIES in Charm purple `#5A56E0` (bubbles Directory, lipgloss "99") with a trailing `/` (ls -F), files in soft contrast; the selected row wins the pink+bold cursor style (bubbles Cursor + Selected). Page-aligned scroll keeps the cursor visible (list/table's stateless shape). Host store owns only the cursor index + a `dir` index; **koru `if(fp.dir == …)` in `! draw` swaps between two fixed entry listings** (root ⇄ documents) so `l`/enter descends a directory row and `h` (+ `..`) climbs back — the sanctioned N-fixed-strings Bridge, no mutable-string store. Paint always flows through the same `<filepicker path entries selected/>` tag; j/k move, g/G ends — widget OWNS paint, NOT the `! key` pipeline. Entries are the list/table newline `string` payload, kind encoded `"<D\|F>\t<name>"` per line. Public: `koru/vaxis:filepicker { win, path, entries: string, selected: i64 }` (palette hardcoded to Bubbles defaults; same pattern as progress-bar). Holes: real ReadDir over a mutable-string store (live filesystem) is the stretch hole — this Bridge switches fixed listings; per-directory cursor memory deferred (cursor resets to the descended-from row, stays valid); permissions/size columns deferred (stretch holes per brief). | Bridge |
+
 ### Evaporated (taste-gate)
 
 | Replay | Tag | Why |
@@ -90,3 +92,4 @@ clone them. Most are layout/composition demos — useful ground, not Charm polis
 | 11 · 2026-07-24 (hy3) | Bridge | `table` columns + header + pink selected row + `…` cell truncation + page-aligned scroll — walls floated: widget-owned scroll state (bubbles' smooth offset) inexpressible on the stateless prop rail; typed `[]Column`/`[]Row` payload deferred |
 | 12 · 2026-07-24 (hy3) | Bridge | `textarea` multi-line input — `┃ ` gutter + placeholder + blink cursor + bottom-anchored follow + hard-clip/cursor-line scroll — hit no new wall (Enter rides `append-char(s, k.ch)` as raw ch 13; widget treats `\r`/`\n` as breaks) |
 | 13 · 2026-07-24 (hy3) | Bridge | `timer` + `stopwatch` — countdown/count-up Duration paint + tick-driven host state — see Replays |
+| 14 · 2026-07-24 (hy3) | Bridge | `filepicker` directory browser — path header + `> ` pink cursor + purple dirs + page-aligned scroll; `if(fp.dir==…)` in `! draw` swaps two fixed listings for l/enter descend + h climb — hit no new wall (the N-fixed-strings navigation Bridge the brief sanctions; live ReadDir is the stretch hole) |
