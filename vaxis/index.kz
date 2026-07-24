@@ -1984,6 +1984,222 @@ const VaxisEvent = union(enum) {
 }
 
 // ============================================================================
+// DEFAULT — attach-only: fuse more `!` arms into a named `run` pump
+// ============================================================================
+//
+//   koru/vaxis:run(title: "demo")     // owns the TTY loop (the pump)
+//   ! draw w |> …
+//   | err e |> …
+//
+//   koru/vaxis(demo)                  // ≡ koru/vaxis:default(demo)
+//   ! key k when k.ch == 'q' |> quit()
+//
+// Sugar only: attach sites contribute effect branches spliced onto the
+// matching `run` (join key = run's title, quotes stripped). No second loop,
+// no terminals on the proxy, no scope change — same `__H` fan-in.
+// Pump identity is a program-global bare name (same altitude as std/store
+// names today — NOT module-scoped; qualify later if composition needs it).
+//
+// Exactly one `run` per name; attach without a run fails loud; `|` on an
+// attach site fails loud.
+
+~[keyword|comptime|transform|pre]pub event default {
+    expr: Expression,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~[transform]proc default|zig {
+    const ast = @import("ast");
+    const ast_functional = @import("ast_functional");
+    // `expr` is the attach pump name (also on invocation.args); walk uses
+    // invocation + program only.
+    _ = &invocation;
+    _ = &item;
+
+    const normalize = struct {
+        fn call(raw: []const u8) []const u8 {
+            if (raw.len >= 2 and raw[0] == '"' and raw[raw.len - 1] == '"') return raw[1 .. raw.len - 1];
+            return raw;
+        }
+    }.call;
+
+    const isVaxisRun = struct {
+        fn call(inv: *const ast.Invocation) bool {
+            if (inv.path.segments.len == 0) return false;
+            if (!std.mem.eql(u8, inv.path.segments[inv.path.segments.len - 1], "run")) return false;
+            const mq = inv.path.module_qualifier orelse return false;
+            return std.mem.eql(u8, mq, "koru.vaxis") or std.mem.eql(u8, mq, "koru/vaxis");
+        }
+    }.call;
+
+    const isVaxisAttach = struct {
+        fn call(inv: *const ast.Invocation) bool {
+            if (inv.path.segments.len == 0) return false;
+            if (!std.mem.eql(u8, inv.path.segments[inv.path.segments.len - 1], "default")) return false;
+            const mq = inv.path.module_qualifier orelse return false;
+            return std.mem.eql(u8, mq, "koru.vaxis") or std.mem.eql(u8, mq, "koru/vaxis");
+        }
+    }.call;
+
+    const pumpNameOfRun = struct {
+        fn call(inv: *const ast.Invocation) ?[]const u8 {
+            for (inv.args) |a| {
+                if (std.mem.eql(u8, a.name, "title")) return normalize(a.value);
+            }
+            if (inv.args.len > 0) return normalize(inv.args[0].value);
+            return null;
+        }
+    }.call;
+
+    const pumpNameOfAttach = struct {
+        fn call(inv: *const ast.Invocation) ?[]const u8 {
+            if (inv.args.len == 0) return null;
+            for (inv.args) |a| {
+                if (std.mem.eql(u8, a.name, "expr")) return normalize(a.value);
+            }
+            return normalize(inv.args[0].value);
+        }
+    }.call;
+
+    const AttachSite = struct { idx: usize, name: []const u8, flow: *const ast.Flow };
+    var attaches = std.ArrayList(AttachSite).initCapacity(allocator, 4) catch unreachable;
+    var runs = std.ArrayList(struct { idx: usize, name: []const u8, flow: *const ast.Flow }).initCapacity(allocator, 2) catch unreachable;
+
+    for (program.items, 0..) |*pi, i| {
+        if (pi.* != .flow) continue;
+        const inv = pi.flow.inv();
+        if (isVaxisAttach(inv)) {
+            const n = pumpNameOfAttach(inv) orelse {
+                const msg = std.fmt.allocPrint(allocator, "comptime {{ @compileError(\"koru/vaxis(name): attach needs a pump name\"); }}", .{}) catch unreachable;
+                return .{ .transformed = .{ .replacement = ast.Item{ .inline_code = ast.InlineCode{ .code = msg, .location = pi.flow.location, .module = pi.flow.module } } } };
+            };
+            attaches.append(allocator, .{ .idx = i, .name = n, .flow = &pi.flow }) catch unreachable;
+        } else if (isVaxisRun(inv)) {
+            const n = pumpNameOfRun(inv) orelse continue;
+            runs.append(allocator, .{ .idx = i, .name = n, .flow = &pi.flow }) catch unreachable;
+        }
+    }
+
+    // Keyword transform Output is `union { transformed: SiteResult }` — empty
+    // no-op is `.transformed = .{}` (not bare `.{}` like non-keyword component).
+    if (attaches.items.len == 0) return .{ .transformed = .{} };
+
+    for (attaches.items) |att| {
+        for (att.flow.body.continuations) |*c| {
+            if (c.kind != .effect) {
+                const inner = std.fmt.allocPrint(allocator, "koru/vaxis({s}): attach is effect-only — no `|` terminals (those stay on koru/vaxis:run). Hang `! draw` / `! key` / `! tick` here; they fuse into the named pump.", .{att.name}) catch unreachable;
+                const msg = std.fmt.allocPrint(allocator, "comptime {{ @compileError(\"{s}\"); }}", .{inner}) catch unreachable;
+                return .{ .transformed = .{ .replacement = ast.Item{ .inline_code = ast.InlineCode{ .code = msg, .location = att.flow.location, .module = att.flow.module } } } };
+            }
+        }
+
+        var run_count: usize = 0;
+        for (runs.items) |r| {
+            if (std.mem.eql(u8, r.name, att.name)) run_count += 1;
+        }
+        if (run_count == 0) {
+            const inner = std.fmt.allocPrint(allocator, "koru/vaxis({s}): no koru/vaxis:run(title: '{s}') to attach to — name the pump on run, then attach", .{ att.name, att.name }) catch unreachable;
+            const msg = std.fmt.allocPrint(allocator, "comptime {{ @compileError(\"{s}\"); }}", .{inner}) catch unreachable;
+            return .{ .transformed = .{ .replacement = ast.Item{ .inline_code = ast.InlineCode{ .code = msg, .location = att.flow.location, .module = att.flow.module } } } };
+        }
+        if (run_count > 1) {
+            const inner = std.fmt.allocPrint(allocator, "koru/vaxis({s}): multiple koru/vaxis:run sites claim pump '{s}' — exactly one run owns the TTY loop", .{ att.name, att.name }) catch unreachable;
+            const msg = std.fmt.allocPrint(allocator, "comptime {{ @compileError(\"{s}\"); }}", .{inner}) catch unreachable;
+            return .{ .transformed = .{ .replacement = ast.Item{ .inline_code = ast.InlineCode{ .code = msg, .location = att.flow.location, .module = att.flow.module } } } };
+        }
+    }
+
+    var fused_run_conts = std.StringHashMap([]ast.Continuation).init(allocator);
+    defer fused_run_conts.deinit();
+
+    for (runs.items) |r| {
+        var has_attach = false;
+        for (attaches.items) |att| {
+            if (std.mem.eql(u8, att.name, r.name)) {
+                has_attach = true;
+                break;
+            }
+        }
+        if (!has_attach) continue;
+
+        var effects = std.ArrayList(ast.Continuation).initCapacity(allocator, r.flow.body.continuations.len + 4) catch unreachable;
+        var terminals = std.ArrayList(ast.Continuation).initCapacity(allocator, 2) catch unreachable;
+
+        for (r.flow.body.continuations) |*c| {
+            const cloned = ast_functional.cloneContinuation(allocator, c) catch unreachable;
+            if (c.kind == .effect) {
+                effects.append(allocator, cloned) catch unreachable;
+            } else {
+                terminals.append(allocator, cloned) catch unreachable;
+            }
+        }
+        for (attaches.items) |att| {
+            if (!std.mem.eql(u8, att.name, r.name)) continue;
+            for (att.flow.body.continuations) |*c| {
+                const cloned = ast_functional.cloneContinuation(allocator, c) catch unreachable;
+                effects.append(allocator, cloned) catch unreachable;
+            }
+        }
+        effects.appendSlice(allocator, terminals.items) catch unreachable;
+        fused_run_conts.put(r.name, effects.toOwnedSlice(allocator) catch unreachable) catch unreachable;
+    }
+
+    var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len) catch unreachable;
+    for (program.items, 0..) |pi, i| {
+        var replaced = false;
+        for (attaches.items) |att| {
+            if (att.idx == i) {
+                const consumed = std.fmt.allocPrint(allocator, "// koru/vaxis: attach '{s}' fused into run", .{att.name}) catch unreachable;
+                new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
+                    .content = consumed,
+                    .location = pi.flow.location,
+                    .module = allocator.dupe(u8, pi.flow.module) catch unreachable,
+                } }) catch unreachable;
+                replaced = true;
+                break;
+            }
+        }
+        if (replaced) continue;
+
+        for (runs.items) |r| {
+            if (r.idx != i) continue;
+            const fused = fused_run_conts.get(r.name) orelse break;
+            const inv_clone = ast_functional.cloneInvocation(allocator, pi.flow.inv()) catch unreachable;
+            new_items.append(allocator, ast.Item{ .flow = ast.Flow{
+                .body = ast.rootSite(inv_clone, fused, pi.flow.location),
+                .pre_label = pi.flow.pre_label,
+                .impl_of = pi.flow.impl_of,
+                .super_shape = pi.flow.super_shape,
+                .inline_body = pi.flow.inline_body,
+                .preamble_code = pi.flow.preamble_code,
+                .is_pure = pi.flow.is_pure,
+                .is_transitively_pure = pi.flow.is_transitively_pure,
+                .location = pi.flow.location,
+                .module = allocator.dupe(u8, pi.flow.module) catch unreachable,
+            } }) catch unreachable;
+            replaced = true;
+            break;
+        }
+        if (replaced) continue;
+
+        new_items.append(allocator, pi) catch unreachable;
+    }
+
+    const new_prog = allocator.create(ast.Program) catch unreachable;
+    new_prog.* = .{
+        .items = new_items.toOwnedSlice(allocator) catch unreachable,
+        .module_annotations = program.module_annotations,
+        .main_module_name = program.main_module_name,
+        .allocator = program.allocator,
+        .type_registry = program.type_registry,
+    };
+    return .{ .transformed = .{ .whole_program = new_prog } };
+}
+
+// ============================================================================
 // COMPONENT — a named, reusable view that SYNTHESIZES a koru event.
 // ============================================================================
 //
