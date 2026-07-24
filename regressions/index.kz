@@ -38,7 +38,7 @@ const std = @import("std");
     "description": "Run the declared regression suite and print a pass/fail board"
 }
 
-~[comptime|command]pub event test {
+~[comptime|command]pub tor test {
     program: *const Program,
     allocator: __koru_std.mem.Allocator,
     argv: []const []const u8,
@@ -183,7 +183,7 @@ const std = @import("std");
 // stuff" today = one case; the seam is what a future graph-runner plugs into.
 // ============================================================================
 
-~[comptime|abstract] pub event run {
+~[comptime|abstract] pub tor run {
     dir: []const u8,
     base: []const u8,
     allocator: __koru_std.mem.Allocator,
@@ -201,7 +201,7 @@ const std = @import("std");
 // The actual subprocess executor (leaf zig work), behind the flow above.
 // Reads the test file's own `//~` directives (the test is self-describing),
 // then drives koruc and scores against them.
-~[comptime] event run-exec {
+~[comptime] tor run-exec {
     dir: []const u8,
     base: []const u8,
     allocator: __koru_std.mem.Allocator,
@@ -376,7 +376,7 @@ const std = @import("std");
 
 // The `case` marker: a declared test case, collected from the AST by `test`.
 // `expr` = the human label; `source` = a JSON object block. Void at runtime.
-~[comptime|norun]pub event case { expr: Expression, source: Source }
+~[comptime|norun]pub tor case { expr: Expression, source: Source }
 
 ~proc case|zig {
     // Void — collected during AST walking by the `test` command.

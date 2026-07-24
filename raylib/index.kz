@@ -80,7 +80,7 @@ pub const Frame = struct {
 // window limp on.
 // ============================================================================
 
-~pub event window.open { width: i32, height: i32, title: string }
+~pub tor window.open { width: i32, height: i32, title: string }
 | win *Window<opened!>
 | err string
 
@@ -96,7 +96,7 @@ pub const Frame = struct {
 
 // Hidden variant — same lifecycle, window never shown. This is what tests use:
 // the full init/draw/close path runs without flashing a window.
-~pub event window.open.hidden { width: i32, height: i32, title: string }
+~pub tor window.open.hidden { width: i32, height: i32, title: string }
 | win *Window<opened!>
 | err string
 
@@ -121,13 +121,13 @@ pub const Frame = struct {
 // transition-chaining aspiration, koru 330_071: chaining must not route
 // through non-void transitions, or this guarantee dies — record kept with
 // the queued koru batch.)
-~pub event window.activate { win: *Window<!opened> } -> *Window<active!>
+~pub tor window.activate { win: *Window<!opened> } -> *Window<active!>
 
 ~proc window.activate|zig {
     return win;
 }
 
-~pub event window.close { win: *Window<!active> }
+~pub tor window.close { win: *Window<!active> }
 
 ~proc window.close|zig {
     c.CloseWindow();
@@ -147,7 +147,7 @@ pub const Frame = struct {
 // asks the window to close, whichever comes first (bounded so tests halt).
 // ============================================================================
 
-~pub event frames { win: *Window<!opened|!active>, count: i32 }
+~pub tor frames { win: *Window<!opened|!active>, count: i32 }
 ! frame *Frame<frame!>
 | done *Window<active!>
 
@@ -169,7 +169,7 @@ pub const Frame = struct {
 // No-op consumer of the per-frame borrow. The compiler auto-inserts this to
 // release `<frame!>` at each frame-body boundary; the user never calls it.
 // (Mirror of sqlite3's release.row.)
-~pub event release.frame { f: *Frame<!frame> }
+~pub tor release.frame { f: *Frame<!frame> }
 ~proc release.frame|zig { _ = &f; }
 
 // ============================================================================
@@ -182,7 +182,7 @@ pub const Frame = struct {
 
 pub const Color = c.Color;
 
-~pub event color { r: u8, g: u8, b: u8 } -> Color
+~pub tor color { r: u8, g: u8, b: u8 } -> Color
 
 ~proc color|zig {
     return $mod.Color{ .r = r, .g = g, .b = b, .a = 255 };
@@ -218,7 +218,7 @@ fn mintTexture(t: c.Texture2D) *Texture {
 
 // Solid-color texture, generated on the GPU — no file dependency, the
 // deterministic path tests use.
-~pub event texture.gen.color { win: *Window<opened|active>, width: i32, height: i32, col: Color }
+~pub tor texture.gen.color { win: *Window<opened|active>, width: i32, height: i32, col: Color }
 | tex *Texture<loaded!>
 | err string
 
@@ -234,7 +234,7 @@ fn mintTexture(t: c.Texture2D) *Texture {
 }
 
 // Texture from an image file (png, bmp, ...).
-~pub event texture.load { win: *Window<opened|active>, path: string }
+~pub tor texture.load { win: *Window<opened|active>, path: string }
 | tex *Texture<loaded!>
 | err string
 
@@ -247,7 +247,7 @@ fn mintTexture(t: c.Texture2D) *Texture {
     return .{ .tex = $mod.mintTexture(t) };
 }
 
-~pub event texture.unload { tex: *Texture<!loaded> }
+~pub tor texture.unload { tex: *Texture<!loaded> }
 
 ~proc texture.unload|zig {
     c.UnloadTexture(tex.tex);
@@ -259,28 +259,28 @@ fn mintTexture(t: c.Texture2D) *Texture {
 // inside a `! frame` body.
 // ============================================================================
 
-~pub event draw.rect { f: *Frame<frame>, x: i32, y: i32, w: i32, h: i32, col: Color }
+~pub tor draw.rect { f: *Frame<frame>, x: i32, y: i32, w: i32, h: i32, col: Color }
 
 ~proc draw.rect|zig {
     _ = &f;
     c.DrawRectangle(x, y, w, h, col);
 }
 
-~pub event draw.texture { f: *Frame<frame>, tex: *Texture<loaded>, x: i32, y: i32, tint: Color }
+~pub tor draw.texture { f: *Frame<frame>, tex: *Texture<loaded>, x: i32, y: i32, tint: Color }
 
 ~proc draw.texture|zig {
     _ = &f;
     c.DrawTexture(tex.tex, x, y, tint);
 }
 
-~pub event draw.clear { f: *Frame<frame>, col: Color }
+~pub tor draw.clear { f: *Frame<frame>, col: Color }
 
 ~proc draw.clear|zig {
     _ = &f;
     c.ClearBackground(col);
 }
 
-~pub event draw.text { f: *Frame<frame>, text: string, x: i32, y: i32, size: i32, col: Color }
+~pub tor draw.text { f: *Frame<frame>, text: string, x: i32, y: i32, size: i32, col: Color }
 
 ~proc draw.text|zig {
     _ = &f;

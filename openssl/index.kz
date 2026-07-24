@@ -106,7 +106,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // SSL_get_verify_result check. Any failure returns `err` loudly — it never
 // hands back an unverified connection.
 
-~pub event connect { host: []const u8, port: u16, allocator: ?std.mem.Allocator }
+~pub tor connect { host: []const u8, port: u16, allocator: ?std.mem.Allocator }
 | ok *Tls<open!>
 | err Error
 
@@ -200,7 +200,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // identical, so the ONLY signal of danger is at the call site — which is the
 // point.
 
-~pub event connect.insecure { host: []const u8, port: u16, allocator: ?std.mem.Allocator }
+~pub tor connect.insecure { host: []const u8, port: u16, allocator: ?std.mem.Allocator }
 | ok *Tls<open!>
 | err Error
 
@@ -252,7 +252,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // write — requires `open`, so it cannot run before connect or after shutdown.
 // ============================================================================
 
-~pub event write { conn: *Tls<!open>, data: []const u8 }
+~pub tor write { conn: *Tls<!open>, data: []const u8 }
 | ok { conn: *Tls<open!>, n: usize }
 | err { conn: *Tls<open!>, code: c_ulong, msg: []const u8 }
 
@@ -273,7 +273,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // ============================================================================
 // `bytes` is a slice INTO the caller's `buf`, so there is nothing extra to free.
 
-~pub event read { conn: *Tls<!open>, buf: []u8 }
+~pub tor read { conn: *Tls<!open>, buf: []u8 }
 | data { conn: *Tls<open!>, bytes: []u8 }
 | eof *Tls<open!>
 | err { conn: *Tls<open!>, code: c_ulong, msg: []const u8 }
@@ -299,7 +299,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // type-check against it. The free obligation rides along as `closing!` — you
 // still MUST call `close`.
 
-~pub event shutdown { conn: *Tls<!open> }
+~pub tor shutdown { conn: *Tls<!open> }
 | ok *Tls<closing!>
 | err { conn: *Tls<closing!>, code: c_ulong, msg: []const u8 }
 
@@ -318,7 +318,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // Accepts EITHER `open` (close without an explicit shutdown) OR `closing`
 // (close after shutdown). Union input is grounded in 330_051's `finalize`.
 
-~pub event close { conn: *Tls<!open|closing> }
+~pub tor close { conn: *Tls<!open|closing> }
 
 ~proc close|zig {
     if (conn.ssl) |s| {

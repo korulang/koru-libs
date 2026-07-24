@@ -78,10 +78,10 @@ package that's never been compiled with real call sites can hide anything):
   Life for the exact commands and output.
 - **Resource safety**: The `running!` obligation on `Container` bites at
   compile time with **no extra flag required** — `stop` and `kill` are both
-  valid discharge events, so Koru's auto-discharge pass refuses to guess
+  valid discharge tors, so Koru's auto-discharge pass refuses to guess
   between them and raises `KORU030` on its own (`docker/tests/forgot_stop.kz`,
   see Proof of Life). This is a *better* result than the sqlite3 exemplar's
-  single-discharge-event case, which needs `--auto-discharge=disable` to make
+  single-discharge-tor case, which needs `--auto-discharge=disable` to make
   the obligation bite (`tests/regression/900_EXAMPLES_SHOWCASE/910_LANGUAGE_SHOOTOUT/2104_21_open_tx_forgot_close`)
   — with two valid ways to close a container, silent auto-discharge was never
   going to be safe, and the compiler agrees.

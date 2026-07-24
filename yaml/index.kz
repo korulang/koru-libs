@@ -95,7 +95,7 @@ pub const Cursor = struct {
 // Open a parser over an in-memory YAML document. The returned Parser carries
 // the `open!` obligation: it MUST reach `begin` (which converts it to a live
 // cursor) or `close`, or the program will not compile.
-~pub event open { input: []const u8, allocator: ?std.mem.Allocator }
+~pub tor open { input: []const u8, allocator: ?std.mem.Allocator }
 | ok *Parser<open!>
 | err []const u8
 
@@ -126,7 +126,7 @@ pub const Cursor = struct {
 
 // Close an open parser, discharging the `open!` obligation. Used on the `eof`
 // and `err` branches of `begin` / `advance`, where there is no live event.
-~pub event close { parser: *Parser<!open> }
+~pub tor close { parser: *Parser<!open> }
 
 ~proc close|zig {
     c.yaml_parser_delete(&parser.raw);
@@ -136,7 +136,7 @@ pub const Cursor = struct {
 
 // The text of the last parse error on a parser. BORROWS the parser (`<open>`)
 // so you can read the message and then still `close` it — no threading.
-~pub event error-text { parser: *Parser<open> } -> []const u8
+~pub tor error-text { parser: *Parser<open> } -> []const u8
 
 ~proc error-text|zig {
     return parser.last_error;
@@ -150,7 +150,7 @@ pub const Cursor = struct {
 // `open!` and mints a `live!` cursor. On an empty stream returns the parser
 // (still open) via `eof`; on a parse error, sets `parser.last_error` and
 // returns the parser (still open) via `err` so you can inspect and close it.
-~pub event begin { parser: *Parser<!open> }
+~pub tor begin { parser: *Parser<!open> }
 | at *Cursor<live!>
 | eof *Parser<open!>
 | err *Parser<open!>
@@ -181,7 +181,7 @@ pub const Cursor = struct {
 // obligation. On stream end deletes the final event, frees the cursor wrapper,
 // and returns the parser (still open) via `eof`. On error likewise returns the
 // open parser via `err` with `parser.last_error` set.
-~pub event advance { cur: *Cursor<!live> }
+~pub tor advance { cur: *Cursor<!live> }
 | at *Cursor<live!>
 | eof *Parser<open!>
 | err *Parser<open!>
@@ -207,7 +207,7 @@ pub const Cursor = struct {
 
 // Delete the current event and close the parser in one move — the full-cleanup
 // discharge of a live cursor. Use this to stop walking early.
-~pub event finish { cur: *Cursor<!live> }
+~pub tor finish { cur: *Cursor<!live> }
 
 ~proc finish|zig {
     const parser = cur.parser;
@@ -224,7 +224,7 @@ pub const Cursor = struct {
 // ============================================================================
 
 // The human-readable kind of the current event, as a stable static string.
-~pub event kind { cur: *Cursor<live> } -> []const u8
+~pub tor kind { cur: *Cursor<live> } -> []const u8
 
 ~proc kind|zig {
     const t = cur.event.type;
@@ -247,7 +247,7 @@ pub const Cursor = struct {
 // non-scalar event takes the `other` branch with no value. The returned slice
 // borrows the event's internal buffer and is valid only until the next
 // `advance` / `finish` — read it before advancing (the cursor stays live).
-~pub event scalar { cur: *Cursor<live> }
+~pub tor scalar { cur: *Cursor<live> }
 | value []const u8
 | other
 

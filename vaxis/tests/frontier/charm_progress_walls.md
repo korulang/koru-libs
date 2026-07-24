@@ -17,7 +17,7 @@ Pin `800_003` remains (unknown fields → Stage D) — separate analysis hole.
 ## Wall 3 — fill math inside component boundary — FIXED
 
 `koru/vaxis:progress-bar` owns proportional fill + half-block blend + `%`.
-Markup tag `<progress-bar …/>` resolves to that event (builtin `wa_qual` path).
+Markup tag `<progress-bar …/>` resolves to that tor (builtin `wa_qual` path).
 Reusable widget:
 
 ```

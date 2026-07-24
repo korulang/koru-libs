@@ -17,7 +17,7 @@ pub const Request = struct {
     headers: []const koru/curl:Header,
 };
 
-~pub event mk { }
+~pub tor mk { }
 | ok Request
 ~proc mk|zig {
     const hs = &[_]koru/curl:Header{ .{ .name = "Content-Type", .value = "application/json" } };

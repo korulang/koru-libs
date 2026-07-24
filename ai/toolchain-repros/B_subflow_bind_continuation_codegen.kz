@@ -9,12 +9,12 @@
 ~import std/io
 const std = @import("std");
 
-~pub event parse { resp: *koru/curl:Response<koru/curl:open> }
+~pub tor parse { resp: *koru/curl:Response<koru/curl:open> }
 | ok i32
 | err koru/curl:Error
 ~proc parse|zig { return .{ .ok = resp.status }; }
 
-~pub event fetch { u: []const u8 }
+~pub tor fetch { u: []const u8 }
 | ok i32
 | err koru/curl:Error
 ~fetch = koru/curl:get(url: u)

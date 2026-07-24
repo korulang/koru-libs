@@ -51,7 +51,7 @@
     "description": "Build Docker images from inline Dockerfile declarations"
 }
 
-~[comptime|command]pub event docker {
+~[comptime|command]pub tor docker {
     program: *const Program,
     allocator: __koru_std.mem.Allocator,
     argv: []const []const u8,
@@ -238,7 +238,7 @@ pub const Container = struct {
 //       COPY . .
 //       CMD ["node", "index.js"]
 //   }
-~[comptime|norun]pub event image { tag: []const u8, source: Source }
+~[comptime|norun]pub tor image { tag: []const u8, source: Source }
 
 ~proc image|zig {
     // Void event - collected during AST walking by docker command
@@ -248,7 +248,7 @@ pub const Container = struct {
 // Build Operations
 // ============================================================================
 
-~pub event build { tag: []const u8, context: []const u8 }
+~pub tor build { tag: []const u8, context: []const u8 }
 | built Image
 | failed { code: i32, msg: []const u8 }
 
@@ -276,7 +276,7 @@ pub const Container = struct {
 // ============================================================================
 
 // Run a container - creates <running!> obligation that must be discharged
-~pub event run { image: []const u8, name: ?[]const u8 }
+~pub tor run { image: []const u8, name: ?[]const u8 }
 | started Container<running!>
 | failed { code: i32, msg: []const u8 }
 
@@ -323,7 +323,7 @@ pub const Container = struct {
 }
 
 // Stop a container - discharges <running!> obligation
-~pub event stop { container: Container<!running> }
+~pub tor stop { container: Container<!running> }
 | stopped
 | failed { code: i32, msg: []const u8 }
 
@@ -347,7 +347,7 @@ pub const Container = struct {
 }
 
 // Kill a container (forceful) - also discharges <running!> obligation
-~pub event kill { container: Container<!running> }
+~pub tor kill { container: Container<!running> }
 | killed
 | failed { code: i32, msg: []const u8 }
 
@@ -374,7 +374,7 @@ pub const Container = struct {
 // Registry Operations
 // ============================================================================
 
-~pub event push { image: []const u8 }
+~pub tor push { image: []const u8 }
 | pushed
 | failed { code: i32, msg: []const u8 }
 
@@ -397,7 +397,7 @@ pub const Container = struct {
     return .{ .pushed = .{} };
 }
 
-~pub event pull { image: []const u8 }
+~pub tor pull { image: []const u8 }
 | pulled
 | failed { code: i32, msg: []const u8 }
 

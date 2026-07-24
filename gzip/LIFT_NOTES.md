@@ -16,7 +16,7 @@ claims were unverified. Two things were true before this pass:
    `MUST_FAIL` test
    (`tests/regression/300_ADVANCED_FEATURES/370_VARIANTS/8211_bare_proc_call_site_fails/`),
    a bare `~proc` compiles fine right up until something actually *calls*
-   the event, at which point KORU110 fires. `--check` on `index.kz` alone
+   the tor, at which point KORU110 fires. `--check` on `index.kz` alone
    never triggered it (no call site inside the file), which is exactly why
    the break was latent: nothing had ever called this package.
 2. There was **no test coverage at all** — the break wouldn't have been
@@ -91,7 +91,7 @@ and `decompress` all allocate their output via the caller's allocator
 (`gzip/index.kz` — `allocator.alloc(u8, max_output)` in `compress|zig` and
 `compress-bytes|zig`; a growable buffer in `decompress|zig`) and return it
 as a bare `[]const u8` in the success branch. There is no `free`/`dispose`
-event in the public API, and the returned slice carries no phantom state —
+tor in the public API, and the returned slice carries no phantom state —
 unlike, say, `sqlite3`'s `*Connection<opened!>` / `*Statement<prepared!>`.
 So there is nothing for the phantom checker to hold onto: a caller can
 compress the same data twice and drop both buffers with zero compiler
@@ -106,7 +106,7 @@ of which library produced it. The language *can* express this kind of
 obligation — `330_068_phantom_obligation_on_primitive_string` shows a
 `[]const u8<tag!>` obligation discharged by a matching `<!tag>` consumer —
 gzip's API just doesn't use that mechanism today. Adding it is a real
-follow-up (a new `free`/`dispose` event plus tagging the three success
+follow-up (a new `free`/`dispose` tor plus tagging the three success
 branches), but it is a new API surface, which this pass's brief scoped out
 ("no new features"). Reporting it honestly per the brief rather than
 inventing a negative test to satisfy gate 3.
@@ -274,7 +274,7 @@ placement:
 1. **The whole worktree predates the `~proc name|zig` host-tag migration
    (KORU110).** Every package here (`curl`, `docker`, `gzip`, `pq`, `sqlite3`,
    `vaxis`) uses bare `~proc name { … }`, which the current compiler rejects:
-   `error[KORU110]: event 'open' is called but its ~proc declaration has no
+   `error[KORU110]: tor 'open' is called but its ~proc declaration has no
    |variant tag`. The exemplar's own gate-2 command (`koruc run
    sqlite3/tests/basic.kz`) does **not** produce `Opened and closed!` against
    this compiler for that reason — it errors on KORU110. I migrated `gzip` (my
@@ -284,7 +284,7 @@ placement:
 2. **"Forgot to discharge" is not caught for the common case — the
    resource-safety pillar is softer than the catalog implies.** The phantom
    checker does *not* reject a top-level flow that mints an obligation and simply
-   never discharges it, *when a discharge event exists*. Minimal repro (built
+   never discharges it, *when a discharge tor exists*. Minimal repro (built
    clean, no error):
 
    ```koru
@@ -295,8 +295,8 @@ placement:
    ~init() | ok s |> std/io:print.ln("forgot finish")   // <open!> dropped — COMPILES
    ```
 
-   It *is* caught only when **no** event anywhere accepts the discharge
-   (`KORU030: … was not discharged. No event accepts <!x>`), or via the
+   It *is* caught only when **no** tor anywhere accepts the discharge
+   (`KORU030: … was not discharged. No tor accepts <!x>`), or via the
    nested-secondary-obligation and loop back-edge paths. This matches the
    red-pin design gaps already in the koru suite
    (`335_040_subflow_drops_obligation_on_input`,

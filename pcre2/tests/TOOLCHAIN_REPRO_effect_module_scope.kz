@@ -34,7 +34,7 @@ pub const c = struct {
 };
 pub const Thing = struct { n: i64 };
 
-~pub event produce {}
+~pub tor produce {}
 ! item *Thing
 | done
 
@@ -48,7 +48,7 @@ pub const Thing = struct { n: i64 };
     return .{ .done = .{} };
 }
 
-~pub event show { t: *Thing }
+~pub tor show { t: *Thing }
 ~proc show|zig {
     std.debug.print("n={d}\n", .{t.n});
 }

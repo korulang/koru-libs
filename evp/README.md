@@ -22,7 +22,7 @@ dance — `EVP_MD_CTX_new` → `EVP_DigestInit_ex` → `EVP_DigestUpdate`\* →
    *consumes* the handle and never re-grants it, so touching it afterward is a
    build error.
 3. **The algorithm is a runtime string.** `EVP_get_digestbyname("sha266")`
-   fails at runtime. Here each algorithm is its own event (`sha256.init`,
+   fails at runtime. Here each algorithm is its own tor (`sha256.init`,
    `sha512.init`, …) — a misspelled digest doesn't parse.
 
 We wrap; we do not reinvent. Delete `libcrypto` and this package computes
@@ -49,7 +49,7 @@ nothing — every byte of hashing is OpenSSL's.
   `tests/algorithms.kz`, and chunked streaming is proven equal to one-shot in
   `tests/chunked.kz`.
 - **Resource safety**: The `hashing` obligation is granted by every `*.init`
-  event (`index.kz` — `sha256.init` etc., result `*Digest<hashing!>`), carried
+  tor (`index.kz` — `sha256.init` etc., result `*Digest<hashing!>`), carried
   across `update` (consumes `<!hashing>`, re-grants `<hashing!>` so it survives a
   loop), and discharged **only** by `final.hex` / `final.bytes`
   (`index.kz` `final.hex|zig` / `final.bytes|zig`), which is where — and the only
@@ -63,7 +63,7 @@ nothing — every byte of hashing is OpenSSL's.
   hashing slice; the package is named `openssl` because that identity is where it
   will grow (HMAC next — it shares the `hashing`-style obligation).
 - **Four algorithms**: SHA-256, SHA-512, SHA-1, MD5. Adding SHA-384/224/SHA-3 is
-  one `.init` event each. (SHA-1/MD5 are included because real code still needs
+  one `.init` tor each. (SHA-1/MD5 are included because real code still needs
   them for legacy checksums, not as a security recommendation.)
 - **No streaming error branch.** `update`/`final` `@panic` if OpenSSL returns
   failure. For built-in digests fed valid buffers this is unreachable; a hardened
@@ -78,7 +78,7 @@ nothing — every byte of hashing is OpenSSL's.
 1. **The brief's verified exemplar no longer compiles (shelf-wide staleness).**
    `koruc run sqlite3/tests/basic.kz` — cited in the brief as producing
    `Opened and closed!` — now fails:
-   `error[KORU110]: event 'open' is called but its ~proc declaration has no
+   `error[KORU110]: tor 'open' is called but its ~proc declaration has no
    |variant tag — bare procs are unresolvable`. The language gained a required
    `~proc name|zig` host tag after the brief and packages were written; the
    entire koru-libs shelf (every `~proc` in sqlite3/curl/gzip/… is bare) is red
@@ -109,7 +109,7 @@ nothing — every byte of hashing is OpenSSL's.
 4. **Praise — the error walls that guided this build.** `PARSE003` (single-field
    payload → "use identity syntax `| ok []const u8`"), `PARSE005` (redundant
    label → "drop the label, write `d` instead of `d: d`"), and especially
-   `KORU030` (names the exact discharge events to call) are textbook
+   `KORU030` (names the exact discharge tors to call) are textbook
    pit-of-success diagnostics. They caught every mistake at the koru level.
 
 ## Proof of life

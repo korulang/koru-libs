@@ -122,7 +122,7 @@ lift ships cleanly around each with the gap stated.
 An effect-branch producer's proc body is emitted at **two sites with different
 scopes**: (1) inlined into the *consumer's* frame, where the wrapper module's
 decls (the `@cImport` alias `c`, and module types like `Match`) are **not** in
-scope; and (2) as the module's own event handler, where they **are**. The
+scope; and (2) as the module's own tor handler, where they **are**. The
 sqlite3 exemplar documents reaching `c` via `const c = @import("root")
 .koru_libs.sqlite3.c;` (index.kz:98) and references its `Statement` type bare
 (index.kz:111). Driven end-to-end that idiom breaks both ways:
@@ -146,10 +146,10 @@ the shadow error; self-contained, no PCRE2).
 (index.kz:145). This is the same aliasing rationale vaxis/pq already use for
 name clashes; here it is *forced*, not chosen.
 
-### Finding 2 — dotted auto-release event name is mis-referenced in codegen
+### Finding 2 — dotted auto-release tor name is mis-referenced in codegen
 
-A borrow minted by `! match *Match<match!>` is discharged by a release event the
-compiler finds **by signature** and auto-inserts. If that event has a **dotted**
+A borrow minted by `! match *Match<match!>` is discharged by a release tor the
+compiler finds **by signature** and auto-inserts. If that tor has a **dotted**
 name (sqlite3's exemplar spells it `release.row`), the declaration registers
 flat as `release_row_event` but the auto-inserted call is emitted as
 `<pkg>.release.row_event.handler` (the dot kept, splitting a namespace that
@@ -159,7 +159,7 @@ transform that is applied correctly everywhere else (`find.all` →
 `find_all_event`, `group.text` → `group_text_event`) is not applied on the
 auto-release reference path.
 
-**Ship-around**: name the release event with a **single non-dotted segment** —
+**Ship-around**: name the release tor with a **single non-dotted segment** —
 `unmatch` (index.kz:187). It is still found by signature (it consumes
 `<!match>`), so the borrow-escape guarantee is fully preserved; only the
 cosmetic `release.x` naming convention is given up.

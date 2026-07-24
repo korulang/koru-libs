@@ -98,9 +98,9 @@ The primary connection lifecycle. We expose two connection styles:
 Connection pooling is out of scope for this library — that lives at a higher
 level. We model a single connection honestly.
 
-#### Future: `koru.pq:config` abstract event
+#### Future: `koru.pq:config` abstract tor
 
-The right pattern for library configuration is an abstract event the library
+The right pattern for library configuration is an abstract tor the library
 consumes, satisfied by user code via assignment:
 
 ```
@@ -256,10 +256,10 @@ validated the core design.
 
 ## Quality Bar
 
-- Every public event has a test
+- Every public tor has a test
 - Every phantom state transition is demonstrated in at least one example
 - The `real_app.kz` example is a complete, working application
-- No example uses a raw libpq call that we have not surfaced as a first-class event
+- No example uses a raw libpq call that we have not surfaced as a first-class tor
 - `koruc deps` installs libpq cleanly on macOS, Ubuntu, Arch, and Alpine
 - **Auto-discharge must emit byte-identical Zig to explicit discharge.** `01_connect_auto.kz`
   and `01_connect.kz` must produce identical `output_emitted.zig`. This is a compiler

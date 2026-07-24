@@ -28,17 +28,17 @@ const Config = struct {
 };
 
 // Inward mutators: |zig procs that write through the borrowed Config pointer.
-~event set.timeout { cfg: *Config<ready>, ms: usize }
+~tor set.timeout { cfg: *Config<ready>, ms: usize }
 ~proc set.timeout|zig {
     cfg.timeout_ms = ms;
 }
 
-~event set.retries { cfg: *Config<ready>, n: usize }
+~tor set.retries { cfg: *Config<ready>, n: usize }
 ~proc set.retries|zig {
     cfg.retries = n;
 }
 
-~pub event fetch { url: []const u8 }
+~pub tor fetch { url: []const u8 }
 ! ?configure *Config<ready>
 | done usize
 

@@ -55,7 +55,7 @@ directly rather than guessing a rename.
 The three examples (`examples/01_simple_get.kz`, `02_post_json.kz`,
 `03_error_handling.kz`) were also written against syntax generations old:
 `=>` branch construction instead of `|>` chaining, `response`/`error` branch
-names that don't match the event's real `ok`/`err` branches, `Header{ .key,
+names that don't match the tor's real `ok`/`err` branches, `Header{ .key,
 .val }` field names that don't match the real `Header{ name, value }`
 struct, positional `std.fmt`-style `print.ln(..., args: [...])` instead of
 the current `{{ expr:fmt }}` interpolation, and a required (non-optional)

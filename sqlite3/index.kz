@@ -40,7 +40,7 @@ pub const Statement = struct {
 // Connection Management
 // ============================================================================
 
-~pub event open { path: []const u8 }
+~pub tor open { path: []const u8 }
 | db *Connection<opened!>
 | err { code: i32, msg: []const u8 }
 
@@ -57,7 +57,7 @@ pub const Statement = struct {
     return .{ .db = conn };
 }
 
-~pub event close { conn: *Connection<!opened> }
+~pub tor close { conn: *Connection<!opened> }
 ~proc close|zig {
     if (conn.handle) |h| {
         _ = c.sqlite3_close(h);
@@ -72,7 +72,7 @@ pub const Statement = struct {
 // `exec` only READS the connection to run SQL — it never closes it — so it
 // BORROWS `<opened>` rather than consuming and re-minting. The caller keeps its
 // live `opened!` obligation across the call and still owes exactly one `close`.
-~pub event exec { conn: *Connection<opened>, sql: []const u8 }
+~pub tor exec { conn: *Connection<opened>, sql: []const u8 }
 | ok
 | err { code: i32, msg: []const u8 }
 
@@ -89,7 +89,7 @@ pub const Statement = struct {
 
 // Literal SQL query - takes a runtime SQL string
 // For compile-time parameterized queries, use ~query { ... } with Source block
-~pub event query.literal { conn: *Connection<!opened>, sql: []const u8 }
+~pub tor query.literal { conn: *Connection<!opened>, sql: []const u8 }
 ! row *Statement<row!>
 | done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
@@ -128,7 +128,7 @@ pub const Statement = struct {
 // release `<row!>` at each row-body boundary; the user never calls it. Its
 // existence is what lets the phantom checker prove the row borrow is scoped —
 // escape it (capture past the row body) and the build fails with KORU030.
-~pub event release.row { stmt: *Statement<!row> }
+~pub tor release.row { stmt: *Statement<!row> }
 ~proc release.row|zig { _ = &stmt; }
 
 // ============================================================================
@@ -145,7 +145,7 @@ pub const Statement = struct {
 // Type hints: :d = int64, :s = text, :f = float64
 // Variables are captured from scope - no need to pass them as parameters
 
-~[comptime|transform]pub event query {
+~[comptime|transform]pub tor query {
     source: Source,
     invocation: *const Invocation,  // The specific invocation being transformed
     item: *const Item,
@@ -155,7 +155,7 @@ pub const Statement = struct {
 
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
-~[norun]pub event query.impl { conn: *Connection<!opened> }
+~[norun]pub tor query.impl { conn: *Connection<!opened> }
 | row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
 | empty *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
@@ -556,7 +556,7 @@ pub const Statement = struct {
 }
 
 // Get next row from statement
-~pub event next { conn: *Connection<!opened>, stmt: *Statement<!prepared> }
+~pub tor next { conn: *Connection<!opened>, stmt: *Statement<!prepared> }
 | row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
 | done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
@@ -579,14 +579,14 @@ pub const Statement = struct {
 
 // Finalize text - acknowledges we're done with borrowed text pointer
 // Must be called BEFORE finalize.stmt (text becomes invalid after stmt finalize)
-~pub event finalize.text { text: []const u8<!text> }
+~pub tor finalize.text { text: []const u8<!text> }
 
 ~proc finalize.text|zig {
     _ = &text;
 }
 
 // Finalize statement - releases the prepared statement
-~pub event finalize.stmt { stmt: *Statement<!prepared> }
+~pub tor finalize.stmt { stmt: *Statement<!prepared> }
 
 ~proc finalize.stmt|zig {
     if (stmt.handle) |h| {
@@ -599,7 +599,7 @@ pub const Statement = struct {
 // Column Access (within row context)
 // ============================================================================
 
-~pub event col.int { stmt: *Statement<row>, index: i32 } -> i64
+~pub tor col.int { stmt: *Statement<row>, index: i32 } -> i64
 ~proc col.int|zig {
     return c.sqlite3_column_int64(stmt.handle, index);
 }
@@ -607,14 +607,14 @@ pub const Statement = struct {
 // NOTE: text is a ROW-SCOPED borrow (valid only within the `! row` body, like
 // std/fs:read-lines' `! line`). Pristine-later: hand back an owned copy so it's
 // safe to capture across rows. For now it matches the stdlib borrow idiom.
-~pub event col.text { stmt: *Statement<row>, index: i32 } -> []const u8
+~pub tor col.text { stmt: *Statement<row>, index: i32 } -> []const u8
 ~proc col.text|zig {
     const ptr = c.sqlite3_column_text(stmt.handle, index);
     const len = c.sqlite3_column_bytes(stmt.handle, index);
     return if (ptr) |p| p[0..@intCast(len)] else "";
 }
 
-~pub event col.real { stmt: *Statement<row>, index: i32 } -> f64
+~pub tor col.real { stmt: *Statement<row>, index: i32 } -> f64
 ~proc col.real|zig {
     return c.sqlite3_column_double(stmt.handle, index);
 }

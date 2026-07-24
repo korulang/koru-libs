@@ -25,13 +25,13 @@ const std = @import("std");
 // This is the SECURITY BOUNDARY. Add events here to expand capabilities.
 // Removing events = removing capabilities. Simple.
 
-~pub event print { text: []const u8 }
+~pub tor print { text: []const u8 }
 
 ~proc print {
     std.debug.print("{s}", .{text});
 }
 
-~pub event println { text: []const u8 }
+~pub tor println { text: []const u8 }
 
 ~proc println {
     std.debug.print("{s}\n", .{text});

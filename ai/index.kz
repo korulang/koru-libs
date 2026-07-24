@@ -71,7 +71,7 @@ pub const Request = struct {
 // Request builders — provider-specific JSON, produced as a `built!` obligation
 // ============================================================================
 
-~pub event request.anthropic {
+~pub tor request.anthropic {
     model: []const u8,
     prompt: []const u8,
     system: ?[]const u8,
@@ -99,7 +99,7 @@ pub const Request = struct {
     return makeRequest(alloc, "https://api.anthropic.com/v1/messages", buf.toOwnedSlice(alloc) catch unreachable);
 }
 
-~pub event request.openai {
+~pub tor request.openai {
     model: []const u8,
     prompt: []const u8,
     system: ?[]const u8,
@@ -130,7 +130,7 @@ pub const Request = struct {
 
 // Discharge the request's `built!` obligation. Frees the JSON body and the
 // Request struct. Omit this call in a flow and the build fails (KORU030).
-~pub event free.request { req: *Request<!built> }
+~pub tor free.request { req: *Request<!built> }
 ~proc free.request|zig {
     req.allocator.free(req.body);
     req.allocator.destroy(req);
@@ -149,7 +149,7 @@ fn makeRequest(alloc: std.mem.Allocator, url: []const u8, body: []const u8) *Req
 // the caller still owes the `koru/curl:close`. They dupe every returned byte
 // out of the response body, so the result survives that close.
 
-~pub event parse.anthropic { resp: *koru/curl:Response<koru/curl:open> }
+~pub tor parse.anthropic { resp: *koru/curl:Response<koru/curl:open> }
 | ok GenerateResult
 | err Error
 
@@ -185,7 +185,7 @@ fn makeRequest(alloc: std.mem.Allocator, url: []const u8, body: []const u8) *Req
     } };
 }
 
-~pub event parse.openai { resp: *koru/curl:Response<koru/curl:open> }
+~pub tor parse.openai { resp: *koru/curl:Response<koru/curl:open> }
 | ok GenerateResult
 | err Error
 

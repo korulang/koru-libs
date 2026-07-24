@@ -34,7 +34,7 @@ pub const Result = struct {
 // Connection Lifecycle
 // ============================================================================
 
-~pub event connect { conninfo: []const u8 }
+~pub tor connect { conninfo: []const u8 }
 | ok *Conn<connected!>
 | err []const u8
 
@@ -55,7 +55,7 @@ pub const Result = struct {
     return .{ .ok = conn };
 }
 
-~pub event disconnect { conn: *Conn<!connected> }
+~pub tor disconnect { conn: *Conn<!connected> }
 
 ~proc disconnect|zig {
     if (conn.handle) |h| {
@@ -70,7 +70,7 @@ pub const Result = struct {
 
 // Fire-and-forget: DDL, INSERT/UPDATE/DELETE where you don't need rows back.
 // Error message is connection-owned — valid until the next operation on conn.
-~pub event exec { conn: *Conn<connected>, sql: []const u8 }
+~pub tor exec { conn: *Conn<connected>, sql: []const u8 }
 | ok
 | err []const u8
 
@@ -86,7 +86,7 @@ pub const Result = struct {
 }
 
 // Query returning rows. Result carries a <result!> obligation — must be cleared.
-~pub event query { conn: *Conn<connected>, sql: []const u8 }
+~pub tor query { conn: *Conn<connected>, sql: []const u8 }
 | rows *Result<result!>
 | empty
 | err []const u8
@@ -108,7 +108,7 @@ pub const Result = struct {
 }
 
 // Number of rows in a result.
-~pub event result.nrows { result: *Result<result> } -> usize
+~pub tor result.nrows { result: *Result<result> } -> usize
 
 ~proc result.nrows|zig {
     const n = c.PQntuples(result.handle);
@@ -117,7 +117,7 @@ pub const Result = struct {
 
 // Get a column value by name. Returns the text representation (libpq's native form).
 // Branches: some = value present, null = SQL NULL, no-such-col = column name not found.
-~pub event result.col { result: *Result<result>, row: usize, col: []const u8 }
+~pub tor result.col { result: *Result<result>, row: usize, col: []const u8 }
 | some []const u8
 | is-null
 | no-such-col
@@ -131,7 +131,7 @@ pub const Result = struct {
 }
 
 // Discharge the result obligation — must be called when done with a result.
-~pub event result.clear { result: *Result<!result> }
+~pub tor result.clear { result: *Result<!result> }
 
 ~proc result.clear|zig {
     if (result.handle) |h| {
@@ -150,7 +150,7 @@ pub const Result = struct {
 //   ~[migrate]koru/pq:sql(conninfo: "...") { ALTER TABLE ... }
 //
 // Future: replace conninfo string with ~koru/pq:config abstract event.
-~[comptime]pub event sql { conninfo: []const u8, source: Source }
+~[comptime]pub tor sql { conninfo: []const u8, source: Source }
 | ok
 | err []const u8
 

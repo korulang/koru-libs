@@ -68,7 +68,7 @@ Levels:
 
 ## API
 
-| Event | Input | Output |
+| Tor | Input | Output |
 |-------|-------|--------|
 | `compress` | `data`, `level?`, `allocator` | `compressed { data, original_size }` or `error []const u8` |
 | `compress-bytes` | `data`, `allocator` | `ok []const u8` or `error []const u8` |

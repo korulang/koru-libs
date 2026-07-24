@@ -51,9 +51,9 @@ The `<running!>` obligation ensures you can't forget to stop the container. The 
 | failed e |> handle_error(e.msg)
 ```
 
-## Events
+## Tors
 
-| Event | Obligation | Description |
+| Tor | Obligation | Description |
 |-------|------------|-------------|
 | `image` | - | Compile-time image declaration |
 | `build` | - | Build image from context |

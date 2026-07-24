@@ -98,7 +98,7 @@ the common case where the binding just falls out of scope.
   obligations (auto-discharge or explicit `disconnect`/`result.clear`,
   index.kz:53-137). The use-after-free above closes the one hole phantom
   typing structurally *couldn't* catch in this pass's scope, because the
-  danger was inside the raw Zig implementation of the phantom-typed event
+  danger was inside the raw Zig implementation of the phantom-typed tor
   itself, not in a caller's misuse of the Koru-level API.
 
 ## What it explicitly doesn't do (yet)
@@ -113,13 +113,13 @@ existing connect/exec/query/comptime-sql surface only, per the brief.
 
 1. **`sqlite3/index.kz`, the exemplar named in the brief, is itself stale.**
    Every `~proc` in it is bare — `koruc --check sqlite3/tests/basic.kz`
-   currently fails with `error[KORU110]: event 'open' is called but its
+   currently fails with `error[KORU110]: tor 'open' is called but its
    ~proc declaration has no |variant tag`. `vaxis/index.kz` is the
    currently-accurate exemplar for proc tagging (`~proc run|zig`, etc). Not
    fixed here — out of this pass's `pq/`-only scope — flagging so it
    doesn't mislead the next contestant who reads the brief's pointer at
    face value.
-2. **`[comptime]` events currently fail past shape-checking.** Confirmed
+2. **`[comptime]` tors currently fail past shape-checking.** Confirmed
    independent of pq: the koru repo's own `MUST_RUN` regression test
    `tests/regression/300_ADVANCED_FEATURES/310_COMPTIME/310_049_invocation_meta/input.kz`
    fails a fresh `koruc run` today with
@@ -127,12 +127,12 @@ existing connect/exec/query/comptime-sql surface only, per the brief.
    (comptime SQL) hits the same feature area from a different angle:
    `koruc --check` passes, but `koruc run`/`build` fails during **backend**
    compilation (Stage B) with `error: missing struct field: invocation` on
-   the `std/io:print.ln` call inside the comptime event's `| ok |>`
+   the `std/io:print.ln` call inside the comptime tor's `| ok |>`
    continuation, plus a separate include-path miss
    (`'libpq-fe.h' file not found`) in the backend's own `@cImport`. Minimal
    repro shape: any `[comptime]pub event` whose continuation calls a plain
    (no-interpolation) `std/io:print.ln`. Pinned as a suspected core-toolchain
-   defect in the `[comptime]` event backend-codegen path — not something
+   defect in the `[comptime]` tor backend-codegen path — not something
    this pass's scope, or a library-side workaround, should paper over.
    `02_sql.kz`'s `--check` gate passes; its full-build gate is honestly red
    and left undone.

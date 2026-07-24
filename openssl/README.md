@@ -24,7 +24,7 @@ shutdown** and compiles those four footguns away:
 1. **Verified by default, uncompilable otherwise.** `connect` *always* verifies
    the peer certificate (`SSL_VERIFY_PEER` + the system CA store) **and** the
    hostname (`SSL_set1_host`). There is no parameter to weaken it. The only way
-   to obtain an unverified channel is to type a different, loudly-named event —
+   to obtain an unverified channel is to type a different, loudly-named tor —
    `connect.insecure`. Skipped verification cannot happen by omission.
 2. **Handshake / shutdown are phantom states.** `connect` completes the full
    handshake before returning an `<open>` connection, so "read before
@@ -34,7 +34,7 @@ shutdown** and compiles those four footguns away:
 3. **The free-chain is one phantom obligation.** `SSL`, `SSL_CTX`, and the
    socket are owned by a single handle carrying an `open!` obligation discharged
    only by `close`. Forget it and the build fails (`KORU030`).
-4. **The error queue is lifted.** Every fallible event drains OpenSSL's error
+4. **The error queue is lifted.** Every fallible tor drains OpenSSL's error
    queue and surfaces the first diagnostic in an honest `| err` branch — never
    silent, never left to poison the next call.
 
@@ -64,7 +64,7 @@ var buf: [8192]u8 = undefined;
 
 ## API reference (v0)
 
-| Event | Consumes → Produces | Purpose |
+| Tor | Consumes → Produces | Purpose |
 |---|---|---|
 | `connect(host, port, allocator?)` | → `ok *Tls<open!>` \| `err Error` | Verified handshake. Only safe constructor. |
 | `connect.insecure(host, port, allocator?)` | → `ok *Tls<open!>` \| `err Error` | **UNSAFE** escape hatch — skips all verification. |

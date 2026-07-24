@@ -7,7 +7,7 @@ const std = @import("std");
     "description": "minimal abstract-override repro"
 }
 
-~[comptime|command] pub event mini {
+~[comptime|command] pub tor mini {
     program: *const Program,
     allocator: __koru_std.mem.Allocator,
     argv: []const []const u8,
@@ -22,7 +22,7 @@ const std = @import("std");
     }
 }
 
-~[comptime|abstract] pub event greet {
+~[comptime|abstract] pub tor greet {
     who: []const u8,
     allocator: __koru_std.mem.Allocator,
 }
@@ -31,7 +31,7 @@ const std = @import("std");
 ~greet = greet-work(who, allocator)
 | ok o => ok o
 
-~[comptime] event greet-work {
+~[comptime] tor greet-work {
     who: []const u8,
     allocator: __koru_std.mem.Allocator,
 }

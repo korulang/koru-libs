@@ -4,7 +4,7 @@ A sandboxed interpreter for Koru scripts with capability-based security.
 
 ## Security Model
 
-Scripts can ONLY call events registered in the interpreter's scope. This is enforced at **compile time** - unregistered events literally don't exist in the binary.
+Scripts can ONLY call tors registered in the interpreter's scope. This is enforced at **compile time** - unregistered tors literally don't exist in the binary.
 
 ```koru
 // This works - println is registered
@@ -36,11 +36,11 @@ cd output && zig build
 cp zig-out/bin/output /usr/local/bin/koru
 ```
 
-## Available Events
+## Available Tors
 
 The default `koru` interpreter provides:
 
-| Event | Description |
+| Tor | Description |
 |-------|-------------|
 | `print` | Print text (no newline) |
 | `println` | Print text with newline |
@@ -108,7 +108,7 @@ The power of Koru's interpreter model is that you can create **bespoke interpret
 }
 ```
 
-The security boundary is the **compilation step itself**. The binary cannot call events that weren't registered.
+The security boundary is the **compilation step itself**. The binary cannot call tors that weren't registered.
 
 ## Use Cases
 
@@ -118,7 +118,7 @@ The security boundary is the **compilation step itself**. The binary cannot call
 - **Edge Computing**: Ship logic to where the data is
 - **Sandboxed Execution**: Run untrusted code safely
 
-## Event Continuations Kill Chatty Interfaces
+## Tor Continuations Kill Chatty Interfaces
 
 Instead of:
 ```
@@ -141,7 +141,7 @@ ONE request, ONE response. The continuation semantics mean the client describes 
 
 ## Budgeted Execution
 
-Events have costs. Execution has limits. Like Ethereum gas, but for your API.
+Tors have costs. Execution has limits. Like Ethereum gas, but for your API.
 
 ### Scope Registration with Costs
 
@@ -178,7 +178,7 @@ Events have costs. Execution has limits. Like Ethereum gas, but for your API.
 
 Resources that need cleanup (files, connections, locks) are tracked via phantom types.
 
-### Obligation Syntax (in Event Signatures)
+### Obligation Syntax (in Tor Signatures)
 
 ```koru
 // Creates obligation - the <allocated!> phantom type
@@ -190,7 +190,7 @@ Resources that need cleanup (files, connections, locks) are tracked via phantom 
 | ok |>
 ```
 
-Obligations are NOT specified in scope registration - they come from the event signatures themselves.
+Obligations are NOT specified in scope registration - they come from the tor signatures themselves.
 
 ### Auto-Discharge
 

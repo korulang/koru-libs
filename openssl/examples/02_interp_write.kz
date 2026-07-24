@@ -16,7 +16,7 @@
 
 var buf: [8192]u8 = undefined;
 
-~event req-path {} -> []const u8
+~tor req-path {} -> []const u8
 ~proc req-path|zig { return "/"; }
 
 ~req-path(): p |> koru/openssl:connect(host: "example.com", port: 443)

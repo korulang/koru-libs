@@ -25,13 +25,13 @@ const Config = struct {
     timeout_ms: usize = 30,
 };
 
-~event mark { cfg: *Config<ready> }
+~tor mark { cfg: *Config<ready> }
 ~proc mark|zig {
     _ = cfg;
     std.debug.print("2: configure handler fired\n", .{});
 }
 
-~pub event fetch { url: []const u8 }
+~pub tor fetch { url: []const u8 }
 ! ?configure *Config<ready>
 | done usize
 

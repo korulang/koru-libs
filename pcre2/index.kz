@@ -84,7 +84,7 @@ pub const Match = struct {
 // A pattern that PCRE2 cannot compile is a loud `err` (with the exact PCRE2
 // diagnostic and the byte offset it choked on), never a silent null.
 
-~pub event compile { pattern: []const u8 }
+~pub tor compile { pattern: []const u8 }
 | ok *Regex<compiled!>
 | err { code: i32, offset: usize, msg: []const u8 }
 
@@ -107,7 +107,7 @@ pub const Match = struct {
 // Free — discharge the `compiled` obligation
 // ============================================================================
 
-~pub event free { re: *Regex<!compiled> }
+~pub tor free { re: *Regex<!compiled> }
 ~proc free|zig {
     if (re.code) |code| {
         c.pcre2_code_free_8(code);
@@ -128,7 +128,7 @@ pub const Match = struct {
 // `find.all` only reads the pattern, never frees it, so the caller keeps the
 // live obligation across the whole call and still owes exactly one `free`.
 
-~pub event find.all { re: *Regex<compiled>, subject: []const u8 }
+~pub tor find.all { re: *Regex<compiled>, subject: []const u8 }
 ! match *Match<match!>
 | done
 | err { code: i32, msg: []const u8 }
@@ -187,7 +187,7 @@ pub const Match = struct {
 // while the declaration registers flat as `release_row_event` — a codegen
 // mismatch that fails to build. A single-segment name sidesteps it. See the
 // README's toolchain-findings section and tests/TOOLCHAIN_REPRO_*.kz.
-~pub event unmatch { m: *Match<!match> }
+~pub tor unmatch { m: *Match<!match> }
 ~proc unmatch|zig { _ = &m; }
 
 // ============================================================================
@@ -196,7 +196,7 @@ pub const Match = struct {
 
 // Number of capture slots this match has (index 0 = the whole match, then one
 // per `( )` group in the pattern).
-~pub event group.count { m: *Match<match> } -> i64
+~pub tor group.count { m: *Match<match> } -> i64
 ~proc group.count|zig {
     return @intCast(m.count);
 }
@@ -204,7 +204,7 @@ pub const Match = struct {
 // Text of capture group `index` (0 = whole match). Returns "" for a group that
 // did not participate in the match (PCRE2_UNSET) or an out-of-range index —
 // never reads out of bounds.
-~pub event group.text { m: *Match<match>, index: i32 } -> []const u8
+~pub tor group.text { m: *Match<match>, index: i32 } -> []const u8
 ~proc group.text|zig {
     const i: usize = @intCast(index);
     if (i >= m.count) return "";
@@ -216,7 +216,7 @@ pub const Match = struct {
 }
 
 // Byte offset where the whole match starts in the subject.
-~pub event match.start { m: *Match<match> } -> i64
+~pub tor match.start { m: *Match<match> } -> i64
 ~proc match.start|zig {
     return @intCast(m.ovector[0]);
 }

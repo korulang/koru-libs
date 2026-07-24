@@ -1,6 +1,6 @@
 # Spike: inward configuration via optional effect-branch
 
-**Question.** Can a library event whose common path needs zero ceremony also
+**Question.** Can a library tor whose common path needs zero ceremony also
 declare an OPTIONAL effect-branch (`! ?name`) that, when the caller handles it,
 fires once *before* the main work, hands the caller a mutable borrow of a
 config value, and then proceeds using the *mutated* config — configuration
@@ -20,7 +20,7 @@ Every probe below is kept runnable. Run from the repo root
 
 ## Leg 1 — DEFAULTS: WORKS
 
-`probe1_defaults.kz`. Event `fetch` declares `! ?configure *Config`; the caller
+`probe1_defaults.kz`. Tor `fetch` declares `! ?configure *Config`; the caller
 omits the handler entirely; the proc's `configure(&cfg)` call lowers to a no-op
 (the optional-effect contract, grounded in tests 400_077 / 400_078) so `cfg`
 keeps its Zig struct defaults.
@@ -39,7 +39,7 @@ the common path.
 
 `probe2_fire_once_before.kz`. The caller now handles `! configure`. All markers
 are routed through `std.debug.print` (a single stderr stream) so ordering is
-deterministic; the handler emits its marker via a `mark` event.
+deterministic; the handler emits its marker via a `mark` tor.
 
 ```
 $ koruc run experiments/config-effect/probe2_fire_once_before.kz
@@ -78,8 +78,8 @@ The corpus already contains every ingredient; the pattern is their composition:
 
 - **Optional effect branch** `! ?name Payload`: tests 210_076, 400_077.
 - **Pointer payload on an effect branch** (`! frame *Frame<ready>`): 400_080.
-- **Handler invoking another event** (`! make r |> destroy(r)`): 400_105.
-- **Handler invoking an event with a literal arg** (`! v _ |> leaf(n: 3)`): 230_015.
+- **Handler invoking another tor** (`! make r |> destroy(r)`): 400_105.
+- **Handler invoking a tor with a literal arg** (`! v _ |> leaf(n: 3)`): 230_015.
 - **A `|zig` proc writing through a pointer arg** (`res.* = ...`): 400_061.
 - **Proc reads state after the firing returns** (`frame(f); destroy(f);`): 400_080
   — the firing is a synchronous callback, so a stack-local `&cfg` is valid across it

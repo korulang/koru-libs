@@ -53,7 +53,7 @@ than route around (three findings below).
   the auth header inline (provider-specific). That is a real ergonomic
   concession — forced by Toolchain findings A/B/C, not chosen — and it buys a
   genuine upside: both obligations are legible at the call site.
-- **Performance**: All lifting is compile-time (phantom checking, event
+- **Performance**: All lifting is compile-time (phantom checking, tor
   dispatch, monomorphized JSON writers). Runtime cost over hand-written curl+std
   is one heap alloc for the request JSON and per-field dupes on the parsed
   result — the same allocations a hand-written client makes. No reflection, no
@@ -74,7 +74,7 @@ than route around (three findings below).
 
 ## What it explicitly doesn't do (yet)
 
-- **No single `generate(...)` convenience event** — blocked by findings A/B/C.
+- **No single `generate(...)` convenience tor** — blocked by findings A/B/C.
 - **No streaming** — one request, one reply.
 - **Auth headers are caller-supplied inline** — because a consumer package
   cannot construct curl's `Header` Zig type in its output binary (finding C), so
@@ -94,7 +94,7 @@ any compiler change.
 
 ### A. Cross-module `open!` obligation is lost in a non-head subflow branch
 `toolchain-repros/A_nested_obligation_lost.kz` vs `A_control_head.kz`. When the
-resource-producing cross-module event (`koru/curl:get`) is the subflow **head**,
+resource-producing cross-module tor (`koru/curl:get`) is the subflow **head**,
 the obligation threads and `koru/curl:close` is accepted. Move it one level down
 into a branch (`| ok p => koru/curl:get(...)`) with the *same* discharge idiom
 and:
@@ -130,7 +130,7 @@ discharges-then-produces impossible to emit.
 - `@import("root").koru_libs.curl` works in the backend/inlined context (sqlite3
   uses `@import("root").koru_libs.sqlite3.c` this way) but in the **output**
   binary: `error: root source file struct 'output_emitted' has no member named 'koru_libs'`.
-- the koru-level `koru/curl:Header` ref translates in event-signature positions
+- the koru-level `koru/curl:Header` ref translates in tor-signature positions
   but leaks verbatim inside a raw-Zig `struct {}` field or a proc-body
   constructor: `error: expected ',' after field`.
 

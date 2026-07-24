@@ -14,13 +14,13 @@ const garbage: []const u8 = "this is definitely not gzip data, just plain text b
 | decompressed _ |> unexpected-success()
 | error e |> expected-error(msg: e)
 
-~event unexpected-success {}
+~tor unexpected-success {}
 
 ~proc unexpected-success|zig {
     @panic("decompress() must reject non-gzip input via the error branch, but it reported success");
 }
 
-~event expected-error { msg: []const u8 }
+~tor expected-error { msg: []const u8 }
 
 ~proc expected-error|zig {
     if (msg.len == 0) {

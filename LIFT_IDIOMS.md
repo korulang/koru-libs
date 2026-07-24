@@ -303,9 +303,9 @@ error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call
 
 ```
 error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open' but got 'koru.openssl:closing!' for argument 'conn'
-error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. No event accepts <!closing>.
+error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. No tor accepts <!closing>.
 error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open' but got 'koru.openssl:closing!' for argument 'conn'
-error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. No event accepts <!closing>.
+error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. No tor accepts <!closing>.
 ```
 
 ---

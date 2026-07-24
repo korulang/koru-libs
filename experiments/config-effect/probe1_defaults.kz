@@ -27,7 +27,7 @@ const Config = struct {
     retries: usize = 0,
 };
 
-~pub event fetch { url: []const u8 }
+~pub tor fetch { url: []const u8 }
 ! ?configure *Config<ready>
 | done usize
 

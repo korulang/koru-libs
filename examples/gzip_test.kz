@@ -20,7 +20,7 @@ const test_data = "Hello, World! This is a test of gzip compression. " ++
     std/io:print.ln("Compression failed")
 
 // Report compression stats
-~event report-stats { compressed: []const u8 }
+~tor report-stats { compressed: []const u8 }
 
 ~proc report-stats {
     std.debug.print("Original: {} bytes\n", .{test_data.len});

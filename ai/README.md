@@ -20,7 +20,7 @@ your flow.
 
 ## The happy path
 
-`ai` gives you building-block events; you wire them in a top-level flow together
+`ai` gives you building-block tors; you wire them in a top-level flow together
 with `curl`. Both obligations are visible right at the call site:
 
 ```koru
@@ -44,7 +44,7 @@ For OpenAI, swap `request.anthropic`→`request.openai`, `parse.anthropic`→
 
 ## API
 
-| Event | Shape | Purpose |
+| Tor | Shape | Purpose |
 |---|---|---|
 | `request.anthropic` / `request.openai` | `{ model, prompt, system?, max_tokens?, allocator? }` → `built *Request<built!>` | Build provider JSON; yields a request carrying a `built!` free-obligation. |
 | `free.request` | `{ req: *Request<!built> }` | Discharge the request obligation (frees the JSON body). |
@@ -57,7 +57,7 @@ with the raw API error body; transport failures surface on curl's own `err`.
 ## Why building blocks, not a single `generate(...)`
 
 A one-call `generate(...)` would have to be a *subflow* that borrow-parses the
-response, discharges it, and produces a value in one event. That exact shape is
+response, discharges it, and produces a value in one tor. That exact shape is
 blocked by three current compiler gaps (obligation loss in non-head subflow
 branches; a codegen bug on bind-in-continuation; no output-binary spelling for a
 sibling package's Zig type). The building-block flow lives entirely in top-level

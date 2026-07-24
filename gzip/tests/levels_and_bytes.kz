@@ -31,7 +31,7 @@ const original: []const u8 =
     | error e |> fail(msg: e)
 | error e |> fail(msg: e)
 
-~event check { label: []const u8, roundtripped: []const u8 }
+~tor check { label: []const u8, roundtripped: []const u8 }
 
 ~proc check|zig {
     if (!std.mem.eql(u8, original, roundtripped)) {
@@ -41,7 +41,7 @@ const original: []const u8 =
     std.debug.print("[{s}] round-trip OK: {} bytes, byte-identical\n", .{ label, roundtripped.len });
 }
 
-~event fail { msg: []const u8 }
+~tor fail { msg: []const u8 }
 
 ~proc fail|zig {
     std.debug.print("gzip operation failed: {s}\n", .{msg});
