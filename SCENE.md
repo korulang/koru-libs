@@ -93,6 +93,7 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-07-24 · **pager Bridge cataloged** — first COMPOSITION clear; active → **menu**.
 - 2026-07-24 · **COMPOSITION_CHALLENGE planted** — leaf queue exhausted; new
   organ asks whether catalog tags compose. Active = **pager**. Brief:
   `COMPOSITION_CHALLENGE.md`; catalog: `challenges/composition/CATALOG.md`.
