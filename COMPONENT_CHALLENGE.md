@@ -48,10 +48,10 @@ Only then does the queue move.
 
 ## Active target (2026-07-24)
 
-**Charm `filepicker`** — sole focus until cataloged as Charm-class.
-(`timer` + `stopwatch` Bridge cataloged 2026-07-24 — countdown/count-up.)
+**Queue exhausted** — Charm port queue cleared (filepicker Bridge 2026-07-24).
+Next generator move is mom/dad: composition challenge, depth replay, or retune.
 
-Queue (after filepicker clears; do not skip ahead):
+Last cleared queue:
 
 1. progress ← cataloged
 2. spinner ← cataloged
@@ -63,7 +63,7 @@ Queue (after filepicker clears; do not skip ahead):
 8. table ← cataloged
 9. textarea ← cataloged
 10. timer / stopwatch ← cataloged
-11. filepicker ← **here**
+11. filepicker ← cataloged
 
 (`key` is non-visual — fold into help later, not a markup widget.)
 
@@ -206,6 +206,10 @@ Governed like `SCENE.md`.
 - 2026-07-24 · **timer + stopwatch Bridge cataloged** (replay 13, hy3) — bubbles
   countdown + count-up; Duration.String() paint; host tick deltas; space/s toggle,
   r reset. Active advances to **filepicker**.
+
+- 2026-07-24 · **filepicker Bridge cataloged** (replay 14, hy3) — bubbles
+  directory browser; path header + pink `>` + purple dirs; N-fixed-listings
+  via `if(dir)` in draw. Queue exhausted.
 
 ## Zero-friction append
 
