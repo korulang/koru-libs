@@ -17,7 +17,7 @@ Leaf reimplementation does not enter Replays.
 
 | Composition | Status |
 |-------------|--------|
-| **pager** (viewport + paginator) | Next — composition organ planted. |
+| **pager** (viewport + paginator) | **Shipped** (replay 01 hy3, 2026-07-24) — see Replays. Queue advances to menu after taste-gate. |
 
 ### Port queue (do not skip)
 
@@ -45,7 +45,7 @@ Layout substrate (not scored here): `component_dock*.k`, `component_stack*.k`,
 
 | Demo | Composition | Thesis | Outcome |
 |------|-------------|--------|---------|
-| — | — | *(empty — first replay clears pager)* | — |
+| `examples/composition_pager.k` | **pager** — `<viewport/>` + `<paginator/>` ×2 (Dots + Arabic) | Charm's deliberate split rewired: one host store owns `page`/`total`/`offset`; the named `koru/vaxis:component(pager)` dock nests the catalog `<viewport/>` (paints the current 12-line page slice at the store offset) over BOTH `<paginator/>` modes bound to the same `page`/`total` — one `h`/`l` mutation steps `page`+`offset` together (multi-field `stored`, timer's shape) so the visible content, the ActiveDot, and the `N/M` count flip in lockstep and can never disagree. Leaves own all paint; nothing reimplemented in `! draw`. Holes: hit no new wall — host win-height blindness (viewport's floated hole) → fixed 12-line page-aligned slices; arrows unreachable (0x3000) → h/l. | Bridge (replay 01 hy3 — koruc compile-proven; gallery eyes pending taste-gate) |
 
 ### Evaporated (taste-gate)
 
