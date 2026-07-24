@@ -622,6 +622,64 @@ const VaxisEvent = union(enum) {
     _ = win.printSegment(.{ .text = owned, .style = cell_style }, .{});
 }
 
+// ============================================================================
+// FRAGMENT SHADER (rung one) — pulse
+// ============================================================================
+//
+// Terminal fragment = one cell. `pulse` is the first fill: for each cell in
+// `win`, uv = (col/w, row/h), time from `t` (monotonic ms), out = glyph + bg.
+// Same thesis as std/kernel (relationships over elements; compiler/host owns
+// the loop) — here the domain is the window's cell grid, not particles.
+//
+// Under UI by layout: dock `<pulse dock="fill" t={{ t:d }}/>` under a topbar —
+// separate Window slots, chrome never fights the field. Stack later = paint
+// order. Declaration surface `shader(name) { frag = … }` is the next rung;
+// this event is the paint substrate that surface will lower onto.
+//
+// Markup `<pulse …/>` resolves via the builtin wa_qual path.
+~pub event pulse { win: koru/vaxis:Window, t: i64 }
+
+~proc pulse|zig {
+    if (!$mod.is_initialized) return;
+    const w: u16 = win.width;
+    const h: u16 = win.height;
+    if (w == 0 or h == 0) return;
+
+    const ms: i64 = if (t < 0) 0 else t;
+    // Slow wash — readable as ambient, not seizure.
+    const phase: f64 = @as(f64, @floatFromInt(ms)) * 0.002;
+    const glyphs = [_][]const u8{ " ", "·", "•", "░", "▒" };
+    const space = glyphs[0];
+
+    var row: u16 = 0;
+    while (row < h) : (row += 1) {
+        const v: f64 = @as(f64, @floatFromInt(row)) / @as(f64, @floatFromInt(h));
+        var col: u16 = 0;
+        while (col < w) : (col += 1) {
+            const u: f64 = @as(f64, @floatFromInt(col)) / @as(f64, @floatFromInt(w));
+            // Two traveling sines → soft interference (cheap Neo-adjacent).
+            const wave = @sin((u * 6.28318530718) + phase) * @sin((v * 6.28318530718) - phase * 0.7);
+            const n = (wave + 1.0) * 0.5; // 0..1
+            const gi: usize = @intFromFloat(@min(4.0, n * 5.0));
+            const glyph = glyphs[gi];
+            // Purple → pink wash (Charm floor), intensity from the field.
+            const r: u32 = @intFromFloat(0x5A + n * (0xEE - 0x5A));
+            const g: u32 = @intFromFloat(0x56 + n * (0x6F - 0x56));
+            const b: u32 = @intFromFloat(0xE0 + n * (0xF8 - 0xE0));
+            const rgb: u32 = (r << 16) | (g << 8) | b;
+            // Space cells still need a grapheme; dim ones keep bg only.
+            const g_use = if (gi == 0) space else glyph;
+            win.writeCell(col, row, .{
+                .char = .{ .grapheme = g_use, .width = 1 },
+                .style = .{
+                    .fg = $mod.libvaxis.Color.rgbFromUint(@intCast(rgb)),
+                    .bg = $mod.libvaxis.Color.rgbFromUint(@intCast(rgb >> 2)),
+                },
+            });
+        }
+    }
+}
+
 // Charm-class timer — a COUNTDOWN clock (COMPONENT timer). Ports bubbles/timer:
 // the widget paints the remaining duration string (Go time.Duration.String() —
 // "1m2s" / "500ms" / "0s" taste) and OWNS all chrome; the host store owns the
@@ -2628,8 +2686,8 @@ const VaxisEvent = union(enum) {
             }
 
     // Builtin meter/spinner/textinput/list/viewport/paginator/help/table/textarea/
-    // timer/stopwatch/filepicker tags resolve to koru/vaxis events (not consumer-
-    // module components). wa_qual path.
+    // timer/stopwatch/filepicker/pulse tags resolve to koru/vaxis events (not
+    // consumer-module components). wa_qual path.
     const childQual = struct {
         fn call(name: []const u8, waq: ?[]const u8, cmod: []const u8) ?[]const u8 {
             if (std.mem.eql(u8, name, "progress-bar")) return waq orelse "koru/vaxis";
@@ -2644,6 +2702,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "timer")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "stopwatch")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "filepicker")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "pulse")) return waq orelse "koru/vaxis";
             return cmod;
         }
     }.call;
