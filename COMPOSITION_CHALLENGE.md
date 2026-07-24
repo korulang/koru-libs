@@ -46,20 +46,14 @@ Only then does the queue move.
 
 ## Active target (2026-07-24)
 
-**`pager`** — compose catalog **`viewport`** + **`paginator`** into one surface.
+**`menu`** — compose catalog **`list`** + **`help`** into one surface.
+(`pager` Bridge cataloged 2026-07-24 — viewport + paginator, one store.)
 
-Thesis to clear: Charm's split was deliberate (paginator = status chrome only;
-viewport = content slice). A real pager **wires them**: host store owns
-`page` / `total` (and whatever offset or content slice the page implies);
-`<viewport/>` paints the page's content; `<paginator/>` paints Dots and/or
-Arabic chrome; `h`/`l` (and friends) mutate page — **not** a hand-rolled
-scroll dump pretending to be both.
+Queue (after menu clears; do not skip ahead):
 
-Queue (after pager clears; do not skip ahead):
-
-1. pager (viewport + paginator) ← **here**
-2. menu (list + help)
-3. browser (filepicker + help) — or retune after pager teaches
+1. pager (viewport + paginator) ← cataloged
+2. menu (list + help) ← **here**
+3. browser (filepicker + help) — or retune after menu teaches
 
 ## You are the contestant
 
@@ -167,6 +161,10 @@ Governed like `SCENE.md`.
 
 - 2026-07-24 · **planted** — COMPONENT leaf queue exhausted; composition organ
   stands up. Active = **pager** (viewport + paginator).
+
+- 2026-07-24 · **pager Bridge cataloged** (replay 01, hy3) — named `pager`
+  nests `<viewport/>` + dual `<paginator/>`; page+offset one stored mutation.
+  Active advances to **menu**.
 
 ## Zero-friction append
 

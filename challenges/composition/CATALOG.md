@@ -17,12 +17,12 @@ Leaf reimplementation does not enter Replays.
 
 | Composition | Status |
 |-------------|--------|
-| **pager** (viewport + paginator) | **Shipped** (replay 01 hy3, 2026-07-24) — see Replays. Queue advances to menu after taste-gate. |
+| **menu** (list + help) | Next — pager Bridge cleared. |
 
 ### Port queue (do not skip)
 
-1. pager (viewport + paginator) ← **active**
-2. menu (list + help)
+1. pager (viewport + paginator) ← **cataloged** (Bridge, 2026-07-24, replay 01 hy3)
+2. menu (list + help) ← **active**
 3. browser (filepicker + help)
 
 ## Seed — leaf catalog (read, do not redo)
