@@ -69,7 +69,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 // GET Request
 // ============================================================================
 
-~pub tor get { url: []const u8, allocator: ?std.mem.Allocator }
+~pub tor get { url: string, allocator: ?std.mem.Allocator }
 | ok *Response<open!>
 | err Error
 
@@ -127,7 +127,7 @@ fn curlError(code: c.CURLcode, allocator: std.mem.Allocator) Error {
 // POST Request
 // ============================================================================
 
-~pub tor post { url: []const u8, body: []const u8, allocator: ?std.mem.Allocator }
+~pub tor post { url: string, body: string, allocator: ?std.mem.Allocator }
 | ok *Response<open!>
 | err Error
 
@@ -193,8 +193,8 @@ pub const Header = struct {
 };
 
 ~pub tor post.with-headers {
-    url: []const u8,
-    body: []const u8,
+    url: string,
+    body: string,
     headers: []const Header,
     allocator: ?std.mem.Allocator
 }
