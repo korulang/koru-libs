@@ -1,0 +1,40 @@
+// KEYSTONE PROBE for the curl async design: can an effect branch hand OWNERSHIP
+// to its handler — a payload obligation the USER must discharge — fired 0..N
+// times?
+//
+// Not the same as raylib's `! frame *Frame<frame!>`, which is a BORROW the
+// compiler reclaims with an auto-inserted `release.frame` at each body
+// boundary. Here nothing is auto-released: each firing mints a resource the
+// handler owns and must close, which is exactly `! finished *Response<open!>`.
+//
+// Not the same as KORU027 either (400_124), which rejects an obligation on a
+// RESUME ARM — the value handed back INTO the proc per firing. This is the
+// payload direction.
+~import std/io
+
+const std = @import("std");
+const Res = struct { n: i32 };
+
+~tor pump { count: i32 }
+! finished *Res<open!>
+| done i32
+
+~proc pump|zig {
+    var i: i32 = 0;
+    while (i < count) : (i += 1) {
+        const r = std.heap.page_allocator.create(Res) catch unreachable;
+        r.* = .{ .n = i };
+        finished(r);
+    }
+    return .{ .done = count };
+}
+
+~tor close { r: *Res<!open> }
+~proc close|zig {
+    std.debug.print("closed {}\n", .{r.n});
+    std.heap.page_allocator.destroy(r);
+}
+
+~pump(count: 3)
+! finished r |> close(r)
+| done n |> std/io:print.ln("done {{ n:d }}")

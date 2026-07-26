@@ -1,0 +1,63 @@
+// THE REDESIGN, on Lars's reading: `drain` never touched the obligation, so it
+// should never have claimed to. Spelled `*Pending<open>` it says exactly what
+// it does — requires an open promise, changes nothing about who owes what.
+//
+// What falls out:
+//   - `| pending` carries NO payload. There is nothing to hand back; the
+//     caller still holds the same promise it held before.
+//   - The obligation is settled in exactly one place, by a tor whose whole job
+//     is settling it. One tor, one job.
+//   - `drain` stops appearing in KORU030's candidate list for free, because
+//     that list is built from `<!state>` declarers — so the mis-typing WAS the
+//     diagnostic bug, not a separate defect to fix downstream.
+~import std/io
+
+const std = @import("std");
+const Pending = struct { n: i32 };
+const Resp = struct { id: i32 };
+
+~tor start {} -> *Pending<open!>
+~proc start|zig {
+    const p = std.heap.page_allocator.create(Pending) catch unreachable;
+    p.* = .{ .n = 0 };
+    return p;
+}
+
+// Requires an open promise. Issues nothing, discharges nothing.
+~tor drain { p: *Pending<open> }
+! progress i32
+! finished *Resp<open!>
+| pending
+| done
+
+~proc drain|zig {
+    p.n += 1;
+    progress(p.n * 50);
+
+    const r = std.heap.page_allocator.create(Resp) catch unreachable;
+    r.* = .{ .id = p.n };
+    finished(r);
+
+    if (p.n < 2) return .{ .pending = .{} };
+    return .{ .done = .{} };
+}
+
+~tor close.resp { r: *Resp<!open> }
+~proc close.resp|zig {
+    std.debug.print("  closed resp {}\n", .{r.id});
+    std.heap.page_allocator.destroy(r);
+}
+
+// The ONLY thing that settles the promise. Whether it finished or was
+// abandoned is the author's word, not an inference from which arm fired.
+~tor release { p: *Pending<!open> }
+~proc release|zig {
+    std.debug.print("released at {}\n", .{p.n});
+    std.heap.page_allocator.destroy(p);
+}
+
+~start(): p |> drain(p)
+! progress pct |> std/io:print.ln("  progress {{ pct:d }}%")
+! finished r |> close.resp(r)
+| pending |> release(p)
+| done |> release(p)
