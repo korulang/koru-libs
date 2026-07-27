@@ -287,3 +287,267 @@ pub const Header = struct {
     // Free response struct
     resp.allocator.destroy(resp);
 }
+
+// ============================================================================
+// Multi interface — many transfers, one thread
+//
+// libcurl's multi interface multiplexes N transfers over sockets from a single
+// thread: `curl_multi_perform` advances every handle as far as it can without
+// blocking and returns. Concurrency here is a property of the sockets, not of
+// threads — nothing in this section spawns one.
+//
+// Two pumps over the same arms. `drain` performs one non-blocking pass and
+// reports; call it from an event loop and transfers progress between frames.
+// `await` runs the same loop with a real poll timeout until the batch drains.
+//
+// Progress is READ from the handles (`curl_easy_getinfo`) rather than pushed
+// by libcurl's XFERINFO callback, deliberately: a C callback firing a Koru
+// effect branch is an unproven shape, and polling the byte counters needs
+// nothing of the sort.
+// ============================================================================
+
+const MAX_TRANSFERS = 32;
+
+const Slot = struct {
+    easy: ?*c.CURL,
+    ctx: WriteContext,
+    url: [:0]u8,
+    live: bool,
+    last_pct: i32,
+};
+
+pub const Multi = struct {
+    handle: ?*c.CURLM,
+    slots: [MAX_TRANSFERS]Slot,
+    count: usize,
+    allocator: std.mem.Allocator,
+};
+
+// What a `! progress` firing carries: which transfer, and how far along.
+pub const Progress = struct {
+    index: i32,
+    percent: i32,
+    downloaded: i64,
+};
+
+// The promise. Holds the batch while it is in flight.
+pub const Pending = struct {
+    m: *Multi,
+};
+
+~pub tor multi.new { allocator: ?std.mem.Allocator } -> *Multi<empty!>
+~proc multi.new|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+    const m = alloc.create(Multi) catch @panic("curl: OOM allocating Multi");
+    m.* = .{
+        .handle = c.curl_multi_init(),
+        .slots = undefined,
+        .count = 0,
+        .allocator = alloc,
+    };
+    return m;
+}
+
+// One URL per call, mirroring curl_multi_add_handle. Consumes EITHER state and
+// issues `open` — not because adding destroys the batch, but because it moves
+// it: a fresh batch is `empty`, and `multi.start` accepts only `<!open>`. So a
+// batch with no transfers in it cannot be started, and the compiler says so
+// rather than libcurl returning nothing at runtime. Same shape as
+// raylib:frames consuming `<!opened|!active>`.
+~pub tor multi.add { m: *Multi<!empty|!open>, url: string } -> *Multi<open!>
+~proc multi.add|zig {
+    if (m.count >= MAX_TRANSFERS) return m;
+
+    const idx = m.count;
+    const slot = &m.slots[idx];
+
+    slot.* = .{
+        .easy = c.curl_easy_init(),
+        .ctx = .{ .buffer = std.ArrayListUnmanaged(u8){}, .allocator = m.allocator },
+        .url = m.allocator.dupeZ(u8, url) catch @panic("curl: OOM duplicating url"),
+        .live = true,
+        .last_pct = -1,
+    };
+
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_URL, slot.url.ptr);
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_FOLLOWLOCATION, @as(c_long, 1));
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_WRITEFUNCTION, writeCallback);
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_WRITEDATA, &slot.ctx);
+    _ = c.curl_multi_add_handle(m.handle, slot.easy);
+
+    m.count += 1;
+    return m;
+}
+
+// Starts nothing by itself — the multi interface begins work on the first
+// perform. What it does is hand back a promise, so the batch handle can no
+// longer be added to or closed while transfers are in flight.
+~pub tor multi.start { m: *Multi<!open> }
+| started *Pending<open!>
+| failed Error
+
+~proc multi.start|zig {
+    if (m.handle == null) {
+        return .{ .failed = .{ .code = @intCast(c.CURLM_INTERNAL_ERROR), .msg = "curl_multi_init failed" } };
+    }
+    const p = m.allocator.create(Pending) catch @panic("curl: OOM allocating Pending");
+    p.* = .{ .m = m };
+    return .{ .started = p };
+}
+
+// Build a Response for a finished handle and detach it from the batch.
+// Removing before cleanup is libcurl's rule — cleaning up an easy handle still
+// attached to a multi corrupts the multi. Doing it here means the Response
+// handed to the author is already detached and `close` stays the single
+// disposer for both the sync and multi paths.
+fn harvest(m: *Multi, easy: ?*c.CURL) ?*Response {
+    var i: usize = 0;
+    while (i < m.count) : (i += 1) {
+        const slot = &m.slots[i];
+        if (slot.easy != easy or !slot.live) continue;
+
+        var http_code: c_long = 0;
+        _ = c.curl_easy_getinfo(slot.easy, c.CURLINFO_RESPONSE_CODE, &http_code);
+
+        _ = c.curl_multi_remove_handle(m.handle, slot.easy);
+        slot.live = false;
+
+        const resp = m.allocator.create(Response) catch @panic("curl: OOM allocating Response");
+        resp.* = .{
+            .handle = slot.easy,
+            .allocator = m.allocator,
+            .status = @intCast(http_code),
+            .body = slot.ctx.buffer.toOwnedSlice(m.allocator) catch &[_]u8{},
+        };
+        slot.easy = null;
+        return resp;
+    }
+    return null;
+}
+
+fn pctOf(slot: *Slot) i32 {
+    var dl: c.curl_off_t = 0;
+    var total: c.curl_off_t = 0;
+    _ = c.curl_easy_getinfo(slot.easy, c.CURLINFO_SIZE_DOWNLOAD_T, &dl);
+    _ = c.curl_easy_getinfo(slot.easy, c.CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &total);
+    if (total <= 0) return 0;
+    return @intCast(@divTrunc(dl * 100, total));
+}
+
+// NON-BLOCKING. One pass: advance every transfer as far as it can go without
+// waiting, report what moved, return. `| pending` hands the promise back so the
+// caller can come round again; `| done` means the batch drained.
+~pub tor drain { p: *Pending<!open> }
+! progress *Progress
+! finished *Response<open!>
+| pending *Pending<open!>
+| done *Multi<owned!>
+
+~proc drain|zig {
+    const m = p.m;
+
+    var running: c_int = 0;
+    _ = $mod.c.curl_multi_perform(m.handle, &running);
+
+    var numfds: c_int = 0;
+    _ = $mod.c.curl_multi_poll(m.handle, null, 0, 0, &numfds);
+
+    var i: usize = 0;
+    while (i < m.count) : (i += 1) {
+        const slot = &m.slots[i];
+        if (!slot.live) continue;
+        const pct = $mod.pctOf(slot);
+        if (pct == slot.last_pct) continue;
+        slot.last_pct = pct;
+        var pr = $mod.Progress{ .index = @intCast(i), .percent = pct, .downloaded = 0 };
+        progress(&pr);
+    }
+
+    var left: c_int = 0;
+    while ($mod.c.curl_multi_info_read(m.handle, &left)) |msg| {
+        if (msg.*.msg != $mod.c.CURLMSG_DONE) continue;
+        if ($mod.harvest(m, msg.*.easy_handle)) |resp| finished(resp);
+    }
+
+    if (running > 0) return .{ .pending = p };
+
+    m.allocator.destroy(p);
+    return .{ .done = m };
+}
+
+// BLOCKING. The same pass in a loop with a real poll timeout, until nothing is
+// left running. The loop is here in the proc, not a koru fold — so this needs
+// no back-edge and no Handlers threading.
+~pub tor await { p: *Pending<!open> }
+! progress *Progress
+! finished *Response<open!>
+| done *Multi<owned!>
+
+~proc await|zig {
+    const m = p.m;
+    var running: c_int = 1;
+
+    while (running > 0) {
+        _ = $mod.c.curl_multi_perform(m.handle, &running);
+
+        var i: usize = 0;
+        while (i < m.count) : (i += 1) {
+            const slot = &m.slots[i];
+            if (!slot.live) continue;
+            const pct = $mod.pctOf(slot);
+            if (pct == slot.last_pct) continue;
+            slot.last_pct = pct;
+            var pr = $mod.Progress{ .index = @intCast(i), .percent = pct, .downloaded = 0 };
+            progress(&pr);
+        }
+
+        var left: c_int = 0;
+        while ($mod.c.curl_multi_info_read(m.handle, &left)) |msg| {
+            if (msg.*.msg != $mod.c.CURLMSG_DONE) continue;
+            if ($mod.harvest(m, msg.*.easy_handle)) |resp| finished(resp);
+        }
+
+        if (running > 0) {
+            var numfds: c_int = 0;
+            _ = $mod.c.curl_multi_poll(m.handle, null, 0, 100, &numfds);
+        }
+    }
+
+    m.allocator.destroy(p);
+    return .{ .done = m };
+}
+
+// Abandon. The other way out of a promise, and it means something different
+// from finishing — which is why the compiler names both rather than choosing.
+~pub tor cancel { p: *Pending<!open> } -> *Multi<owned!>
+~proc cancel|zig {
+    const m = p.m;
+    var i: usize = 0;
+    while (i < m.count) : (i += 1) {
+        const slot = &m.slots[i];
+        if (!slot.live) continue;
+        _ = c.curl_multi_remove_handle(m.handle, slot.easy);
+        c.curl_easy_cleanup(slot.easy);
+        slot.ctx.buffer.deinit(m.allocator);
+        slot.easy = null;
+        slot.live = false;
+    }
+    m.allocator.destroy(p);
+    return m;
+}
+
+~pub tor multi.close { m: *Multi<!owned> }
+~proc multi.close|zig {
+    var i: usize = 0;
+    while (i < m.count) : (i += 1) {
+        const slot = &m.slots[i];
+        if (slot.live) {
+            _ = c.curl_multi_remove_handle(m.handle, slot.easy);
+            c.curl_easy_cleanup(slot.easy);
+            slot.ctx.buffer.deinit(m.allocator);
+        }
+        m.allocator.free(slot.url);
+    }
+    _ = c.curl_multi_cleanup(m.handle);
+    m.allocator.destroy(m);
+}

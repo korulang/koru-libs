@@ -1,0 +1,116 @@
+// THE ASYNC SURFACE — the shape agreed with Lars, written out.
+//
+// Procs are STUBS. This file exists so the declaration surface can be read and
+// type-checked as legal Koru; it does not talk to libcurl yet.
+//
+// HOW IT IS ASYNC. `multi.start` returns IMMEDIATELY with a promise. Behind it
+// a worker runs pure libcurl — sockets, no Koru, no user code — and pushes
+// completions onto a queue. `drain` and `await` REPLAY that queue onto the
+// calling thread. So transfers genuinely progress while the caller does other
+// work, and yet no user code ever executes off-thread: no function colouring,
+// no threads at the surface.
+//
+// The arms fire because time passed and sockets moved, not because someone
+// called a function. `drain` reports; it never performs.
+//
+// TWO PUMPS, SAME ARMS. `drain` is non-blocking — call it once per frame and
+// paint whatever landed. `await` blocks until the multi handle drains. The
+// caller picks; the arms are identical.
+//
+// OPEN, deliberately not decided here:
+//   - whether `! progress` fires per poll tick or per in-flight transfer.
+//     Per-transfer is what a progress-bar-per-download wants; per-tick is
+//     closer to what libcurl hands over.
+//   - whether `drain` should consume `<!open>` and re-mint as written, or take
+//     a non-consuming `<open>`. Consuming is what we agreed; the non-consuming
+//     reading came later and is NOT folded in here.
+//   - `cancel` and `drain` both consume `<!open>`, so a dropped promise has two
+//     legal disposers meaning opposite things. Auto-discharge picks one.
+//   - `await` needs koru 210_170 (a fold whose event carries effect arms drops
+//     the Handlers argument when the fold head has a prefix).
+const std = @import("std");
+
+pub const Multi = struct { n: i32 };
+pub const Pending = struct { n: i32 };
+pub const Response = struct { status: i32 };
+
+// ── building the batch ──────────────────────────────────────────────────────
+
+~pub tor multi.new { allocator: ?std.mem.Allocator } -> *Multi<open!>
+~proc multi.new|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+    const m = alloc.create(Multi) catch unreachable;
+    m.* = .{ .n = 0 };
+    return m;
+}
+
+// One URL at a time, mirroring curl_multi_add_handle. Consumes and re-issues,
+// so a handle that was never built cannot be started.
+~pub tor multi.add { m: *Multi<!open>, url: string } -> *Multi<open!>
+~proc multi.add|zig {
+    _ = url;
+    m.n += 1;
+    return m;
+}
+
+// ── starting: returns immediately ───────────────────────────────────────────
+
+// The worker starts here. This call does NOT wait for anything.
+~pub tor multi.start { m: *Multi<!open> } -> *Pending<open!>
+~proc multi.start|zig {
+    const p = std.heap.page_allocator.create(Pending) catch unreachable;
+    p.* = .{ .n = m.n };
+    std.heap.page_allocator.destroy(m);
+    return p;
+}
+
+// ── collecting: two pumps, same arms ────────────────────────────────────────
+
+// NON-BLOCKING. Replays whatever the worker queued since last time, then
+// returns. `| pending` carries the promise forward; `| done` means the multi
+// handle drained and hands back the batch to be closed.
+~pub tor drain { p: *Pending<!open> }
+! progress i32
+! finished *Response<open!>
+| pending *Pending<open!>
+| done *Multi<owned!>
+
+~proc drain|zig {
+    p.n -= 1;
+    if (p.n > 0) return .{ .pending = p };
+    const m = std.heap.page_allocator.create(Multi) catch unreachable;
+    m.* = .{ .n = 0 };
+    std.heap.page_allocator.destroy(p);
+    return .{ .done = m };
+}
+
+// BLOCKING. Same arms; returns only once every transfer has landed.
+~pub tor await { p: *Pending<!open> }
+! progress i32
+! finished *Response<open!>
+| done *Multi<owned!>
+
+~proc await|zig {
+    const m = std.heap.page_allocator.create(Multi) catch unreachable;
+    m.* = .{ .n = 0 };
+    std.heap.page_allocator.destroy(p);
+    return .{ .done = m };
+}
+
+// Abandon. The other way out of a promise, and it means something different
+// from finishing — which is exactly why the compiler must not choose for you.
+~pub tor cancel { p: *Pending<!open> } -> *Multi<owned!>
+~proc cancel|zig {
+    const m = std.heap.page_allocator.create(Multi) catch unreachable;
+    m.* = .{ .n = 0 };
+    std.heap.page_allocator.destroy(p);
+    return m;
+}
+
+// ── discharging ─────────────────────────────────────────────────────────────
+
+~pub tor close { r: *Response<!open> }
+~proc close|zig { std.heap.page_allocator.destroy(r); }
+
+~pub tor multi.close { m: *Multi<!owned> }
+~proc multi.close|zig { std.heap.page_allocator.destroy(m); }
