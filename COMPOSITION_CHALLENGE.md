@@ -1,3 +1,13 @@
+---
+challenge: composition
+kind: chain-stage
+status: standing
+yields: one composed surface proving cataloged leaves hold together
+catalog: examples/composition_*.k
+family: widget
+stage: 2
+---
+
 # COMPOSITION_CHALLENGE — prove the catalog composes
 
 A **replayable generator**, not a task and not a backlog. You run it from zero,

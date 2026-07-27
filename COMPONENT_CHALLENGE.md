@@ -1,3 +1,13 @@
+---
+challenge: component
+kind: generator
+status: standing
+yields: one Charm-class vaxis widget, usable as a markup tag
+catalog: examples/component_*.k
+family: widget
+stage: 1
+---
+
 # COMPONENT_CHALLENGE — grow the vaxis component catalog
 
 A **replayable generator**, not a task and not a backlog. You run it from zero,
