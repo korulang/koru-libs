@@ -153,7 +153,7 @@ const VaxisEvent = union(enum) {
 //   | done             — clean exit
 //   | err string       — init failure
 
-~pub event run { title: string }
+~pub tor run { title: string }
 ! ?draw koru/vaxis:Window
 ! ?key koru/vaxis:KeyData
 ! ?resize koru/vaxis:SizeData
@@ -329,14 +329,14 @@ const VaxisEvent = union(enum) {
 // ============================================================================
 
 // Request quit. Sets the flag the `run` loop checks each iteration.
-~pub event quit {}
+~pub tor quit {}
 
 ~proc quit|zig {
     $mod.should_quit = true;
 }
 
 // Render the current frame to the terminal.
-~pub event render {}
+~pub tor render {}
 
 ~proc render|zig {
     if ($mod.is_initialized) {
@@ -345,7 +345,7 @@ const VaxisEvent = union(enum) {
 }
 
 // Clear the screen.
-~pub event clear {}
+~pub tor clear {}
 
 ~proc clear|zig {
     if ($mod.is_initialized) {
@@ -358,7 +358,7 @@ const VaxisEvent = union(enum) {
 }
 
 // Write text at position.
-~pub event write-at { x: u16, y: u16, text: string }
+~pub tor write-at { x: u16, y: u16, text: string }
 
 ~proc write-at|zig {
     if ($mod.is_initialized) {
@@ -377,7 +377,7 @@ const VaxisEvent = union(enum) {
 // every downstream write-styled's `style:` param; or pass it explicitly. No
 // param defaults yet, so all attrs are named here — partial specs ride the
 // struct defaults via an inline `{ … }` record literal instead.
-~pub event style { bold: bool, dim: bool, italic: bool, strikethrough: bool } -> koru/vaxis:Style
+~pub tor style { bold: bool, dim: bool, italic: bool, strikethrough: bool } -> koru/vaxis:Style
 
 ~proc style|zig {
     return .{ .bold = bold, .dim = dim, .italic = italic, .strikethrough = strikethrough, .fg = 0, .bg = 0 };
@@ -386,7 +386,7 @@ const VaxisEvent = union(enum) {
 // Write text at position WITH a style. `style` is a reusable Style value —
 // bind it once, apply to many writes. The koru Style maps onto libvaxis
 // Cell.Style (bools + fg/bg RGB; 0 color = .default).
-~pub event write-styled { x: u16, y: u16, text: string, style: koru/vaxis:Style }
+~pub tor write-styled { x: u16, y: u16, text: string, style: koru/vaxis:Style }
 
 ~proc write-styled|zig {
     if ($mod.is_initialized) {
@@ -408,7 +408,7 @@ const VaxisEvent = union(enum) {
 // Open a child window (a positioned, sized region) of the root and return it as
 // a value. Bind it (`: win`) and downstream write-in calls pun `win` to paint
 // INTO it with box-relative coords. `border` draws a frame around the region.
-~pub event box { x: u16, y: u16, w: u16, h: u16, border: bool } -> koru/vaxis:Window
+~pub tor box { x: u16, y: u16, w: u16, h: u16, border: bool } -> koru/vaxis:Window
 
 ~proc box|zig {
     const root = $mod.vx.window();
@@ -427,7 +427,7 @@ const VaxisEvent = union(enum) {
 // moves the whole subtree. `w`/`h` of 0 mean FILL to the parent's edge (libvaxis
 // takes ?u16, null = fill) — a StackPanel row is `sub(parent, x:0, y:i, w:0, h:1)`:
 // full width, one row tall, at row i.
-~pub event sub { parent: koru/vaxis:Window, x: u16, y: u16, w: u16, h: u16 } -> koru/vaxis:Window
+~pub tor sub { parent: koru/vaxis:Window, x: u16, y: u16, w: u16, h: u16 } -> koru/vaxis:Window
 
 ~proc sub|zig {
     return parent.child(.{
@@ -444,7 +444,7 @@ const VaxisEvent = union(enum) {
 // cannot be comptime-folded, because the terminal height changes on resize. This
 // is precisely the primitive StackPanel never needed: fixed top rows never touch
 // the far edge, so they stay pure arithmetic; the bottom edge does not.
-~pub event sub-from-bottom { parent: koru/vaxis:Window, up: u16, h: u16 } -> koru/vaxis:Window
+~pub tor sub-from-bottom { parent: koru/vaxis:Window, up: u16, h: u16 } -> koru/vaxis:Window
 
 ~proc sub-from-bottom|zig {
     var y: i32 = @as(i32, parent.height) - @as(i32, up);
@@ -461,7 +461,7 @@ const VaxisEvent = union(enum) {
 // bottom-docked rows (`bottom`). Height = parent.height - top - bottom, resolved
 // at runtime so the fill grows and shrinks with the terminal — classic Dock's
 // last-child-fill, expressed as a koru Window value.
-~pub event sub-fill { parent: koru/vaxis:Window, top: u16, bottom: u16 } -> koru/vaxis:Window
+~pub tor sub-fill { parent: koru/vaxis:Window, top: u16, bottom: u16 } -> koru/vaxis:Window
 
 ~proc sub-fill|zig {
     var hh: i32 = @as(i32, parent.height) - @as(i32, top) - @as(i32, bottom);
@@ -481,7 +481,7 @@ const VaxisEvent = union(enum) {
 //   |> stack(parent: body): panel
 //   |> sweep(todos)
 //   ! sweep … |> stack-row(stack: panel): rw |> todo-row(win: rw, …)
-~pub event stack { parent: koru/vaxis:Window } -> koru/vaxis:Stack
+~pub tor stack { parent: koru/vaxis:Window } -> koru/vaxis:Stack
 
 ~proc stack|zig {
     $mod.stack_next_y = 0;
@@ -490,7 +490,7 @@ const VaxisEvent = union(enum) {
 
 // Next 1-line full-width slice of the stack's parent. Advances the frame cursor.
 // Layout stays the container's job — the child paints into the returned window.
-~pub event stack-row { stack: koru/vaxis:Stack } -> koru/vaxis:Window
+~pub tor stack-row { stack: koru/vaxis:Stack } -> koru/vaxis:Window
 
 ~proc stack-row|zig {
     const y = $mod.stack_next_y;
@@ -505,7 +505,7 @@ const VaxisEvent = union(enum) {
 
 // Write text INTO a window, at coords relative to that window's top-left. Moving
 // the window moves everything written into it — the retained-layout payoff.
-~pub event write-in { win: koru/vaxis:Window, x: u16, y: u16, text: string }
+~pub tor write-in { win: koru/vaxis:Window, x: u16, y: u16, text: string }
 
 ~proc write-in|zig {
     if ($mod.is_initialized) {
@@ -521,7 +521,7 @@ const VaxisEvent = union(enum) {
 // trailing " N%". Width = win.width (stack/dock rows hand a slice). Component
 // markup tags `<progress-bar …/>` resolve to this event (builtin path), so the
 // widget boundary owns the meter.
-~pub event progress-bar { win: koru/vaxis:Window, value: i64, max: i64 }
+~pub tor progress-bar { win: koru/vaxis:Window, value: i64, max: i64 }
 
 ~proc progress-bar|zig {
     if (!$mod.is_initialized) return;
@@ -601,7 +601,7 @@ const VaxisEvent = union(enum) {
 // (COMPONENT spinner). Defaults match bubbles/spinner MiniDot + Charm purple
 // #5A56E0. `ms` is monotonic tick payload; widget owns frame index + period.
 // Markup tag `<spinner …/>` resolves via builtin wa_qual path.
-~pub event spinner { win: koru/vaxis:Window, ms: i64 }
+~pub tor spinner { win: koru/vaxis:Window, ms: i64 }
 
 ~proc spinner|zig {
     if (!$mod.is_initialized) return;
@@ -633,11 +633,11 @@ const VaxisEvent = union(enum) {
 //
 // Under UI by layout: dock `<pulse dock="fill" t={{ t:d }}/>` under a topbar —
 // separate Window slots, chrome never fights the field. Stack later = paint
-// order. Prefer `koru/vaxis:shader(name) { frag = … }` for authored fills;
+// order. Prefer `koru/vaxis:shader(name) { glyph=/fg=/bg= }` (C1) for authored fills;
 // `pulse` stays the hard-coded builtin twin.
 //
 // Markup `<pulse …/>` resolves via the builtin wa_qual path.
-~pub event pulse { win: koru/vaxis:Window, t: i64 }
+~pub tor pulse { win: koru/vaxis:Window, t: i64 }
 
 ~proc pulse|zig {
     if (!$mod.is_initialized) return;
@@ -687,7 +687,7 @@ const VaxisEvent = union(enum) {
 // as spinner). Purple #5A56E0 running, dim #606060 paused; when remaining ≤ 0 the
 // timer is TIMED OUT → "0s" painted in Charm pink #EE6FF8. `running` is 0/1 (the
 // store rail is i64, same as paginator/list). Markup `<timer …/>` via wa_qual.
-~pub event timer { win: koru/vaxis:Window, remaining_ms: i64, running: i64 }
+~pub tor timer { win: koru/vaxis:Window, remaining_ms: i64, running: i64 }
 
 ~proc timer|zig {
     if (!$mod.is_initialized) return;
@@ -752,7 +752,7 @@ const VaxisEvent = union(enum) {
 // elapsed ms + running flag and increments on `! tick`, reset zeroes it. Purple
 // #5A56E0 running, dim #606060 paused. `running` is 0/1 (i64 store rail). Markup
 // `<stopwatch …/>` resolves via the builtin wa_qual path.
-~pub event stopwatch { win: koru/vaxis:Window, elapsed_ms: i64, running: i64 }
+~pub tor stopwatch { win: koru/vaxis:Window, elapsed_ms: i64, running: i64 }
 
 ~proc stopwatch|zig {
     if (!$mod.is_initialized) return;
@@ -812,7 +812,7 @@ const VaxisEvent = union(enum) {
 // Prompt "> ", placeholder when empty, focused purple prompt, dim placeholder,
 // blink ~530ms from `ms` tick. Cursor always at end (append-char/pop-char
 // path — no mid-buffer caret yet). Markup `<text-input …/>` via wa_qual.
-~pub event text-input { win: koru/vaxis:Window, value: string, ms: i64 }
+~pub tor text-input { win: koru/vaxis:Window, value: string, ms: i64 }
 
 ~proc text-input|zig {
     if (!$mod.is_initialized) return;
@@ -940,7 +940,7 @@ const VaxisEvent = union(enum) {
 // on the visible page. State (items newlstring + selected index) lives in a
 // host store and is fed as props — the widget OWNS paint/chrome, NOT the key
 // pipeline. Markup tag `<list …/>` resolves via builtin wa_qual path.
-~pub event list { win: koru/vaxis:Window, title: string, items: string, selected: i64 }
+~pub tor list { win: koru/vaxis:Window, title: string, items: string, selected: i64 }
 
 ~proc list|zig {
     if (!$mod.is_initialized) return;
@@ -1116,7 +1116,7 @@ const VaxisEvent = union(enum) {
 // count-height here would leave a key-press dead zone where the host offset
 // moves and nothing changes on screen. Floated, not routed around.
 // Markup tag `<viewport …/>` resolves via builtin wa_qual path.
-~pub event viewport { win: koru/vaxis:Window, content: string, offset: i64 }
+~pub tor viewport { win: koru/vaxis:Window, content: string, offset: i64 }
 
 ~proc viewport|zig {
     if (!$mod.is_initialized) return;
@@ -1176,7 +1176,7 @@ const VaxisEvent = union(enum) {
 // paint, NOT the `! key` pipeline (host keys mutate `page`). The row is
 // usually 1 tall (a status row); it paints at y=0 of whatever window it is
 // handed. Markup tag `<paginator …/>` resolves via builtin wa_qual path.
-~pub event paginator { win: koru/vaxis:Window, page: i64, total: i64, kind: string }
+~pub tor paginator { win: koru/vaxis:Window, page: i64, total: i64, kind: string }
 
 ~proc paginator|zig {
     if (!$mod.is_initialized) return;
@@ -1256,7 +1256,7 @@ const VaxisEvent = union(enum) {
 // short/full lists is the deferred hole); `mode` is a host store int the app's
 // `?` key toggles — the widget OWNS the paint, NOT the `! key` pipeline.
 // Markup tag `<help …/>` resolves via builtin wa_qual path.
-~pub event help { win: koru/vaxis:Window, bindings: string, mode: i64 }
+~pub tor help { win: koru/vaxis:Window, bindings: string, mode: i64 }
 
 ~proc help|zig {
     if (!$mod.is_initialized) return;
@@ -1441,7 +1441,7 @@ const VaxisEvent = union(enum) {
 // viewport needs widget-owned scroll state the prop rail can't hold yet;
 // floated, not routed around).
 // Markup tag `<table …/>` resolves via builtin wa_qual path.
-~pub event table { win: koru/vaxis:Window, headers: string, widths: string, rows: string, selected: i64 }
+~pub tor table { win: koru/vaxis:Window, headers: string, widths: string, rows: string, selected: i64 }
 
 ~proc table|zig {
     if (!$mod.is_initialized) return;
@@ -1640,7 +1640,7 @@ const VaxisEvent = union(enum) {
 // keep N fixed entry strings and flip an i64 dir index (a valid Bridge — real
 // mutable-string ReadDir is a stretch hole).
 // Markup tag `<filepicker …/>` resolves via builtin wa_qual path.
-~pub event filepicker { win: koru/vaxis:Window, path: string, entries: string, selected: i64 }
+~pub tor filepicker { win: koru/vaxis:Window, path: string, entries: string, selected: i64 }
 
 ~proc filepicker|zig {
     if (!$mod.is_initialized) return;
@@ -1757,7 +1757,7 @@ const VaxisEvent = union(enum) {
 // a hard line break. Host store owns the buffer; the widget OWNS paint/
 // chrome, NOT the `! key` pipeline.
 // Markup tag `<textarea …/>` resolves via builtin wa_qual path.
-~pub event textarea { win: koru/vaxis:Window, value: string, ms: i64 }
+~pub tor textarea { win: koru/vaxis:Window, value: string, ms: i64 }
 
 ~proc textarea|zig {
     if (!$mod.is_initialized) return;
@@ -1926,7 +1926,7 @@ const VaxisEvent = union(enum) {
 // the exact shape the parser builds for `a |> b |> c`). The site's own trailing
 // continuations (a `|> render()`, branch handlers) ride on the LAST link.
 // Nesting, {{ }} interpolation, and <box> come next — each an increment on this.
-~[comptime|transform]pub event view {
+~[comptime|transform]pub tor view {
     source: Source,
     invocation: *const Invocation,  // the specific invocation being transformed
     item: *const Item,
@@ -2061,7 +2061,7 @@ const VaxisEvent = union(enum) {
 // Exactly one `run` per name; attach without a run fails loud; `|` on an
 // attach site fails loud.
 
-~[keyword|comptime|transform|pre]pub event default {
+~[keyword|comptime|transform|pre]pub tor default {
     expr: Expression,
     invocation: *const Invocation,
     item: *const Item,
@@ -2258,21 +2258,21 @@ const VaxisEvent = union(enum) {
 }
 
 // ============================================================================
-// SHADER — named fragment fill with a tiny `frag =` expression language
+// SHADER — C1 cell outs: glyph + truecolor fg/bg
 // ============================================================================
 //
 //   koru/vaxis:shader(ambient) {
-//       frag = 0.3 + 0.2 * sin(u * 6.28 + t) * cos(v * 6.28 - t * 0.4)
+//       glyph = "░"
+//       fg = rgb(0.4 + 0.2 * sin(u * 6.28 + t), 0.3, 0.8)
+//       bg = rgb(0.05, 0.02, 0.12)
 //   }
 //
-// Declaration (like `component`): synthesizes `ambient { win, t }` + |zig that
-// walks the window's cells. Bindings in frag: `u`/`v` in [0,1], `t` = seconds
-// from tick ms. Ops: + - * / , sin(), cos(), parens, number literals.
-// Frag yields a float; clamped to [0,1] for glyph/color intensity.
-//
-// Dock it: `<ambient dock="fill" t={{ t:d }}/>` (consumer-module event).
-// Empty body / missing `frag =` → loud compileError. Samplers/tables = next grill.
-~[comptime|transform|pre]pub event shader {
+// Bindings: u,v ∈ [0,1]; x,y cell indices; w,h size; t = seconds.
+// Builtins: sin cos clamp lerp noise rgb. Extra idents → f64 event params.
+// D3: omit glyph → " "; omit fg → white; omit bg → do not overwrite cell bg.
+// Scalar `frag =` is REJECTED (teaching error → C1).
+// Dock: `<ambient dock="fill" t={{ t:d }} speed={{ s:f }}/>`.
+~[comptime|transform|pre]pub tor shader {
     expr: Expression,
     source: Source,
     invocation: *const Invocation,
@@ -2302,12 +2302,19 @@ const VaxisEvent = union(enum) {
     const errItem = struct {
         fn call(a: std.mem.Allocator, loc: anytype, module: []const u8, comptime fmt: []const u8, args: anytype) ast.Item {
             const inner = std.fmt.allocPrint(a, fmt, args) catch unreachable;
-            const msg = std.fmt.allocPrint(a, "comptime {{ @compileError(\"{s}\"); }}", .{inner}) catch unreachable;
+            // Escape quotes for Zig @compileError string.
+            var esc = std.ArrayList(u8).initCapacity(a, inner.len + 8) catch unreachable;
+            for (inner) |c| {
+                if (c == '"') esc.appendSlice(a, "\\\"") catch unreachable else esc.append(a, c) catch unreachable;
+            }
+            const msg = std.fmt.allocPrint(a, "comptime {{ @compileError(\"{s}\"); }}", .{esc.items}) catch unreachable;
             return ast.Item{ .inline_code = ast.InlineCode{ .code = msg, .location = loc, .module = module } };
         }
     }.call;
 
-    // frag expr → Zig float expression. Bindings u,v,t already in scope as f64.
+    const Rgb = struct { r: []const u8, g: []const u8, b: []const u8 };
+
+    // Float expr → Zig. Collects non-builtin idents into `params`.
     const fragToZig = struct {
         fn skipWs(s: []const u8, i: *usize) void {
             while (i.* < s.len and (s[i.*] == ' ' or s[i.*] == '\t' or s[i.*] == '\n' or s[i.*] == '\r')) i.* += 1;
@@ -2321,9 +2328,36 @@ const VaxisEvent = union(enum) {
         fn fail(a: std.mem.Allocator, msg: []const u8) []const u8 {
             return std.fmt.allocPrint(a, "__FRAG_ERR__{s}", .{msg}) catch "__FRAG_ERR__";
         }
-        fn parseExpr(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+        fn isBuiltin(id: []const u8) bool {
+            const builtins = [_][]const u8{ "u", "v", "x", "y", "w", "h", "t", "sin", "cos", "clamp", "lerp", "noise", "rgb" };
+            for (builtins) |b| if (std.mem.eql(u8, id, b)) return true;
+            return false;
+        }
+        fn addParam(a: std.mem.Allocator, params: *std.ArrayList([]const u8), id: []const u8) void {
+            for (params.items) |p| if (std.mem.eql(u8, p, id)) return;
+            params.append(a, a.dupe(u8, id) catch unreachable) catch unreachable;
+        }
+        fn parseArgs(a: std.mem.Allocator, s: []const u8, i: *usize, params: *std.ArrayList([]const u8), want: usize) ?[]const []const u8 {
+            var list = std.ArrayList([]const u8).initCapacity(a, want) catch unreachable;
+            var n: usize = 0;
+            while (true) {
+                const e = parseExpr(a, s, i, params);
+                if (std.mem.startsWith(u8, e, "__FRAG_ERR__")) return null;
+                list.append(a, e) catch unreachable;
+                n += 1;
+                skipWs(s, i);
+                if (i.* < s.len and s[i.*] == ',') {
+                    i.* += 1;
+                    continue;
+                }
+                break;
+            }
+            if (n != want) return null;
+            return list.toOwnedSlice(a) catch unreachable;
+        }
+        fn parseExpr(a: std.mem.Allocator, s: []const u8, i: *usize, params: *std.ArrayList([]const u8)) []const u8 {
             skipWs(s, i);
-            var left = parseTerm(a, s, i);
+            var left = parseTerm(a, s, i, params);
             if (std.mem.startsWith(u8, left, "__FRAG_ERR__")) return left;
             while (true) {
                 skipWs(s, i);
@@ -2331,15 +2365,15 @@ const VaxisEvent = union(enum) {
                 const op = s[i.*];
                 if (op != '+' and op != '-') break;
                 i.* += 1;
-                const right = parseTerm(a, s, i);
+                const right = parseTerm(a, s, i, params);
                 if (std.mem.startsWith(u8, right, "__FRAG_ERR__")) return right;
                 left = std.fmt.allocPrint(a, "({s} {c} {s})", .{ left, op, right }) catch unreachable;
             }
             return left;
         }
-        fn parseTerm(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+        fn parseTerm(a: std.mem.Allocator, s: []const u8, i: *usize, params: *std.ArrayList([]const u8)) []const u8 {
             skipWs(s, i);
-            var left = parseUnary(a, s, i);
+            var left = parseUnary(a, s, i, params);
             if (std.mem.startsWith(u8, left, "__FRAG_ERR__")) return left;
             while (true) {
                 skipWs(s, i);
@@ -2347,39 +2381,38 @@ const VaxisEvent = union(enum) {
                 const op = s[i.*];
                 if (op != '*' and op != '/') break;
                 i.* += 1;
-                const right = parseUnary(a, s, i);
+                const right = parseUnary(a, s, i, params);
                 if (std.mem.startsWith(u8, right, "__FRAG_ERR__")) return right;
                 left = std.fmt.allocPrint(a, "({s} {c} {s})", .{ left, op, right }) catch unreachable;
             }
             return left;
         }
-        fn parseUnary(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+        fn parseUnary(a: std.mem.Allocator, s: []const u8, i: *usize, params: *std.ArrayList([]const u8)) []const u8 {
             skipWs(s, i);
             if (i.* < s.len and s[i.*] == '-') {
                 i.* += 1;
-                const inner = parseUnary(a, s, i);
+                const inner = parseUnary(a, s, i, params);
                 if (std.mem.startsWith(u8, inner, "__FRAG_ERR__")) return inner;
                 return std.fmt.allocPrint(a, "(-({s}))", .{inner}) catch unreachable;
             }
-            return parsePrimary(a, s, i);
+            return parsePrimary(a, s, i, params);
         }
-        fn parsePrimary(a: std.mem.Allocator, s: []const u8, i: *usize) []const u8 {
+        fn parsePrimary(a: std.mem.Allocator, s: []const u8, i: *usize, params: *std.ArrayList([]const u8)) []const u8 {
             skipWs(s, i);
-            if (i.* >= s.len) return fail(a, "unexpected end of frag expression");
+            if (i.* >= s.len) return fail(a, "unexpected end of expression");
             if (s[i.*] == '(') {
                 i.* += 1;
-                const inner = parseExpr(a, s, i);
+                const inner = parseExpr(a, s, i, params);
                 if (std.mem.startsWith(u8, inner, "__FRAG_ERR__")) return inner;
                 skipWs(s, i);
-                if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' in frag expression");
+                if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')'");
                 i.* += 1;
                 return std.fmt.allocPrint(a, "({s})", .{inner}) catch unreachable;
             }
-            if (s[i.*] >= '0' and s[i.*] <= '9' or s[i.*] == '.') {
+            if ((s[i.*] >= '0' and s[i.*] <= '9') or s[i.*] == '.') {
                 const start = i.*;
                 while (i.* < s.len and ((s[i.*] >= '0' and s[i.*] <= '9') or s[i.*] == '.')) i.* += 1;
                 const lit = s[start..i.*];
-                // Force f64 literal so `0.3 + …` stays float in Zig.
                 if (std.mem.indexOfScalar(u8, lit, '.') == null) {
                     return std.fmt.allocPrint(a, "{s}.0", .{lit}) catch unreachable;
                 }
@@ -2392,66 +2425,305 @@ const VaxisEvent = union(enum) {
                 skipWs(s, i);
                 if (i.* < s.len and s[i.*] == '(') {
                     i.* += 1;
-                    const arg = parseExpr(a, s, i);
-                    if (std.mem.startsWith(u8, arg, "__FRAG_ERR__")) return arg;
-                    skipWs(s, i);
-                    if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after function arg");
-                    i.* += 1;
-                    if (std.mem.eql(u8, id, "sin")) return std.fmt.allocPrint(a, "@sin({s})", .{arg}) catch unreachable;
-                    if (std.mem.eql(u8, id, "cos")) return std.fmt.allocPrint(a, "@cos({s})", .{arg}) catch unreachable;
-                    return fail(a, "unknown frag function (rung one: sin, cos)");
+                    if (std.mem.eql(u8, id, "sin") or std.mem.eql(u8, id, "cos")) {
+                        const args = parseArgs(a, s, i, params, 1) orelse return fail(a, "sin/cos need 1 arg");
+                        skipWs(s, i);
+                        if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after args");
+                        i.* += 1;
+                        const fn_name = if (std.mem.eql(u8, id, "sin")) "@sin" else "@cos";
+                        return std.fmt.allocPrint(a, "{s}({s})", .{ fn_name, args[0] }) catch unreachable;
+                    }
+                    if (std.mem.eql(u8, id, "clamp")) {
+                        const args = parseArgs(a, s, i, params, 3) orelse return fail(a, "clamp(x, lo, hi) needs 3 args");
+                        skipWs(s, i);
+                        if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after args");
+                        i.* += 1;
+                        return std.fmt.allocPrint(a, "@max({s}, @min({s}, {s}))", .{ args[1], args[2], args[0] }) catch unreachable;
+                    }
+                    if (std.mem.eql(u8, id, "lerp")) {
+                        const args = parseArgs(a, s, i, params, 3) orelse return fail(a, "lerp(a, b, t) needs 3 args");
+                        skipWs(s, i);
+                        if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after args");
+                        i.* += 1;
+                        return std.fmt.allocPrint(a, "(({s}) + (({s}) - ({s})) * ({s}))", .{ args[0], args[1], args[0], args[2] }) catch unreachable;
+                    }
+                    if (std.mem.eql(u8, id, "noise")) {
+                        // 1 or 2 args — peek by parsing flexibly
+                        skipWs(s, i);
+                        const a0 = parseExpr(a, s, i, params);
+                        if (std.mem.startsWith(u8, a0, "__FRAG_ERR__")) return a0;
+                        skipWs(s, i);
+                        if (i.* < s.len and s[i.*] == ',') {
+                            i.* += 1;
+                            const a1 = parseExpr(a, s, i, params);
+                            if (std.mem.startsWith(u8, a1, "__FRAG_ERR__")) return a1;
+                            skipWs(s, i);
+                            if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after noise args");
+                            i.* += 1;
+                            // fract(sin(dot)*k)
+                            return std.fmt.allocPrint(a, "blk: {{ const __n = @sin(({s}) * 12.9898 + ({s}) * 78.233) * 43758.5453; break :blk __n - @floor(__n); }}", .{ a0, a1 }) catch unreachable;
+                        }
+                        if (i.* >= s.len or s[i.*] != ')') return fail(a, "expected ')' after noise arg");
+                        i.* += 1;
+                        return std.fmt.allocPrint(a, "blk: {{ const __n = @sin(({s}) * 12.9898) * 43758.5453; break :blk __n - @floor(__n); }}", .{a0}) catch unreachable;
+                    }
+                    if (std.mem.eql(u8, id, "rgb")) return fail(a, "rgb(...) only allowed on fg= / bg= (not inside float math)");
+                    return fail(a, "unknown function (sin cos clamp lerp noise rgb)");
                 }
-                if (std.mem.eql(u8, id, "u") or std.mem.eql(u8, id, "v")) {
+                if (std.mem.eql(u8, id, "u") or std.mem.eql(u8, id, "v") or std.mem.eql(u8, id, "x") or std.mem.eql(u8, id, "y")) {
                     return a.dupe(u8, id) catch unreachable;
                 }
-                if (std.mem.eql(u8, id, "t")) {
-                    return a.dupe(u8, "t_sec") catch unreachable;
-                }
-                return fail(a, "unknown frag binding (rung one: u, v, t)");
+                if (std.mem.eql(u8, id, "t")) return a.dupe(u8, "t_sec") catch unreachable;
+                if (std.mem.eql(u8, id, "w")) return a.dupe(u8, "wf") catch unreachable;
+                if (std.mem.eql(u8, id, "h")) return a.dupe(u8, "hf") catch unreachable;
+                addParam(a, params, id);
+                return a.dupe(u8, id) catch unreachable;
             }
-            return fail(a, "unexpected character in frag expression");
+            return fail(a, "unexpected character in expression");
         }
-        fn call(a: std.mem.Allocator, src: []const u8) []const u8 {
+        fn call(a: std.mem.Allocator, src: []const u8, params: *std.ArrayList([]const u8)) []const u8 {
             var i: usize = 0;
-            const out = parseExpr(a, src, &i);
+            const out = parseExpr(a, src, &i, params);
             if (std.mem.startsWith(u8, out, "__FRAG_ERR__")) return out;
             skipWs(src, &i);
-            if (i < src.len) return fail(a, "trailing junk after frag expression");
+            if (i < src.len) return fail(a, "trailing junk after expression");
             return out;
         }
-    }.call;
+        fn parseRgb(a: std.mem.Allocator, src: []const u8, params: *std.ArrayList([]const u8)) union(enum) { ok: Rgb, err: []const u8 } {
+            var i: usize = 0;
+            skipWs(src, &i);
+            if (i + 3 > src.len or !std.mem.eql(u8, src[i .. i + 3], "rgb")) return .{ .err = fail(a, "fg/bg must be rgb(r, g, b) with channels in 0..1") };
+            i += 3;
+            skipWs(src, &i);
+            if (i >= src.len or src[i] != '(') return .{ .err = fail(a, "expected rgb(...)") };
+            i += 1;
+            const args = parseArgs(a, src, &i, params, 3) orelse return .{ .err = fail(a, "rgb(r, g, b) needs 3 args") };
+            skipWs(src, &i);
+            if (i >= src.len or src[i] != ')') return .{ .err = fail(a, "expected ')' after rgb args") };
+            i += 1;
+            skipWs(src, &i);
+            if (i < src.len) return .{ .err = fail(a, "trailing junk after rgb(...)") };
+            return .{ .ok = .{ .r = args[0], .g = args[1], .b = args[2] } };
+        }
+    };
 
-    const extractFrag = struct {
-        fn call(a: std.mem.Allocator, text: []const u8) ?[]const u8 {
-            // Find `frag` then `=` then rest of non-empty line / to end.
+    const extractAssign = struct {
+        // Value may span lines when paren-depth > 0 (multiline rgb / nested calls).
+        fn call(a: std.mem.Allocator, text: []const u8, key: []const u8) ?[]const u8 {
             var i: usize = 0;
             while (i < text.len) : (i += 1) {
-                if (i + 4 <= text.len and std.mem.eql(u8, text[i .. i + 4], "frag")) {
-                    const after = i + 4;
-                    if (after < text.len and ((text[after] >= 'a' and text[after] <= 'z') or (text[after] >= 'A' and text[after] <= 'Z') or text[after] == '_' or (text[after] >= '0' and text[after] <= '9'))) {
+                if (i + key.len > text.len) break;
+                if (!std.mem.eql(u8, text[i .. i + key.len], key)) continue;
+                const after = i + key.len;
+                if (after < text.len and (fragToZig.isIdentStart(text[after]) or (text[after] >= '0' and text[after] <= '9'))) continue;
+                var j = after;
+                while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
+                if (j >= text.len or text[j] != '=') continue;
+                j += 1;
+                while (j < text.len and (text[j] == ' ' or text[j] == '\t' or text[j] == '\n' or text[j] == '\r')) j += 1;
+                const start = j;
+                var depth: i32 = 0;
+                var in_str = false;
+                while (j < text.len) {
+                    const c = text[j];
+                    if (in_str) {
+                        if (c == '\\' and j + 1 < text.len) {
+                            j += 2;
+                            continue;
+                        }
+                        if (c == '"') in_str = false;
+                        j += 1;
                         continue;
                     }
-                    var j = after;
-                    while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
-                    if (j >= text.len or text[j] != '=') continue;
+                    if (c == '"') {
+                        in_str = true;
+                        j += 1;
+                        continue;
+                    }
+                    if (c == '(') depth += 1;
+                    if (c == ')') depth -= 1;
+                    if (depth <= 0 and (c == '\n' or c == '\r')) break;
                     j += 1;
-                    while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
-                    var end = j;
-                    while (end < text.len and text[end] != '\n' and text[end] != '\r') end += 1;
-                    const raw = text[j..end];
-                    // trim trailing ws
-                    var e = raw.len;
-                    while (e > 0 and (raw[e - 1] == ' ' or raw[e - 1] == '\t')) e -= 1;
-                    if (e == 0) return null;
-                    return a.dupe(u8, raw[0..e]) catch unreachable;
                 }
+                const raw = text[start..j];
+                var e = raw.len;
+                while (e > 0 and (raw[e - 1] == ' ' or raw[e - 1] == '\t' or raw[e - 1] == '\n' or raw[e - 1] == '\r')) e -= 1;
+                if (e == 0) return null;
+                return a.dupe(u8, raw[0..e]) catch unreachable;
             }
             return null;
+        }
+        fn hasKey(text: []const u8, key: []const u8) bool {
+            var i: usize = 0;
+            while (i < text.len) : (i += 1) {
+                if (i + key.len > text.len) break;
+                if (!std.mem.eql(u8, text[i .. i + key.len], key)) continue;
+                const after = i + key.len;
+                if (after < text.len and (fragToZig.isIdentStart(text[after]) or (text[after] >= '0' and text[after] <= '9'))) continue;
+                var j = after;
+                while (j < text.len and (text[j] == ' ' or text[j] == '\t')) j += 1;
+                if (j < text.len and text[j] == '=') return true;
+            }
+            return false;
+        }
+    };
+
+    const parseGlyph = struct {
+        fn call(a: std.mem.Allocator, src: []const u8) union(enum) { ok: []const u8, err: []const u8 } {
+            var i: usize = 0;
+            fragToZig.skipWs(src, &i);
+            if (i >= src.len or src[i] != '"') return .{ .err = fragToZig.fail(a, "glyph must be a string literal like \" \"") };
+            i += 1;
+            const start = i;
+            while (i < src.len and src[i] != '"') : (i += 1) {}
+            if (i >= src.len) return .{ .err = fragToZig.fail(a, "unterminated glyph string") };
+            const body = src[start..i];
+            i += 1;
+            fragToZig.skipWs(src, &i);
+            if (i < src.len) return .{ .err = fragToZig.fail(a, "trailing junk after glyph string") };
+            // Escape for Zig string literal
+            var esc = std.ArrayList(u8).initCapacity(a, body.len + 4) catch unreachable;
+            for (body) |c| {
+                if (c == '\\' or c == '"') {
+                    esc.append(a, '\\') catch unreachable;
+                }
+                esc.append(a, c) catch unreachable;
+            }
+            return .{ .ok = esc.toOwnedSlice(a) catch unreachable };
         }
     }.call;
 
     const synth = struct {
-        fn call(a: std.mem.Allocator, sname: []const u8, frag_zig: []const u8, qual: ?[]const u8, cmodule: []const u8, cloc: anytype) [2]ast.Item {
+        fn call(
+            a: std.mem.Allocator,
+            sname: []const u8,
+            glyph_esc: []const u8,
+            fg: ?Rgb,
+            bg: ?Rgb,
+            params: []const []const u8,
+            qual: ?[]const u8,
+            cmodule: []const u8,
+            cloc: anytype,
+        ) [2]ast.Item {
+            const nfields = 2 + params.len;
+            const fields = a.alloc(ast.Field, nfields) catch unreachable;
+            fields[0] = .{
+                .name = a.dupe(u8, "win") catch unreachable,
+                .type = a.dupe(u8, "Window") catch unreachable,
+                .module_path = a.dupe(u8, qual orelse "koru/vaxis") catch unreachable,
+            };
+            fields[1] = .{
+                .name = a.dupe(u8, "t") catch unreachable,
+                .type = a.dupe(u8, "i64") catch unreachable,
+            };
+            for (params, 0..) |pn, pi| {
+                fields[2 + pi] = .{
+                    .name = a.dupe(u8, pn) catch unreachable,
+                    .type = a.dupe(u8, "f64") catch unreachable,
+                };
+            }
+            const event_item = ast.Item{ .event_decl = ast.EventDecl{
+                .path = mkPath(a, cmodule, sname),
+                .input = ast.Shape{ .fields = fields },
+                .branches = &[_]ast.Branch{},
+                .is_public = false,
+                .is_implicit_flow = false,
+                .annotations = &[_][]const u8{},
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+
+            const fg_r = if (fg) |c| c.r else "1.0";
+            const fg_g = if (fg) |c| c.g else "1.0";
+            const fg_b = if (fg) |c| c.b else "1.0";
+            const has_bg = bg != null;
+            const bg_r = if (bg) |c| c.r else "0.0";
+            const bg_g = if (bg) |c| c.g else "0.0";
+            const bg_b = if (bg) |c| c.b else "0.0";
+
+            // Keep bindings live when unused in authored exprs.
+            // Color path matches `pulse` (rgbFromUint) — not a raw `.rgb = .{…}` literal.
+            // t_sec wraps so phase stays in a precise float range (wall-clock ms is ~1e12).
+            const body = std.fmt.allocPrint(a,
+                \\const __vx = @import("vaxis");
+                \\const w: u16 = win.width;
+                \\const h: u16 = win.height;
+                \\if (w == 0 or h == 0) return;
+                \\const ms: i64 = if (t < 0) 0 else t;
+                \\const t_sec: f64 = @as(f64, @floatFromInt(@mod(ms, @as(i64, 1_000_000)))) * 0.001;
+                \\const wf: f64 = @as(f64, @floatFromInt(w));
+                \\const hf: f64 = @as(f64, @floatFromInt(h));
+                \\var row: u16 = 0;
+                \\while (row < h) : (row += 1) {{
+                \\    const y: f64 = @as(f64, @floatFromInt(row));
+                \\    const v: f64 = y / hf;
+                \\    var col: u16 = 0;
+                \\    while (col < w) : (col += 1) {{
+                \\        const x: f64 = @as(f64, @floatFromInt(col));
+                \\        const u: f64 = x / wf;
+                \\        const __glyph = "{s}";
+                \\        const __fgr: f64 = @max(0.0, @min(1.0, ({s}) + (u * 0.0) + (v * 0.0) + (x * 0.0) + (y * 0.0) + (wf * 0.0) + (hf * 0.0) + (t_sec * 0.0)));
+                \\        const __fgg: f64 = @max(0.0, @min(1.0, ({s})));
+                \\        const __fgb: f64 = @max(0.0, @min(1.0, ({s})));
+                \\        const __fg_u: u24 = (@as(u24, @intFromFloat(__fgr * 255.0)) << 16) |
+                \\            (@as(u24, @intFromFloat(__fgg * 255.0)) << 8) |
+                \\            @as(u24, @intFromFloat(__fgb * 255.0));
+                \\        const __fg = __vx.Color.rgbFromUint(__fg_u);
+                \\        if ({s}) {{
+                \\            const __bgr: f64 = @max(0.0, @min(1.0, ({s})));
+                \\            const __bgg: f64 = @max(0.0, @min(1.0, ({s})));
+                \\            const __bgb: f64 = @max(0.0, @min(1.0, ({s})));
+                \\            const __bg_u: u24 = (@as(u24, @intFromFloat(__bgr * 255.0)) << 16) |
+                \\                (@as(u24, @intFromFloat(__bgg * 255.0)) << 8) |
+                \\                @as(u24, @intFromFloat(__bgb * 255.0));
+                \\            win.writeCell(col, row, .{{
+                \\                .char = .{{ .grapheme = __glyph, .width = 1 }},
+                \\                .style = .{{ .fg = __fg, .bg = __vx.Color.rgbFromUint(__bg_u) }},
+                \\            }});
+                \\        }} else {{
+                \\            var __cell = win.readCell(col, row) orelse __vx.Cell{{
+                \\                .char = .{{ .grapheme = " ", .width = 1 }},
+                \\                .style = .{{}},
+                \\            }};
+                \\            __cell.char = .{{ .grapheme = __glyph, .width = 1 }};
+                \\            __cell.style.fg = __fg;
+                \\            win.writeCell(col, row, __cell);
+                \\        }}
+                \\    }}
+                \\}}
+            , .{
+                glyph_esc,
+                fg_r,
+                fg_g,
+                fg_b,
+                if (has_bg) "true" else "false",
+                bg_r,
+                bg_g,
+                bg_b,
+            }) catch unreachable;
+
+            const proc_item = ast.Item{ .proc_decl = ast.ProcDecl{
+                .path = mkPath(a, cmodule, sname),
+                .body = ast.Source{ .text = body, .location = cloc, .scope = .{ .bindings = &[_]ast.ScopeBinding{} }, .phantom_type = null },
+                .annotations = &[_][]const u8{},
+                .target = a.dupe(u8, "zig") catch unreachable,
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+            return .{ event_item, proc_item };
+        }
+
+        // Stub event + proc whose body is @compileError — so call sites resolve
+        // and the teaching message surfaces at Zig compile (not masked by KORU040).
+        fn failLoud(
+            a: std.mem.Allocator,
+            sname: []const u8,
+            comptime fmt: []const u8,
+            args: anytype,
+            qual: ?[]const u8,
+            cmodule: []const u8,
+            cloc: anytype,
+        ) [2]ast.Item {
             const fields = a.alloc(ast.Field, 2) catch unreachable;
             fields[0] = .{
                 .name = a.dupe(u8, "win") catch unreachable,
@@ -2472,46 +2744,12 @@ const VaxisEvent = union(enum) {
                 .location = cloc,
                 .module = a.dupe(u8, cmodule) catch unreachable,
             } };
-
-            // Zig body in the CONSUMER module (like component events). Do not
-            // use $mod — that is the consumer, not koru/vaxis. libvaxis is a
-            // package dep of the output binary; import it directly.
-            const body = std.fmt.allocPrint(a,
-                \\const __vx = @import("vaxis");
-                \\const w: u16 = win.width;
-                \\const h: u16 = win.height;
-                \\if (w == 0 or h == 0) return;
-                \\const ms: i64 = if (t < 0) 0 else t;
-                \\const t_sec: f64 = @as(f64, @floatFromInt(ms)) * 0.001;
-                \\const glyphs = [_][]const u8{{ " ", "·", "•", "░", "▒" }};
-                \\const space = glyphs[0];
-                \\var row: u16 = 0;
-                \\while (row < h) : (row += 1) {{
-                \\    const v: f64 = @as(f64, @floatFromInt(row)) / @as(f64, @floatFromInt(h));
-                \\    var col: u16 = 0;
-                \\    while (col < w) : (col += 1) {{
-                \\        const u: f64 = @as(f64, @floatFromInt(col)) / @as(f64, @floatFromInt(w));
-                \\        // `+ 0*u + 0*v` keeps bindings live when the authored frag omits them.
-                \\        const __frag: f64 = ({s}) + (u * 0.0) + (v * 0.0);
-                \\        const n: f64 = @max(0.0, @min(1.0, __frag));
-                \\        const gi: usize = @intFromFloat(@min(4.0, n * 5.0));
-                \\        const glyph = glyphs[gi];
-                \\        const r: u32 = @intFromFloat(0x5A + n * (0xEE - 0x5A));
-                \\        const g: u32 = @intFromFloat(0x56 + n * (0x6F - 0x56));
-                \\        const b: u32 = @intFromFloat(0xE0 + n * (0xF8 - 0xE0));
-                \\        const rgb: u32 = (r << 16) | (g << 8) | b;
-                \\        const g_use = if (gi == 0) space else glyph;
-                \\        win.writeCell(col, row, .{{
-                \\            .char = .{{ .grapheme = g_use, .width = 1 }},
-                \\            .style = .{{
-                \\                .fg = __vx.Color.rgbFromUint(@intCast(rgb)),
-                \\                .bg = __vx.Color.rgbFromUint(@intCast(rgb / 4)),
-                \\            }},
-                \\        }});
-                \\    }}
-                \\}}
-            , .{frag_zig}) catch unreachable;
-
+            const inner = std.fmt.allocPrint(a, fmt, args) catch unreachable;
+            var esc = std.ArrayList(u8).initCapacity(a, inner.len + 8) catch unreachable;
+            for (inner) |c| {
+                if (c == '"') esc.appendSlice(a, "\\\"") catch unreachable else esc.append(a, c) catch unreachable;
+            }
+            const body = std.fmt.allocPrint(a, "_ = win;\n_ = t;\ncomptime {{ @compileError(\"{s}\"); }}\n", .{esc.items}) catch unreachable;
             const proc_item = ast.Item{ .proc_decl = ast.ProcDecl{
                 .path = mkPath(a, cmodule, sname),
                 .body = ast.Source{ .text = body, .location = cloc, .scope = .{ .bindings = &[_]ast.ScopeBinding{} }, .phantom_type = null },
@@ -2522,7 +2760,7 @@ const VaxisEvent = union(enum) {
             } };
             return .{ event_item, proc_item };
         }
-    }.call;
+    };
 
     var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len + 4) catch unreachable;
     var synthed = std.ArrayList(ast.Item).initCapacity(allocator, 4) catch unreachable;
@@ -2554,34 +2792,99 @@ const VaxisEvent = union(enum) {
             continue;
         }
 
-        const frag_src = extractFrag(allocator, markup) orelse {
-            new_items.append(allocator, errItem(allocator, pi.flow.location, pi.flow.module, "koru/vaxis:shader({s}): needs `frag = <expr>` (bindings u, v, t; sin/cos)", .{name})) catch unreachable;
+        const qual = sinv.path.module_qualifier;
+        const cmod = pi.flow.module;
+        const cloc = pi.flow.location;
+
+        const reject = struct {
+            fn call(
+                a: std.mem.Allocator,
+                sname: []const u8,
+                comptime fmt: []const u8,
+                args: anytype,
+                q: ?[]const u8,
+                cm: []const u8,
+                loc: anytype,
+                syn: *std.ArrayList(ast.Item),
+                ni: *std.ArrayList(ast.Item),
+                found_flag: *bool,
+            ) void {
+                const pair = synth.failLoud(a, sname, fmt, args, q, cm, loc);
+                syn.append(a, pair[0]) catch unreachable;
+                syn.append(a, pair[1]) catch unreachable;
+                found_flag.* = true;
+                const consumed = std.fmt.allocPrint(a, "// koru/vaxis: shader '{s}' rejected", .{sname}) catch unreachable;
+                ni.append(a, ast.Item{ .host_line = ast.HostLine{
+                    .content = consumed,
+                    .location = loc,
+                    .module = a.dupe(u8, cm) catch unreachable,
+                } }) catch unreachable;
+            }
+        }.call;
+
+        if (extractAssign.hasKey(markup, "frag")) {
+            reject(allocator, name, "koru/vaxis:shader({s}): scalar frag= is gone — use glyph= / fg=rgb(...) / bg=rgb(...) (C1 cell outs)", .{name}, qual, cmod, cloc, &synthed, &new_items, &found);
             continue;
-        };
-        const frag_zig = fragToZig(allocator, frag_src);
-        if (std.mem.startsWith(u8, frag_zig, "__FRAG_ERR__")) {
-            const why = frag_zig["__FRAG_ERR__".len..];
-            new_items.append(allocator, errItem(allocator, pi.flow.location, pi.flow.module, "koru/vaxis:shader({s}): {s}", .{ name, why })) catch unreachable;
+        }
+
+        var params = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
+
+        var glyph_esc: []const u8 = " ";
+        if (extractAssign.call(allocator, markup, "glyph")) |gsrc| {
+            switch (parseGlyph(allocator, gsrc)) {
+                .ok => |g| glyph_esc = g,
+                .err => |e| {
+                    const why = e["__FRAG_ERR__".len..];
+                    reject(allocator, name, "koru/vaxis:shader({s}): {s}", .{ name, why }, qual, cmod, cloc, &synthed, &new_items, &found);
+                    continue;
+                },
+            }
+        }
+
+        var fg_rgb: ?Rgb = null;
+        if (extractAssign.call(allocator, markup, "fg")) |fsrc| {
+            switch (fragToZig.parseRgb(allocator, fsrc, &params)) {
+                .ok => |c| fg_rgb = c,
+                .err => |e| {
+                    const why = e["__FRAG_ERR__".len..];
+                    reject(allocator, name, "koru/vaxis:shader({s}): {s}", .{ name, why }, qual, cmod, cloc, &synthed, &new_items, &found);
+                    continue;
+                },
+            }
+        }
+
+        var bg_rgb: ?Rgb = null;
+        if (extractAssign.call(allocator, markup, "bg")) |bsrc| {
+            switch (fragToZig.parseRgb(allocator, bsrc, &params)) {
+                .ok => |c| bg_rgb = c,
+                .err => |e| {
+                    const why = e["__FRAG_ERR__".len..];
+                    reject(allocator, name, "koru/vaxis:shader({s}): {s}", .{ name, why }, qual, cmod, cloc, &synthed, &new_items, &found);
+                    continue;
+                },
+            }
+        }
+
+        if (extractAssign.call(allocator, markup, "glyph") == null and fg_rgb == null and bg_rgb == null) {
+            reject(allocator, name, "koru/vaxis:shader({s}): needs at least one of glyph= / fg=rgb(...) / bg=rgb(...)", .{name}, qual, cmod, cloc, &synthed, &new_items, &found);
             continue;
         }
 
         found = true;
-        const pair = synth(allocator, name, frag_zig, sinv.path.module_qualifier, pi.flow.module, pi.flow.location);
+        const pair = synth.call(allocator, name, glyph_esc, fg_rgb, bg_rgb, params.items, qual, cmod, cloc);
         synthed.append(allocator, pair[0]) catch unreachable;
         synthed.append(allocator, pair[1]) catch unreachable;
 
-        const consumed = std.fmt.allocPrint(allocator, "// koru/vaxis: shader '{s}' synthesized → event + frag fill", .{name}) catch unreachable;
+        const consumed = std.fmt.allocPrint(allocator, "// koru/vaxis: shader '{s}' synthesized → C1 glyph/fg/bg fill", .{name}) catch unreachable;
         new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
             .content = consumed,
-            .location = pi.flow.location,
-            .module = allocator.dupe(u8, pi.flow.module) catch unreachable,
+            .location = cloc,
+            .module = allocator.dupe(u8, cmod) catch unreachable,
         } }) catch unreachable;
     }
 
     if (!found) {
-        // No successful synth — still return program if we only injected errors
         if (synthed.items.len == 0) {
-            // Check whether we replaced any shader site with errors
             var touched = false;
             for (new_items.items) |ni| {
                 if (ni == .inline_code) {
@@ -2632,7 +2935,7 @@ const VaxisEvent = union(enum) {
 // koru `if`, loop it with `for`, nest it — composition is koru flow, not template
 // syntax. This proof does string props (`:s`, zero-alloc passthrough into write-at);
 // typed/formatted props (`:d`, `:b`) ride the fmt rail next.
-~[comptime|transform|pre]pub event component {
+~[comptime|transform|pre]pub tor component {
     expr: Expression,
     source: Source,
     invocation: *const Invocation,
