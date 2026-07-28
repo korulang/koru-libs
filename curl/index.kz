@@ -330,6 +330,15 @@ pub const Progress = struct {
     downloaded: i64,
 };
 
+// What a `! ?started-multi` firing carries: which slot the transfer landed in.
+// Deliberately the SAME ordinal `Progress.index` reports against, because that
+// is the whole point of the arm — a consumer that seeds one row per transfer
+// here can be found again by every later `! progress` without keeping a second
+// list in step by hand.
+pub const Transfer = struct {
+    index: i32,
+};
+
 // The promise. Holds the batch while it is in flight.
 pub const Pending = struct {
     m: *Multi,
@@ -382,15 +391,34 @@ pub const Pending = struct {
 // Starts nothing by itself — the multi interface begins work on the first
 // perform. What it does is hand back a promise, so the batch handle can no
 // longer be added to or closed while transfers are in flight.
+// `! ?started-multi` pulses ONCE PER TRANSFER before the promise is handed back
+// — the one moment where every slot exists and none has moved. It is the twin of
+// `poll`'s `! progress`, at the other end of the batch's life: progress reports
+// a transfer that has advanced, this reports a transfer that now exists.
+//
+// Optional, so a caller that does not care about per-transfer setup writes
+// nothing. A caller that does gets its rows built by the same act that built the
+// transfers, instead of hand-counting a second list into agreement (the three
+// literal `insert(xfers)` rows this arm retires in koru-examples/downloads).
 ~pub tor multi.start { m: *Multi<!open> }
+! ?started-multi *Transfer
 | started *Pending<open!>
 | failed Error
 
+// `$mod.`-qualified throughout: a proc body carrying effect branches splices
+// into the CALLER, where this module's scope is gone (KORU112). The arm is what
+// changed that — before it, bare `c` and `Pending` were fine here.
 ~proc multi.start|zig {
     if (m.handle == null) {
-        return .{ .failed = .{ .code = @intCast(c.CURLM_INTERNAL_ERROR), .msg = "curl_multi_init failed" } };
+        return .{ .failed = .{ .code = @intCast($mod.c.CURLM_INTERNAL_ERROR), .msg = "curl_multi_init failed" } };
     }
-    const p = m.allocator.create(Pending) catch @panic("curl: OOM allocating Pending");
+    var i: usize = 0;
+    while (i < m.count) : (i += 1) {
+        if (!m.slots[i].live) continue;
+        var t = $mod.Transfer{ .index = @intCast(i) };
+        started_multi(&t);
+    }
+    const p = m.allocator.create($mod.Pending) catch @panic("curl: OOM allocating Pending");
     p.* = .{ .m = m };
     return .{ .started = p };
 }
@@ -435,15 +463,33 @@ fn pctOf(slot: *Slot) i32 {
 }
 
 // NON-BLOCKING. One pass: advance every transfer as far as it can go without
-// waiting, report what moved, return. `| pending` hands the promise back so the
-// caller can come round again; `| done` means the batch drained.
-~pub tor drain { p: *Pending<!open> }
+// waiting, report what moved, return.
+//
+// It BORROWS the promise (`<open>`, no bang), and that is the whole point of
+// the shape. Advancing a batch does not end it: the handle that comes back is
+// the one that went in. The earlier spelling consumed `<!open>` and re-issued
+// `<open!>` on a `| pending` branch that returned the identical pointer — a
+// consume-and-reissue of the SAME state on the SAME handle, which is a borrow
+// wearing a consume's clothes. (Contrast `multi.add`, which also returns its
+// argument but moves it `empty` → `open`: there the consume-and-reissue IS the
+// state transition, and is right.)
+//
+// The cost of the old shape was not cosmetic. A caller holding the promise
+// across calls — a frame loop, a store — had to surrender the obligation and
+// take it back every single pass, which for a store means removing the row and
+// re-inserting it. Borrowing lets the owner keep `<open!>` for the whole run,
+// which is what is actually true: polling never made the batch not-theirs.
+//
+// So this reports and returns nothing. `| complete` says the batch has stopped
+// running; `finish` is what ends it, because ending is a consuming act and
+// consumption happens on INPUT, never on a branch.
+~pub tor poll { p: *Pending<open> }
 ! progress *Progress
 ! finished *Response<open!>
-| pending *Pending<open!>
-| done *Multi<owned!>
+| running
+| complete
 
-~proc drain|zig {
+~proc poll|zig {
     const m = p.m;
 
     var running: c_int = 0;
@@ -469,10 +515,24 @@ fn pctOf(slot: *Slot) i32 {
         if ($mod.harvest(m, msg.*.easy_handle)) |resp| finished(resp);
     }
 
-    if (running > 0) return .{ .pending = p };
+    if (running > 0) return .{ .running = .{} };
+    return .{ .complete = .{} };
+}
 
+// Ends a promise that has stopped running, handing the batch back. The
+// consuming half of `poll`: `<!open>` dies HERE, on an input, because that is
+// the only position a phantom obligation can be consumed in. One `finish` per
+// promise, however many `poll`s came before it.
+//
+// Sibling of `cancel`, and the difference is intent rather than mechanism —
+// `finish` collects a batch that ran to the end, `cancel` abandons one that did
+// not. Both are legal exits, which is why a store holding a Pending must be
+// told which it wants (`! discharge`) rather than being left to guess.
+~pub tor finish { p: *Pending<!open> } -> *Multi<owned!>
+~proc finish|zig {
+    const m = p.m;
     m.allocator.destroy(p);
-    return .{ .done = m };
+    return m;
 }
 
 // BLOCKING. The same pass in a loop with a real poll timeout, until nothing is
