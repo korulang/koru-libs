@@ -539,9 +539,15 @@ const VaxisEvent = union(enum) {
     const full_g = "▌";
     const empty_g = "░";
 
+    // FIXED-WIDTH label. `bar_w` is whatever the label leaves, so a
+    // variable-width label makes the BAR change length as the number grows —
+    // crossing 9 -> 10 and 99 -> 100 each steal a cell, and the bar visibly
+    // shrinks at the moment it completes. Right-align the number in a constant
+    // field instead: " 100%" and "   2%" are both 5 cells, so the track is the
+    // same length for the whole run.
     var pct_buf: [8]u8 = undefined;
-    const pct_text = std.fmt.bufPrint(&pct_buf, " {d}%", .{@as(u32, @intFromFloat(@round(pct * 100.0)))}) catch " ?%";
-    const pct_w: u16 = @intCast(pct_text.len);
+    const pct_text = std.fmt.bufPrint(&pct_buf, "{d:>4}%", .{@as(u32, @intFromFloat(@round(pct * 100.0)))}) catch "   ?%";
+    const pct_w: u16 = 5;
 
     var total_w: u16 = win.width;
     if (total_w < pct_w + 1) total_w = pct_w + 1;
