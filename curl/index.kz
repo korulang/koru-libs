@@ -312,6 +312,8 @@ const Slot = struct {
     easy: ?*c.CURL,
     ctx: WriteContext,
     url: [:0]u8,
+    body: ?[:0]u8,
+    hdrs: ?*c.curl_slist,
     live: bool,
     last_pct: i32,
 };
@@ -337,6 +339,15 @@ pub const Progress = struct {
 // list in step by hand.
 pub const Transfer = struct {
     index: i32,
+};
+
+// What a `! ?chunk` firing carries: which transfer, and the bytes that arrived
+// since the last drain. `data` is a POLL-SCOPED borrow (valid only within the
+// `! chunk` body, same convention as sqlite3's row-scoped text): the buffer it
+// points into is cleared the moment the arm returns. Copy out what you keep.
+pub const Chunk = struct {
+    index: i32,
+    data: []const u8,
 };
 
 // The promise. Holds the batch while it is in flight.
@@ -374,12 +385,66 @@ pub const Pending = struct {
         .easy = c.curl_easy_init(),
         .ctx = .{ .buffer = std.ArrayListUnmanaged(u8){}, .allocator = m.allocator },
         .url = m.allocator.dupeZ(u8, url) catch @panic("curl: OOM duplicating url"),
+        .body = null,
+        .hdrs = null,
         .live = true,
         .last_pct = -1,
     };
 
     _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_URL, slot.url.ptr);
     _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_FOLLOWLOCATION, @as(c_long, 1));
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_WRITEFUNCTION, writeCallback);
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_WRITEDATA, &slot.ctx);
+    _ = c.curl_multi_add_handle(m.handle, slot.easy);
+
+    m.count += 1;
+    return m;
+}
+
+// The authenticated-POST twin of `multi.add` — the request shape
+// `post.with-headers` speaks, on the batch surface `poll`/`await` can pump
+// under a live UI. The slot OWNS its copies of the body and the built header
+// list (libcurl requires both to outlive the transfer; the caller's strings
+// are free to die the moment this returns), released in `multi.close` with
+// the url. No FOLLOWLOCATION here: a redirected POST silently degrades to a
+// GET, and an API endpoint that redirects deserves a loud status over a
+// quietly wrong verb.
+~pub tor multi.add.post {
+    m: *Multi<!empty|!open>,
+    url: string,
+    body: string,
+    headers: []const Header
+} -> *Multi<open!>
+
+~proc multi.add.post|zig {
+    if (m.count >= MAX_TRANSFERS) return m;
+
+    const idx = m.count;
+    const slot = &m.slots[idx];
+
+    slot.* = .{
+        .easy = c.curl_easy_init(),
+        .ctx = .{ .buffer = std.ArrayListUnmanaged(u8){}, .allocator = m.allocator },
+        .url = m.allocator.dupeZ(u8, url) catch @panic("curl: OOM duplicating url"),
+        .body = m.allocator.dupeZ(u8, body) catch @panic("curl: OOM duplicating body"),
+        .hdrs = null,
+        .live = true,
+        .last_pct = -1,
+    };
+
+    for (headers) |h| {
+        const header_str = std.fmt.allocPrintSentinel(m.allocator, "{s}: {s}", .{ h.name, h.value }, 0) catch @panic("curl: OOM building header");
+        slot.hdrs = c.curl_slist_append(slot.hdrs, header_str.ptr);
+        m.allocator.free(header_str);
+    }
+
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_URL, slot.url.ptr);
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_POST, @as(c_long, 1));
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_POSTFIELDS, slot.body.?.ptr);
+    _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(slot.body.?.len)));
+    if (slot.hdrs) |list| {
+        _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_HTTPHEADER, list);
+    }
     _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_WRITEFUNCTION, writeCallback);
     _ = c.curl_easy_setopt(slot.easy, c.CURLOPT_WRITEDATA, &slot.ctx);
     _ = c.curl_multi_add_handle(m.handle, slot.easy);
@@ -483,8 +548,17 @@ fn pctOf(slot: *Slot) i32 {
 // So this reports and returns nothing. `| complete` says the batch has stopped
 // running; `finish` is what ends it, because ending is a consuming act and
 // consumption happens on INPUT, never on a branch.
+// `! ?chunk` is the streaming arm, and PRESENCE IS THE SWITCH: provide it and
+// every drain pass hands you the bytes that arrived since the last one, with
+// the slot's buffer cleared behind each firing — `finished` then carries only
+// the status and whatever trailed the final drain. Omit it and nothing drains:
+// bodies buffer whole and arrive on `finished`, exactly as before. The arm
+// fires from THIS proc body during the pass (the same shape as `! progress`),
+// never from libcurl's C callback — the callback only ever appends to the
+// slot buffer, which is the boundary this section's header commits to.
 ~pub tor poll { p: *Pending<open> }
-! progress *Progress
+! ?chunk *Chunk
+! ?progress *Progress
 ! finished *Response<open!>
 | running
 | complete
@@ -497,6 +571,18 @@ fn pctOf(slot: *Slot) i32 {
 
     var numfds: c_int = 0;
     _ = $mod.c.curl_multi_poll(m.handle, null, 0, 0, &numfds);
+
+    if (@hasDecl(__H, "chunk")) {
+        var ci: usize = 0;
+        while (ci < m.count) : (ci += 1) {
+            const slot = &m.slots[ci];
+            if (!slot.live) continue;
+            if (slot.ctx.buffer.items.len == 0) continue;
+            var ch = $mod.Chunk{ .index = @intCast(ci), .data = slot.ctx.buffer.items };
+            chunk(&ch);
+            slot.ctx.buffer.clearRetainingCapacity();
+        }
+    }
 
     var i: usize = 0;
     while (i < m.count) : (i += 1) {
@@ -539,7 +625,8 @@ fn pctOf(slot: *Slot) i32 {
 // left running. The loop is here in the proc, not a koru fold — so this needs
 // no back-edge and no Handlers threading.
 ~pub tor await { p: *Pending<!open> }
-! progress *Progress
+! ?chunk *Chunk
+! ?progress *Progress
 ! finished *Response<open!>
 | done *Multi<owned!>
 
@@ -549,6 +636,18 @@ fn pctOf(slot: *Slot) i32 {
 
     while (running > 0) {
         _ = $mod.c.curl_multi_perform(m.handle, &running);
+
+        if (@hasDecl(__H, "chunk")) {
+            var ci: usize = 0;
+            while (ci < m.count) : (ci += 1) {
+                const slot = &m.slots[ci];
+                if (!slot.live) continue;
+                if (slot.ctx.buffer.items.len == 0) continue;
+                var ch = $mod.Chunk{ .index = @intCast(ci), .data = slot.ctx.buffer.items };
+                chunk(&ch);
+                slot.ctx.buffer.clearRetainingCapacity();
+            }
+        }
 
         var i: usize = 0;
         while (i < m.count) : (i += 1) {
@@ -607,6 +706,8 @@ fn pctOf(slot: *Slot) i32 {
             slot.ctx.buffer.deinit(m.allocator);
         }
         m.allocator.free(slot.url);
+        if (slot.body) |b| m.allocator.free(b);
+        if (slot.hdrs) |h| c.curl_slist_free_all(h);
     }
     _ = c.curl_multi_cleanup(m.handle);
     m.allocator.destroy(m);

@@ -1,0 +1,27 @@
+// Streaming drain test — `! chunk` on `await`, the presence-switch in action.
+//
+// The transfer below runs with the chunk arm PROVIDED, so the body never
+// buffers whole: each drain pass hands the bytes that arrived since the last
+// one, and `finished` carries only the status plus whatever trailed the final
+// drain. Expected shape (exact chunk count/sizes vary with the network):
+//   chunk[0]: <n> bytes        (one or more times, n > 0)
+//   finished: status 200, leftover <m> bytes
+//   batch done
+//
+// The invariant a human checks: total chunk bytes + leftover == the document
+// (example.com is ~1.2KB), and leftover is small-or-zero — the body arrived
+// through the arm, not on the Response.
+//
+//   koruc run curl/tests/chunks.kz
+
+~import koru/curl
+~import std/io
+
+~koru/curl:multi.new()
+|> koru/curl:multi.add(url: "https://example.com/")
+|> koru/curl:multi.start()
+| started p |> koru/curl:await(p)
+    ! chunk ch |> std/io:print.ln("chunk[{{ ch.index:d }}]: {{ ch.data.len:d }} bytes")
+    ! finished r |> std/io:print.ln("finished: status {{ r.status:d }}, leftover {{ r.body.len:d }} bytes") |> koru/curl:close(resp: r)
+    | done m |> koru/curl:multi.close(m) |> std/io:print.ln("batch done")
+| failed e |> std/io:print.ln("failed: {{ e.msg:s }}")

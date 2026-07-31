@@ -98,9 +98,11 @@ signatures and re-verified end-to-end.
   scope for a quality pass; would be a separate slice (or arguably the
   intended v1 scope this v0 never finished, per `ECOSYSTEM.md`'s own
   "Implementation tasks" list).
-- No streaming response body — the whole body is buffered into memory via
-  the write callback, matching what `curl/index.kz` already did before this
-  pass. Not touched.
+- Streaming response bodies landed 2026-07-31 (the kopium SSE pass): the
+  optional `! ?chunk` arm on `poll`/`await` drains each slot's buffer per
+  pass when — and only when — the consumer installs it; omitted, bodies
+  buffer whole exactly as before. `multi.add.post` carries headers + POST
+  body so the batch surface can speak to authenticated APIs.
 - HTTP status codes (4xx/5xx) are not treated as errors — only
   transport-level failures (DNS, TLS, connection refused) produce `| err`.
   This is standard libcurl/HTTP-client behavior, not a gap, but it surprises

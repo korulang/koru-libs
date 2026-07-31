@@ -193,13 +193,13 @@ This package wraps [libcurl](https://curl.se/libcurl/) using FFI bindings:
 - [x] Examples (all three run end-to-end against httpbin.org)
 - [x] Documentation
 - [ ] PUT/DELETE/PATCH
-- [ ] Streaming response bodies
+- [x] Streaming response bodies (`! ?chunk` on `poll`/`await` — presence is the switch; `tests/chunks.kz`)
 
 ---
 
 ## Future Enhancements
 
-- [ ] Streaming responses (don't load entire body into memory)
+- [x] Streaming responses — provide `! chunk` and bodies drain per pass instead of buffering whole
 - [ ] Query parameter building
 - [ ] OAuth support
 - [ ] Multipart file uploads
