@@ -37,7 +37,7 @@ This document outlines foundational infrastructure packages needed to make Koru 
 | Regex route paths `/posts/[0-9]+` (P2) | PCRE2 | ✅ `pcre2` | met |
 | Cookie/session signing, ETags (P4/P6) | OpenSSL EVP | ✅ `evp` | met |
 | HTTPS client — upstream/webhook calls | OpenSSL / libcurl | ✅ `openssl` + `curl` | met |
-| **JSON body parse + serialize (P6)** | yyjson / cJSON | ❌ **MISSING** | 🔥🔥 **the biggest hole** |
+| JSON body parse + serialize (P6) | yyjson | ✅ `yyjson` (read v0) | serialize is the depth pass |
 | **JWT sessions / auth (P4)** | libjwt | ❌ missing | 🔥 new lift |
 | **Redis — sessions / cache / rate-limit (P4)** | hiredis | ❌ missing | 🔥 new lift |
 | **Password hashing (P3 auth)** | libargon2 / bcrypt | ❌ missing | 🔥 security, new lift |
@@ -46,14 +46,12 @@ This document outlines foundational infrastructure packages needed to make Koru 
 | **Server-side TLS — accept + cert/key** | OpenSSL | ⚠️ `openssl` is *client* v0 | 🔥 **depth pass** |
 | HTTP date / cookie expiry (P4/P6) | cctz / tz | ❌ missing | 🚧 new lift |
 
-**The headline new lift: JSON.** A webserver framework that cannot parse a JSON
-body or serialize a JSON response is not usable, and the catalog has *no* JSON
-lift at all (the JSON5/JSONC entry below never shipped). Target: **yyjson**
-(fastest proven C JSON lib) or cJSON. The Koru advantage is a parse tree whose
-node handles are phantom-scoped borrows (no use-after-free of a freed value),
-whose lifecycle (`yyjson_doc_free`) is an unleakable obligation, and whose
-expected shape can be validated at the boundary. Single highest-value new lift
-for real-app readiness.
+**JSON: landed (read v0).** `yyjson` shipped exactly as this section speced it:
+a parse tree whose node handles are phantom-scoped borrows of `*Doc<open>` (no
+use-after-free of a freed value) and whose lifecycle (`yyjson_doc_free`) is an
+unleakable `open!` obligation. What remains is the **serialize depth pass** —
+building + writing JSON (the `mut` API) — which kopium's request bodies will
+demand next.
 
 **The headline depth pass: server TLS.** `openssl` is client-v0 only; a webserver
 *terminates* TLS. `SSL_CTX` cert/key loading + the `accept`-side handshake is the
