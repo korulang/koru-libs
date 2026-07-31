@@ -1,0 +1,309 @@
+// @korulang/yyjson — the definitive Koru yyjson edition (v0: parse + read)
+// ==========================================================================
+//
+// Lifts yyjson (the fastest conformant JSON library — single-file C, used by
+// PHP internals, ScyllaDB, and others) into a phantom-obligation-typed Koru
+// edition. yyjson's read API hands back an arena-owned `yyjson_doc`: every
+// `yyjson_val*` you navigate to (object members, array elements, scalars) is
+// a raw pointer INTO that arena. Free the doc and every value pointer you
+// were holding is instantly dangling — a use-after-free that in C is a
+// silent footgun and in production is a CVE waiting to happen.
+//
+// This edition compiles that footgun away:
+//   • The parsed document is a phantom obligation (`open`): the build FAILS
+//     if you forget to free it (`close`), same shape as sqlite3's
+//     Connection / pcre2's Regex.
+//   • Every value-reading event (`root`, `object.get`, `array.get`,
+//     `array.each`, `object.each`, `as.*`) takes `doc: *Doc<open>` as a
+//     BORROW, not just documentation — the compiler requires the caller to
+//     still hold the live `open!` obligation on that exact binding. Call
+//     `close` first and then try to read a value and the phantom checker
+//     rejects it with "Use-after-discharge" — the value cannot be read once
+//     its doc is gone, enforced at compile time, not discovered at 3am from
+//     a crash dump.
+//   • Wrong-type reads (`as.string` on a number, `as.int` on an object) are
+//     a loud `wrong-type` branch, never a silently-defaulted zero or empty
+//     string — yyjson's own C accessors return 0/NULL on type mismatch,
+//     which we refuse to expose directly because it hides bugs.
+//
+// USAGE:
+//   ~import koru/yyjson
+//
+//   ~koru/yyjson:parse(text: "{\"name\": \"ada\", \"age\": 36}")
+//   | ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "name")
+//       | found name_v |> koru/yyjson:as.string(doc, v: name_v)
+//           | ok name |> std/io:print.ln("name: {{ name:s }}") |> koru/yyjson:close(doc)
+//           | wrong-type |> std/io:print.ln("name was not a string") |> koru/yyjson:close(doc)
+//       | not-found |> std/io:print.ln("no name field") |> koru/yyjson:close(doc)
+//   | err e |> std/io:print.ln("parse failed at byte {{ e.pos:d }}: {{ e.msg:s }}")
+//
+// (Note the explicit `v: name_v` label on the second call — bare positional
+// args only punning-match when the local binding's name equals the callee's
+// own parameter name, as `doc` does above; `root_v`/`name_v` do not match `v`
+// and need the label. See tests/basic.kz for this exact flow, verified
+// end-to-end.)
+//
+// Scope (v0, read path only — see README for what's cut): parse a JSON
+// document, navigate objects/arrays, iterate both, and read scalar leaves.
+// Serialization (building + writing JSON) is a separate depth pass — see
+// README "What it explicitly doesn't do (yet)".
+
+~import std/build
+~import std/deps
+
+// System dependency: yyjson must be installed.
+~std/deps:requires.system {
+    "name": "yyjson",
+    "check": "pkg-config --modversion yyjson",
+    "brew": "yyjson",
+    "apt": "libyyjson-dev",
+    "dnf": "yyjson-devel",
+    "pacman": "yyjson",
+    "apk": "yyjson-dev"
+}
+
+// Build requirements: link against libyyjson.
+~std/build:requires {
+    exe.linkSystemLibrary("yyjson");
+    exe.linkLibC();
+}
+
+const std = @import("std");
+pub const c = @cImport({
+    @cInclude("yyjson.h");
+});
+
+// A parsed JSON document. `handle` owns the arena every yyjson_val in the
+// tree is allocated from; the phantom `open` obligation is what forces you
+// to free it (via `close`) exactly once.
+pub const Doc = struct {
+    handle: ?*c.yyjson_doc,
+};
+
+// A JSON value — object, array, string, number, bool, or null. This is a
+// direct alias for yyjson's own `yyjson_val`: no wrapper struct, no extra
+// allocation. A `*Value` is a raw pointer into its Doc's arena, so reading
+// one is exactly as fast as calling the yyjson C accessor directly (the
+// lifting happens entirely in the type system, never at runtime). Safety
+// comes from every reader below requiring `doc: *Doc<open>` — the compiler
+// won't let you present that argument once `close` has discharged it.
+pub const Value = c.yyjson_val;
+
+// Scratch struct handed to `object.each`'s `! entry` body — one key/value
+// pair per firing, reused across iterations (same convention as pcre2's
+// `__match` and sqlite3's `__row`: a stack-scratch struct mutated in place,
+// never heap-allocated per entry).
+pub const Entry = struct {
+    key: []const u8,
+    value: ?*Value,
+};
+
+// ============================================================================
+// Parse — mint the `open` obligation
+// ============================================================================
+//
+// Never a silent null: a malformed document is a loud `err` carrying
+// yyjson's own error code, the byte offset it choked on, and its message.
+
+~pub tor parse { text: string }
+| ok *Doc<open!>
+| err { code: i32, pos: usize, msg: string }
+
+~proc parse|zig {
+    var read_err: c.yyjson_read_err = std.mem.zeroes(c.yyjson_read_err);
+    // YYJSON_READ_INSITU is NOT set, so yyjson promises not to modify `dat` —
+    // the API still requires a mutable pointer type, hence the constCast.
+    const doc = c.yyjson_read_opts(@constCast(text.ptr), text.len, 0, null, &read_err);
+    if (doc == null) {
+        const msg = if (read_err.msg) |m| std.mem.span(m) else "unknown JSON parse error";
+        return .{ .err = .{ .code = @intCast(read_err.code), .pos = read_err.pos, .msg = msg } };
+    }
+    const d = std.heap.page_allocator.create(Doc) catch @panic("yyjson: OOM allocating Doc");
+    d.* = Doc{ .handle = doc };
+    return .{ .ok = d };
+}
+
+// ============================================================================
+// Close — discharge the `open` obligation
+// ============================================================================
+
+~pub tor close { doc: *Doc<!open> }
+
+~proc close|zig {
+    if (doc.handle) |h| {
+        c.yyjson_doc_free(h);
+    }
+    std.heap.page_allocator.destroy(doc);
+}
+
+// ============================================================================
+// Root — the entry point into the tree. BORROWS `doc` (bare <open>, not
+// consumed): the caller keeps the live `open!` obligation and still owes
+// exactly one `close`. A successfully parsed document always has a root, so
+// this is a direct return, not a branch.
+// ============================================================================
+
+~pub tor root { doc: *Doc<open> } -> *Value
+
+~proc root|zig {
+    const r = c.yyjson_doc_get_root(doc.handle);
+    return r orelse @panic("yyjson: doc has no root — unreachable for a successfully parsed doc");
+}
+
+// ============================================================================
+// Object / array navigation — every reader BORROWS `doc`, just like `root`.
+// yyjson's own accessors are null-safe on a type mismatch (an object.get on
+// a non-object, or an array.get on a non-array, is a documented `NULL`, never
+// a crash), so a wrong-shape read is folded straight into the miss branch
+// rather than needing a separate type probe.
+// ============================================================================
+
+~pub tor object.get { doc: *Doc<open>, v: *Value, key: string }
+| found *Value
+| not-found
+
+~proc object.get|zig {
+    _ = doc;
+    // yyjson_obj_getn takes an explicit length, so a key sliced out of
+    // another JSON value (not null-terminated) is exactly as safe as a
+    // koru string literal — no accidental buffer over-read either way.
+    const r = c.yyjson_obj_getn(v, key.ptr, key.len);
+    if (r) |val| {
+        return .{ .found = val };
+    }
+    return .{ .not_found = .{} };
+}
+
+~pub tor array.get { doc: *Doc<open>, v: *Value, index: i64 }
+| found *Value
+| out-of-range
+
+~proc array.get|zig {
+    _ = doc;
+    if (index < 0) return .{ .out_of_range = .{} };
+    const r = c.yyjson_arr_get(v, @intCast(index));
+    if (r) |val| {
+        return .{ .found = val };
+    }
+    return .{ .out_of_range = .{} };
+}
+
+// ============================================================================
+// array.each — iterate every element of an array value. `! item` fires once
+// per element, its body inlined at the call site (same effect-branch cursor
+// shape as sqlite3's `! row` and pcre2's `! match`). Each `*Value` handed to
+// the body is a borrow into the doc's arena — safe for the duration of the
+// loop, and (like every reader here) only reachable while `doc` still carries
+// `open`.
+// ============================================================================
+
+~pub tor array.each { doc: *Doc<open>, v: *Value }
+! item *Value
+| done
+| not-an-array
+
+~proc array.each|zig {
+    // Effect-branch body: emitted at TWO sites — inlined into the consumer's
+    // frame (module decls out of scope) and as this module's own handler
+    // (module decls in scope). Reach the module's own `c` import through the
+    // non-colliding root alias so both sites resolve, same convention as
+    // sqlite3's query.literal and pcre2's find.all.
+    const yj = @import("root").koru_koru.koru_yyjson;
+    _ = doc;
+    if (!yj.c.yyjson_is_arr(v)) return .{ .not_an_array = .{} };
+    var iter: yj.c.yyjson_arr_iter = undefined;
+    _ = yj.c.yyjson_arr_iter_init(v, &iter);
+    while (yj.c.yyjson_arr_iter_next(&iter)) |val| {
+        item(val);
+    }
+    return .{ .done = .{} };
+}
+
+// ============================================================================
+// object.each — iterate every key/value pair of an object value. `! entry`
+// fires once per member with a reused scratch `Entry{ key, value }` — same
+// stack-scratch convention as `__match`/`__row` above: mutated in place per
+// iteration, never heap-allocated.
+// ============================================================================
+
+~pub tor object.each { doc: *Doc<open>, v: *Value }
+! entry *Entry
+| done
+| not-an-object
+
+~proc object.each|zig {
+    const yj = @import("root").koru_koru.koru_yyjson;
+    _ = doc;
+    if (!yj.c.yyjson_is_obj(v)) return .{ .not_an_object = .{} };
+    var iter: yj.c.yyjson_obj_iter = undefined;
+    _ = yj.c.yyjson_obj_iter_init(v, &iter);
+    var __entry: yj.Entry = undefined;
+    while (yj.c.yyjson_obj_iter_next(&iter)) |key_val| {
+        const val = yj.c.yyjson_obj_iter_get_val(key_val);
+        const kptr = yj.c.yyjson_get_str(key_val);
+        const klen = yj.c.yyjson_get_len(key_val);
+        __entry = yj.Entry{ .key = if (kptr) |p| p[0..klen] else "", .value = val };
+        entry(&__entry);
+    }
+    return .{ .done = .{} };
+}
+
+// ============================================================================
+// Scalar leaves — read a value as a concrete type. A type mismatch is a
+// loud `wrong-type` branch (yyjson's raw accessors return 0/NULL on
+// mismatch; we refuse to expose that footgun directly).
+// ============================================================================
+
+~pub tor as.string { doc: *Doc<open>, v: *Value }
+| ok string
+| wrong-type
+
+~proc as.string|zig {
+    _ = doc;
+    if (c.yyjson_get_str(v)) |p| {
+        const len = c.yyjson_get_len(v);
+        return .{ .ok = p[0..len] };
+    }
+    return .{ .wrong_type = .{} };
+}
+
+~pub tor as.int { doc: *Doc<open>, v: *Value }
+| ok i64
+| wrong-type
+
+~proc as.int|zig {
+    _ = doc;
+    if (!c.yyjson_is_int(v)) return .{ .wrong_type = .{} };
+    return .{ .ok = c.yyjson_get_sint(v) };
+}
+
+~pub tor as.double { doc: *Doc<open>, v: *Value }
+| ok f64
+| wrong-type
+
+~proc as.double|zig {
+    _ = doc;
+    if (!c.yyjson_is_num(v)) return .{ .wrong_type = .{} };
+    return .{ .ok = c.yyjson_get_num(v) };
+}
+
+~pub tor as.bool { doc: *Doc<open>, v: *Value }
+| ok bool
+| wrong-type
+
+~proc as.bool|zig {
+    _ = doc;
+    if (!c.yyjson_is_bool(v)) return .{ .wrong_type = .{} };
+    // NOT c.yyjson_get_bool(v) — see the "Toolchain findings" section of
+    // README.md. yyjson's own `unsafe_yyjson_get_bool` inline C function does
+    // a shift-and-mask on a bitfield-packed union member, and Zig's
+    // translate-c mistranslates that specific inline body (`expected type
+    // 'bool', found 'c_int'` deep in the generated cimport.zig, confirmed
+    // with a standalone `zig run` against yyjson.h — nothing Koru-specific).
+    // yyjson_val's own public layout (`struct yyjson_val { tag: u64, uni }`,
+    // yyjson.h ~4765) and its documented tag bit-macros survive translate-c
+    // fine, so we replicate the one broken accessor's logic directly against
+    // the tag byte instead of calling it.
+    const tag: u64 = v.tag;
+    return .{ .ok = ((tag & c.YYJSON_SUBTYPE_MASK) >> c.YYJSON_TYPE_BIT) != 0 };
+}

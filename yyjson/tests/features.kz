@@ -1,0 +1,85 @@
+// Feature coverage — object.each, a wrong-type read, a missing key, a
+// malformed document, array.get by index (both found and out-of-range),
+// as.double, and as.bool. Matches the house convention of one flow per
+// feature (see pcre2/tests/features.kz).
+//
+// EXPECTED output:
+//   x = 1
+//   y = 2
+//   age as string: wrong-type
+//   missing: not-found
+//   second tag: computing
+//   index out of range
+//   pi = 3.5
+//   active = true
+//   bad json at byte 1: unexpected character, expected a string key
+//   done
+
+~import koru/yyjson
+~import std/io
+
+// (1) object.each over a small object.
+~koru/yyjson:parse(text: "{\"x\": 1, \"y\": 2}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.each(doc, v: root_v)
+    ! entry e |> koru/yyjson:as.int(doc, v: e.value.?)
+        | ok n |> std/io:print.ln("{{ e.key:s }} = {{ n:d }}")
+        | wrong-type |> std/io:print.ln("{{ e.key:s }}: wrong type")
+    | done |> koru/yyjson:close(doc)
+    | not-an-object |> koru/yyjson:close(doc) |> std/io:print.ln("not an object")
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (2) Wrong-type read: "age" is a number, ask for it as a string.
+~koru/yyjson:parse(text: "{\"age\": 36}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "age")
+    | found age_v |> koru/yyjson:as.string(doc, v: age_v)
+        | ok _ |> std/io:print.ln("age as string: SHOULD NOT HAPPEN") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("age as string: wrong-type") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("age: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (3) Missing key.
+~koru/yyjson:parse(text: "{\"age\": 36}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "missing")
+    | found _ |> std/io:print.ln("missing: SHOULD NOT HAPPEN") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("missing: not-found") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (4) array.get by index — the found case.
+~koru/yyjson:parse(text: "[\"math\", \"computing\"]")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:array.get(doc, v: root_v, index: 1)
+    | found tag_v |> koru/yyjson:as.string(doc, v: tag_v)
+        | ok s |> std/io:print.ln("second tag: {{ s:s }}") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("second tag: wrong type") |> koru/yyjson:close(doc)
+    | out-of-range |> std/io:print.ln("index out of range") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (4b) array.get by index — the out-of-range case (index 5 of a 2-element array).
+~koru/yyjson:parse(text: "[\"math\", \"computing\"]")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:array.get(doc, v: root_v, index: 5)
+    | found _ |> std/io:print.ln("SHOULD NOT HAPPEN") |> koru/yyjson:close(doc)
+    | out-of-range |> std/io:print.ln("index out of range") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (6) as.double — read a floating-point field.
+~koru/yyjson:parse(text: "{\"pi\": 3.5}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "pi")
+    | found pi_v |> koru/yyjson:as.double(doc, v: pi_v)
+        | ok f |> std/io:print.ln("pi = {{ f:any }}") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("pi: wrong type") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("pi: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (7) as.bool — read a boolean field.
+~koru/yyjson:parse(text: "{\"active\": true}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "active")
+    | found active_v |> koru/yyjson:as.bool(doc, v: active_v)
+        | ok b |> std/io:print.ln("active = {{ b:any }}") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("active: wrong type") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("active: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (8) Malformed JSON: the err branch fires loudly with yyjson's own
+// diagnostic and the byte offset it choked on. No silent fallback.
+~koru/yyjson:parse(text: "{bad}")
+| ok doc |> koru/yyjson:close(doc) |> std/io:print.ln("SHOULD NOT PARSE")
+| err e |> std/io:print.ln("bad json at byte {{ e.pos:d }}: {{ e.msg:s }}") |> std/io:print.ln("done")

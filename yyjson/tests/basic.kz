@@ -1,0 +1,44 @@
+// Basic yyjson test — parse a small object, read a string field, an int
+// field, then iterate a nested array. Three independent pipelines (each
+// parses its own doc), matching the house convention of one flow per feature
+// (see pcre2/tests/features.kz).
+//
+// EXPECTED output:
+//   name: ada
+//   age: 36
+//   tag: math
+//   tag: computing
+//   done
+
+~import koru/yyjson
+~import std/io
+
+// (1) String field.
+~koru/yyjson:parse(text: "{\"name\": \"ada\", \"age\": 36}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "name")
+    | found name_v |> koru/yyjson:as.string(doc, v: name_v)
+        | ok name |> std/io:print.ln("name: {{ name:s }}") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("name: wrong type") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("name: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (2) Int field.
+~koru/yyjson:parse(text: "{\"name\": \"ada\", \"age\": 36}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "age")
+    | found age_v |> koru/yyjson:as.int(doc, v: age_v)
+        | ok age |> std/io:print.ln("age: {{ age:d }}") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("age: wrong type") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("age: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")
+
+// (3) Array iteration.
+~koru/yyjson:parse(text: "{\"tags\": [\"math\", \"computing\"]}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "tags")
+    | found tags_v |> koru/yyjson:array.each(doc, v: tags_v)
+        ! item t |> koru/yyjson:as.string(doc, v: t)
+            | ok s |> std/io:print.ln("tag: {{ s:s }}")
+            | wrong-type |> std/io:print.ln("tag: wrong type")
+        | done |> koru/yyjson:close(doc) |> std/io:print.ln("done")
+        | not-an-array |> koru/yyjson:close(doc) |> std/io:print.ln("tags: not an array")
+    | not-found |> std/io:print.ln("tags: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("parse failed: {{ e.msg:s }}")

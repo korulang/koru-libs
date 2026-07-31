@@ -1,0 +1,52 @@
+// TOOLCHAIN REPRO (not a yyjson feature) — an effect-branch event's own
+// declared parameter name gets reused VERBATIM as the inlined body's local
+// binding name at the call site, with no hygiene/renaming. If the caller
+// happens to already have a local bound to that same identifier (for any
+// unrelated reason, anywhere earlier in the same flow function), Zig's
+// no-shadowing rule turns it into a hard compile error — even though the
+// caller's code and the library's code are both individually correct.
+//
+// This is a pure core-language finding, nothing yyjson-specific: reproduced
+// here with two trivial events that have nothing to do with JSON. See
+// yyjson/README.md "Toolchain findings" for the full writeup and the real
+// diagnostics from the actual yyjson/index.kz collision that surfaced this
+// (array.each's `v: *Value` parameter vs. a caller binding also named `v`
+// from an earlier `root(doc): v`).
+//
+// `get-count` returns i32 directly (`-> i32`), destructured into a binding
+// named `v` — completely unremarkable, ordinary caller code. `each-i32` is
+// an EFFECT-BRANCH event (`! item`) whose own parameter is ALSO named `v`,
+// coincidentally. Calling it downstream of the `v` binding should be totally
+// fine (they're unrelated variables in unrelated code) — instead the build
+// fails because the inliner's substitution for `each-i32`'s own `v` parameter
+// collides with the caller's `v`.
+//
+// EXPECTED (if the hygiene gap is fixed): compiles and runs, printing
+//   count: 3
+//   saw 10
+//   saw 20
+//   saw 30
+//
+// ACTUAL (current compiler): fails to build with:
+//   output_emitted.zig:N:M: error: local constant 'v' shadows local constant from outer scope
+//   note: previous declaration here
+//
+// Reproduce:
+//   koruc run yyjson/tests/TOOLCHAIN_REPRO_effect_param_shadow.kz
+
+~import std/io
+
+~pub tor get-count { n: i32 } -> i32
+~proc get-count|zig {
+    return n;
+}
+
+~pub tor each-i32 { v: []const i32 }
+! item i32
+
+~proc each-i32|zig {
+    for (v) |it| item(it);
+}
+
+~get-count(n: 3): v |> std/io:print.ln("count: {{ v:d }}") |> each-i32(v: &[_]i32{ 10, 20, 30 })
+! item x |> std/io:print.ln("saw {{ x:d }}")

@@ -1,0 +1,28 @@
+// NEGATIVE TEST — this file must NOT compile.
+//
+// Misuse: calling koru/yyjson:root on a *Doc after its <open!> obligation has
+// already been discharged by koru/yyjson:close. Every reader in this package
+// (root, object.get, array.get, array.each, object.each, as.*) requires
+// `doc: *Doc<open>` — a BORROW of the live obligation, not just documentation
+// — so once `close` has discharged it, presenting that same binding again is
+// a use-after-free of the doc's arena (every yyjson_val in the tree was
+// allocated out of memory `close` just freed). The phantom checker must
+// catch this at compile time, exactly the class of bug (analogous to
+// sqlite3/pq's use-after-close/use-after-disconnect) the obligation exists to
+// make impossible.
+//
+// Grounded in the same shape as the koru-libs pq lift's own negative test
+// (pq/tests/negative_use_after_disconnect.kz) and the koru compiler's own
+// regression test for this class of bug:
+//   tests/regression/300_ADVANCED_FEATURES/330_PHANTOM_TYPES/330_007_use_after_disposal/input.kz
+//
+// Reproduce:
+//   koruc run yyjson/tests/negative_use_after_close.kz
+//   EXPECT: CONTAINS Use-after-discharge
+
+~import koru/yyjson
+~import std/io
+
+~koru/yyjson:parse(text: "{}")
+| ok doc |> koru/yyjson:close(doc) |> koru/yyjson:root(doc): _ |> std/io:print.ln("should never get here")
+| err _ |> _

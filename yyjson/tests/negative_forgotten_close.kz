@@ -1,0 +1,24 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// A `koru/yyjson:parse` success carries the `open!` obligation: the parsed
+// doc MUST be handed back to `koru/yyjson:close`, or the yyjson arena leaks.
+//
+// By default the compiler's auto-discharge pass is clever enough to insert
+// the missing `koru/yyjson:close` for you when it can trace the binding to
+// its single legal disposer (the same convenience curl/pcre2/evp lean on).
+// So under DEFAULT settings this file compiles — auto-discharge plugs the
+// leak. Disable that safety net (`--auto-discharge=disable`, the same flag
+// used across this catalog for this exact class of test) and the obligation
+// tracking is laid bare: the doc is bound to `_` and dropped, no disposer
+// runs, and the build fails loudly instead of leaking.
+//
+// Reproduce:
+//   koruc --check yyjson/tests/negative_forgotten_close.kz --auto-discharge=disable  # passes shape check
+//   koruc run   yyjson/tests/negative_forgotten_close.kz --auto-discharge=disable    # FAILS:
+//     error[KORU030]: Resource '_' <open!> was not discharged. Call: koru.yyjson:close
+
+~import koru/yyjson
+
+~koru/yyjson:parse(text: "{}")
+| ok _ |> _
+| err _ |> _

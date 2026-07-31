@@ -1,0 +1,37 @@
+// read_config — a runnable newcomer example.
+//
+// Parse a small JSON "config" blob, read a string and a number field, and
+// walk an array of tags. There is NO explicit `close` on the happy path
+// below `object.each`/`array.each`'s `done` branch — every terminal branch
+// still calls it explicitly here for clarity, but try deleting one and watch
+// the build refuse (auto-discharge will silently save you under default
+// settings; add --auto-discharge=disable to see the obligation laid bare,
+// same as tests/negative_forgotten_close.kz).
+//
+//   $ koruc run yyjson/examples/read_config.kz
+//   service: search-api
+//   port: 8443
+//   tag: prod
+//   tag: us-east
+
+~import koru/yyjson
+~import std/io
+
+~koru/yyjson:parse(text: "{\"service\": \"search-api\", \"port\": 8443, \"tags\": [\"prod\", \"us-east\"]}")
+| ok doc |> koru/yyjson:root(doc): root_v |> koru/yyjson:object.get(doc, v: root_v, key: "service")
+    | found service_v |> koru/yyjson:as.string(doc, v: service_v)
+        | ok s |> std/io:print.ln("service: {{ s:s }}") |> koru/yyjson:object.get(doc, v: root_v, key: "port")
+            | found port_v |> koru/yyjson:as.int(doc, v: port_v)
+                | ok p |> std/io:print.ln("port: {{ p:d }}") |> koru/yyjson:object.get(doc, v: root_v, key: "tags")
+                    | found tags_v |> koru/yyjson:array.each(doc, v: tags_v)
+                        ! item t |> koru/yyjson:as.string(doc, v: t)
+                            | ok tag |> std/io:print.ln("tag: {{ tag:s }}")
+                            | wrong-type |> _
+                        | done |> koru/yyjson:close(doc)
+                        | not-an-array |> koru/yyjson:close(doc)
+                    | not-found |> koru/yyjson:close(doc)
+                | wrong-type |> std/io:print.ln("port: wrong type") |> koru/yyjson:close(doc)
+            | not-found |> std/io:print.ln("port: missing") |> koru/yyjson:close(doc)
+        | wrong-type |> std/io:print.ln("service: wrong type") |> koru/yyjson:close(doc)
+    | not-found |> std/io:print.ln("service: missing") |> koru/yyjson:close(doc)
+| err e |> std/io:print.ln("config is not valid JSON: {{ e.msg:s }}")
