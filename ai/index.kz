@@ -72,9 +72,9 @@ pub const Request = struct {
 // ============================================================================
 
 ~pub tor request.anthropic {
-    model: []const u8,
-    prompt: []const u8,
-    system: ?[]const u8,
+    model: string,
+    prompt: string,
+    system: ?string,
     max_tokens: ?i32,
     allocator: ?std.mem.Allocator
 } -> *Request<built!>
@@ -100,9 +100,9 @@ pub const Request = struct {
 }
 
 ~pub tor request.openai {
-    model: []const u8,
-    prompt: []const u8,
-    system: ?[]const u8,
+    model: string,
+    prompt: string,
+    system: ?string,
     max_tokens: ?i32,
     allocator: ?std.mem.Allocator
 } -> *Request<built!>
