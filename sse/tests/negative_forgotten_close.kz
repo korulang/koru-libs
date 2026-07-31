@@ -1,0 +1,17 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// `koru/sse:new` mints `framing!`: the stream MUST reach `koru/sse:close`
+// or its buffer leaks. Under default settings auto-discharge inserts the
+// close (the same convenience curl/yyjson/pcre2 lean on); disabled, the
+// obligation is laid bare and the build fails loudly.
+//
+// Reproduce:
+//   koruc run sse/tests/negative_forgotten_close.kz --auto-discharge=disable
+//   EXPECT: CONTAINS KORU030
+
+~import koru/sse
+
+~koru/sse:new(): s
+|> koru/sse:feed(s, bytes: "data: x\n")
+! data _ |> _
+| ok |> _

@@ -1,0 +1,18 @@
+// NEGATIVE TEST — this file must NOT compile.
+//
+// `feed` takes `s: *Stream<framing>` — a BORROW of the live obligation.
+// Once `close` has discharged it, presenting the same binding again is a
+// use-after-free of the stream's buffer, and the phantom checker rejects
+// it at compile time (the same class as yyjson's use-after-close).
+//
+// Reproduce:
+//   koruc run sse/tests/negative_feed_after_close.kz
+//   EXPECT: CONTAINS Use-after-discharge
+
+~import koru/sse
+
+~koru/sse:new(): s
+|> koru/sse:close(s)
+|> koru/sse:feed(s, bytes: "data: too late\n")
+! data _ |> _
+| ok |> _

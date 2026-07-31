@@ -1,0 +1,21 @@
+// SSE framing — the four hazards in one run:
+//   (1) a record split MID-LINE across two feeds must emit exactly once,
+//   (2) comment keepalives and blank separators are consumed silently,
+//   (3) `[DONE]` is punctuation, never data,
+//   (4) an unterminated tail at close is dropped, not emitted.
+//
+// EXPECTED output:
+//   data: alpha
+//   data: beta
+//   data: gamma
+//   fed
+//   closed
+
+~import koru/sse
+~import std/io
+
+~koru/sse:new(): s |> koru/sse:feed(s, bytes: "data: alpha\n: keepalive comment\n\ndata: be")
+! data d |> std/io:print.ln("data: {{ d:s }}")
+| ok |> koru/sse:feed(s, bytes: "ta\ndata: gamma\ndata: [DONE]\ndata: tail-without-newline")
+    ! data d |> std/io:print.ln("data: {{ d:s }}")
+    | ok |> std/io:print.ln("fed") |> koru/sse:close(s) |> std/io:print.ln("closed")
