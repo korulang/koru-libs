@@ -44,8 +44,8 @@ std/string:from-page(text: "buy milk")
 
 koru/vaxis:run(title: "dock-stack-live")
 ! draw w |> app(win: w): panel
-    |> std/store:sweep(todos)
-    ! sweep { entity.label } |> std/string:read(s: label): text
+    |> std/store:query(todos)
+    ! query { entity.label } |> std/string:read(s: label): text
         |> koru/vaxis:stack-row(stack: panel): rw
         |> std/fmt:ln("{{ text:s }}"): line |> todo-row(win: rw, line.text)
 ! key k when k.ch == 'q' |> koru/vaxis:quit()

@@ -43,8 +43,8 @@ std/string:from-page(text: "")
 
 koru/vaxis:run(title: "text-input")
 ! draw w |> koru/vaxis:sub(parent: w, x: 0, y: 0, w: 0, h: 0): root
-    |> std/store:sweep(buf)
-    ! sweep { buf: entity.text } |> std/string:read(s: buf): value
+    |> std/store:query(buf)
+    ! query { buf: entity.text } |> std/string:read(s: buf): value
         |> app(win: root, value, clock.ms)
 ! tick ms |> std/store:stored { clock.ms: ms }
 ! key k when k.ch == 27 |> koru/vaxis:quit()

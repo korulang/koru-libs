@@ -29,11 +29,11 @@ std/store:insert(sprites) { x: 30, y: 40, vx: 1, vy: 5 }
 // Chained single-field writes — one atomic unit per the chain-envelope
 // ruling. (A single multi-field stored block through the cursor is pinned
 // red as koru 690_038: `unknown store '<s>[__koru_qrow]'`.)
-[name(movement)]std/store:query(sprites)
-! query { entity.x, entity.y, entity.vx, entity.vy } |> std/store:stored { entity.x: entity.x + entity.vx } |> std/store:stored { entity.y: entity.y + entity.vy }
+[name(movement)]std/store:rule(sprites)
+! row { entity.x, entity.y, entity.vx, entity.vy } |> std/store:stored { entity.x: entity.x + entity.vx } |> std/store:stored { entity.y: entity.y + entity.vy }
 
-[name(report)|depends_on(movement)]std/store:query(sprites)
-! query { entity.x, entity.y } |> std/io:print.ln("sprite at {{ x:d }},{{ y:d }}")
+[name(report)|depends_on(movement)]std/store:rule(sprites)
+! row { entity.x, entity.y } |> std/io:print.ln("sprite at {{ x:d }},{{ y:d }}")
 
 libs/raylib:window.open.hidden(width: 320, height: 200, title: "bounce round 2")
 | win w |> libs/raylib:frames(win: w, count: 4)
