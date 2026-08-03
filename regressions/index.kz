@@ -184,12 +184,12 @@ const std = @import("std");
 // ============================================================================
 
 ~[comptime|abstract] pub tor run {
-    dir: []const u8,
-    base: []const u8,
+    dir: string,
+    base: string,
     allocator: __koru_std.mem.Allocator,
 }
 | passed
-| failed []const u8
+| failed string
 
 // Default = a FLOW that delegates to the zig executor and re-produces `run`'s
 // own branches. Using a flow default (not a bare `~proc run|zig`) is what makes
@@ -202,12 +202,12 @@ const std = @import("std");
 // Reads the test file's own `//~` directives (the test is self-describing),
 // then drives koruc and scores against them.
 ~[comptime] tor run-exec {
-    dir: []const u8,
-    base: []const u8,
+    dir: string,
+    base: string,
     allocator: __koru_std.mem.Allocator,
 }
 | passed
-| failed []const u8
+| failed string
 
 ~proc run-exec|zig {
     // ---- read the test file and parse its //~ directives ----

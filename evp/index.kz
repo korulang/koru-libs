@@ -105,7 +105,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
 // finalise the same binding — no re-issued handle to thread.
 // ============================================================================
 
-~pub tor update { d: *Digest<hashing>, bytes: []const u8 }
+~pub tor update { d: *Digest<hashing>, bytes: string }
 
 ~proc update|zig {
     if (c.EVP_DigestUpdate(d.ctx, bytes.ptr, bytes.len) != 1) {
@@ -119,7 +119,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
 // use of the handle after `final` is a compile error.
 // ============================================================================
 
-~pub tor final.hex { d: *Digest<!hashing> } -> []const u8
+~pub tor final.hex { d: *Digest<!hashing> } -> string
 
 ~proc final.hex|zig {
     var out: [c.EVP_MAX_MD_SIZE]u8 = undefined;
@@ -132,7 +132,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
     return hexEncode(out[0..outlen]);
 }
 
-~pub tor final.bytes { d: *Digest<!hashing> } -> []const u8
+~pub tor final.bytes { d: *Digest<!hashing> } -> string
 
 ~proc final.bytes|zig {
     var out: [c.EVP_MAX_MD_SIZE]u8 = undefined;
@@ -152,7 +152,7 @@ fn hexEncode(bytes: []const u8) []const u8 {
 // common "hash this buffer" case. No handle escapes, so nothing to forget.
 // ============================================================================
 
-~pub tor sha256.hex { input: []const u8 } -> []const u8
+~pub tor sha256.hex { input: string } -> string
 
 ~proc sha256.hex|zig {
     var out: [32]u8 = undefined;

@@ -40,9 +40,9 @@ pub const Statement = struct {
 // Connection Management
 // ============================================================================
 
-~pub tor open { path: []const u8 }
+~pub tor open { path: string }
 | db *Connection<opened!>
-| err { code: i32, msg: []const u8 }
+| err { code: i32, msg: string }
 
 ~proc open|zig {
     var db: ?*c.sqlite3 = null;
@@ -72,9 +72,9 @@ pub const Statement = struct {
 // `exec` only READS the connection to run SQL — it never closes it — so it
 // BORROWS `<opened>` rather than consuming and re-minting. The caller keeps its
 // live `opened!` obligation across the call and still owes exactly one `close`.
-~pub tor exec { conn: *Connection<opened>, sql: []const u8 }
+~pub tor exec { conn: *Connection<opened>, sql: string }
 | ok
-| err { code: i32, msg: []const u8 }
+| err { code: i32, msg: string }
 
 ~proc exec|zig {
     var errmsg: [*c]u8 = null;
@@ -89,10 +89,10 @@ pub const Statement = struct {
 
 // Literal SQL query - takes a runtime SQL string
 // For compile-time parameterized queries, use ~query { ... } with Source block
-~pub tor query.literal { conn: *Connection<!opened>, sql: []const u8 }
+~pub tor query.literal { conn: *Connection<!opened>, sql: string }
 ! row *Statement<row!>
 | done *Connection<opened!>
-| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
+| err { conn: *Connection<opened!>, code: i32, msg: string }
 
 ~proc query.literal|zig {
     // Effect-branch proc: this body inlines into the consumer's frame, where
@@ -158,7 +158,7 @@ pub const Statement = struct {
 ~[norun]pub tor query.impl { conn: *Connection<!opened> }
 | row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
 | empty *Connection<opened!>
-| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
+| err { conn: *Connection<opened!>, code: i32, msg: string }
 
 ~proc query|zig {
     const ast = @import("ast");
@@ -559,7 +559,7 @@ pub const Statement = struct {
 ~pub tor next { conn: *Connection<!opened>, stmt: *Statement<!prepared> }
 | row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
 | done *Connection<opened!>
-| err { conn: *Connection<opened!>, code: i32, msg: []const u8 }
+| err { conn: *Connection<opened!>, code: i32, msg: string }
 
 ~proc next|zig {
     const rc = c.sqlite3_step(stmt.handle);
@@ -579,7 +579,7 @@ pub const Statement = struct {
 
 // Finalize text - acknowledges we're done with borrowed text pointer
 // Must be called BEFORE finalize.stmt (text becomes invalid after stmt finalize)
-~pub tor finalize.text { text: []const u8<!text> }
+~pub tor finalize.text { text: string<!text> }
 
 ~proc finalize.text|zig {
     _ = &text;
@@ -607,7 +607,7 @@ pub const Statement = struct {
 // NOTE: text is a ROW-SCOPED borrow (valid only within the `! row` body, like
 // std/fs:read-lines' `! line`). Pristine-later: hand back an owned copy so it's
 // safe to capture across rows. For now it matches the stdlib borrow idiom.
-~pub tor col.text { stmt: *Statement<row>, index: i32 } -> []const u8
+~pub tor col.text { stmt: *Statement<row>, index: i32 } -> string
 ~proc col.text|zig {
     const ptr = c.sqlite3_column_text(stmt.handle, index);
     const len = c.sqlite3_column_bytes(stmt.handle, index);

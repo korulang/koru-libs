@@ -62,12 +62,12 @@ fn levelToZlib(level: ?Level) c_int {
 // ============================================================================
 
 ~pub tor compress {
-    data: []const u8,
+    data: string,
     level: ?Level,
     allocator: std.mem.Allocator
 }
-| compressed { data: []const u8, original_size: usize }
-| error []const u8
+| compressed { data: string, original_size: usize }
+| error string
 
 ~proc compress|zig {
     // Allocate output buffer - worst case is slightly larger than input.
@@ -132,11 +132,11 @@ fn levelToZlib(level: ?Level) c_int {
 // ============================================================================
 
 ~pub tor compress-bytes {
-    data: []const u8,
+    data: string,
     allocator: std.mem.Allocator
 }
-| ok []const u8
-| error []const u8
+| ok string
+| error string
 
 ~proc compress-bytes|zig {
     // Same gzip-wrapper-overhead fix as compress|zig above.
@@ -185,11 +185,11 @@ fn levelToZlib(level: ?Level) c_int {
 // ============================================================================
 
 ~pub tor decompress {
-    data: []const u8,
+    data: string,
     allocator: std.mem.Allocator
 }
-| decompressed []const u8
-| error []const u8
+| decompressed string
+| error string
 
 ~proc decompress|zig {
     // Start with 4x input size, grow if needed
@@ -284,7 +284,7 @@ const Deflater = struct {
 
 ~pub tor deflate.init { level: ?Level }
 | ok *Deflater<open!>
-| err []const u8
+| err string
 
 ~proc deflate.init|zig {
     const d = std.heap.page_allocator.create(Deflater) catch {
@@ -307,9 +307,9 @@ const Deflater = struct {
     return .{ .ok = d };
 }
 
-~pub tor deflate.push { d: *Deflater<!open|!fed>, chunk: []const u8 }
+~pub tor deflate.push { d: *Deflater<!open|!fed>, chunk: string }
 | ok *Deflater<fed!>
-| err []const u8
+| err string
 
 ~proc deflate.push|zig {
     const a = std.heap.page_allocator;
@@ -331,8 +331,8 @@ const Deflater = struct {
 }
 
 ~pub tor deflate.finish { d: *Deflater<!fed> }
-| done { d: *Deflater<done!>, data: []const u8 }
-| err []const u8
+| done { d: *Deflater<done!>, data: string }
+| err string
 
 ~proc deflate.finish|zig {
     const a = std.heap.page_allocator;
@@ -360,7 +360,7 @@ const Deflater = struct {
 // Discharge the <done!> obligation: copy the compressed bytes out into
 // caller-owned memory, then free the Deflater and its internal buffer.
 // After this call `data` (borrowed) is gone but `bytes` (owned) is yours.
-~pub tor deflate.release { d: *Deflater<!done>, data: []const u8 } -> []const u8
+~pub tor deflate.release { d: *Deflater<!done>, data: string } -> string
 
 ~proc deflate.release|zig {
     const a = std.heap.page_allocator;

@@ -34,9 +34,9 @@ pub const Result = struct {
 // Connection Lifecycle
 // ============================================================================
 
-~pub tor connect { conninfo: []const u8 }
+~pub tor connect { conninfo: string }
 | ok *Conn<connected!>
-| err []const u8
+| err string
 
 ~proc connect|zig {
     const handle = c.PQconnectdb(conninfo.ptr);
@@ -70,9 +70,9 @@ pub const Result = struct {
 
 // Fire-and-forget: DDL, INSERT/UPDATE/DELETE where you don't need rows back.
 // Error message is connection-owned — valid until the next operation on conn.
-~pub tor exec { conn: *Conn<connected>, sql: []const u8 }
+~pub tor exec { conn: *Conn<connected>, sql: string }
 | ok
-| err []const u8
+| err string
 
 ~proc exec|zig {
     const res = c.PQexec(conn.handle, sql.ptr);
@@ -86,10 +86,10 @@ pub const Result = struct {
 }
 
 // Query returning rows. Result carries a <result!> obligation — must be cleared.
-~pub tor query { conn: *Conn<connected>, sql: []const u8 }
+~pub tor query { conn: *Conn<connected>, sql: string }
 | rows *Result<result!>
 | empty
-| err []const u8
+| err string
 
 ~proc query|zig {
     const res = c.PQexec(conn.handle, sql.ptr);
@@ -117,8 +117,8 @@ pub const Result = struct {
 
 // Get a column value by name. Returns the text representation (libpq's native form).
 // Branches: some = value present, null = SQL NULL, no-such-col = column name not found.
-~pub tor result.col { result: *Result<result>, row: usize, col: []const u8 }
-| some []const u8
+~pub tor result.col { result: *Result<result>, row: usize, col: string }
+| some string
 | is-null
 | no-such-col
 
@@ -150,9 +150,9 @@ pub const Result = struct {
 //   ~[migrate]koru/pq:sql(conninfo: "...") { ALTER TABLE ... }
 //
 // Future: replace conninfo string with ~koru/pq:config abstract event.
-~[comptime]pub tor sql { conninfo: []const u8, source: Source }
+~[comptime]pub tor sql { conninfo: string, source: Source }
 | ok
-| err []const u8
+| err string
 
 ~proc sql|zig {
     const handle = c.PQconnectdb(conninfo.ptr);

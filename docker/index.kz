@@ -238,7 +238,7 @@ pub const Container = struct {
 //       COPY . .
 //       CMD ["node", "index.js"]
 //   }
-~[comptime|norun]pub tor image { tag: []const u8, source: Source }
+~[comptime|norun]pub tor image { tag: string, source: Source }
 
 ~proc image|zig {
     // Void event - collected during AST walking by docker command
@@ -248,9 +248,9 @@ pub const Container = struct {
 // Build Operations
 // ============================================================================
 
-~pub tor build { tag: []const u8, context: []const u8 }
+~pub tor build { tag: string, context: string }
 | built Image
-| failed { code: i32, msg: []const u8 }
+| failed { code: i32, msg: string }
 
 ~proc build|zig {
     const allocator = std.heap.page_allocator;
@@ -276,9 +276,9 @@ pub const Container = struct {
 // ============================================================================
 
 // Run a container - creates <running!> obligation that must be discharged
-~pub tor run { image: []const u8, name: ?[]const u8 }
+~pub tor run { image: string, name: ?string }
 | started Container<running!>
-| failed { code: i32, msg: []const u8 }
+| failed { code: i32, msg: string }
 
 ~proc run|zig {
     const allocator = std.heap.page_allocator;
@@ -325,7 +325,7 @@ pub const Container = struct {
 // Stop a container - discharges <running!> obligation
 ~pub tor stop { container: Container<!running> }
 | stopped
-| failed { code: i32, msg: []const u8 }
+| failed { code: i32, msg: string }
 
 ~proc stop|zig {
     const allocator = std.heap.page_allocator;
@@ -349,7 +349,7 @@ pub const Container = struct {
 // Kill a container (forceful) - also discharges <running!> obligation
 ~pub tor kill { container: Container<!running> }
 | killed
-| failed { code: i32, msg: []const u8 }
+| failed { code: i32, msg: string }
 
 ~proc kill|zig {
     const allocator = std.heap.page_allocator;
@@ -374,9 +374,9 @@ pub const Container = struct {
 // Registry Operations
 // ============================================================================
 
-~pub tor push { image: []const u8 }
+~pub tor push { image: string }
 | pushed
-| failed { code: i32, msg: []const u8 }
+| failed { code: i32, msg: string }
 
 ~proc push|zig {
     const allocator = std.heap.page_allocator;
@@ -397,9 +397,9 @@ pub const Container = struct {
     return .{ .pushed = .{} };
 }
 
-~pub tor pull { image: []const u8 }
+~pub tor pull { image: string }
 | pulled
-| failed { code: i32, msg: []const u8 }
+| failed { code: i32, msg: string }
 
 ~proc pull|zig {
     const allocator = std.heap.page_allocator;

@@ -23,19 +23,19 @@ const std = @import("std");
 }
 
 ~[comptime|abstract] pub tor greet {
-    who: []const u8,
+    who: string,
     allocator: __koru_std.mem.Allocator,
 }
-| ok []const u8
+| ok string
 
 ~greet = greet-work(who, allocator)
 | ok o => ok o
 
 ~[comptime] tor greet-work {
-    who: []const u8,
+    who: string,
     allocator: __koru_std.mem.Allocator,
 }
-| ok []const u8
+| ok string
 
 ~proc greet-work|zig {
     _ = who;

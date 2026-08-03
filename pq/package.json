@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/pq",
+  "version": "0.0.1",
+  "description": "libpq (PostgreSQL) bindings for Koru, lifted behind phantom-typed connection and result obligations",
+  "keywords": ["koru", "korulang", "pq", "libpq", "postgres", "postgresql", "database", "zig", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/pq"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["pq"]
+    }
+  }
+}

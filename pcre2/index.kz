@@ -84,9 +84,9 @@ pub const Match = struct {
 // A pattern that PCRE2 cannot compile is a loud `err` (with the exact PCRE2
 // diagnostic and the byte offset it choked on), never a silent null.
 
-~pub tor compile { pattern: []const u8 }
+~pub tor compile { pattern: string }
 | ok *Regex<compiled!>
-| err { code: i32, offset: usize, msg: []const u8 }
+| err { code: i32, offset: usize, msg: string }
 
 ~proc compile|zig {
     var errcode: c_int = 0;
@@ -128,10 +128,10 @@ pub const Match = struct {
 // `find.all` only reads the pattern, never frees it, so the caller keeps the
 // live obligation across the whole call and still owes exactly one `free`.
 
-~pub tor find.all { re: *Regex<compiled>, subject: []const u8 }
+~pub tor find.all { re: *Regex<compiled>, subject: string }
 ! match *Match<match!>
 | done
-| err { code: i32, msg: []const u8 }
+| err { code: i32, msg: string }
 
 ~proc find.all|zig {
     // Effect-branch body: this proc is emitted at TWO sites — inlined into the
@@ -204,7 +204,7 @@ pub const Match = struct {
 // Text of capture group `index` (0 = whole match). Returns "" for a group that
 // did not participate in the match (PCRE2_UNSET) or an out-of-range index —
 // never reads out of bounds.
-~pub tor group.text { m: *Match<match>, index: i32 } -> []const u8
+~pub tor group.text { m: *Match<match>, index: i32 } -> string
 ~proc group.text|zig {
     const i: usize = @intCast(index);
     if (i >= m.count) return "";

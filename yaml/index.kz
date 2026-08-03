@@ -95,9 +95,9 @@ pub const Cursor = struct {
 // Open a parser over an in-memory YAML document. The returned Parser carries
 // the `open!` obligation: it MUST reach `begin` (which converts it to a live
 // cursor) or `close`, or the program will not compile.
-~pub tor open { input: []const u8, allocator: ?std.mem.Allocator }
+~pub tor open { input: string, allocator: ?std.mem.Allocator }
 | ok *Parser<open!>
-| err []const u8
+| err string
 
 ~proc open|zig {
     const alloc = allocator orelse std.heap.page_allocator;
@@ -136,7 +136,7 @@ pub const Cursor = struct {
 
 // The text of the last parse error on a parser. BORROWS the parser (`<open>`)
 // so you can read the message and then still `close` it — no threading.
-~pub tor error-text { parser: *Parser<open> } -> []const u8
+~pub tor error-text { parser: *Parser<open> } -> string
 
 ~proc error-text|zig {
     return parser.last_error;
@@ -224,7 +224,7 @@ pub const Cursor = struct {
 // ============================================================================
 
 // The human-readable kind of the current event, as a stable static string.
-~pub tor kind { cur: *Cursor<live> } -> []const u8
+~pub tor kind { cur: *Cursor<live> } -> string
 
 ~proc kind|zig {
     const t = cur.event.type;
@@ -248,7 +248,7 @@ pub const Cursor = struct {
 // borrows the event's internal buffer and is valid only until the next
 // `advance` / `finish` — read it before advancing (the cursor stays live).
 ~pub tor scalar { cur: *Cursor<live> }
-| value []const u8
+| value string
 | other
 
 ~proc scalar|zig {
