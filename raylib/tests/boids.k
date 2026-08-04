@@ -47,8 +47,8 @@ for(0..200)
 ! each s |> std/grid:stored { flock[s].x: @as(f32, @floatFromInt((s * 137 + (s * s) % 53) % 620)) + 10.0, flock[s].y: @as(f32, @floatFromInt((s * 89 + (s * s) % 71) % 420)) + 20.0, flock[s].vx: @as(f32, @floatFromInt((s * 31) % 17)) * 0.26 - 2.1, flock[s].vy: @as(f32, @floatFromInt((s * 19) % 13)) * 0.34 - 2.0 }
 
 tor clear-sums {}
-clear-sums = for(0..200)
-    ! each ci |> std/grid:stored { flock[ci].cx: 0.0, flock[ci].cy: 0.0, flock[ci].ax: 0.0, flock[ci].ay: 0.0, flock[ci].sx: 0.0, flock[ci].sy: 0.0, flock[ci].n: 0.0 }
+clear-sums = std/grid:sweep(flock)
+! sweep c |> std/grid:stored { c.cx: 0.0, c.cy: 0.0, c.ax: 0.0, c.ay: 0.0, c.sx: 0.0, c.sy: 0.0, c.n: 0.0 }
 
 // Every pair. Perception 52px, personal space 17px. `d2 > 0.25` excludes self.
 tor gather {}
@@ -64,14 +64,14 @@ gather = for(0..200)
 // under 1), so weighting the RAW terms means the weights are not comparable and
 // no stable balance exists. Normalised first, a weight IS the contribution.
 tor normalize {}
-normalize = for(0..200)
-    ! each ni |> std/grid:stored { flock[ni].cx: if (flock[ni].n > 0.0 and @sqrt((flock[ni].cx / flock[ni].n - flock[ni].x) * (flock[ni].cx / flock[ni].n - flock[ni].x) + (flock[ni].cy / flock[ni].n - flock[ni].y) * (flock[ni].cy / flock[ni].n - flock[ni].y)) > 0.001) (flock[ni].cx / flock[ni].n - flock[ni].x) / @sqrt((flock[ni].cx / flock[ni].n - flock[ni].x) * (flock[ni].cx / flock[ni].n - flock[ni].x) + (flock[ni].cy / flock[ni].n - flock[ni].y) * (flock[ni].cy / flock[ni].n - flock[ni].y)) else 0.0, flock[ni].cy: if (flock[ni].n > 0.0 and @sqrt((flock[ni].cx / flock[ni].n - flock[ni].x) * (flock[ni].cx / flock[ni].n - flock[ni].x) + (flock[ni].cy / flock[ni].n - flock[ni].y) * (flock[ni].cy / flock[ni].n - flock[ni].y)) > 0.001) (flock[ni].cy / flock[ni].n - flock[ni].y) / @sqrt((flock[ni].cx / flock[ni].n - flock[ni].x) * (flock[ni].cx / flock[ni].n - flock[ni].x) + (flock[ni].cy / flock[ni].n - flock[ni].y) * (flock[ni].cy / flock[ni].n - flock[ni].y)) else 0.0, flock[ni].ax: if (flock[ni].n > 0.0 and @sqrt((flock[ni].ax / flock[ni].n - flock[ni].vx) * (flock[ni].ax / flock[ni].n - flock[ni].vx) + (flock[ni].ay / flock[ni].n - flock[ni].vy) * (flock[ni].ay / flock[ni].n - flock[ni].vy)) > 0.001) (flock[ni].ax / flock[ni].n - flock[ni].vx) / @sqrt((flock[ni].ax / flock[ni].n - flock[ni].vx) * (flock[ni].ax / flock[ni].n - flock[ni].vx) + (flock[ni].ay / flock[ni].n - flock[ni].vy) * (flock[ni].ay / flock[ni].n - flock[ni].vy)) else 0.0, flock[ni].ay: if (flock[ni].n > 0.0 and @sqrt((flock[ni].ax / flock[ni].n - flock[ni].vx) * (flock[ni].ax / flock[ni].n - flock[ni].vx) + (flock[ni].ay / flock[ni].n - flock[ni].vy) * (flock[ni].ay / flock[ni].n - flock[ni].vy)) > 0.001) (flock[ni].ay / flock[ni].n - flock[ni].vy) / @sqrt((flock[ni].ax / flock[ni].n - flock[ni].vx) * (flock[ni].ax / flock[ni].n - flock[ni].vx) + (flock[ni].ay / flock[ni].n - flock[ni].vy) * (flock[ni].ay / flock[ni].n - flock[ni].vy)) else 0.0, flock[ni].sx: if (@sqrt(flock[ni].sx * flock[ni].sx + flock[ni].sy * flock[ni].sy) > 0.0001) flock[ni].sx / @sqrt(flock[ni].sx * flock[ni].sx + flock[ni].sy * flock[ni].sy) else 0.0, flock[ni].sy: if (@sqrt(flock[ni].sx * flock[ni].sx + flock[ni].sy * flock[ni].sy) > 0.0001) flock[ni].sy / @sqrt(flock[ni].sx * flock[ni].sx + flock[ni].sy * flock[ni].sy) else 0.0 }
+normalize = std/grid:sweep(flock)
+! sweep c |> std/grid:stored { c.cx: if (c.n > 0.0 and @sqrt((c.cx / c.n - c.x) * (c.cx / c.n - c.x) + (c.cy / c.n - c.y) * (c.cy / c.n - c.y)) > 0.001) (c.cx / c.n - c.x) / @sqrt((c.cx / c.n - c.x) * (c.cx / c.n - c.x) + (c.cy / c.n - c.y) * (c.cy / c.n - c.y)) else 0.0, c.cy: if (c.n > 0.0 and @sqrt((c.cx / c.n - c.x) * (c.cx / c.n - c.x) + (c.cy / c.n - c.y) * (c.cy / c.n - c.y)) > 0.001) (c.cy / c.n - c.y) / @sqrt((c.cx / c.n - c.x) * (c.cx / c.n - c.x) + (c.cy / c.n - c.y) * (c.cy / c.n - c.y)) else 0.0, c.ax: if (c.n > 0.0 and @sqrt((c.ax / c.n - c.vx) * (c.ax / c.n - c.vx) + (c.ay / c.n - c.vy) * (c.ay / c.n - c.vy)) > 0.001) (c.ax / c.n - c.vx) / @sqrt((c.ax / c.n - c.vx) * (c.ax / c.n - c.vx) + (c.ay / c.n - c.vy) * (c.ay / c.n - c.vy)) else 0.0, c.ay: if (c.n > 0.0 and @sqrt((c.ax / c.n - c.vx) * (c.ax / c.n - c.vx) + (c.ay / c.n - c.vy) * (c.ay / c.n - c.vy)) > 0.001) (c.ay / c.n - c.vy) / @sqrt((c.ax / c.n - c.vx) * (c.ax / c.n - c.vx) + (c.ay / c.n - c.vy) * (c.ay / c.n - c.vy)) else 0.0, c.sx: if (@sqrt(c.sx * c.sx + c.sy * c.sy) > 0.0001) c.sx / @sqrt(c.sx * c.sx + c.sy * c.sy) else 0.0, c.sy: if (@sqrt(c.sx * c.sx + c.sy * c.sy) > 0.0001) c.sy / @sqrt(c.sx * c.sx + c.sy * c.sy) else 0.0 }
 
 // The three rules, summed into a raw heading. Cohesion and alignment only apply
 // when the boid can actually see someone; separation applies regardless.
 tor steer {}
-steer = for(0..200)
-    ! each si |> std/grid:stored { flock[si].rx: flock[si].vx + flock[si].cx * 0.035 + flock[si].ax * 0.060 + flock[si].sx * 0.095, flock[si].ry: flock[si].vy + flock[si].cy * 0.035 + flock[si].ay * 0.060 + flock[si].sy * 0.095 }
+steer = std/grid:sweep(flock)
+! sweep c |> std/grid:stored { c.rx: c.vx + c.cx * 0.035 + c.ax * 0.060 + c.sx * 0.095, c.ry: c.vy + c.cy * 0.035 + c.ay * 0.060 + c.sy * 0.095 }
 
 libs/raylib:window.open(width: 640, height: 460, title: "koru boids")
 | win w |> libs/raylib:window.fps(win: w, fps: 60) |> libs/raylib:frames(win: w, count: 3000)
