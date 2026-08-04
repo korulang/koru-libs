@@ -25,10 +25,22 @@
 // SHAPE NOTES, forced by defects rather than taste (see the koru pins):
 //  - Accumulators are COLUMNS ON THE GRID; a per-boid running total has to be
 //    addressable per boid.
-//  - Each pass is its own `tor`; a store write followed by `|> for(..)` does
-//    not compose, and nested in an arm it silently accumulates nothing.
-//  - A `std/grid:stored` is always the LAST link of its chain (koru 697_012),
-//    which is why the draw precedes the write.
+//  - Each pass is its own `tor` for a LAYOUT reason only: a `|> for(..)` link
+//    must sit on the SAME LINE as the write it follows, and every chain link in
+//    this file is written on its own continuation line. The multi-line form is
+//    refused loudly with KORU010, whether the loop's arms are at column 0 or
+//    indented under it, because the arms have no construct to attach to.
+//    RETESTED 2026-08-04 on a clean tree at koru 5aa3693e: the SEMANTIC claim
+//    this line used to carry — "a store write followed by `|> for(..)` does not
+//    compose, and nested in an arm it silently accumulates nothing" — is FALSE
+//    in all three positions, and it named the store when this file only ever
+//    used the grid. Pinned green as koru 697_013.
+//  - A `std/grid:stored` is ONE LINK of its chain, not the last one — koru
+//    697_012 pins exactly that, and this line used to claim the opposite while
+//    citing that pin as its authority. The tail-drop it described was fixed.
+//    697_012 covers a `print` and a second write as next links; whether the
+//    draw can now follow the write here is untested, so the order below stands
+//    unchanged rather than being rearranged on an unmeasured guess.
 //  - State is a grid, not a store, because a store sweep cannot carry the frame
 //    borrow (koru 690_252).
 import libs/raylib
