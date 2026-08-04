@@ -111,6 +111,22 @@ pub const Frame = struct {
     return .{ .win = w };
 }
 
+// Frame pacing. Without this the frame loop runs as fast as the machine will
+// go — a 1200-frame animation finishes in half a second and looks like a
+// single flash, which is indistinguishable from "nothing rendered" and is
+// exactly how the first boids demo appeared to fail.
+//
+// A BORROW, not a transition: pacing does not change what the window IS, so it
+// takes `<opened>` and mints nothing. That keeps it usable as an ordinary link
+// in the chain between `open` and `frames`, which is the only place it makes
+// sense to call.
+~pub tor window.fps { win: *Window<opened>, fps: i32 }
+
+~proc window.fps|zig {
+    _ = &win;
+    c.SetTargetFPS(fps);
+}
+
 // Explicit opened -> active transition WITHOUT rendering — the error-path
 // exit. After window.open, if a later setup step fails, the <opened!> window
 // has no other legal route to close (close accepts only <!active>, and
