@@ -61,3 +61,57 @@ a flock has no natural scalar. The nearest cheap instrument is probably a
 clustering statistic over two frames — mean nearest-neighbour distance should
 FALL as sub-flocks form, where a lattice holds it constant. Not built, and it
 may be more apparatus than a demo deserves.
+
+
+## The second half: oscillating between failure modes means the FORMULATION is
+## wrong, not the constants
+
+Once the flocking was real it was still bad, and Lars named it precisely —
+"they seem to EXTREMELY awkwardly clump and jitter". Fixing that took three
+attempts, and only the third one was a fix.
+
+The first bug was a genuine sign error in disguise: separation accumulated
+`(x_i - x_j)`, which GROWS with distance, so the repulsion was weakest at
+contact and strongest at the edge of its own radius. Boids could sit on top of
+each other feeling nothing, and the only force they met came as they crossed
+the radius, so they oscillated across it. Clumping and jitter were one bug seen
+from two sides. Correct is `∝ 1/d`.
+
+Then came the part worth recording. With separation fixed, the flock strung
+into evenly-spaced diagonal filaments. Reduce separation and raise cohesion: it
+collapsed into a single dense ball. **Two opposite failure modes, reachable by
+nudging the same two numbers in opposite directions, with nothing good in
+between.**
+
+That is the signature of a formulation problem, and it has a name here: the
+three rules produce vectors with wildly different NATURAL MAGNITUDES —
+cohesion is a distance (up to the perception radius, ~52), alignment is a
+velocity difference (~4), separation is a sum of reciprocals (well under 1).
+Weighting the raw vectors means the weights are not comparable to each other,
+so there is no stable region to tune toward; every adjustment trades one
+pathology for its opposite.
+
+Reynolds normalises each steering vector to unit length BEFORE weighting. Then
+a weight is literally the contribution, the three are commensurable, and the
+first set of numbers tried worked. The structural change cost less than the
+tuning did.
+
+**The test, and it is cheap:** if two adjustments in opposite directions
+produce two different pathologies and no improvement, stop adjusting. Something
+in the model is not comparable to something else it is being summed with. This
+generalises well past flocking — any weighted sum of terms with unlike units
+has it, which includes most cost models and most heuristics.
+
+## What it settles into, and why that is not a bug
+
+The flock reaches a steady state: a few large groups, moving coherently,
+visually samey after a minute. That is the model behaving correctly rather than
+a defect. Alignment is a consensus process, and consensus over a connected
+neighbourhood graph with no noise converges to global order — this is the
+Vicsek model at zero noise, where the ordered phase is the only phase.
+
+The standard remedy is the standard control parameter: a small random
+perturbation added per boid per frame, which is exactly what Vicsek varies to
+move the system between ordered and disordered. Obstacles or a predator do the
+same job with more structure. Not added here; the demo exists to show the three
+rules working, and it does.
