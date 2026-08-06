@@ -143,6 +143,17 @@ contestant knows the slot is gone.
   second-module exception, exercised. Its contribution is not a lifted assertion
   — the page interface has none a caller can violate — but the `num_pages`
   parameter that no longer exists.
+- **[sched](unikraft/sched/README.md)** — `uksched`'s thread lifetime behind six
+  states and 13 tors, with the asymmetry gate placed on *being scheduled*:
+  `terminate` accepts only `<!ran>`, and `<ran!>` is minted on EVIDENCE — the
+  entry shim raises a flag — rather than inferred from a yield. 22 of 112
+  `UK_ASSERT`s retired, per site, including the two guarding a re-primed live
+  thread and the one guarding a thread freed while the scheduler still holds it.
+  Its `struct uk_sched` mirror is proven **structurally**, by walking the
+  scheduler's own roster and finding the running thread on it, because every
+  candidate witness symbol in `ukschedcoop` is a file static. Deliberately does
+  not bind the fused `uk_sched_thread_create_fn*`: it would collapse three of
+  the ordering rules the lift exists to lift.
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -205,7 +216,7 @@ measurement and the column would lie if it did not say so:
 
 | C library | gate | linkable | `static inline` | Koru module | shape |
 |---|---|---:|---:|---|---|
-| `uksched` | allowlist | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
+| `uksched` | allowlist | 42 | 27 | `unikraft/sched` | **TAKEN** — threads; ordering + lifetime. The scheduler pointer itself is case 3 (`uk_sched_current`/`uk_thread_current` are both `static inline`) and every `struct uk_sched` callback is a `ukschedcoop` file static, so an address-witness proof is not available; the lift proves its mirror by walking the roster instead |
 | `uknetdev` | allowlist | 33 | 12 | `unikraft/net` | state machine — **but see below** |
 | `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` + `unikraft/pages` | **TAKEN** — three replays landed rival readings and the merge shipped as TWO modules: bytes in `unikraft/alloc`, pages in `unikraft/pages`. Read both. Its lesson is recorded under Duplicate prevention. |
 | `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | mappings |

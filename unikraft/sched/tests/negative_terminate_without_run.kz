@@ -1,0 +1,63 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): give a thread a stack, a TLS and a place in
+// the run queue, then destroy it without ever letting it execute.
+//
+// `terminate` accepts only <!ran> or <!parked>, and <ran!> is minted only by
+// `run`, `join`, `unpark` or the named escape `sched:never-ran`. `attach`
+// produces <queued!>, so this chain has nothing `terminate` will take.
+//
+// WHY THIS IS THE ASYMMETRY GATE AND NOT PEDANTRY. `uk_thread_create_container`
+// allocates a thread struct, a stack, an aux stack and a TLS out of the
+// scheduler's allocators. `CONFIG_STACK_SIZE_PAGE_ORDER` is 6 in every image
+// these tests build, so the stack alone is 256 KiB — an eighth of the 2 MB RAM
+// floor a Koru unikernel boots in, reserved and returned with no instruction
+// executed. In a pool-of-workers program the same shape is that multiplied by
+// the pool size.
+//
+// The C has nothing to say about it, and could not have.
+// `uk_sched_thread_add` followed by `uk_sched_thread_terminate` is correct,
+// warning-free and does no work: every `UK_ASSERT` on that path is satisfied,
+// because "was this thread ever scheduled" is not a fact the scheduler keeps.
+// This lift keeps it — the entry shim raises a flag as its first act — which is
+// why `run` can mint <ran!> as an OBSERVATION rather than an assumption.
+//
+// The legitimate case stays expressible and stays loud:
+//
+//     grep -r "sched:never-ran"
+//
+// answers "which programs allocate thread stacks they never schedule". What
+// this rejects is the SILENT waste.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           '!unikraft.sched:ran|!unikraft.sched:parked' but got
+//           'unikraft.sched:queued!' for argument 'thread'
+//
+// The control is `never_ran_escape.kz`, which is this program with
+// `sched:never-ran` in front of the `terminate` and compiles clean.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/sched
+~import std/io
+
+~unikraft/sched:current
+| ready sched |> unikraft/sched:reserve(sched, name: "never-scheduled", stack: 0)
+    | thread box |> unikraft/sched:prime(thread: box, laps: 1)
+        | ok wired |> unikraft/sched:attach(thread: wired)
+            | ok queued |> unikraft/sched:terminate(thread: queued)
+                |> std/io:print.ln("should never get here")
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }}")
+                |> unikraft/sched:unspawned(e.thread): u
+                |> unikraft/sched:release(thread: u)
+        | rejected r |> std/io:print.ln("prime: {{ r.reason:s }}")
+            |> unikraft/sched:unspawned(r.thread): u
+            |> unikraft/sched:release(thread: u)
+    | refused why |> std/io:print.ln("reserve: {{ why:s }}")
+| unavailable why |> std/io:print.ln("no scheduler: {{ why:s }}")
