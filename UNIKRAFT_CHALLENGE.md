@@ -143,6 +143,15 @@ contestant knows the slot is gone.
   second-module exception, exercised. Its contribution is not a lifted assertion
   — the page interface has none a caller can violate — but the `num_pages`
   parameter that no longer exists.
+- **[vmem](unikraft/vmem/README.md)** — `ukvmem` behind a 5-state ratchet, 12
+  tors. Its two headline rules have NO assertion and their penalty is a dead
+  machine: touching a reservation (`uk_vma_rsvd_ops.fault == NULL`) and writing
+  through a read-only mapping both end in an unresolvable page fault, in debug
+  and release alike. Both are phantom states with a negative test. Pillar 4
+  applied to the committed half and REFUSED on the reservation half, which costs
+  no memory. Two kernel constants no symbol exports — the page size and
+  `UK_PAGING_VADDR_ANY` — are DERIVED BY BEHAVIOURAL PROBE rather than assumed;
+  the console prints `0xbaadbaad80000000`. Census 20 retired / 16 not, per site.
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -208,7 +217,7 @@ measurement and the column would lie if it did not say so:
 | `uksched` | allowlist | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
 | `uknetdev` | allowlist | 33 | 12 | `unikraft/net` | state machine — **but see below** |
 | `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` + `unikraft/pages` | **TAKEN** — three replays landed rival readings and the merge shipped as TWO modules: bytes in `unikraft/alloc`, pages in `unikraft/pages`. Read both. Its lesson is recorded under Duplicate prevention. |
-| `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | mappings |
+| `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | **TAKEN** — mappings; the `static inline` wrappers here are reachable BY RECONSTRUCTION (they add no logic over exported `uk_vma_map` + exported `uk_vma_*_ops`), which is the opposite outcome from `uknetdev`'s |
 | `ukblkdev` | allowlist | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
 | `uklock` | allowlist | 15 | 19 | `unikraft/lock` | acquire/release on every path |
 | `ukfile` | **open** | 10 | 56 | `unikraft/file` | no allowlist, so all 10 link — but they are `nop`/`pollq` helpers and the real surface IS the inlines. Thin. |
