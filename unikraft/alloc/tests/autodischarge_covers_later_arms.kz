@@ -1,0 +1,67 @@
+// PROOF (was mis-filed as a FRONTIER): a handle handed back on a LATER branch arm
+// and then dropped is auto-discharged. This file compiles, boots, and does not
+// leak — and the emitted program is the evidence.
+//
+// ---------------------------------------------------------------------------
+// WHAT THIS FILE USED TO CLAIM, AND WHY IT WAS WRONG
+// ---------------------------------------------------------------------------
+// It was carried from the 02b replay asserting that "only a tor's FIRST declared
+// branch has its payload obligations tracked for discharge", that this program
+// therefore leaks its allocation on `| refused`, and that a compiler fix was
+// needed. All of that is false. Disproved 2026-08-06 by reading the artifact.
+//
+// The source below frees on `| ok grown` and on `| rejected r`. Compile it and
+// grep the emitted Zig for `free_event.handler`: there are THREE calls, and the
+// third sits inside the `| refused e |>` branch —
+//
+//     // >>> BRANCH: input.kz:105  | refused e |>
+//     _ = koru_unikraft.koru_alloc.free_event.handler(.{ .block = e.block });
+//
+// — the exact arm the old note said leaked. The compiler inserted it.
+//
+// ---------------------------------------------------------------------------
+// THE ACTUAL MECHANISM
+// ---------------------------------------------------------------------------
+// Obligations are keyed by BINDING NAME, not by AST-node identity
+// (src/auto_discharge_inserter.zig:97-98, addBinding:158 — a StringHashMap on the
+// name). Arm position cannot matter. What varies is whether auto-discharge can
+// ELECT a disposer for the state:
+//
+//   * exactly one unattended disposer -> inserted silently at the terminator;
+//   * zero or several                 -> KORU030, naming the binding.
+//
+// The control that settles it from the other side: give a state a second
+// unattended disposer and drop the LATER arm's handle. You get
+//
+//     error[KORU030]: Resource 'later' <live!> has multiple discharge options:
+//                     close, scrap. Discharge explicitly.
+//
+// naming `later` — the second arm's binding. The checker sees later arms fine.
+//
+// WHY THE ORIGINAL OBSERVATION LOOKED LIKE ARM POSITION. 02b's controls against
+// shipped `unikraft/blk` were real: KORU030 fired for a `<configured!>` handle on
+// arm 1 and stayed silent for a `<stuck!>` handle on arm 2, in one compile. But
+// the discriminator was the DISPOSER. `<stuck!>`'s only consumer is
+// `blk:abandon` — one unattended disposer, auto-inserted. `<configured!>`'s could
+// not be elected, so it was reported. Two arms, two disposer shapes, one correct
+// compiler. Four labelled controls were run and every one of them varied arm
+// position while none varied the disposer set, which is how a real asymmetry
+// produced a wrong mechanism.
+//
+// KEPT, rather than deleted, for two reasons: it is a live regression against the
+// auto-discharge path on later arms, and it is the record of a mis-attribution
+// that reached a README, a status report, and a commissioned bugfix before anyone
+// read the emitted code. See
+// `koru/concepts/frag-a-reproducible-failure-localises-the-symptom-not-the-defect.md`.
+~import unikraft/alloc
+~import std/io
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 64)
+    | block scratch |> unikraft/alloc:write(block: scratch, bytes: "sixty-four bytes about to be asked to become eight mib")
+        | ok filled |> unikraft/alloc:resize(block: filled, bytes: 8388608)
+            | ok grown |> unikraft/alloc:free(block: grown)
+            | refused e |> std/io:print.ln("resize refused: {{ e.reason:s }}")
+        | rejected r |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")

@@ -18,8 +18,10 @@
 // naming here: on FAILURE the old block is still live and still owed, and
 // `p = uk_realloc(a, p, n)` throws away the only pointer to it. `| refused` is
 // the only place the original can come back. It is named, it is owned, and Koru
-// requires the arm to be handled — but see frontier_failure_arm_leak.kz for the
-// one part of that guarantee the compiler does not currently enforce.
+// requires the arm to be handled. And if the arm merely BINDS it and walks away,
+// auto-discharge inserts the `free` — verified in the emitted Zig, see
+// autodischarge_covers_later_arms.kz. The guarantee has no hole; an earlier note
+// here claimed it did, and that claim was withdrawn 2026-08-06.
 //
 // EXPECTED: error[KORU030]: Use-after-discharge: binding 'filled' was already
 //           discharged and cannot be used

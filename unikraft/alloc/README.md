@@ -26,7 +26,7 @@ where it came from.
 | strict `free` + a named escape | **02a**, **02b** | overrules 02c's deliberate permissive `free` — see below |
 | `take.aligned` | **02a** | 02c judged it impossible; 02a booted a 4096-aligned DMA buffer and disproved that |
 | `available` as one number | **02c** | over 02b's three `avail.*` readings |
-| `frontier_failure_arm_leak.kz` | **02b** | the live compiler defect, carried across so it stays pinned |
+| `autodischarge_covers_later_arms.kz` | **02b**, corrected | a later-arm handle IS auto-discharged; the file records the mis-attribution |
 | `uk_palloc`/`uk_pfree` | **02b** | moved OUT, to `unikraft/pages` — a different C API, a different unit |
 
 ---
@@ -443,38 +443,78 @@ compile clean through the emit pass and boot.
 
 ---
 
-## The discharge wall does not guard later arms — and which guarantees rest on it
+## CORRECTED 2026-08-06: later arms ARE guarded. The claim below was wrong.
 
-`tests/frontier_failure_arm_leak.kz` is a file that SHOULD fail to compile and
-today does not. It is carried across from the 02b replay, re-pointed at this
-module, and re-verified here. **A fix is commissioned in another session; this
-directory holds the pin, not the fix.**
+This section previously asserted, in bold, that **only a tor's first declared
+branch has its payload obligations tracked for discharge**, and listed three of
+this module's guarantees as unenforced. That was carried from the 02b replay,
+repeated in this README, reported up twice, and a bugfix was commissioned against
+it. **It is false.** Disproved by reading the emitted program.
 
-> **Only a tor's FIRST declared branch has its payload obligations tracked for
-> discharge.** A handle handed back on the second or any later branch can be
-> bound and discarded, and no diagnostic fires.
+### What actually happens
 
-This matters far beyond `ukalloc`, because handing the handle back on a failure
-arm is the shape the brief itself prescribes. 02b localised it with controls
-against the shipped `unikraft/blk` — not against its own lift — and established
-that it is **arm position**, not struct payloads and not mid-chain position. The
-STATE wall on later arms is intact; only the DISCHARGE wall is missing.
+Obligations are keyed by BINDING NAME, not by AST-node identity
+(`src/auto_discharge_inserter.zig:97-98`, `addBinding:158` — `StringHashMap`
+keyed on the binding's name). Arm position therefore cannot matter, and does not.
 
-**Which of this module's guarantees rest on the un-enforced arms:**
+What varies is whether AUTO-DISCHARGE can elect a disposer:
+
+- **Exactly one unattended disposer for the state** → the compiler INSERTS the
+  disposal at the terminator, silently and by design. Nothing leaks and nothing
+  is reported, because nothing is wrong.
+- **Zero or several** → `KORU030`, naming the binding.
+
+So a dropped handle on a later arm is not unguarded; it is *handled*. Compile
+`tests/autodischarge_covers_later_arms.kz` and read the emitted Zig: the source
+frees on `| ok grown` and on `| rejected r` only, and the artifact carries a
+THIRD call — `free_event.handler(.{ .block = e.block })` inside the
+`| refused e |>` branch, the exact arm the old claim said leaked.
+
+The two-disposer control settles it from the other side. Give a state a second
+unattended disposer and drop the LATER arm's handle:
+
+```
+error[KORU030]: Resource 'later' <live!> has multiple discharge options:
+                close, scrap. Discharge explicitly.
+```
+
+It names `later` — the second arm's binding. The checker sees later arms fine.
+
+### Why 02b's observation looked like arm position
+
+Its controls against shipped `unikraft/blk` were real: `KORU030` fired for a
+`<configured!>` handle on arm 1 and stayed silent for a `<stuck!>` handle on arm
+2, in one compile. But the discriminator was the DISPOSER, not the arm.
+`<stuck!>`'s only consumer is `blk:abandon` — one unattended disposer, so it was
+auto-inserted. `<configured!>`'s path could not be elected, so it was reported.
+Two arms, two disposer shapes, one correct compiler.
+
+**The lesson is the one this repo already writes down**: a reproducible failure
+localises the symptom, not the defect, and an asymmetry is not a mechanism. Four
+labelled controls were run and the conclusion still went the wrong way, because
+every control varied arm position and none varied the disposer set.
+
+### What this means for this module's guarantees
+
+Every arm in the table below IS enforced — as an auto-inserted disposal rather
+than as a diagnostic, which is the stronger outcome:
 
 | guarantee | arm | enforced today? |
 |---|---|---|
-| `resize \| refused` hands back the original in `<live!>`, still owed | 2nd | **NO** — this is the headline claim of the lift |
-| `write \| rejected` hands back `<raw!>` | 2nd | **NO** |
-| `read \| rejected` hands back `<live!>` | 2nd | **NO** |
+| `resize \| refused` hands back the original in `<live!>`, still owed | 2nd | **yes** — `free` auto-inserted; verified in the emitted Zig |
+| `write \| rejected` hands back `<raw!>` | 2nd | **yes** |
+| `read \| rejected` hands back `<live!>` | 2nd | **yes** |
 | `take \| block`, `take.zeroed \| block`, `take.aligned \| block` | 1st | yes |
 | `write \| ok`, `read \| view`, `resize \| ok` | 1st | yes |
 
-So the honest form of the headline claim is: **the failed-realloc leak cannot be
-written by accident** — the arm must be handled, the handle is named, and it
-cannot be *misused* — **but it can still be bound and dropped**, and today the
-compiler will not say so. That is the gap, stated where the claim is made rather
-than in a footnote.
+So the headline claim stands **without** the caveat this section used to attach to
+it: the failed-realloc leak cannot be written by accident, the arm must be
+handled, the handle is named, it cannot be misused — and if it is merely dropped,
+the compiler frees it for you. The one thing to keep in mind is the flip side,
+which is real: because auto-discharge is silent, *removing* a state's only
+disposer is what makes the leak checker able to speak. That is why the named
+escape `untouched` earns its keep, and it is recorded in
+`koru/concepts/frag-a-named-escape-buys-a-diagnostic-not-just-a-grep.md`.
 
 ---
 
@@ -528,9 +568,11 @@ Three, all surfaced by the three replays and none worked around inside
    fails in the backend as `KORU040: unknown tor 'lib:count: n'`, pointing at a
    line the source does not have. `~lib:count(): n` works. Both boot tests here
    write `~unikraft/alloc:available(): at_start` for this reason.
-3. **The phantom-obligation DISCHARGE wall guards only a tor's first declared
-   branch.** See the section above and
-   `tests/frontier_failure_arm_leak.kz`.
+3. ~~The phantom-obligation DISCHARGE wall guards only a tor's first declared
+   branch.~~ **WITHDRAWN 2026-08-06 — this was not a compiler defect.** Later arms
+   are guarded; auto-discharge inserts the disposal when a state has exactly one
+   unattended disposer. See the correction section above and
+   `tests/autodischarge_covers_later_arms.kz`.
 
 And one that is not a compiler defect but will cost the next agent an hour
 (02c's finding, confirmed here): **`unikraft` is a built-in alias pinned to the
@@ -556,6 +598,6 @@ siblings resolve fine. Override with `koru.json`:
 | `tests/negative_free_without_use.kz` | the strict gate |
 | `tests/negative_use_after_resize.kz` | `alloc.h:211`, enforced |
 | `tests/negative_use_after_free.kz` | use-after-discharge; double-free is the same shape |
-| `tests/frontier_failure_arm_leak.kz` | FRONTIER — should refuse, today compiles. The pin. |
+| `tests/autodischarge_covers_later_arms.kz` | PROOF — a later-arm handle is auto-discharged; compiles and boots by design. |
 | `tests/wrapper.zig` | C-ABI seam; derives the flow list at comptime |
 | `tests/main.c` | Unikraft's `main` calls `koru_main` |

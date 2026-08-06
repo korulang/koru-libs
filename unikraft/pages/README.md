@@ -264,31 +264,37 @@ boots.
 
 ---
 
-## The discharge wall does not guard later arms — and which guarantees rest on it
+## CORRECTED 2026-08-06: later arms ARE guarded
 
-The same live compiler defect that `unikraft/alloc` pins in
-`tests/frontier_failure_arm_leak.kz` applies here, and this module has no
-separate pin because one pin per defect is enough — read that file.
+This section previously carried, from the 02b replay, the claim that **only a
+tor's first declared branch has its payload obligations tracked for discharge**,
+and listed two of this module's guarantees as unenforced. **That is false**, and
+it was disproved by reading the emitted program rather than by reasoning about it.
 
-> **Only a tor's FIRST declared branch has its payload obligations tracked for
-> discharge.** A handle handed back on a later branch can be bound and discarded
-> with no diagnostic. The STATE wall on later arms is intact; only the DISCHARGE
-> wall is missing.
+Obligations are keyed by BINDING NAME, not AST-node identity
+(`src/auto_discharge_inserter.zig:97-98`, `addBinding:158`), so arm position
+cannot matter. What varies is whether auto-discharge can ELECT a disposer for the
+state: exactly one unattended disposer is inserted silently at the terminator;
+zero or several raise `KORU030` naming the binding. A dropped handle on a later
+arm is therefore *handled*, not unguarded.
 
-**Which of this module's guarantees rest on the un-enforced arms:**
+The full disproof, the two-disposer control, and why 02b's real observation on
+shipped `unikraft/blk` looked like arm position when the discriminator was the
+disposer, are in `unikraft/alloc/README.md` and in
+`unikraft/alloc/tests/autodischarge_covers_later_arms.kz` — one record per
+correction, and it lives beside the module that carried the claim loudest.
 
 | guarantee | arm | enforced today? |
 |---|---|---|
-| `write \| rejected` hands back `<blank!>` — the thing that keeps a refused write from satisfying the gate | 2nd | **NO** |
-| `read \| rejected` hands back `<filled!>` | 2nd | **NO** |
+| `write \| rejected` hands back `<blank!>` — keeps a refused write from satisfying the gate | 2nd | **yes** — `give` auto-inserted |
+| `read \| rejected` hands back `<filled!>` | 2nd | **yes** |
 | `take \| pages`, `write \| ok`, `read \| view` | 1st | yes |
 
-This module is **less exposed than `unikraft/alloc`**, and for a structural
-reason worth naming: it has no `resize`. The headline un-enforced arm over there
-is `resize | refused` handing back a still-owed original — the failed-realloc
-leak. There is no `prealloc` in ukalloc, so this module's later arms carry a
-handle only on refused *accesses*, never on a refused *reallocation*. The two
-rows above can still be bound and dropped, and today the compiler will not say so.
+The structural observation that survives the correction: this module has no
+`resize`, so its later arms carry a handle only on refused *accesses*, never on a
+refused *reallocation*. That was offered as "less exposed than `unikraft/alloc`";
+with the exposure gone it is simply a smaller surface, which is still the reason
+the module is 7 tors rather than 10.
 
 ---
 
