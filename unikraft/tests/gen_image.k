@@ -5,13 +5,13 @@
 //   koruc gen_image.k unikraft gen   ->  Makefile.uk + Kraftfile
 
 import std/io
-import koru/unikraft
+import unikraft
 
-koru/unikraft:image(name: "koru") {
+unikraft:image(name: "koru") {
     APPKORU_CFLAGS-y += -DKORU_UNIKERNEL=1
 }
 
-koru/unikraft:kconfig {
+unikraft:kconfig {
     CONFIG_OPTIMIZE_SIZE: 'y'
     CONFIG_OPTIMIZE_DEADELIM: 'y'
     CONFIG_OPTIMIZE_NOOMITFP: 'n'

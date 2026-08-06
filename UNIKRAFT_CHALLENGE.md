@@ -3,7 +3,7 @@ challenge: unikraft
 kind: generator
 status: standing
 yields: one Unikraft sublibrary lifted into Koru behind phantom obligations, proven by a unikernel that boots
-catalog: unikraft/lib/*/index.kz
+catalog: unikraft/*/index.kz
 family: lift
 created: 2026-08-06
 ---
@@ -116,22 +116,29 @@ trade is the whole craft.
 
 ### Duplicate prevention & variance
 
-Before choosing, read the catalog: every directory under `unikraft/lib/` with an
+Before choosing, read the catalog: every directory under `unikraft/` with an
 `index.kz` is a shipped or in-flight lift. Read their READMEs and their tests.
 Bring something not already there.
 
 Measured shelf — resource-bearing surface, public functions per library
 (`unikraft` HEAD `3fdffba8`):
 
-| library | fns | shape |
-|---|---:|---|
-| `uksched` | 79 | threads; ordering + lifetime |
-| `ukfile` | 75 | handles; open/close family |
-| `uknetdev` | 61 | **the exemplar target** — explicit state machine, per-packet netbufs |
-| `ukalloc` | 52 | symmetric pair; a good test of *not* over-modelling |
-| `ukblkdev` | 36 | netdev-shaped, smaller |
-| `ukvmem` | 32 | mappings |
-| `uklock` | 30 | classic acquire/release on every path |
+| C library | fns | Koru module | shape |
+|---|---:|---|---|
+| `uksched` | 79 | `unikraft/sched` | threads; ordering + lifetime |
+| `ukfile` | 75 | `unikraft/file` | handles; open/close family |
+| `uknetdev` | 61 | `unikraft/net` | **the exemplar target** — explicit state machine, per-packet netbufs |
+| `ukalloc` | 52 | `unikraft/alloc` | symmetric pair; a good test of *not* over-modelling |
+| `ukblkdev` | 36 | `unikraft/blk` | netdev-shaped, smaller |
+| `ukvmem` | 32 | `unikraft/vmem` | mappings |
+| `uklock` | 30 | `unikraft/lock` | classic acquire/release on every path |
+
+**Naming: drop the `uk` prefix and the transliteration.** The C library is
+`uknetdev`; the Koru module is `unikraft/net`, imported as `import unikraft/net`.
+`unikraft` is a platform namespace beside `std`, not a shelf under `koru` — a
+caller is naming the operating system they are inside, not a third-party
+dependency they picked. If the DX pillar means anything it means a consumer never
+types `uknetdev`.
 
 `uknetdev` + `netbuf` together carry every obligation shape you will ever need —
 ratchet, nested sub-resource (queues), paired toggle (`rxq_intr_enable/disable`),
@@ -141,7 +148,7 @@ you are writing the template; scope to a slice and say what you left.
 
 ### What "done" looks like (the gates)
 
-1. `koruc --check unikraft/lib/<name>/index.kz` passes.
+1. `koruc --check unikraft/<name>/index.kz` passes.
 2. **A unikernel built from your lift boots under QEMU and prints.** Not
    `--check`, not a host build — the real boundary. The recipe, the exact
    commands, and the traps are in `/Users/larsde/src/koru/examples/unikraft/BUILD.md`.
@@ -219,7 +226,7 @@ work — that control costs under a minute and it is the step that gets skipped.
 
 1. Read the standards, then `BUILD.md`.
 2. Read `gzip/index.kz:258` and `2104_14/db.kz` — the asymmetry, twice.
-3. List `unikraft/lib/*/` and read what is there. Dedup.
+3. List `unikraft/*/` and read what is there. Dedup.
 4. Pick a target from the shelf. Grep it for `UK_ASSERT` and state branches
    before you design anything — that grep IS the state machine.
 5. Build. Ground every Koru construct in a passing test.
@@ -227,7 +234,7 @@ work — that control costs under a minute and it is the step that gets skipped.
 
 ---
 
-**Catalog upkeep**: a shipped lift is a directory under `unikraft/lib/<name>/`
+**Catalog upkeep**: a shipped lift is a directory under `unikraft/<name>/`
 with `index.kz`, `tests/`, and `README.md`. The catalog is the repo.
 
 ## Tending log

@@ -4,13 +4,13 @@ Declare a Unikraft unikernel from the Koru program that runs in it.
 
 ```koru
 import std/io
-import koru/unikraft
+import unikraft
 
-koru/unikraft:image(name: "koru") {
+unikraft:image(name: "koru") {
     APPKORU_CFLAGS-y += -DKORU_UNIKERNEL=1
 }
 
-koru/unikraft:kconfig {
+unikraft:kconfig {
     CONFIG_OPTIMIZE_SIZE: 'y'
     CONFIG_OPTIMIZE_DEADELIM: 'y'
 }
