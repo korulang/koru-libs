@@ -1,0 +1,65 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Resource 'reply' obligation
+
+// NEGATIVE (must FAIL to compile): do the Tversion exchange and never give the
+// request back. This is the INNERMOST of the three nestings and the one whose
+// leak the C reports only as a log line, at teardown, in a build with logging
+// on.
+//
+// `uk_9p_version` is the ONLY exported `uk_9p_*` verb that does not remove its
+// own request. Compare `uk_9p_attach` at 9p.c:169 and `uk_9p_walk` at 9p.c:272,
+// both of which call `uk_9pdev_req_remove` before returning. `version` hands the
+// caller a live `struct uk_9preq *` and the caller owes the removal.
+//
+// WHAT IT COSTS TO FORGET:
+//
+//   * The tag stays set in `dev->_req_mgmt.tag_bm`. That is a bitmap of
+//     UK_9P_NUMTAGS entries, allocated by `_req_mgmt_next_tag_locked`
+//     (9pdev.c:172) with `uk_find_next_zero_bit`. It is a genuinely finite
+//     resource and nothing ever reclaims a tag except `uk_9pdev_req_remove`.
+//   * The request stays on `req_list`, so at disconnect `_req_mgmt_cleanup`
+//     walks it, finds a live reference, and prints
+//     `uk_pr_err("Tag %d still has references on cleanup.\n")` (9pdev.c:186) —
+//     which is a message about a mistake made at start-up, delivered at
+//     shutdown, in a build with `uk_pr_err` compiled in.
+//
+// There is no assertion for it.
+//
+// WHY THIS IS A COMPILE ERROR RATHER THAN A SILENT INSERTION, which is the
+// distinction `unikraft/alloc`'s README draws and this module inherits: a
+// dropped `<received!>` has exactly ONE consumer, `reply.release`, and
+// `reply.release` is not a disposal — it mints `<negotiated!>`, another live
+// obligation on a different handle. There is therefore nothing for
+// auto-discharge to elect, and the dropped reply is REPORTED.
+//
+// The same shape is what makes the composition rule self-enforcing rather than
+// advisory. Even if the obligation were silently discharged, this program would
+// still be stuck: `version` consumed the `*Dev`, and `reply.release` is the only
+// tor in the module that produces one. A leaked reply is a program with no
+// device left to attach with, to skip with, or to disconnect.
+//
+// EXPECTED: error[KORU030]: Resource 'reply' obligation <received!> was not
+//           discharged. Call: reply.release
+//
+// (The diagnostic names the OUTPUT FIELD of the branch arm, `reply`, not the
+// arm binding `v` the flow spells. Worth knowing before writing an expectation
+// against a record-carrying branch.)
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/ninep
+~import std/io
+
+~unikraft/ninep:connect(tag: "korufs")
+| ok mount |> unikraft/ninep:version(dev: mount, requested: "9P2000.L")
+    | negotiated v |> std/io:print.ln("version: {{ v.protocol:s }}, msize {{ v.msize:d }}")
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }}")
+        |> unikraft/ninep:session.skipped(e.dev): spent
+            |> unikraft/ninep:disconnect(dev: spent)
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }}")

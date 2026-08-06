@@ -1,0 +1,58 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge
+
+// NEGATIVE (must FAIL to compile): read from a file after closing it.
+//
+// `file.close` consumes the `*File`, so the binding is discharged and cannot be
+// named afterwards. Double-close is the same unspellable shape.
+//
+// WHAT THE C DOES INSTEAD, and it is worse than a plain use-after-free because
+// two different things go wrong at two different layers:
+//
+//   * `file.close` is `uk_9pfid_put`, which on the last reference calls
+//     `uk_9pdev_fid_release` (9pfid.c:64). That clunks the fid on the SERVER
+//     and then hands the `struct uk_9pfid` to `_fid_mgmt_del_fid_locked`
+//     (9pdev.c:461), which moves it onto the device's FREE LIST — where the
+//     next `uk_9pdev_fid_create` will hand it straight back out (9pdev.c:67)
+//     with its `fid` number intact and a fresh refcount.
+//   * So a read through the stale handle is not a wild pointer. It is a read
+//     through a fid number the server has forgotten, or — after any subsequent
+//     `walk` — a read through SOMEBODY ELSE'S FILE, at the same address, with a
+//     valid refcount and a valid `_dev`.
+//
+// There is no assertion in `uk9p` that can see this and there could not be: the
+// recycled fid is indistinguishable from a live one by inspection. The server
+// answers Rerror "unknown fid" in the first case and answers CORRECTLY, with
+// the wrong file's bytes, in the second.
+//
+// EXPECTED: error[KORU030]: Use-after-discharge: binding 'fh' was already
+//           discharged and cannot be used
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/ninep
+~import std/io
+
+~unikraft/ninep:connect(tag: "korufs")
+| ok mount |> unikraft/ninep:version(dev: mount, requested: "9P2000.L")
+    | negotiated v |> unikraft/ninep:reply.release(v.reply)
+        | ok rel |> unikraft/ninep:attach(rel.dev, uname: "korunaut", aname: "")
+            | ok tree |> unikraft/ninep:walk(root: tree, name: "koru.txt")
+                | ok node |> unikraft/ninep:file.open(file: node, mode: 0)
+                    | ok fh |> unikraft/ninep:file.close(file: fh)
+                        | ok closed |> std/io:print.ln("closed, was_last {{ closed.was_last:any }}")
+                            |> unikraft/ninep:file.read(file: fh, offset: 0, count: 64)
+                            | data d |> std/io:print.ln("should never get here: {{ d.bytes:s }}")
+                            | failed e |> std/io:print.ln("read: {{ e.reason:s }}")
+                            | rejected r |> std/io:print.ln("read: {{ r.reason:s }}")
+                    | refused e |> std/io:print.ln("open: {{ e.reason:s }}")
+                | refused e |> std/io:print.ln("walk: {{ e.reason:s }}")
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }}")
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }}")
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }}")

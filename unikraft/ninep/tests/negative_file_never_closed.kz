@@ -1,0 +1,59 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Resource 'node' obligation
+
+// NEGATIVE (must FAIL to compile): walk to a fid and never give it back.
+//
+// This is the middle level of the nesting, and it is worth its own file because
+// of what it is NOT. `unikraft/alloc` deliberately does not claim "forgetting to
+// free is a compile error", and its README says why: a dropped `<live!>` block
+// has exactly one unattended terminal disposer, so the compiler INSERTS the
+// `free` and reports nothing. Correct behaviour; not a catch.
+//
+// `unikraft/ninep` CAN make the claim at every level, and it is the same
+// mechanism reaching the opposite outcome rather than a different mechanism.
+// `<walked>`'s only consumers are `file.open` and `file.close`, and NEITHER is a
+// disposal — `file.open` mints `<opened!>` and `file.close` mints `<rooted!>` on
+// the parent. There is no terminal for auto-discharge to elect anywhere in this
+// module, at any of the three levels, because every destructor here hands back
+// a live parent obligation. The nesting is what makes leak-detection total.
+//
+// WHAT THE C DOES INSTEAD: exactly what
+// `negative_disconnect_with_file_open.kz` describes, one level down. The fid
+// stays on `dev->_fid_mgmt.fid_active_list`, the server keeps it open, and the
+// only thing standing between that and a disconnect is 9pdev.c:118 — an
+// assertion that is `do {} while(0)` in every shipped image.
+//
+// The three-way split for this module, stated exactly:
+//
+//   * forget to CLOSE a file        -> compile ERROR (this file)
+//   * forget to RELEASE a reply     -> compile ERROR (negative_reply_leaked.kz)
+//   * forget to USE a connection    -> compile ERROR
+//                                      (negative_disconnect_without_session.kz)
+//
+// There is no fourth case where something is silently inserted, and that is a
+// property of the composition rule, not a coincidence.
+//
+// EXPECTED: error[KORU030]: Resource 'node' obligation <walked!> was not
+//           discharged. Call: file.close
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/ninep
+~import std/io
+
+~unikraft/ninep:connect(tag: "korufs")
+| ok mount |> unikraft/ninep:version(dev: mount, requested: "9P2000.L")
+    | negotiated v |> unikraft/ninep:reply.release(v.reply)
+        | ok rel |> unikraft/ninep:attach(rel.dev, uname: "korunaut", aname: "")
+            | ok tree |> unikraft/ninep:walk(root: tree, name: "koru.txt")
+                | ok node |> std/io:print.ln("walked, and nothing ever gives the fid back")
+                | refused e |> std/io:print.ln("walk: {{ e.reason:s }}")
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }}")
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }}")
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }}")
