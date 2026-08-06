@@ -1,0 +1,59 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): reserve address space and store into it.
+//
+// THIS IS THE HEADLINE. `write` accepts <!mapped|!used>, and <mapped!> is minted
+// only by `commit`. `reserve` mints <reserved!>. So touching a reservation is a
+// program that does not exist.
+//
+// WHAT THE C DOES WITH THE SAME PROGRAM. Nothing — it compiles it, silently, and
+// the machine dies:
+//
+//     __vaddr_t va = __VADDR_ANY;
+//     uk_vma_reserve(uk_vas_get_active(), &va, 4096);
+//     *(char *)va = 'x';                      /* triple fault */
+//
+// `uk_vma_rsvd_ops` sets `.fault = __NULL` (vma_rsvd.c:13). `vmem_pagefault`
+// reaches `if (unlikely(!ctx.vma->ops->fault)) return -EFAULT;`
+// (vmem.c:1093-1094), the architecture handler has nothing to resolve, and the
+// fault goes unhandled.
+//
+// THERE IS NO `UK_ASSERT` FOR THIS AND THERE COULD NOT BE. An assertion fires
+// inside a function, and this mistake never calls one — it is a store through a
+// pointer. `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` makes no difference in either
+// direction: the debug build and the release build both die, identically, with
+// no diagnostic. That is what makes it worth lifting, and it is a different
+// species of finding from `unikraft/blk`'s 105 transcribed assertions.
+//
+// THE LEGITIMATE PROGRAM IS ONE WORD LONGER: `commit` between the two, which is
+// what the C's `UK_VMA_MAP_REPLACE` dance means (vma_types.h:33-34, README
+// example 5).
+//
+// EXPECTED, verbatim: error[KORU030]: Phantom state mismatch: expected
+//           '!unikraft.vmem:mapped|!unikraft.vmem:used' but got
+//           'unikraft.vmem:reserved!' for argument 'area'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/vmem
+~import std/io
+
+~unikraft/vmem:active
+| ready vm |> unikraft/vmem:reserve(vm.space, bytes: 4096)
+    | area rsv |> unikraft/vmem:write(rsv.area, at: 0, bytes: "this store would take the kernel down")
+        | ok w |> std/io:print.ln("should never get here")
+            |> unikraft/vmem:release(area: w)
+                | ok |> _
+                | failed e |> unikraft/vmem:abandon(e.area)
+        | rejected r |> std/io:print.ln("rejected: {{ r.reason:s }}")
+            |> unikraft/vmem:untouched(r.area): u |> unikraft/vmem:release(area: u)
+                | ok |> _
+                | failed e |> unikraft/vmem:abandon(e.area)
+    | refused e |> std/io:print.ln("reserve failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no address space: {{ why:s }}")

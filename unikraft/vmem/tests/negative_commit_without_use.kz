@@ -1,0 +1,58 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): put anonymous memory behind a reservation and
+// tear it down without ever touching it.
+//
+// This is pillar 4's asymmetry, on the half where this module applies it.
+// `release` accepts <!used> or <!frozen>; both are reachable only through a real
+// access or through the named escape. `commit` mints <mapped!>. So
+// `commit(); release();` is not a program you can write.
+//
+// WHY THE COMMITTED HALF AND NOT THE RESERVED HALF. A reservation is address
+// space and nothing else — no physical memory, no page-table entries
+// (vma_types.h:20-35) — so `withdraw` takes <!reserved> and demands nothing, and
+// tests/boot_vmem.kz's second flow does exactly that on purpose. A `commit`
+// changes that: `uk_vma_map` with `uk_vma_anon_ops` installs a fault handler that
+// calls the frame allocator on first touch (vma_anon.c:63). Committing and
+// dropping is the one that acquires something, and it is the one that is gated.
+//
+// THE C HAS NOTHING TO SAY ABOUT EITHER, and could not: `uk_vma_map` followed by
+// `uk_vma_unmap` over the same range is correct, warning-free, assertion-free
+// and does no work. ukvmem cannot know whether the caller read the range —
+// demand paging means an untouched anonymous mapping never even allocated a
+// frame.
+//
+// THE LEGITIMATE CASE STAYS EXPRESSIBLE AND STAYS LOUD. A guard range, or a
+// mapping held so a later `commit` cannot take the address, writes
+// `unikraft/vmem:untouched` and compiles:
+//
+//     grep -r "vmem:untouched"
+//
+// What this refuses is the SILENT no-op.
+//
+// EXPECTED, verbatim: error[KORU030]: Phantom state mismatch: expected
+//           '!unikraft.vmem:used|!unikraft.vmem:frozen' but got
+//           'unikraft.vmem:mapped!' for argument 'area'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/vmem
+~import std/io
+
+~unikraft/vmem:active
+| ready vm |> unikraft/vmem:reserve(vm.space, bytes: 4096)
+    | area rsv |> unikraft/vmem:commit(rsv.area)
+        | ok mapped |> unikraft/vmem:release(area: mapped)
+            | ok |> std/io:print.ln("should never get here")
+            | failed e |> unikraft/vmem:abandon(e.area)
+        | refused e |> unikraft/vmem:withdraw(e.area)
+            | ok |> _
+            | failed x |> unikraft/vmem:abandon(x.area)
+    | refused e |> std/io:print.ln("reserve failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no address space: {{ why:s }}")

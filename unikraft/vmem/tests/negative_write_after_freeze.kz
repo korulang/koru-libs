@@ -1,0 +1,68 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): store into a range that was made read-only.
+//
+// `freeze` mints <frozen!>. `write` accepts <!mapped|!used> and nothing else. So
+// a write after a freeze is a program that does not exist — and `read.frozen`
+// exists precisely so that the frozen range stays readable without ever handing
+// back a token `write` would accept.
+//
+// WHAT THE C DOES WITH THE SAME PROGRAM. Compiles it, silently, and the machine
+// dies — the second of this library's two fatal-and-unasserted rules:
+//
+//     uk_vma_set_attr(vas, va, 4096, PAGE_ATTR_PROT_READ, 0);
+//     *(char *)va = 'x';                      /* unhandled page fault */
+//
+// `vmem_access_allowed` (vmem.c:991) returns false for a write to a range
+// without `PAGE_ATTR_PROT_WRITE`, `vmem_pagefault` turns that into -EFAULT
+// (vmem.c:1089-1090), and the fault is unresolvable.
+//
+// SAME SPECIES AS THE RESERVATION RULE, DIFFERENT ORGAN. Neither is an
+// assertion; both are a store through a pointer that the virtual memory system
+// refuses after the fact. `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` changes nothing
+// about either.
+//
+// AND IT IS THE REASON `read` AND `read.frozen` ARE TWO TORS rather than one
+// accepting <!mapped|!used|!frozen>. A single `read` would have to mint one
+// state, and minting <used!> for a frozen range would hand the caller exactly
+// the token this test is about.
+//
+// EXPECTED, verbatim: error[KORU030]: Phantom state mismatch: expected
+//           '!unikraft.vmem:mapped|!unikraft.vmem:used' but got
+//           'unikraft.vmem:frozen!' for argument 'area'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/vmem
+~import std/io
+
+~unikraft/vmem:active
+| ready vm |> unikraft/vmem:reserve(vm.space, bytes: 4096)
+    | area rsv |> unikraft/vmem:commit(rsv.area)
+        | ok mapped |> unikraft/vmem:write(area: mapped, at: 0, bytes: "first write, while the range is still writable")
+            | ok written |> unikraft/vmem:freeze(area: written)
+                | ok frozen |> unikraft/vmem:write(area: frozen, at: 0, bytes: "this store would take the kernel down")
+                    | ok w |> std/io:print.ln("should never get here")
+                        |> unikraft/vmem:release(area: w)
+                            | ok |> _
+                            | failed e |> unikraft/vmem:abandon(e.area)
+                    | rejected r |> unikraft/vmem:untouched(r.area): u |> unikraft/vmem:release(area: u)
+                        | ok |> _
+                        | failed e |> unikraft/vmem:abandon(e.area)
+                | failed e |> unikraft/vmem:release(e.area)
+                    | ok |> _
+                    | failed x |> unikraft/vmem:abandon(x.area)
+            | rejected r |> unikraft/vmem:untouched(r.area): u |> unikraft/vmem:release(area: u)
+                | ok |> _
+                | failed e |> unikraft/vmem:abandon(e.area)
+        | refused e |> unikraft/vmem:withdraw(e.area)
+            | ok |> _
+            | failed x |> unikraft/vmem:abandon(x.area)
+    | refused e |> std/io:print.ln("reserve failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no address space: {{ why:s }}")

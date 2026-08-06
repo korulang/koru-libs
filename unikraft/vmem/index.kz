@@ -1,0 +1,781 @@
+// @korulang/unikraft-vmem — Unikraft's virtual address space manager
+// (`ukvmem`), lifted.
+//
+//   import unikraft/vmem
+//
+// WHAT THIS IS. `lib/ukvmem` manages the kernel's own virtual address space: a
+// sorted list of virtual memory areas (VMAs), each one a range of addresses with
+// a type, a page-protection word and an optional fault handler. Five exported
+// operations act on it — `uk_vma_map`, `uk_vma_unmap`, `uk_vma_set_attr`,
+// `uk_vma_advise`, `uk_vma_find` — and four exported `struct uk_vma_ops` globals
+// select what kind of area you get.
+//
+// THE TWO RULES THIS LIFT EXISTS FOR, AND WHY THEY ARE DIFFERENT FROM THE OTHER
+// LIFTS' RULES. `unikraft/blk` transcribes 105 `UK_ASSERT`s. `unikraft/alloc`
+// and `unikraft/pages` found rules with no assertion at all. ukvmem has both
+// kinds, and its two headline rules are of the second kind — but they are worse
+// than a missing assertion, because the C's response to breaking them is not a
+// wrong answer, it is a dead machine:
+//
+//   1. A RESERVATION MAY NOT BE TOUCHED. `uk_vma_rsvd_ops` sets `.fault = NULL`
+//      (vma_rsvd.c:13). `vmem_pagefault` checks `if (!ctx.vma->ops->fault)
+//      return -EFAULT` (vmem.c:1093-1094) and an unresolved page fault takes the
+//      kernel down. Reserving address space and reading one byte of it is a
+//      program C compiles without a warning, without an assertion, in debug and
+//      release alike, and it triple-faults.
+//
+//   2. A READ-ONLY MAPPING MAY NOT BE WRITTEN. `vmem_access_allowed`
+//      (vmem.c:991) returns false for a write to a range without
+//      `PAGE_ATTR_PROT_WRITE`, and `vmem_pagefault` turns that into the same
+//      -EFAULT and the same dead machine. Also unasserted, also silent.
+//
+// Both are lifted here into phantom states, so the compiler refuses the program
+// instead of the machine refusing it. See `commit`, `freeze`, and the three
+// negative tests.
+//
+// THE RATCHET. One handle, five states:
+//
+//     reserve      mints  <reserved!>                 uk_vma_map  (rsvd_ops)
+//     commit       needs  <!reserved>  mints <mapped!>  uk_vma_map  (anon_ops, REPLACE)
+//     write        needs  <!mapped|!used>  mints <used!>  (a real store; no C call)
+//     read         needs  <!mapped|!used>  mints <used!>  (a real load;  no C call)
+//     untouched    needs  <!mapped>   mints <used!>     (NO C CALL — the escape)
+//     freeze       needs  <!used>     mints <frozen!>   uk_vma_set_attr (PROT_READ)
+//     read.frozen  needs  <!frozen>   mints <frozen!>   (a real load;  no C call)
+//     release      needs  <!used|!frozen>              uk_vma_unmap
+//     withdraw     needs  <!reserved>                  uk_vma_unmap
+//     abandon      needs  <!stuck>                     (nothing — see below)
+//
+// THE ASYMMETRY, AND THE HALF WHERE IT DELIBERATELY DOES NOT APPLY (pillar 4).
+//
+//   * `release` accepts ONLY <!used> or <!frozen>, and both are reachable only
+//     through a real access. So `commit(); release();` — take backing memory for
+//     an address range and hand it back without ever touching it — is not a
+//     program you can write. This is the exemplars' shape: gzip's `finish`
+//     accepting only <!fed> (gzip/index.kz:258), and `2104_14`'s `close` taking
+//     <!active> and not <!connected>.
+//
+//   * `withdraw` accepts <!reserved> and demands nothing. THIS IS ON PURPOSE and
+//     it is the pillar-4 judgement call this module makes. A reservation is
+//     address space and nothing else: no physical memory, no page-table entries,
+//     no bytes (vma_types.h:20-35). Reserving 1 GiB and giving it back untouched
+//     costs the machine one `struct uk_vma`. Ratcheting the free half of a
+//     genuinely free operation is the feature-maximalism the brief warns about,
+//     so the reservation half is symmetric and says so. The asymmetry is on the
+//     COMMITTED half, which is where the C spends memory.
+//
+//     `withdraw` rather than an overload of `release` so the two are separable:
+//     `grep -r "vmem:withdraw"` answers "where do we give back address space we
+//     never backed", which is a different question from "where do we unmap".
+//
+// THE NAMED ESCAPE is `untouched`, the same word `unikraft/alloc` and
+// `unikraft/pages` use, for the same reason and with the same grep:
+//
+//     grep -r "vmem:untouched"   ->   "where do we commit memory we never touch"
+//
+// A guard page, or a range mapped so that a later `commit` cannot take the
+// address, is legitimate; it says so in one word and runs no C call.
+//
+// THREE PARAMETERS THAT NO LONGER EXIST. This is the DX contribution, and each
+// one is a caller mistake the C cannot detect:
+//
+//   1. THE ADDRESS. C's reserve-then-use dance is
+//      `uk_vma_reserve(vas, &vaddr, len)` followed by
+//      `uk_vma_map_anon(vas, &vaddr, len, attr, UK_VMA_MAP_REPLACE, name)` with
+//      the SAME `vaddr` (README example 5). Pass `__VADDR_ANY` the second time
+//      by mistake and you get a fresh unrelated mapping somewhere else, rc == 0,
+//      no assertion, and the reservation becomes a permanent hole. Here the
+//      address lives in the handle and `commit` takes no address at all.
+//   2. THE REPLACE FLAG. Forget `UK_VMA_MAP_REPLACE` and the same call returns
+//      -EEXIST (vmem.c:660) — the loud version of the same mistake. `commit`
+//      sets it unconditionally because reaching a reservation is the only thing
+//      `commit` does. This retires the one flags assertion ukvmem has that a
+//      caller can trip: vma_types.h:60.
+//   3. THE PAGE ALIGNMENT. `uk_vma_map` returns -EINVAL unless `len` is a
+//      multiple of the page size (vmem.c:634), and the page size is a
+//      compile-time constant of the KERNEL that no symbol exports. `reserve`
+//      takes bytes and rounds up, so a caller never learns what a page is.
+//
+// THREE CONSTANTS THAT NO SYMBOL EXPORTS, AND WHAT THIS LIFT DOES ABOUT EACH.
+// A separately linked freestanding archive cannot see a `#define`. ukvmem's API
+// needs three of them, and they get three different honest answers:
+//
+//   * THE PAGE SIZE is DERIVED, by asking ukvmem which lengths it accepts. See
+//     `active`, probe 2.
+//   * `UK_PAGING_VADDR_ANY` is DERIVED, by finding the value that makes
+//     `uk_vma_map` pick an address instead of using the one you gave it. See
+//     `active`, probe 1. This is not a guess with a plausibility check on top:
+//     the probe's success condition is a behaviour only VADDR_ANY produces.
+//   * THE PROTECTION BITS (`PROT_READ` = 0x01, `PROT_WRITE` = 0x02) are
+//     HARDCODED, and this lift does not prove them. They are identical in both
+//     in-tree architectures — x86_64 `plat/native/arch/x86_64/.../page.h:56-59`
+//     and arm64 `plat/native/arch/arm64/.../page.h:47-50` — and they are part of
+//     the platform PAL's interface rather than a private detail. But a platform
+//     that renumbered them would be caught by a fatal page fault, not by a
+//     refusal from this module. Stated as a claim NOT made, in README.md.
+//
+// ONE VMA PER AREA, BOUGHT WITH A UNIQUE NAME POINTER. `vmem_vma_can_merge`
+// (vmem.c:254-266) merges two adjacent VMAs when their ops, attributes, flags,
+// page level AND `name` POINTER all match — pointer identity, not string
+// equality. Two adjacent areas from this module would therefore merge into one
+// `struct uk_vma` if they shared a name literal, and the handle's range would
+// stop describing a VMA. So each `Area` carries its own name bytes and hands
+// `uk_vma_map` a pointer INTO ITSELF. Distinct allocations, distinct pointers,
+// no merge, ever — an area's VMA is exactly and only that area. `lookup`'s
+// round-trip proof depends on this and would not hold without it.
+//
+// WHY `abandon` DELIBERATELY LEAKS. The consequence of the paragraph above:
+// `uk_vma_map` STORES the name pointer, it does not copy the string
+// (vmem.c:734-735). A handle whose VMA is still installed therefore cannot be
+// freed — the kernel would hold a dangling `const char *` into freed memory and
+// print it from any VMA listing. `abandon` exists for the case where an unmap
+// refused, i.e. where the VMA is still installed, so it frees NOTHING and says
+// so. An abandoned area costs one `struct Area`. That is the honest price of
+// giving up on an address range, and it is stated rather than hidden.
+//
+// WHAT UKVMEM DOES ON FAILURE, WHICH SHAPES EVERY FAILURE ARM HERE. `uk_vma_unmap`
+// and `uk_vma_set_attr` cannot fail partway: `vmem_vma_unmap` calls `UK_CRASH`
+// if the unmap handler refuses (vmem.c:477) and `vmem_vma_set_attr` does the same
+// (vmem.c:802). So the `| failed` arms of `release`, `withdraw` and `freeze`
+// cover only what `vmem_vma_split_vmas` can report — the range is not there
+// (-ENOENT), or a split needed memory it could not get (-ENOMEM). This is worth
+// knowing before reading those arms and expecting more from them.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// LINKABILITY: case 1 of the brief's three-case rule. `lib/ukvmem/exportsyms.uk`
+// exists and lists 20 symbols. Every symbol below is on it.
+//
+// The convenience wrappers a C author actually calls — `uk_vma_reserve`,
+// `uk_vma_reserve_ex`, `uk_vma_map_anon`, `uk_vma_map_dma`, `uk_vma_map_stack` —
+// are `static inline` in `vma_types.h`, which is case 3. THAT DOES NOT BLOCK
+// THIS LIFT, and the reason is the interesting half of the linkability verdict:
+// unlike `uk_netdev_rx_one`, these inlines add no logic. Each is
+// `return uk_vma_map(..., &uk_vma_<kind>_ops, ...)` — an EXPORTED function and
+// an EXPORTED data symbol. Reconstructing them costs no shim, no extra call
+// frame and no ABI guess; it is the identical call with the identical arguments.
+// The one exception is `uk_vma_map_stack`, which also does guard-page arithmetic
+// over `CONFIG_LIBUKVMEM_STACK_GUARD_PAGES_*`. Those are Kconfig constants that
+// no symbol exports and this lift cannot derive, so stack VMAs are NOT lifted.
+// Stated in README.md.
+
+const Vas = opaque {};
+const VmaOps = opaque {};
+
+// exportsyms.uk:1
+extern fn uk_vas_get_active() ?*Vas;
+
+// exportsyms.uk:6-9. `__vaddr_t` and `__sz` are both `__uptr`
+// (include/uk/arch/types.h:196,200), which is `usize`.
+extern fn uk_vma_map(
+    vas: *Vas,
+    vaddr: *usize,
+    len: usize,
+    attr: c_ulong,
+    flags: c_ulong,
+    name: ?[*:0]const u8,
+    ops: *const VmaOps,
+    args: ?*anyopaque,
+) c_int;
+extern fn uk_vma_unmap(vas: *Vas, vaddr: usize, len: usize, flags: c_ulong) c_int;
+extern fn uk_vma_set_attr(vas: *Vas, vaddr: usize, len: usize, attr: c_ulong, flags: c_ulong) c_int;
+extern fn uk_vma_find(vas: *Vas, vaddr: usize) ?*const VmaHead;
+
+// exportsyms.uk:11,13. Data symbols, taken by address only — the module never
+// dereferences either, which is why `VmaOps` stays opaque and this lift carries
+// no mirror of `struct uk_vma_ops`.
+extern const uk_vma_rsvd_ops: VmaOps;
+extern const uk_vma_anon_ops: VmaOps;
+
+// nolibc, backed by ukalloc's default allocator. Same seam `unikraft/blk` uses.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+
+// --- The one ABI mirror, and it is two fields long.
+//
+// `uk_vma_find` hands back a `const struct uk_vma *` and ukvmem exports no
+// accessor for it — `uk_vma_len` is `static inline` (vmem.h:134). The first two
+// fields of `struct uk_vma` are `__vaddr_t start; __vaddr_t end;`
+// (include/uk/vmem.h:109-110), unconditionally: that declaration carries no
+// `#ifdef` at all, unlike `struct uk_vas` two structs above it. Nothing here
+// reads past `end`, so `attr`, `flags` and `name` — which WOULD depend on
+// `struct uk_list_head` being two pointers — are not claimed.
+//
+// The mirror is PROVEN at run time before any caller can reach it. See `active`,
+// probe 3.
+const VmaHead = extern struct {
+    start: usize,
+    end: usize,
+};
+
+comptime {
+    if (@offsetOf(VmaHead, "start") != 0) @compileError("uk_vma.start moved");
+    if (@offsetOf(VmaHead, "end") != 8) @compileError("uk_vma.end moved");
+}
+
+// --- Constants.
+
+// Page protection bits. HARDCODED, not derived, not proven — see the header note
+// and README.md's claims-not-made. x86_64 page.h:56-59, arm64 page.h:47-50.
+const PROT_NONE: c_ulong = 0x00;
+const PROT_READ: c_ulong = 0x01;
+const PROT_WRITE: c_ulong = 0x02;
+const PROT_RW: c_ulong = PROT_READ | PROT_WRITE;
+
+// uk/vmem.h:496 — replace whatever VMAs the range collides with.
+const MAP_REPLACE: c_ulong = 0x04;
+
+// uk/vmem.h:491 — an unmap over a range with holes is an error rather than a
+// silent partial success.
+const STRICT: c_ulong = 0x1000;
+
+const EINVAL: c_int = -22;
+
+// The seed of `UK_PAGING_VADDR_ANY`, which is `UK_PAGING_VADDR_INV`
+// (paging.h:199), which is this value aligned down to a page level the archive
+// cannot see (x86_64 addr.h:24-28, arm64 addr.h:37-42). The ALIGNMENT is what
+// `active` derives; the seed itself is a named constant of the platform, in the
+// same class as MAP_REPLACE above.
+const VADDR_SEED: usize = 0xBAADBAADBAADBAAD;
+
+// A length that is a whole number of pages on every page size Unikraft supports
+// (4 KiB, 16 KiB, 64 KiB), used by probe 1 so that probe 1 does not need the
+// answer probe 2 produces.
+const PROBE_LEN: usize = 65536;
+
+// ============================================================================
+// THE ADDRESS SPACE, AND THE THREE PROBES THAT PRODUCE IT
+// ============================================================================
+
+const Space = extern struct {
+    vas: *Vas,
+    page: usize,
+    any: usize,
+};
+
+var space: Space = undefined;
+
+// One name pointer for every probe VMA in `active`. Only one probe VMA exists at
+// a time, and its ops/attrs never match ukboot's own `heap` area, so it cannot
+// merge with anything.
+var probe_name = [_]u8{ 'k', 'o', 'r', 'u', '/', 'p', 'r', 'o', 'b', 'e', 0 };
+
+// Scratch for `lookup`'s formatted address. A BORROW, valid until the next
+// `lookup`, same discipline as `unikraft/blk`'s staging buffer.
+var lookup_hex: [18]u8 = undefined;
+
+// Written once, by `active`. `std/io` offers `:d` and `:s` and no hex
+// specifier, and `UK_PAGING_VADDR_ANY` in decimal is 13451612916365131776,
+// which tells a reader nothing.
+var any_hex: [18]u8 = undefined;
+
+fn probeName() [*:0]const u8 {
+    return @ptrCast(&probe_name);
+}
+
+fn writeHex(out: *[18]u8, v: usize) void {
+    const digits = "0123456789abcdef";
+    out[0] = '0';
+    out[1] = 'x';
+    for (0..16) |i| {
+        const shift: u6 = @intCast((15 - i) * 4);
+        out[2 + i] = digits[@as(usize, (v >> shift) & 0xf)];
+    }
+}
+
+// The active virtual address space, with the page size and `VADDR_ANY` derived
+// and the `struct uk_vma` mirror proven — or an explicit refusal naming which
+// probe failed.
+//
+// `uk_vas_get_active` returns a static that starts NULL (vmem.c:22-35), and is
+// set by `ukboot` only when CONFIG_LIBUKBOOT_HEAP_BASE and CONFIG_LIBUKVMEM are
+// both configured in (boot.c:169-173). Every other ukvmem entry point takes that
+// pointer and asserts it (vmem.c:617). The one-arm-per-problem rule applies here
+// as everywhere: "no address space" and "the probes disagree with the kernel" are
+// the same branch with different payloads, because in both cases there is
+// nothing the caller may do next.
+//
+// THREE PROBES, each a real ukvmem call whose SUCCESS CONDITION is a behaviour
+// only the right answer produces. Nothing here is a plausibility check on a
+// guess.
+//
+//   1. VADDR_ANY. For each alignment from 2^12 to 2^47, align `VADDR_SEED` down
+//      and hand the result to `uk_vma_map` as the requested address. If the call
+//      succeeds AND the address written back DIFFERS from the one supplied, then
+//      first-fit ran (vmem.c:638-648) — and first-fit runs for exactly one input
+//      value. A candidate that is merely a valid free address maps AT that
+//      address and writes the same value back (vmem.c:772), so it is rejected and
+//      unmapped. A candidate that is neither is refused by
+//      `uk_paging_vaddr_range_isvalid` (vmem.c:686). All three outcomes are
+//      distinguishable, and only one of them is VADDR_ANY.
+//
+//   2. THE PAGE SIZE. `uk_vma_map` returns -EINVAL when `len` is not a whole
+//      number of pages (vmem.c:634) and every other refusal has a different code.
+//      So the SMALLEST power of two that is accepted IS the page size. Probe 1
+//      used 65,536 bytes precisely so it would not need this answer first.
+//
+//   3. THE MIRROR. Reserve one page, ask `uk_vma_find` for it, and require the
+//      returned `start` and `end` to equal the address ukvmem just chose and that
+//      address plus the page size. Three values this archive knows independently,
+//      compared against two fields it is claiming the layout of. A wrong offset
+//      cannot pass by coincidence.
+//
+// Every probe VMA is unmapped before `active` returns; the address space is
+// exactly as `active` found it.
+//
+// Cost: 30-odd `uk_vma_map` calls, once. A program calls `active` once and
+// threads the `*Space`. `reserve` and everything after it run one C call each.
+//
+// If any probe fails, there is no `*Space`, and because `reserve` is the only
+// source of an `*Area`, nothing in this module can be used at all. No degraded
+// path, no assumed page size, no "the usual layout".
+// The derived numbers ride in the `| ready` payload, the same way
+// `unikraft/blk:get` hands back the geometry it read: a program that wants to
+// print what its own kernel answered needs them, and there is no second call
+// that could report them because there is nothing to report if `active` refused.
+~pub tor active { }
+| ready { space: *Space, page_size: u64, any_address: u64, any_hex: string }
+| unavailable string
+
+~proc active|zig {
+    const vas = uk_vas_get_active() orelse {
+        return .{ .unavailable = "no active virtual address space: ukboot sets one only when CONFIG_LIBUKVMEM and CONFIG_LIBUKBOOT_HEAP_BASE are both configured in (boot.c:169-173)" };
+    };
+
+    // --- Probe 1: UK_PAGING_VADDR_ANY.
+    var any: usize = 0;
+    var found_any = false;
+    for (12..48) |bits| {
+        const shift: u6 = @intCast(bits);
+        const mask: usize = (@as(usize, 1) << shift) - 1;
+        const candidate = VADDR_SEED & ~mask;
+
+        var va = candidate;
+        if (uk_vma_map(vas, &va, PROBE_LEN, PROT_NONE, 0, probeName(), &uk_vma_rsvd_ops, null) != 0) continue;
+
+        // The map succeeded. Either ukvmem chose the address (this was
+        // VADDR_ANY) or it honoured ours (this was an ordinary free address).
+        _ = uk_vma_unmap(vas, va, PROBE_LEN, 0);
+        if (va != candidate) {
+            any = candidate;
+            found_any = true;
+            break;
+        }
+    }
+    if (!found_any) {
+        return .{ .unavailable = "could not derive UK_PAGING_VADDR_ANY: no alignment of the platform's invalid-address seed made uk_vma_map choose an address of its own, so this lift cannot ask ukvmem for a free range and refuses to guess one" };
+    }
+
+    // --- Probe 2: the page size.
+    var page: usize = 0;
+    for (12..18) |bits| {
+        const shift: u6 = @intCast(bits);
+        const len = @as(usize, 1) << shift;
+
+        var va = any;
+        const rc = uk_vma_map(vas, &va, len, PROT_NONE, 0, probeName(), &uk_vma_rsvd_ops, null);
+        if (rc == EINVAL) continue;
+        if (rc != 0) {
+            return .{ .unavailable = "deriving the page size failed for a reason other than misalignment: uk_vma_map refused a reservation it should have been able to place" };
+        }
+        _ = uk_vma_unmap(vas, va, len, 0);
+        page = len;
+        break;
+    }
+    if (page == 0) {
+        return .{ .unavailable = "could not derive the page size: uk_vma_map rejected every length from 4 KiB to 64 KiB as misaligned, which no page size Unikraft supports would produce" };
+    }
+
+    // --- Probe 3: the struct uk_vma mirror.
+    var va = any;
+    if (uk_vma_map(vas, &va, page, PROT_NONE, 0, probeName(), &uk_vma_rsvd_ops, null) != 0) {
+        return .{ .unavailable = "could not place a one-page reservation to prove the struct uk_vma mirror" };
+    }
+    const head = uk_vma_find(vas, va) orelse {
+        _ = uk_vma_unmap(vas, va, page, 0);
+        return .{ .unavailable = "uk_vma_find did not return the VMA that uk_vma_map had just created, so this lift cannot trust it to describe any other" };
+    };
+    const ok_layout = head.start == va and head.end == va + page;
+    _ = uk_vma_unmap(vas, va, page, 0);
+    if (!ok_layout) {
+        return .{ .unavailable = "struct uk_vma's first two fields are not the start and end of the area this lift just created: the mirror in unikraft/vmem does not match this kernel and reading a VMA would read the wrong words" };
+    }
+
+    space = Space{ .vas = vas, .page = page, .any = any };
+    writeHex(&any_hex, any);
+    return .{ .ready = .{
+        .space = &space,
+        .page_size = @intCast(page),
+        .any_address = @intCast(any),
+        .any_hex = any_hex[0..18],
+    } };
+}
+
+// ============================================================================
+// THE HANDLE
+// ============================================================================
+//
+// A caller never sees a `struct uk_vas *`, a `__vaddr_t`, a flags word or an
+// attribute word. The handle carries the range, the name bytes whose ADDRESS
+// keeps this area's VMA from merging with a neighbour (see the header note), and
+// a formatted address so a program can print where ukvmem put it — `std/io`
+// offers `:d` and `:s` and no hex specifier, and a 64-bit address in decimal
+// helps nobody.
+
+const Area = extern struct {
+    vas: *Vas,
+    start: usize,
+    len: usize,
+    name: [10]u8,
+    hex: [18]u8,
+};
+
+fn areaName(a: *Area) [*:0]const u8 {
+    return @ptrCast(&a.name);
+}
+
+// ============================================================================
+// RESERVE — address space, and nothing else
+// ============================================================================
+
+// `uk_vma_map` with `uk_vma_rsvd_ops`: the range is claimed in the VMA list, no
+// physical memory is consumed and no page-table entry is created
+// (vma_types.h:20-35). Mints <reserved!>.
+//
+// TOUCHING THE RESULT IS FATAL, and that is rule 1 from the header: the
+// reservation's ops have no fault handler, so any access to the range is an
+// unresolved page fault. `write` and `read` accept <!mapped|!used> and never
+// <!reserved>, so the fatal program does not compile. See
+// tests/negative_write_before_commit.kz.
+//
+// `bytes` is BYTES and is rounded up to the page size this lift derived. The
+// caller never learns what a page is; `uk_vma_map`'s -EINVAL on a misaligned
+// length (vmem.c:634) is unreachable from here.
+//
+// A zero-length reservation is refused BEFORE the call rather than forwarded:
+// `uk_vma_map` asserts `len > 0` (vmem.c:620), and with
+// CONFIG_LIBUKDEBUG_ENABLE_ASSERT off — which is every shipped image — a zero
+// length walks into `vmem_first_fit` and reserves a VMA with `start == end`,
+// which `uk_vma_len` then asserts against (uk/vmem.h:136) from a completely
+// different call. One report per problem, at the site that caused it.
+~pub tor reserve { space: *Space, bytes: u64 }
+| area {
+    area: *Area<reserved!>,
+    at: u64,
+    span: u64,
+    hex: string
+}
+| refused { bytes: u64, errno: i32, reason: string }
+
+~proc reserve|zig {
+    if (bytes == 0) {
+        return .{ .refused = .{ .bytes = bytes, .errno = EINVAL, .reason = "zero-length reservation: uk_vma_map asserts len > 0 and shipped images compile that assertion out" } };
+    }
+    const want: usize = @intCast(bytes);
+    if (want > ~@as(usize, 0) - (space.page - 1)) {
+        return .{ .refused = .{ .bytes = bytes, .errno = EINVAL, .reason = "rounding the request up to a whole number of pages overflows the address space" } };
+    }
+    const len = ((want + space.page - 1) / space.page) * space.page;
+
+    const mem = malloc(@sizeOf(Area)) orelse {
+        return .{ .refused = .{ .bytes = bytes, .errno = -12, .reason = "out of memory allocating the area handle" } };
+    };
+    const a: *Area = @ptrCast(@alignCast(mem));
+    a.vas = space.vas;
+    a.len = len;
+    a.name = [_]u8{ 'k', 'o', 'r', 'u', '/', 'v', 'm', 'e', 'm', 0 };
+
+    var va = space.any;
+    const rc = uk_vma_map(space.vas, &va, len, PROT_NONE, 0, areaName(a), &uk_vma_rsvd_ops, null);
+    if (rc != 0) {
+        free(mem);
+        return .{ .refused = .{ .bytes = bytes, .errno = @intCast(rc), .reason = "uk_vma_map could not place the reservation" } };
+    }
+
+    a.start = va;
+    writeHex(&a.hex, va);
+    return .{ .area = .{
+        .area = a,
+        .at = @intCast(va),
+        .span = @intCast(len),
+        .hex = a.hex[0..18],
+    } };
+}
+
+// ============================================================================
+// COMMIT — put memory behind the reservation
+// ============================================================================
+
+// `uk_vma_map` again, at the reservation's own address, with `uk_vma_anon_ops`
+// and `UK_VMA_MAP_REPLACE`. The reservation is unmapped and freed and the
+// anonymous area takes its place (vmem.c:658-674, 711-719). Mints <mapped!>.
+//
+// Anonymous memory is demand-paged and ZERO-FILLED on first touch
+// (vma_anon.c:71-76 — the memset is skipped only under UK_VMA_MAP_UNINITIALIZED,
+// which this lift never sets). That is why `read` accepts <!mapped> and does not
+// need a prior write, and it is the one place this module is LESS strict than
+// `unikraft/pages`, which cannot make that claim because the buddy allocator
+// does not zero.
+//
+// THE TWO PARAMETERS THAT ARE NOT HERE are the point of this tor. C requires the
+// caller to remember the reservation's address and to remember
+// `UK_VMA_MAP_REPLACE`; forgetting the flag is -EEXIST and loud, forgetting the
+// address is a fresh mapping elsewhere, rc == 0, and a permanently lost
+// reservation. `commit` takes neither. This retires vma_types.h:60, the flags
+// assertion in `uk_vma_reserve_ex`.
+//
+// THE FAILURE ARM HANDS BACK <reserved!>, deliberately not a new state: a
+// `uk_vma_map` that returned non-zero changed nothing (every early return in
+// vmem.c:634-700 precedes the unmap of the old VMAs at :711), so the reservation
+// is exactly as it was and `commit` or `withdraw` are both still correct. The
+// brief's rule is that a failure arm moves the handle when the failure changes
+// what is legal next; here it does not.
+//
+// `len` does not need re-reading after the call. `uk_vma_map` enlarges `len`
+// only inside the REPLACE branch and only when the replaced VMAs extend beyond
+// the requested range (vmem.c:672-673); because every area from this module owns
+// its VMA outright — see the unique-name note in the header — `vma_start` and
+// `vma_end` are that one VMA and the recomputed length is the one supplied.
+~pub tor commit { area: *Area<!reserved> }
+| ok *Area<mapped!>
+| refused { area: *Area<reserved!>, errno: i32, reason: string }
+
+~proc commit|zig {
+    var va = area.start;
+    const rc = uk_vma_map(area.vas, &va, area.len, PROT_RW, MAP_REPLACE, areaName(area), &uk_vma_anon_ops, null);
+    if (rc != 0) {
+        return .{ .refused = .{ .area = area, .errno = @intCast(rc), .reason = "uk_vma_map could not put anonymous memory behind the reservation; the reservation is untouched" } };
+    }
+    return .{ .ok = area };
+}
+
+// ============================================================================
+// TOUCH — the accesses the reservation rule exists to gate
+// ============================================================================
+
+// Copy `bytes` into the area at offset `at`. Mints <used!>. No C call: this is a
+// store through the mapping, which faults a page in through
+// `vma_op_anon_fault` (vma_anon.c:56) the first time it lands on a fresh page.
+//
+// `rejected` hands the handle back in <mapped!> and NOT <used!>: a store this
+// lift refused before touching a byte must not satisfy the asymmetry gate. The
+// cost is the one `unikraft/alloc` and `unikraft/pages` also pay and also state —
+// an out-of-range write spends a `used` you had already earned. The alternative
+// is a hole in the gate, which is worse.
+~pub tor write { area: *Area<!mapped|!used>, at: u64, bytes: string }
+| ok *Area<used!>
+| rejected { area: *Area<mapped!>, reason: string }
+
+~proc write|zig {
+    if (bytes.len == 0) {
+        return .{ .rejected = .{ .area = area, .reason = "write of zero bytes" } };
+    }
+    const off: usize = @intCast(at);
+    if (off >= area.len or bytes.len > area.len - off) {
+        return .{ .rejected = .{ .area = area, .reason = "write runs past the end of the mapping" } };
+    }
+    const p: [*]u8 = @ptrFromInt(area.start);
+    for (0..bytes.len) |i| p[off + i] = bytes[i];
+    return .{ .ok = area };
+}
+
+// Borrow `len` bytes at offset `at`. `bytes` is a BORROW of the mapping, valid
+// until the next `write` or until `release`, never freed by the caller, never a
+// second obligation.
+//
+// Accepts <!mapped> as well as <!used> because anonymous memory is zero-filled
+// on first touch (vma_anon.c:71-76). Reading a committed area nothing has written
+// reads zeros, which is a defined answer — unlike `unikraft/pages`, where the
+// same shape reads the previous tenant's bytes and is refused.
+~pub tor read { area: *Area<!mapped|!used>, at: u64, len: u64 }
+| view { area: *Area<used!>, bytes: string }
+| rejected { area: *Area<mapped!>, reason: string }
+
+~proc read|zig {
+    if (len == 0) {
+        return .{ .rejected = .{ .area = area, .reason = "read of zero bytes" } };
+    }
+    const off: usize = @intCast(at);
+    const want: usize = @intCast(len);
+    if (off >= area.len or want > area.len - off) {
+        return .{ .rejected = .{ .area = area, .reason = "read runs past the end of the mapping" } };
+    }
+    const p: [*]u8 = @ptrFromInt(area.start);
+    return .{ .view = .{ .area = area, .bytes = p[off .. off + want] } };
+}
+
+// THE NAMED ESCAPE from the asymmetry gate.
+//
+//     grep -r "vmem:untouched"   ->   "where do we commit memory we never touch"
+//
+// A guard range, or a mapping held so a later `commit` cannot take the address,
+// is legitimate and says so in one word. It runs no C call, which is the honest
+// emission: nothing happened.
+~pub tor untouched { area: *Area<!mapped> } -> *Area<used!>
+
+~proc untouched|zig {
+    return area;
+}
+
+// ============================================================================
+// FREEZE — rule 2, the read-only mapping
+// ============================================================================
+
+// `uk_vma_set_attr` to PROT_READ over the area's whole range. Mints <frozen!>,
+// and `write` does not accept <!frozen>, so a store into a read-only mapping is
+// not a program you can write. See tests/negative_write_after_freeze.kz.
+//
+// This is the second of the two fatal-and-unasserted rules in the header. C's
+// consequence for writing through a read-only mapping is `vmem_access_allowed`
+// (vmem.c:991) returning false, `vmem_pagefault` returning -EFAULT, and the
+// kernel taking an unhandled page fault. There is no assertion to transcribe;
+// there is a machine that stops.
+//
+// FREEZING IS ONE-WAY IN THIS LIFT, and that is a restriction this module adds
+// rather than a claim about ukvmem. `uk_vma_set_attr` will happily restore
+// PROT_WRITE, so a `thaw` is buildable — and it would make `<frozen>` a
+// suggestion rather than a guarantee for the rest of the program, which is the
+// whole value of the state. A program that needs to write again should not
+// freeze. Stated in README.md's claims-not-made.
+//
+// No split happens. `uk_vma_set_attr` splits a VMA when only part of it changes
+// attributes (vmem.c:848, via `vmem_vma_need_split`); this call covers the area's
+// entire VMA exactly, because the unique name pointer guarantees the VMA is the
+// area and nothing more.
+//
+// `| failed` hands back <used!>: nothing changed, and every other operation on a
+// written area is still correct. It covers only what
+// `vmem_vma_split_vmas` reports — ukvmem calls `UK_CRASH` if the attribute change
+// itself fails (vmem.c:802), so there is no arm for that and there could not be.
+~pub tor freeze { area: *Area<!used> }
+| ok *Area<frozen!>
+| failed { area: *Area<used!>, errno: i32, reason: string }
+
+~proc freeze|zig {
+    const rc = uk_vma_set_attr(area.vas, area.start, area.len, PROT_READ, STRICT);
+    if (rc != 0) {
+        return .{ .failed = .{ .area = area, .errno = @intCast(rc), .reason = "uk_vma_set_attr could not make the range read-only" } };
+    }
+    return .{ .ok = area };
+}
+
+// Read a frozen area. Separate from `read` because the two mint different
+// states, and they must: a `read` that returned <used!> for a frozen area would
+// hand the caller a token `write` accepts, and the next store would be the fatal
+// program this module exists to refuse. Same borrow rules as `read`.
+~pub tor read.frozen { area: *Area<!frozen>, at: u64, len: u64 }
+| view { area: *Area<frozen!>, bytes: string }
+| rejected { area: *Area<frozen!>, reason: string }
+
+~proc read.frozen|zig {
+    if (len == 0) {
+        return .{ .rejected = .{ .area = area, .reason = "read of zero bytes" } };
+    }
+    const off: usize = @intCast(at);
+    const want: usize = @intCast(len);
+    if (off >= area.len or want > area.len - off) {
+        return .{ .rejected = .{ .area = area, .reason = "read runs past the end of the mapping" } };
+    }
+    const p: [*]u8 = @ptrFromInt(area.start);
+    return .{ .view = .{ .area = area, .bytes = p[off .. off + want] } };
+}
+
+// ============================================================================
+// LOOK
+// ============================================================================
+
+// `uk_vma_find`, through the mirror `active` proved. Answers "is anything mapped
+// at this address, and how far does it run" — the only read of the VMA list
+// ukvmem exports at all.
+//
+// `hex` is a BORROW of one module-level buffer, valid until the next `lookup`.
+//
+// Takes no obligation and mints none: knowing what is at an address constrains
+// nothing about what you may do next. Its value here is that it makes the
+// bracket in tests/boot_vmem.kz closeable — a VMA is there before `release` and
+// `| none` after, which is this organ's equivalent of `unikraft/pages`' free-page
+// count coming back equal.
+~pub tor lookup { space: *Space, at: u64 }
+| area { start: u64, span: u64, hex: string }
+| none
+
+~proc lookup|zig {
+    const head = uk_vma_find(space.vas, @intCast(at)) orelse {
+        return .{ .none = .{} };
+    };
+    writeHex(&lookup_hex, head.start);
+    return .{ .area = .{
+        .start = @intCast(head.start),
+        .span = @intCast(head.end - head.start),
+        .hex = lookup_hex[0..18],
+    } };
+}
+
+// ============================================================================
+// GIVE BACK
+// ============================================================================
+
+// `uk_vma_unmap` with STRICT checking, and the handle goes with it. Consumes the
+// obligation, so a double release is unspellable and so is any access afterwards.
+//
+// Accepts <!used> or <!frozen> and NOT <!mapped>: committing an address range and
+// dropping it without ever touching it is the program this module refuses. See
+// tests/negative_commit_without_use.kz, and `untouched` for the legitimate case.
+//
+// STRICT (`UK_VMA_FLAG_STRICT_VMA_CHECK`) rather than the default: without it,
+// unmapping a range that is not there returns 0 (vmem.c:520-521) and a lift that
+// forwarded that would report success for a mapping that had already gone.
+~pub tor release { area: *Area<!used|!frozen> }
+| ok
+| failed { area: *Area<stuck!>, errno: i32, reason: string }
+
+~proc release|zig {
+    const rc = uk_vma_unmap(area.vas, area.start, area.len, STRICT);
+    if (rc != 0) {
+        return .{ .failed = .{ .area = area, .errno = @intCast(rc), .reason = "uk_vma_unmap refused the range; the mapping is still installed" } };
+    }
+    free(@ptrCast(area));
+    return .{ .ok = .{} };
+}
+
+// The reservation half, and the place this module decides pillar 4's asymmetry
+// does NOT apply. A reservation holds address space and nothing else — no
+// physical memory, no page-table entries — so handing one back unused costs the
+// machine one `struct uk_vma` and demanding ceremony for it would be the
+// feature-maximalism the brief warns against.
+//
+// Named `withdraw` rather than overloading `release` so the two are separable:
+//
+//     grep -r "vmem:withdraw"  ->  address space given back, never backed
+//     grep -r "vmem:release"   ->  a mapping torn down
+//
+// STRICT for the same reason as `release`.
+~pub tor withdraw { area: *Area<!reserved> }
+| ok
+| failed { area: *Area<stuck!>, errno: i32, reason: string }
+
+~proc withdraw|zig {
+    const rc = uk_vma_unmap(area.vas, area.start, area.len, STRICT);
+    if (rc != 0) {
+        return .{ .failed = .{ .area = area, .errno = @intCast(rc), .reason = "uk_vma_unmap refused the reservation; it is still in the VMA list" } };
+    }
+    free(@ptrCast(area));
+    return .{ .ok = .{} };
+}
+
+// The one way out of <stuck!>. The kernel VMA is left exactly where ukvmem left
+// it, and the handle is deliberately NOT freed: `uk_vma_map` stored a pointer to
+// this handle's name bytes rather than copying the string (vmem.c:734-735), so
+// freeing it would leave the kernel a dangling `const char *` that any VMA
+// listing would print. An abandoned area costs one `struct Area` — 56 bytes — and
+// that is the honest price of an address range nobody could unmap.
+//
+// Named rather than implicit so that "we gave up on a range" is a grep, not an
+// inference.
+~pub tor abandon { area: *Area<!stuck> }
+
+~proc abandon|zig {
+    _ = area;
+}

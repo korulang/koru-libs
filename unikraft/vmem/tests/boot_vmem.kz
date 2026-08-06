@@ -1,0 +1,156 @@
+// POSITIVE, and the gate-2 artifact for this module: `ukvmem` driven from Koru
+// inside a unikernel, against the kernel's own live virtual address space — the
+// one `ukboot` installed for the heap, not a private one this program made.
+//
+// TWO FLOWS, because this module has two halves and proving them jointly would
+// prove neither.
+//
+//   flow 0 — THE RATCHET, the committed half:
+//       active -> reserve -> commit -> write -> read -> freeze -> read.frozen
+//              -> lookup (a VMA is there) -> release -> lookup (nothing is)
+//
+//   flow 1 — THE SYMMETRIC HALF, address space with nothing behind it:
+//       active -> reserve -> lookup (a VMA is there) -> withdraw
+//              -> lookup (nothing is)
+//
+// WHAT THE CONSOLE PROVES.
+//
+//   1. THREE PROBES PASSED ON A REAL KERNEL. Reaching `| ready` at all means
+//      `active` derived `UK_PAGING_VADDR_ANY` by finding the one input value that
+//      makes `uk_vma_map` choose an address of its own; derived the page size by
+//      finding the smallest length `uk_vma_map` does not call misaligned; and
+//      proved its two-field `struct uk_vma` mirror by round-tripping a
+//      reservation through `uk_vma_find`. Both derived numbers are printed.
+//      A failure prints which probe failed and takes nothing.
+//
+//   2. THE ROUNDING IS THE LIFT'S, NOT THE CALLER'S. The program asks for 100
+//      bytes. The console reports the span it actually got, which is one page.
+//      `uk_vma_map` returns -EINVAL for any length that is not a whole number of
+//      pages (vmem.c:634), and the page size is a compile-time constant of the
+//      kernel that no symbol exports.
+//
+//   3. THE MEMORY IS REAL. The bytes written at offset 0 come back out of a
+//      demand-paged anonymous mapping at an address ukvmem chose. Nothing was
+//      mapped there until the store faulted it in through `vma_op_anon_fault`.
+//
+//   4. THE RANGE IS STILL READABLE AFTER `freeze`, and the compiler refused the
+//      write that would follow it — see tests/negative_write_after_freeze.kz.
+//      Read-only means read-only, not gone.
+//
+//   5. THE BRACKET CLOSES, TWICE. `uk_vma_find` reports a VMA of the right span
+//      at the right address before each teardown and reports nothing after it.
+//      That is this organ's equivalent of `unikraft/pages`' free-page count
+//      coming back equal: the proof that `release` and `withdraw` actually
+//      removed what they said they removed, rather than returning 0 over a range
+//      that had already gone (which is exactly what `uk_vma_unmap` does without
+//      `UK_VMA_FLAG_STRICT_VMA_CHECK` — vmem.c:520-521 — and why this lift always
+//      sets it).
+//
+// Build and boot: see ../README.md.
+
+// `~import unikraft` is DELIBERATELY ABSENT — importing `unikraft/vmem` already
+// pulls `unikraft/index.kz` into scope, and writing the parent import as well
+// registers the module twice. Recorded on `unikraft/blk`'s boot test, confirmed
+// here.
+//
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/vmem
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_VMEM=1
+}
+
+// LIBUKVMEM selects LIBUKPAGING, LIBUKLCPU, LIBISRLIB and LIBUKALLOC on its own
+// (lib/ukvmem/Config.uk:4-8). LIBUKBOOT_HEAP_BASE is the one that is NOT implied
+// and is load-bearing: `ukboot` calls `uk_vas_init` + `uk_vas_set_active` only
+// inside `#ifdef CONFIG_LIBUKBOOT_HEAP_BASE` (boot.c:135-175). Without it there
+// is no active address space and `active` refuses — loudly, which is the point.
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKPAGING: 'y'
+    CONFIG_LIBUKVMEM: 'y'
+    CONFIG_LIBUKBOOT_HEAP_BASE: '0x400000000'
+}
+
+// --- flow 0: the ratchet ----------------------------------------------------
+
+~unikraft/vmem:active
+| ready vm |> std/io:print.ln("vas ready:  page size {{ vm.page_size:d }} B, VADDR_ANY {{ vm.any_hex:s }} (both DERIVED, neither assumed)")
+    |> unikraft/vmem:reserve(vm.space, bytes: 100)
+        | area rsv |> std/io:print.ln("reserve:    asked 100 B, got {{ rsv.span:d }} B at {{ rsv.hex:s }} -- address space only, touching it would fault")
+            |> unikraft/vmem:commit(rsv.area)
+                | ok mapped |> unikraft/vmem:write(area: mapped, at: 0, bytes: "anonymous memory, demand-paged, at an address ukvmem picked")
+                    | ok written |> unikraft/vmem:read(area: written, at: 0, len: 59)
+                        | view seen |> std/io:print.ln("commit+rw:  {{ seen.bytes:s }}")
+                            |> unikraft/vmem:freeze(seen.area)
+                                | ok frozen |> unikraft/vmem:read.frozen(area: frozen, at: 0, len: 59)
+                                    | view still |> std/io:print.ln("frozen:     {{ still.bytes:s }}")
+                                        |> unikraft/vmem:lookup(vm.space, rsv.at)
+                                            | area live |> std/io:print.ln("before rel: uk_vma_find reports {{ live.span:d }} B at {{ live.hex:s }}")
+                                                |> unikraft/vmem:release(still.area)
+                                                    | ok |> unikraft/vmem:lookup(vm.space, rsv.at)
+                                                        | area ghost |> std/io:print.ln("after rel:  {{ ghost.span:d }} B STILL at {{ ghost.hex:s }} -- release did not unmap")
+                                                        | none |> std/io:print.ln("after rel:  nothing at {{ rsv.hex:s }} -- the bracket closes")
+                                                    | failed e |> std/io:print.ln("release: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/vmem:abandon(e.area)
+                                            | none |> std/io:print.ln("before rel: nothing at {{ rsv.hex:s }} -- the mirror or the mapping is wrong")
+                                                |> unikraft/vmem:release(still.area)
+                                                    | ok |> _
+                                                    | failed e |> unikraft/vmem:abandon(e.area)
+                                    | rejected r |> std/io:print.ln("frozen read rejected: {{ r.reason:s }}")
+                                        |> unikraft/vmem:release(r.area)
+                                            | ok |> _
+                                            | failed e |> unikraft/vmem:abandon(e.area)
+                                | failed e |> std/io:print.ln("freeze: {{ e.reason:s }} ({{ e.errno:d }})")
+                                    |> unikraft/vmem:release(e.area)
+                                        | ok |> _
+                                        | failed x |> unikraft/vmem:abandon(x.area)
+                        | rejected r |> std/io:print.ln("read rejected: {{ r.reason:s }}")
+                            |> unikraft/vmem:untouched(r.area): u |> unikraft/vmem:release(area: u)
+                                | ok |> _
+                                | failed e |> unikraft/vmem:abandon(e.area)
+                    | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}")
+                        |> unikraft/vmem:untouched(r.area): u |> unikraft/vmem:release(area: u)
+                            | ok |> _
+                            | failed e |> unikraft/vmem:abandon(e.area)
+                | refused e |> std/io:print.ln("commit: {{ e.reason:s }} ({{ e.errno:d }})")
+                    |> unikraft/vmem:withdraw(e.area)
+                        | ok |> _
+                        | failed x |> unikraft/vmem:abandon(x.area)
+        | refused e |> std/io:print.ln("reserve failed: {{ e.reason:s }} ({{ e.errno:d }})")
+| unavailable why |> std/io:print.ln("no address space: {{ why:s }}")
+
+// --- flow 1: the symmetric half ---------------------------------------------
+//
+// A reservation costs no physical memory and no page-table entry, so this lift
+// deliberately does NOT ratchet it: `withdraw` accepts <!reserved> and demands
+// nothing. Two pages of address space taken and given straight back is a program
+// that compiles, and it should be.
+
+~unikraft/vmem:active
+| ready vm |> unikraft/vmem:reserve(vm.space, bytes: 8192)
+    | area rsv |> std/io:print.ln("reserve:    {{ rsv.span:d }} B of address space at {{ rsv.hex:s }}, never committed")
+        |> unikraft/vmem:lookup(vm.space, rsv.at)
+            | area live |> std/io:print.ln("before wd:  uk_vma_find reports {{ live.span:d }} B at {{ live.hex:s }}")
+                |> unikraft/vmem:withdraw(rsv.area)
+                    | ok |> unikraft/vmem:lookup(vm.space, rsv.at)
+                        | area ghost |> std/io:print.ln("after wd:   {{ ghost.span:d }} B STILL at {{ ghost.hex:s }} -- withdraw did not unmap")
+                        | none |> std/io:print.ln("after wd:   nothing at {{ rsv.hex:s }} -- address space given back untouched")
+                    | failed e |> std/io:print.ln("withdraw: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/vmem:abandon(e.area)
+            | none |> std/io:print.ln("before wd:  nothing at {{ rsv.hex:s }} -- the mirror or the reservation is wrong")
+                |> unikraft/vmem:withdraw(rsv.area)
+                    | ok |> _
+                    | failed e |> unikraft/vmem:abandon(e.area)
+    | refused e |> std/io:print.ln("reserve failed: {{ e.reason:s }} ({{ e.errno:d }})")
+| unavailable why |> std/io:print.ln("no address space: {{ why:s }}")
