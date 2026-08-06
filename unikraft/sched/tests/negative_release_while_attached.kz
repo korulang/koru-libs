@@ -1,0 +1,56 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): free a thread that is still on the
+// scheduler's run queue.
+//
+// This is the direct transcription of thread.c:1005:
+//
+//     UK_ASSERT(!t->sched); /* Thread must be disconnected from scheduler */
+//
+// `uk_thread_release` frees the thread struct, its stack, its aux stack and its
+// TLS. If the scheduler still holds the thread — it is on `s->thread_list` and,
+// if runnable, in the run queue — the next context switch reads a freed
+// allocation and jumps into a freed stack. With
+// `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` off, which is every shipped image, there is
+// no diagnostic; there is a crash somewhere else, later.
+//
+// Here `release` accepts only <!detached>, and <detached!> is minted only by
+// `sched:unspawned`, which is reachable only from <container> or <primed> — the
+// two states in which the thread has never been handed to a scheduler. So a
+// live scheduler thread cannot reach `release` at all. The reaping call for an
+// attached thread is `terminate`, which is `uk_sched_thread_terminate` and does
+// the removal first.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.sched:detached' but got 'unikraft.sched:ran!'
+//           for argument 'thread'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/sched
+~import std/io
+
+~unikraft/sched:current
+| ready sched |> unikraft/sched:reserve(sched, name: "freed-while-live", stack: 0)
+    | thread box |> unikraft/sched:prime(thread: box, laps: 1)
+        | ok wired |> unikraft/sched:attach(thread: wired)
+            | ok queued |> unikraft/sched:run(thread: queued)
+                | ok live |> unikraft/sched:release(thread: live)
+                    |> std/io:print.ln("should never get here")
+                | stalled st |> std/io:print.ln("run: {{ st.reason:s }}")
+                    |> unikraft/sched:never-ran(st.thread): u
+                    |> unikraft/sched:terminate(thread: u)
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }}")
+                |> unikraft/sched:unspawned(e.thread): v
+                |> unikraft/sched:release(thread: v)
+        | rejected r |> std/io:print.ln("prime: {{ r.reason:s }}")
+            |> unikraft/sched:unspawned(r.thread): w
+            |> unikraft/sched:release(thread: w)
+    | refused why |> std/io:print.ln("reserve: {{ why:s }}")
+| unavailable why |> std/io:print.ln("no scheduler: {{ why:s }}")

@@ -1,0 +1,50 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): install an entry point on a thread that
+// already has one.
+//
+// This is the direct transcription of thread.c:872-873:
+//
+//     UK_ASSERT(t->ctx.ip == 0x0);
+//     UK_ASSERT(!(t->flags & UK_THREADF_RUNNABLE));
+//
+// with the C's own comment two lines above it — "Make sure that we got handed
+// over a container". `uk_thread_container_init_fn1` writes a new instruction
+// pointer and a new stack pointer into `t->ctx`; on a thread that is already
+// runnable, or already running, that is a rewrite of where the CPU will resume.
+// With `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` off — every shipped image — the C does
+// it and says nothing.
+//
+// Here `prime` consumes <!container>, and nothing mints <container!> except
+// `reserve` and `prime`'s own refusal arm. A second `prime` has nothing to
+// consume, so the assertion has nothing left to catch.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.sched:container' but got 'unikraft.sched:primed!'
+//           for argument 'thread'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/sched
+~import std/io
+
+~unikraft/sched:current
+| ready sched |> unikraft/sched:reserve(sched, name: "primed-twice", stack: 0)
+    | thread box |> unikraft/sched:prime(thread: box, laps: 1)
+        | ok wired |> unikraft/sched:prime(thread: wired, laps: 2)
+            | ok again |> unikraft/sched:unspawned(thread: again): u
+                |> unikraft/sched:release(thread: u)
+            | rejected r |> std/io:print.ln("prime: {{ r.reason:s }}")
+                |> unikraft/sched:unspawned(r.thread): v
+                |> unikraft/sched:release(thread: v)
+        | rejected r |> std/io:print.ln("prime: {{ r.reason:s }}")
+            |> unikraft/sched:unspawned(r.thread): w
+            |> unikraft/sched:release(thread: w)
+    | refused why |> std/io:print.ln("reserve: {{ why:s }}")
+| unavailable why |> std/io:print.ln("no scheduler: {{ why:s }}")

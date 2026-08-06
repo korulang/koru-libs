@@ -1,0 +1,804 @@
+// @korulang/unikraft-sched — Unikraft's scheduler (`uksched`), lifted.
+//
+//   import unikraft/sched
+//
+// WHAT THIS IS. `lib/uksched` is 42 exported functions over a thread lifetime
+// that Unikraft has drawn as an ASCII diagram in its own header
+// (`include/uk/thread.h:123-161`) and then encoded 112 times as `UK_ASSERT`.
+// `UK_ASSERT` expands to `do {} while(0)` whenever `CONFIG_LIBUKDEBUG_ENABLE_ASSERT`
+// is off — which is every image anyone ships. This module transcribes the part
+// of that ordering a CALLER can violate into phantom states, so the compiler
+// refuses those programs and the emitted code carries no check at all.
+//
+// WHY THIS IS A DIFFERENT SHAPE FROM `unikraft/blk`. A block device is one
+// object moving forward through a bring-up. A thread is two things at once:
+// an ORDERING (you may not set an entry point twice; you may not attach a
+// thread that is already attached) and a LIFETIME that the thread itself can
+// end. `ukblkdev` has nothing that corresponds to "the resource ran". This
+// module's asymmetry gate is exactly that: a thread that was allocated a stack,
+// a TLS and an aux stack, attached to the scheduler, and then destroyed WITHOUT
+// EVER BEING GIVEN CPU. On a 2 MB unikernel a default thread stack is 256 KiB —
+// an eighth of the machine, taken and returned with no instruction executed.
+//
+// THE RATCHET. One handle, six states, one direction:
+//
+//     reserve     mints  <container!>                  uk_thread_create_container
+//     prime       needs  <!container>  mints <primed!>   uk_thread_container_init_fn1
+//     attach      needs  <!primed>     mints <queued!>    uk_sched_thread_add
+//     run         needs  <!queued|!ran> mints <ran!>      sched_yield  (+ proof it ran)
+//     join        needs  <!queued|!ran> mints <ran!>      sched_yield until finished
+//     park        needs  <!ran>        mints <parked!>    uk_thread_block
+//     unpark      needs  <!parked>     mints <ran!>       uk_thread_wake
+//     terminate   needs  <!ran|!parked>                   uk_sched_thread_terminate
+//     never-ran   needs  <!queued>     mints <ran!>       NO C CALL — the escape
+//     unspawned   needs  <!container|!primed> mints <detached!>  NO C CALL
+//     release     needs  <!detached>                      uk_thread_release
+//
+// THE ASYMMETRY (pillar 4). `terminate` accepts ONLY <!ran> or <!parked>, and
+// <ran!> is minted only by `run`, `join`, `unpark` or the named escape. So
+//
+//     attach(t) | ok q |> terminate(thread: q)
+//
+// does not compile. This is the thread twin of gzip's `fed` gate
+// (koru-libs/gzip/index.kz:258, where `finish` accepts only <!fed> and only
+// `push` mints it) and of the transaction showcase's rule that `close` takes
+// <!active> and not <!connected> (koru tests/.../2104_14_open_tx_commit_close/
+// db.kz). RAII guarantees a thread is REAPED; it cannot force it to be RUN.
+//
+// The escape is deliberate, named and greppable: `sched:never-ran`. A program
+// that pre-attaches a pool of workers and tears some of them down unused says
+// so out loud, and `grep -r "sched:never-ran"` answers "did we allocate thread
+// stacks we never scheduled". Its sibling `sched:unspawned` answers the same
+// question one step earlier, for a thread that never reached the scheduler at
+// all; it is also the recovery route out of a failed `attach`, and that dual
+// role is stated rather than hidden.
+//
+// WHAT `run` DOES NOT ASSUME. <ran!> is a claim that the thread executed, so
+// this module PROVES it rather than inferring it from a yield: the entry shim
+// sets a flag as its first act, and `run` reads that flag after yielding. If
+// the flag is clear the tor takes `| stalled` and hands the handle back in
+// <queued!>. There is no arm that mints <ran!> without evidence.
+//
+// WHO OWNS A THREAD'S DEATH — the one design decision everything else follows
+// from. Unikraft supports two disciplines and they are incompatible:
+//
+//   (A) OWNED. The body never exits by itself; the parent reaps it with
+//       `uk_sched_thread_terminate`, which removes it from the scheduler, runs
+//       the termination table and releases the memory in one call.
+//   (B) SELF-EXITING. The body calls `uk_sched_thread_exit()`, the thread lands
+//       on `sched->exited_threads`, and `uk_sched_thread_gc` releases it later.
+//
+// An obligation can only describe (A). Under (B) the parent's handle becomes a
+// dangling pointer at a moment the parent cannot observe — `uk_sched_thread_remove`
+// has already NULLed `t->sched` — so `uk_sched_thread_terminate` on it would trip
+// its own `UK_ASSERT(thread->sched)` in a debug build and corrupt a freed
+// allocation in a release one. **This lift models (A) only**, and it does not
+// merely document that: the entry shim it owns cannot take route (B), because
+// after the body's last lap it PARKS (`uk_thread_block` + yield, forever) instead
+// of exiting. So `uk_sched_thread_exit`, `uk_sched_thread_exit2` and
+// `uk_sched_thread_gc` are not bound here, and README.md says why rather than
+// listing them as future work.
+//
+// WHAT A CALLER SUPPLIES, AND WHAT IT CANNOT. The C thread entry is a function
+// pointer, `void (*)(void *) __noreturn`. **Koru has no first-class function
+// value at the surface** — nothing in the language's test suite passes a flow or
+// a tor as an argument — and "no threads at the surface" is a stated tenet of
+// the language, so there is no spelling to invent here either. This module
+// therefore OWNS the entry point and the caller supplies DATA: a thread name and
+// a lap count. The shipped body announces each lap on the console and yields
+// between laps, which is enough to drive every state in the machine against the
+// real cooperative scheduler and to make the interleave visible. It is not a
+// general-purpose "run my code on a thread" facility and README.md says so in
+// those words, under claims not made.
+//
+// WHAT IS NOT RATCHETED. `census` walks the scheduler's thread list and takes
+// and mints nothing: knowing how many threads exist constrains nothing about
+// what you may do next. There is no obligation on `*Sched` either — the
+// scheduler is created by `ukboot` before `main` and is never given back, so an
+// obligation on it could not be discharged; the proof that one exists rides on
+// being inside `current`'s `| ready` arm, exactly as `unikraft/pages` does with
+// its `*Pager`.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Every symbol below is on `lib/uksched/exportsyms.uk` (case 1 of the brief's
+// three-case rule — the file exists, 42 lines, and objcopy localizes everything
+// not on it) except `_uk_alloc_head`, which is on `lib/ukalloc/exportsyms.uk:22`.
+
+const UkThread = opaque {};
+const UkAlloc = opaque {};
+
+// exportsyms.uk:22 of ukalloc. `uk_alloc_get_default()` is `static inline`
+// (alloc.h:136) and returns this variable; reading it is the same load.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+// thread.h:97, and uksched/exportsyms.uk:39. Declared here so the assembler in
+// `currentThread` has a symbol to relocate against; it is never read directly —
+// see that function for why.
+extern var __uk_sched_thread_current: ?*ThreadRaw;
+
+extern fn uk_thread_create_container(
+    a: ?*UkAlloc,
+    a_stack: ?*UkAlloc,
+    stack_len: usize,
+    a_auxstack: ?*UkAlloc,
+    auxstack_len: usize,
+    a_uktls: ?*UkAlloc,
+    no_ectx: bool,
+    name: ?[*:0]const u8,
+    priv: ?*anyopaque,
+    dtor: ?*const fn (*UkThread) callconv(.c) void,
+) ?*UkThread;
+
+extern fn uk_thread_container_init_fn1(
+    t: *UkThread,
+    fn1: *const fn (?*anyopaque) callconv(.c) noreturn,
+    argp: ?*anyopaque,
+) void;
+
+extern fn uk_sched_thread_add(s: *SchedRaw, t: *UkThread) c_int;
+extern fn uk_sched_thread_terminate(t: *UkThread) void;
+extern fn uk_thread_release(t: *UkThread) void;
+extern fn uk_thread_block(t: *UkThread) void;
+extern fn uk_thread_wake(t: *UkThread) void;
+
+// `sched_yield` is a syscall definition (sched.c:396) and is on the allowlist,
+// so the plain C name links. It returns 0 unconditionally.
+extern fn sched_yield() c_int;
+
+// nolibc, in the same address space. No syscall shim, no libc emulation.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+extern fn printf(fmt: [*:0]const u8, ...) c_int;
+
+// --- struct uk_sched, mirrored from lib/uksched/include/uk/sched.h:88.
+//
+// There is no exported accessor for ANY of these fields and no exported way to
+// obtain a `struct uk_sched *` at all: `uk_sched_current()` is `static inline`
+// (sched.h:53) over `uk_thread_current()`, which is also `static inline`
+// (thread.h:100). So the scheduler pointer is reachable only through the layout
+// below. That is the brief's case 3, and this module answers it the way
+// `unikraft/pages` does: mirror, then PROVE the mirror at run time before using
+// it. See `current`.
+//
+// Nothing in this declaration is conditional. The only `#ifdef` in the C struct
+// is `CONFIG_LIBUKSCHED_STATS`, and it appends `start_time` and `stats` AFTER
+// `next` — past everything mirrored here — so no build option can shift these
+// offsets. (Contrast `unikraft/pages`, where `CONFIG_LIBUKALLOC_IFMALLOC`
+// inserts two pointers mid-struct and needs a detector.)
+
+const TailqHead = extern struct {
+    first: ?*ThreadRaw,
+    last: ?*anyopaque,
+};
+
+const TailqEntry = extern struct {
+    next: ?*ThreadRaw,
+    prev: ?*anyopaque,
+};
+
+const SchedRaw = extern struct {
+    yield: ?*anyopaque, // 0
+    thread_add: ?*anyopaque, // 8
+    thread_remove: ?*anyopaque, // 16
+    thread_blocked: ?*anyopaque, // 24
+    thread_woken: ?*anyopaque, // 32
+    thread_woken_isr: ?*anyopaque, // 40
+    idle_thread: ?*anyopaque, // 48
+    sched_start: ?*anyopaque, // 56
+    is_started: u8, // 64
+    _pad: [7]u8,
+    thread_list: TailqHead, // 72
+    exited_threads: TailqHead, // 88
+    a: ?*UkAlloc, // 104
+    a_stack: ?*UkAlloc, // 112
+    a_auxstack: ?*UkAlloc, // 120
+    a_uktls: ?*UkAlloc, // 128
+    next: ?*SchedRaw, // 136
+};
+
+// --- struct uk_thread, thread.h:56. Only three fields are read: `sched` (to
+// find the scheduler), `flags` (to name what state the C thinks it is in when a
+// proof fails) and `thread_list` (to walk the scheduler's roster). The gaps are
+// named by size rather than mirrored field by field, because a field this module
+// never touches is a claim it does not need to make.
+
+const ThreadRaw = extern struct {
+    // ctx(16) ectx(8) tlsp(8) uktlsp(8) auxsp(8) queue(16) = 64
+    _head: [64]u8,
+    flags: u32, // 64
+    _pad0: u32,
+    wakeup_time: i64, // 72
+    sched: ?*SchedRaw, // 80
+    // wait_ticket(32) _mem(56) _gc_fn(8) _gc_argp(8) dtor(8) priv(8) exec_time(8) name(8)
+    _mid: [136]u8, // 88
+    thread_list: TailqEntry, // 224
+};
+
+// Measured against a built kernel — Unikraft 0.21.0 "Ijiraq", x86_64, the
+// version `Kraftfile: unikraft.version: stable` fetches. The measurement is a
+// `printf("%zu", offsetof(...))` in a probe image, reproduced in README.md so
+// the numbers can be re-derived rather than believed. These assertions prove the
+// mirror is SELF-CONSISTENT; `current`'s run-time proof is what checks it against
+// the kernel actually linked in.
+comptime {
+    if (@offsetOf(SchedRaw, "sched_start") != 56) @compileError("uk_sched.sched_start moved");
+    if (@offsetOf(SchedRaw, "is_started") != 64) @compileError("uk_sched.is_started moved");
+    if (@offsetOf(SchedRaw, "thread_list") != 72) @compileError("uk_sched.thread_list moved");
+    if (@offsetOf(SchedRaw, "exited_threads") != 88) @compileError("uk_sched.exited_threads moved");
+    if (@offsetOf(SchedRaw, "a") != 104) @compileError("uk_sched.a moved");
+    if (@offsetOf(SchedRaw, "a_stack") != 112) @compileError("uk_sched.a_stack moved");
+    if (@offsetOf(SchedRaw, "a_auxstack") != 120) @compileError("uk_sched.a_auxstack moved");
+    if (@offsetOf(SchedRaw, "a_uktls") != 128) @compileError("uk_sched.a_uktls moved");
+    if (@offsetOf(SchedRaw, "next") != 136) @compileError("uk_sched.next moved");
+    if (@sizeOf(SchedRaw) != 144) @compileError("uk_sched changed size");
+
+    if (@offsetOf(ThreadRaw, "flags") != 64) @compileError("uk_thread.flags moved");
+    if (@offsetOf(ThreadRaw, "wakeup_time") != 72) @compileError("uk_thread.wakeup_time moved");
+    if (@offsetOf(ThreadRaw, "sched") != 80) @compileError("uk_thread.sched moved");
+    if (@offsetOf(ThreadRaw, "thread_list") != 224) @compileError("uk_thread.thread_list moved");
+    if (@sizeOf(ThreadRaw) != 240) @compileError("uk_thread changed size");
+}
+
+// UK_THREADF_*, thread.h:163-175.
+const F_RUNNABLE: u32 = 0x008;
+const F_EXITED: u32 = 0x010;
+
+// ============================================================================
+// THE HANDLES
+// ============================================================================
+
+// The proven scheduler. A caller never sees `struct uk_sched *`.
+const Sched = extern struct {
+    s: *SchedRaw,
+};
+
+var scheduler: Sched = undefined;
+
+// One thread. `t` is the C thread; everything else is this lift's own
+// bookkeeping, allocated beside it.
+//
+// `started` and `finished` are written by the worker and read by the parent.
+// They are the evidence behind <ran!>: without them `run` would be asserting
+// that a yield scheduled the thread, which is a claim about the scheduler's
+// policy and not an observation.
+const Thread = extern struct {
+    t: ?*UkThread,
+    name: ?[*:0]u8,
+    laps: u32,
+    lap: u32,
+    started: u32,
+    finished: u32,
+};
+
+// The current thread, read exactly the way `uk_thread_current()` reads it.
+//
+// `__uk_sched_thread_current` is `__uk_pcpuvar` (sched.c:50): the symbol
+// addresses a TEMPLATE in `.uk_pcpuvar`, and each CPU's live copy sits at
+// `template + tmpl_size * cpu_idx`, reached through the GS base. On x86_64 that
+// is one `mov %gs:sym(%rip)` — lib/ukpcpuvar/arch/x86_64/include/uk/pcpuvar/arch.h,
+// `__uk_pcpuvar_arch_current_get`. This is that instruction, so the read is
+// correct on any CPU.
+//
+// A plain load of the extern variable happens to give the same answer on the
+// boot CPU (measured: cpu_idx 0, so the live copy IS the template) and would be
+// a silent lie on any other. The instruction costs the same; the assumption is
+// what would have cost something.
+// Both architectures Unikraft's `ukpcpuvar` implements are spelled out, and
+// anything else is a COMPILE ERROR naming the gap. There is no portable
+// fallback here and there must not be: a plain load of the extern variable is
+// the wrong instruction on every CPU but the boot one, and it fails silently —
+// it returns the template's copy, which on CPU 0 is right by coincidence.
+const uk_arch = @import("builtin").cpu.arch;
+
+// The arm64 form needs the per-CPU section base, which the linker script
+// defines (`lib/ukpcpuvar/include/uk/pcpuvar.h:20`). It is never dereferenced,
+// only subtracted.
+extern const _uk_pcpuvar_base: anyopaque;
+
+fn currentThread() ?*ThreadRaw {
+    return switch (uk_arch) {
+        .x86_64 => asm volatile ("mov %%gs:__uk_sched_thread_current(%%rip), %[ret]"
+            : [ret] "=r" (-> ?*ThreadRaw),
+            :
+            : .{ .memory = true }),
+        .aarch64 => blk: {
+            const off = @intFromPtr(&__uk_sched_thread_current) - @intFromPtr(&_uk_pcpuvar_base);
+            break :blk asm volatile (
+                \\mrs %[ret], tpidr_el1
+                \\ldr %[ret], [%[ret], %[off]]
+                : [ret] "=&r" (-> ?*ThreadRaw),
+                : [off] "r" (off),
+                : .{ .memory = true });
+        },
+        else => @compileError("unikraft/sched: uk_thread_current() reads a per-CPU variable and ukpcpuvar implements only x86_64 (GS-relative) and arm64 (TPIDR_EL1); this target has neither"),
+    };
+}
+
+// Walk `s`'s roster, stopping at `stop` if it is found. Returns the number of
+// threads seen and whether `stop` was among them.
+//
+// `while`, not `for`: a linked-list walk has no trip count known before it
+// starts. The bound is a refusal to loop forever on a corrupt list, not a count.
+const ROSTER_BOUND: u32 = 1024;
+
+fn rosterWalk(s: *SchedRaw, stop: ?*ThreadRaw) struct { n: u32, found: bool, overran: bool } {
+    var n: u32 = 0;
+    var found = false;
+    var cur = s.thread_list.first;
+    while (cur) |t| {
+        if (stop != null and t == stop.?) found = true;
+        n += 1;
+        if (n > ROSTER_BOUND) return .{ .n = n, .found = found, .overran = true };
+        cur = t.thread_list.next;
+    }
+    return .{ .n = n, .found = found, .overran = false };
+}
+
+fn destroy(h: *Thread) void {
+    if (h.name) |p| free(@ptrCast(p));
+    free(@ptrCast(h));
+}
+
+// Copy a Koru `string` into a NUL-terminated allocation the C can keep.
+// `uk_thread_create_container` stores the pointer and `uk_sched_dumpk_threads`
+// prints it, so it must outlive the call — a borrow of the caller's bytes would
+// be a dangling `name` field the moment the flow moved on.
+fn dupz(text: []const u8) ?[*:0]u8 {
+    const raw = malloc(text.len + 1) orelse return null;
+    const p: [*]u8 = @ptrCast(raw);
+    for (0..text.len) |i| p[i] = text[i];
+    p[text.len] = 0;
+    return @ptrCast(p);
+}
+
+// ============================================================================
+// THE ENTRY POINT THIS MODULE OWNS
+// ============================================================================
+
+// The one thread body in this lift. See the module header for why the caller
+// supplies data and not code.
+//
+// It does three things, in this order, and the order is the whole contract:
+//
+//   1. Raises `started` as its FIRST act, so `run`'s proof is an observation of
+//      the thread having executed at least one instruction.
+//   2. Runs `laps` laps, announcing each and yielding after it. The yield is
+//      what makes the interleave with the parent real and visible, rather than
+//      the parent seeing one uninterrupted burst.
+//   3. PARKS FOREVER instead of returning. `uk_thread_fn1_t` is `__noreturn` and
+//      the two legal ways to leave are `uk_sched_thread_exit()` — which puts the
+//      thread on the garbage-collection list and invalidates the parent's handle
+//      at a moment the parent cannot see — or never leaving. This body never
+//      leaves. That is what makes the parent's obligation honest: while this
+//      loop is running, `terminate` is always a legal call and always describes
+//      a thread that is still there.
+fn workerBody(argp: ?*anyopaque) callconv(.c) noreturn {
+    const h: *Thread = @ptrCast(@alignCast(argp.?));
+    @atomicStore(u32, &h.started, 1, .release);
+
+    // `h.laps` is read inline rather than hoisted into a local. A host-line
+    // `const laps` ANYWHERE in this module — even function-local, even here —
+    // makes koruc stop binding the `laps` input of `prime` to a local and fall
+    // back to unscoped textual substitution of the token, which then rewrites
+    // `thread.laps` into `thread.__koru_event_input.laps` and edits the text
+    // inside string literals. Minimal repro and the emitted evidence are in
+    // README.md, "What the toolchain got wrong". Nothing about the lift's design
+    // wants a local here; the comment exists so nobody re-adds one.
+    for (0..h.laps) |i| {
+        const n: u32 = @intCast(i + 1);
+        @atomicStore(u32, &h.lap, n, .release);
+        _ = printf("  [%s] lap %u of %u, on its own stack\n", h.name.?, @as(c_uint, n), @as(c_uint, h.laps));
+        _ = sched_yield();
+    }
+
+    @atomicStore(u32, &h.finished, 1, .release);
+
+    // No trip count: this loop ends when the parent reaps the thread, and the
+    // parent's call never returns here.
+    while (true) {
+        uk_thread_block(h.t.?);
+        _ = sched_yield();
+    }
+}
+
+// ============================================================================
+// ACQUIRE THE SCHEDULER
+// ============================================================================
+
+// The running scheduler, PROVEN, or an explicit refusal naming which proof
+// failed.
+//
+// A mirrored struct is an ABI CLAIM, and an ABI claim that is wrong corrupts
+// memory silently. `unikraft/blk` guards its mirror with `@offsetOf` assertions,
+// which prove the mirror is self-consistent and say nothing about the C.
+// `unikraft/pages` interrogates the C at run time by comparing table slots
+// against exported symbol addresses. Neither technique is available here:
+// `struct uk_sched`'s function pointers are FILE STATICS in `lib/ukschedcoop`
+// (`schedcoop_yield` and friends are not on any exportsyms.uk), so this archive
+// cannot know a single one of their addresses.
+//
+// So the proof is STRUCTURAL instead — it checks an invariant the scheduler
+// maintains rather than an address it holds. Six tests, all read-only, no call
+// made through any pointer until every one has passed:
+//
+//   1. `uk_thread_current()` is non-NULL. Before `uk_sched_start` it is NULL
+//      (sched.c:213 asserts exactly that), so this also proves boot got far
+//      enough.
+//   2. `t->sched` at offset 80 is non-NULL and word-aligned.
+//   3. `s->is_started` is true — sched.c:249 sets it, and nothing clears it.
+//   4. `s->next` is NULL and `s->a` and `s->a_uktls` are `_uk_alloc_head`, the
+//      one allocator address this archive knows independently
+//      (`ukboot/boot.c:360` passes `uk_alloc_get_default()` as both). `a_stack`
+//      and `a_auxstack` are checked non-NULL only: `ukboot` hands those two
+//      separate stack allocators, which the probe confirmed.
+//   5. Every vtable slot the scheduler must have — yield, thread_add,
+//      thread_remove, thread_blocked, thread_woken, sched_start — is non-NULL.
+//      `uk_sched_start` asserts `sched_start` (sched.c:211) and
+//      `uk_sched_thread_add` calls `thread_add` unconditionally.
+//   6. THE ROUND TRIP, and the test that makes the other five more than a
+//      plausibility argument: walk `s->thread_list` and find the current thread
+//      on it. That list is threaded through `uk_thread.thread_list` at offset
+//      224, and membership is the exact invariant `uk_sched_thread_add`
+//      (sched.c:373) and `uk_sched_start` (sched.c:241) maintain. Passing it
+//      proves offset 80 really is `sched`, offset 72 really is that scheduler's
+//      roster, and offset 224 really is a thread's link on it — three mirrored
+//      offsets confirmed by one walk, in a structure that could not close by
+//      accident.
+//
+// If any test fails, `current` takes `| unavailable` and names it. Because
+// `current` is the only source of a `*Sched` and `reserve` is the only source of
+// a `*Thread`, nothing in this module is reachable after a refusal. There is no
+// degraded path and no assumed layout.
+//
+// Cost: about a dozen loads plus one walk of a list that holds two threads at
+// boot. A program calls `current` once and threads the `*Sched`.
+~pub tor current { }
+| ready *Sched
+| unavailable string
+
+~proc current|zig {
+    const t = currentThread() orelse {
+        return .{ .unavailable = "uk_thread_current() is NULL: uk_sched_start has not run, so there is no scheduler to attach threads to" };
+    };
+
+    const s = t.sched orelse {
+        return .{ .unavailable = "the current thread is not attached to a scheduler" };
+    };
+    if ((@intFromPtr(s) & 0x7) != 0) {
+        return .{ .unavailable = "the word at uk_thread+80 is not an aligned pointer, so it is not struct uk_sched * and unikraft/sched refuses to guess the layout" };
+    }
+
+    if (s.is_started == 0) {
+        return .{ .unavailable = "struct uk_sched.is_started reads false while a thread is running on it, which uk_sched_start never produces: the mirrored layout is not this kernel's" };
+    }
+    if (s.next != null) {
+        return .{ .unavailable = "struct uk_sched.next is non-NULL: more than one scheduler is registered, and this lift models the single scheduler ukboot starts" };
+    }
+    if (s.a != _uk_alloc_head or s.a_uktls != _uk_alloc_head) {
+        return .{ .unavailable = "struct uk_sched.a / .a_uktls are not the default allocator ukboot passed to uk_schedcoop_create, so the mirrored layout is not this kernel's" };
+    }
+    if (s.a_stack == null or s.a_auxstack == null) {
+        return .{ .unavailable = "struct uk_sched has no stack or aux-stack allocator, so no thread container can be built" };
+    }
+    if (s.yield == null or s.thread_add == null or s.thread_remove == null or
+        s.thread_blocked == null or s.thread_woken == null or s.sched_start == null)
+    {
+        return .{ .unavailable = "struct uk_sched's callback table has a NULL slot, which uk_sched_init never produces: the mirrored layout is not this kernel's" };
+    }
+
+    const walk = rosterWalk(s, t);
+    if (walk.overran) {
+        return .{ .unavailable = "the scheduler's thread list did not terminate within 1024 entries, so offset 72 or offset 224 is not what this lift mirrors" };
+    }
+    if (!walk.found) {
+        return .{ .unavailable = "the current thread is not on its own scheduler's thread list: the mirrored offsets do not describe this kernel and unikraft/sched refuses to write through them" };
+    }
+
+    scheduler = Sched{ .s = s };
+    return .{ .ready = &scheduler };
+}
+
+// How many threads the scheduler is holding, counted by walking the same list
+// `current`'s proof walked. At boot that is two — `init` and `idle` — and it
+// goes up by one per `attach` and down by one per `terminate`.
+//
+// No obligation: knowing the roster size constrains nothing about what you may
+// do next. This is the module's `blk:count`.
+//
+// There is no exported way to ask. `uk_sched_dumpk_threads` prints the roster to
+// the kernel log and returns nothing, and `uk_sched_foreach_thread` is a macro.
+~pub tor census { sched: *Sched } -> u32
+
+~proc census|zig {
+    return rosterWalk(sched.s, null).n;
+}
+
+// ============================================================================
+// BUILD A THREAD
+// ============================================================================
+
+// `uk_thread_create_container`: a thread struct with a stack, an aux stack, a
+// TLS and extended-context space, but NO entry point and NOT runnable.
+//
+// The allocators are not the caller's problem. `uk_thread_create_container`
+// takes four of them and getting them wrong is how you allocate a thread stack
+// out of the TLS pool; they are read from the proven `*Sched`, which is exactly
+// what `uk_sched_thread_create_fn1` (sched.c:114) does internally.
+//
+// `stack` is the stack size in bytes; 0 means the kernel default
+// (`__STACK_SIZE`, which `CONFIG_STACK_SIZE_PAGE_ORDER` sets — order 6, 256 KiB,
+// in every image this module's tests build).
+//
+// Mints <container!>. The only tors that accept it are `prime` and the named
+// escape `unspawned`: there is deliberately no path from a fresh container to
+// `terminate`.
+~pub tor reserve { sched: *Sched, name: string, stack: u64 }
+| thread *Thread<container!>
+| refused string
+
+~proc reserve|zig {
+    if (name.len == 0) {
+        return .{ .refused = "a thread needs a name: uk_sched_dumpk_threads prints it and an unnamed thread is unidentifiable in a crash dump" };
+    }
+
+    const mem = malloc(@sizeOf(Thread)) orelse {
+        return .{ .refused = "out of memory allocating the thread handle" };
+    };
+    const h: *Thread = @ptrCast(@alignCast(mem));
+    h.* = Thread{ .t = null, .name = null, .laps = 0, .lap = 0, .started = 0, .finished = 0 };
+
+    h.name = dupz(name) orelse {
+        free(mem);
+        return .{ .refused = "out of memory copying the thread name" };
+    };
+
+    const s = sched.s;
+    const t = uk_thread_create_container(
+        s.a,
+        s.a_stack,
+        @intCast(stack),
+        s.a_auxstack,
+        0,
+        s.a_uktls,
+        false,
+        h.name,
+        null,
+        null,
+    ) orelse {
+        destroy(h);
+        return .{ .refused = "uk_thread_create_container could not allocate the thread, its stack, its aux stack or its TLS" };
+    };
+
+    h.t = t;
+    return .{ .thread = h };
+}
+
+// `uk_thread_container_init_fn1`: install the entry point and mark the thread
+// runnable.
+//
+// THIS IS THE TOR THAT LIFTS THE CONTAINER ASSERTIONS. thread.c:872-873 checks
+// `t->ctx.ip == 0x0` and `!(t->flags & UK_THREADF_RUNNABLE)` — together, "the
+// thing you handed me is a container nobody has primed yet". Priming a second
+// time overwrites the instruction pointer and the stack pointer of a thread that
+// may be mid-execution; with asserts off, the C does it without a word. Here
+// `prime` consumes <!container> and mints <primed!>, and nothing mints
+// <container!> except `reserve`, so a second `prime` has nothing to consume.
+//
+// `laps` is how many times the body announces itself before parking. It is data,
+// not code — see the module header on what a caller can and cannot supply.
+//
+// The failure arm hands the handle back in <container!>: nothing was installed,
+// so the thread is exactly what `reserve` produced and `prime` is still the
+// correct next call.
+~pub tor prime { thread: *Thread<!container>, laps: u32 }
+| ok *Thread<primed!>
+| rejected { thread: *Thread<container!>, reason: string }
+
+~proc prime|zig {
+    if (laps == 0) {
+        return .{ .rejected = .{ .thread = thread, .reason = "a thread with zero laps would park without ever announcing itself, which is indistinguishable from a thread that never ran" } };
+    }
+    thread.laps = laps;
+    uk_thread_container_init_fn1(thread.t.?, &workerBody, @ptrCast(thread));
+    return .{ .ok = thread };
+}
+
+// `uk_sched_thread_add`: hand the primed thread to the scheduler.
+//
+// Lifts sched.c:364, `UK_ASSERT(!t->sched)` — "this thread is not already
+// attached". <!primed> is minted only by `prime` and consumed here, so a second
+// `attach` has nothing to consume and an `attach` of a bare container cannot be
+// spelled. It also lifts `schedcoop_thread_add`'s
+// `UK_ASSERT(!uk_thread_is_exited(t))` (schedcoop.c): in this module an exited
+// thread has no handle at all, because `terminate` and `release` both consume
+// theirs.
+//
+// A failure hands back <primed!> — the scheduler refused it, so it is exactly
+// what `prime` produced, and `unspawned` is the way out.
+~pub tor attach { thread: *Thread<!primed> }
+| ok *Thread<queued!>
+| refused { thread: *Thread<primed!>, errno: i32, reason: string }
+
+~proc attach|zig {
+    const rc = uk_sched_thread_add(scheduler.s, thread.t.?);
+    if (rc < 0) {
+        return .{ .refused = .{ .thread = thread, .errno = @intCast(rc), .reason = "uk_sched_thread_add refused the thread" } };
+    }
+    return .{ .ok = thread };
+}
+
+// ============================================================================
+// GIVE IT CPU
+// ============================================================================
+
+// Yield the current thread once, then check that the attached thread actually
+// executed.
+//
+// `sched_yield` hands the CPU to the next runnable thread; under `ukschedcoop`
+// that is round-robin over the run queue, so a freshly attached thread is
+// reached within one pass. The pass length is not assumed: it is the roster
+// size, which `current` already proved this module can count.
+//
+// Mints <ran!> ONLY on evidence. The body raises `started` as its first act; if
+// the flag is still clear after a full pass the tor takes `| stalled` and hands
+// the handle back in <queued!> — the weaker of the two claims, and the honest
+// one, at the cost of spending a `ran` that a re-entrant call had earned. That
+// cost is the same one `unikraft/blk` states for its `rejected` arm and it is
+// preferred to a hole in the gate.
+~pub tor run { thread: *Thread<!queued|!ran> }
+| ok *Thread<ran!>
+| stalled { thread: *Thread<queued!>, reason: string }
+
+~proc run|zig {
+    const pass = rosterWalk(scheduler.s, null).n;
+    var i: u32 = 0;
+    while (i <= pass) : (i += 1) {
+        if (@atomicLoad(u32, &thread.started, .acquire) != 0) {
+            return .{ .ok = thread };
+        }
+        _ = sched_yield();
+    }
+    if (@atomicLoad(u32, &thread.started, .acquire) != 0) {
+        return .{ .ok = thread };
+    }
+    return .{ .stalled = .{ .thread = thread, .reason = "the thread did not execute within one full pass of the run queue" } };
+}
+
+// Yield until the thread's body has finished all its laps.
+//
+// Unikraft has no join. There is no `uk_sched_thread_join` on `exportsyms.uk`
+// and none in the headers: a parent that wants to know its child is done either
+// shares a flag or uses a wait queue, and both are things it writes itself. This
+// tor is the flag, owned by the lift, so a caller does not write it again — and
+// `laps` comes back as evidence of what was actually run.
+//
+// The wait after the first pass is UNBOUNDED, exactly as `unikraft/blk`'s
+// transfer wait is: a body that never finishes is a hung program either way, and
+// a timeout would be a policy the C does not have and an arm that lies about
+// what happened. The bounded part is only the start check, which is what
+// distinguishes "still working" from "never scheduled".
+~pub tor join { thread: *Thread<!queued|!ran> }
+| done { thread: *Thread<ran!>, laps: u64 }
+| stalled { thread: *Thread<queued!>, reason: string }
+
+~proc join|zig {
+    const pass = rosterWalk(scheduler.s, null).n;
+    var i: u32 = 0;
+    while (i <= pass and @atomicLoad(u32, &thread.started, .acquire) == 0) : (i += 1) {
+        _ = sched_yield();
+    }
+    if (@atomicLoad(u32, &thread.started, .acquire) == 0) {
+        return .{ .stalled = .{ .thread = thread, .reason = "the thread did not execute within one full pass of the run queue" } };
+    }
+
+    while (@atomicLoad(u32, &thread.finished, .acquire) == 0) {
+        _ = sched_yield();
+    }
+    return .{ .done = .{ .thread = thread, .laps = @intCast(@atomicLoad(u32, &thread.lap, .acquire)) } };
+}
+
+// `uk_thread_block`: take the thread out of the run queue.
+//
+// Lifts sched.h:138, `UK_ASSERT(!uk_thread_is_runnable(t))` inside
+// `uk_sched_thread_blocked` — the scheduler callback the exported
+// `uk_thread_block` reaches. Blocking a thread twice is what that assertion is
+// there to catch, and here <parked!> is consumed by `unpark` and by nothing
+// else, so a second `park` has nothing to consume.
+//
+// No failure arm: `uk_thread_block` returns void and cannot fail.
+~pub tor park { thread: *Thread<!ran> } -> *Thread<parked!>
+
+~proc park|zig {
+    uk_thread_block(thread.t.?);
+    return thread;
+}
+
+// `uk_thread_wake`: put the thread back in the run queue.
+//
+// Lifts sched.h:151, `UK_ASSERT(uk_thread_is_runnable(t))` inside
+// `uk_sched_thread_woken`. Mints <ran!> and not <queued!> because a thread that
+// can be parked has already been given CPU — the state is a memory of what
+// happened, and waking cannot un-run it.
+//
+// No failure arm: `uk_thread_wake` returns void.
+~pub tor unpark { thread: *Thread<!parked> } -> *Thread<ran!>
+
+~proc unpark|zig {
+    uk_thread_wake(thread.t.?);
+    return thread;
+}
+
+// THE NAMED ESCAPE from the asymmetry gate. `terminate` accepts only <!ran> or
+// <!parked>, and only actually running the thread mints <ran!> — so a worker
+// attached and torn down without ever being scheduled cannot be spelled. That is
+// the point; this is how a program that means it says so.
+//
+// Deliberately greppable: `grep -r "sched:never-ran"` answers "which programs
+// allocate thread stacks they never schedule". It runs no C call, which is the
+// honest emission — nothing happened.
+~pub tor never-ran { thread: *Thread<!queued> } -> *Thread<ran!>
+
+~proc never-ran|zig {
+    return thread;
+}
+
+// ============================================================================
+// TEAR DOWN
+// ============================================================================
+
+// `uk_sched_thread_terminate`: remove from the scheduler, run the termination
+// table, and release the thread's memory — one call, because that is what the C
+// does for a thread that is not the caller (sched.c:327).
+//
+// Lifts sched.c:300, `UK_ASSERT(thread->sched)`, whose own comment says it "can
+// also fail on a double-termination". Here the handle is CONSUMED, so a second
+// `terminate` has nothing to pass and the double-termination the C can only
+// notice with asserts on is not a program that exists. It also lifts
+// thread.c:1004, `UK_ASSERT(t != uk_thread_current())`: a `*Thread` in this
+// module is always a thread the caller created and never the caller itself,
+// because `current` hands out a `*Sched` and no handle on the running thread.
+//
+// No failure arm: `uk_sched_thread_terminate` returns void.
+~pub tor terminate { thread: *Thread<!ran|!parked> }
+
+~proc terminate|zig {
+    uk_sched_thread_terminate(thread.t.?);
+    destroy(thread);
+}
+
+// The way out for a thread that never reached the scheduler — a container that
+// was not primed, a primed thread the scheduler refused, or a worker a program
+// decided not to start after all.
+//
+// Two roles in one tor, said out loud rather than split: it is the named escape
+// at the level below `never-ran`, AND it is the recovery arm out of a failed
+// `attach`. Splitting them would give two tors with identical bodies and
+// identical states, which is ceremony, not information.
+//
+// Runs no C call: an unattached container needs nothing undone before
+// `uk_thread_release`, which asserts precisely `!t->sched` (thread.c:1005).
+~pub tor unspawned { thread: *Thread<!container|!primed> } -> *Thread<detached!>
+
+~proc unspawned|zig {
+    return thread;
+}
+
+// `uk_thread_release`: run the destructor and free the thread, its stack, its
+// aux stack and its TLS.
+//
+// Lifts thread.c:1005, `UK_ASSERT(!t->sched)` — "thread must be disconnected
+// from scheduler". <!detached> is minted only by `unspawned`, which is reachable
+// only from <container> or <primed>, and both of those are states in which the
+// thread has never been attached. So releasing a live scheduler thread is
+// unspellable, and the assertion has nothing left to catch.
+//
+// No failure arm: `uk_thread_release` returns void.
+~pub tor release { thread: *Thread<!detached> }
+
+~proc release|zig {
+    uk_thread_release(thread.t.?);
+    destroy(thread);
+}

@@ -1,0 +1,41 @@
+// POSITIVE CONTROL for `negative_terminate_without_run.kz`, and the proof that
+// the named escape is an escape rather than an unreachable arm.
+//
+// This is that negative program with one word inserted:
+//
+//     attach | ok queued |> never-ran(queued) |> terminate(...)
+//
+// and it compiles clean through the emit pass. So the refusal next door is
+// about the MISSING DECLARATION, not about the shape of the chain — the
+// asymmetry gate is a gate with a door in it, and the door has a name you can
+// grep for.
+//
+// It is deliberately compile-only. `never-ran` runs no C call, so booting it
+// would prove nothing the boot image does not already prove; what needs
+// checking is that the compiler accepts it, and that is what this file checks.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/sched
+~import std/io
+
+~unikraft/sched:current
+| ready sched |> unikraft/sched:reserve(sched, name: "deliberately-idle", stack: 0)
+    | thread box |> unikraft/sched:prime(thread: box, laps: 1)
+        | ok wired |> unikraft/sched:attach(thread: wired)
+            | ok queued |> unikraft/sched:never-ran(thread: queued): spared
+                |> unikraft/sched:terminate(thread: spared)
+                |> std/io:print.ln("a worker that was reserved, primed, attached and deliberately never scheduled")
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }}")
+                |> unikraft/sched:unspawned(e.thread): u
+                |> unikraft/sched:release(thread: u)
+        | rejected r |> std/io:print.ln("prime: {{ r.reason:s }}")
+            |> unikraft/sched:unspawned(r.thread): v
+            |> unikraft/sched:release(thread: v)
+    | refused why |> std/io:print.ln("reserve: {{ why:s }}")
+| unavailable why |> std/io:print.ln("no scheduler: {{ why:s }}")

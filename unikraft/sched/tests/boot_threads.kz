@@ -1,0 +1,94 @@
+// POSITIVE, and the gate-2 artifact: the whole uksched thread machine driven
+// from Koru, inside a unikernel, against the real cooperative scheduler ukboot
+// started.
+//
+//   current -> census -> reserve -> prime -> attach
+//           -> run -> park -> unpark -> join
+//           -> terminate -> census
+//
+// Every arrow is a phantom transition the compiler checked before this program
+// existed, and every step is one exported uksched call with nothing around it.
+//
+// WHAT THE CONSOLE PROVES:
+//
+//   1. THE STRUCTURAL PROOF PASSED on a real image. There is no exported way to
+//      obtain a `struct uk_sched *` — `uk_sched_current()` and
+//      `uk_thread_current()` are both `static inline` — so `current` mirrors two
+//      structs and then proves the mirror by walking the scheduler's own thread
+//      list and finding the running thread on it. Reaching `| ready` at all is
+//      that walk closing.
+//   2. THE ROSTER BRACKETS THE PROGRAM. Two threads at boot (`init` and `idle`),
+//      three after `attach`, two again after `terminate`. The three numbers are
+//      counted by the same walk, so they are also the proof re-run twice.
+//   3. THE INTERLEAVE IS REAL. The worker announces each lap from its own stack
+//      and yields; `main` prints between them. Lines from two threads
+//      alternating on one console is a cooperative context switch happening,
+//      not a function call.
+//   4. `park` AND `unpark` MOVE A THREAD OUT OF AND BACK INTO THE RUN QUEUE
+//      while `main` holds the only handle to it — and `park` accepts only
+//      <!ran>, which is why the wake can succeed: `schedcoop_thread_woken_isr`
+//      re-queues a thread only if it is QUEUEABLE, and that flag is set by the
+//      context switch a thread must already have been through. The state
+//      machine forbids the one order in which the C would silently lose the
+//      thread.
+//
+// Build and boot: see ../README.md.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/sched
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_SCHED=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKSCHED: 'y'
+    CONFIG_LIBUKSCHEDCOOP: 'y'
+    CONFIG_LIBUKBOOT_INITSCHED: 'y'
+}
+
+~unikraft/sched:current
+| ready sched |> unikraft/sched:census(sched): booted
+    |> std/io:print.ln("proven:    {{ booted:d }} threads on the scheduler (init + idle), roster walked")
+    |> unikraft/sched:reserve(sched, name: "koru-worker", stack: 0)
+        | thread box |> unikraft/sched:prime(thread: box, laps: 3)
+            | ok wired |> unikraft/sched:attach(thread: wired)
+                | ok queued |> unikraft/sched:census(sched): armed
+                    |> std/io:print.ln("attached:  {{ armed:d }} threads, the worker has a stack and has run nothing")
+                    |> unikraft/sched:run(thread: queued)
+                        | ok live |> std/io:print.ln("main:      back from one yield, the worker executed")
+                            |> unikraft/sched:park(thread: live): held
+                            |> std/io:print.ln("main:      worker parked; <parked> is not a state run accepts")
+                            |> unikraft/sched:unpark(thread: held): woken
+                            |> unikraft/sched:join(thread: woken)
+                                | done fin |> std/io:print.ln("joined:    worker finished {{ fin.laps:d }} laps")
+                                    |> unikraft/sched:terminate(fin.thread)
+                                    |> unikraft/sched:census(sched): reaped
+                                    |> std/io:print.ln("reaped:    {{ reaped:d }} threads, stack and TLS given back")
+                                | stalled st |> std/io:print.ln("join:      {{ st.reason:s }}")
+                                    |> unikraft/sched:never-ran(st.thread): u
+                                    |> unikraft/sched:terminate(thread: u)
+                        | stalled st |> std/io:print.ln("run:       {{ st.reason:s }}")
+                            |> unikraft/sched:never-ran(st.thread): u
+                            |> unikraft/sched:terminate(thread: u)
+                | refused e |> std/io:print.ln("attach:    {{ e.reason:s }} ({{ e.errno:d }})")
+                    |> unikraft/sched:unspawned(e.thread): u
+                    |> unikraft/sched:release(thread: u)
+            | rejected r |> std/io:print.ln("prime:     {{ r.reason:s }}")
+                |> unikraft/sched:unspawned(r.thread): u
+                |> unikraft/sched:release(thread: u)
+        | refused why |> std/io:print.ln("reserve:   {{ why:s }}")
+| unavailable why |> std/io:print.ln("no scheduler: {{ why:s }}")
