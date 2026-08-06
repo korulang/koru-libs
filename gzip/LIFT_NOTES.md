@@ -44,17 +44,6 @@ Both are now fixed:
 - `gzip/index.kz:194` — `~proc decompress|zig { ... }` (no buffer-sizing bug here — decompress already grows its buffer dynamically)
 - `gzip/index.kz:83` and `:143` — `max_output = compressBound(...) + 18`
 
-The README and the file-header usage comment also drifted from reality:
-they documented `~import "$koru/gzip"` (the `$`-prefix import form is
-explicitly rejected — see
-`tests/regression/500_INTEGRATION_TESTING/540_VALIDATION/405_import_rejects_dollar_prefix/`),
-dot-path calls (`~koru.gzip:compress`) instead of the working slash form
-(`~koru/gzip:compress`), `compress_bytes` (underscore) instead of the
-actual declared name `compress-bytes` (hyphen), and `e.msg`/`d.data` field
-access on branches that are declared as bare `[]const u8` (`error
-[]const u8`, `decompressed []const u8` — no `.msg`/`.data` fields exist).
-All fixed to match what actually compiles.
-
 ## The quadrifecta self-audit
 
 - **DX**: The happy path is three named branches (`compressed` /
@@ -264,24 +253,10 @@ placement:
   is not phantom-tracked (the `[]const u8` carries no obligation), so using
   `data` *after* `release` is not a compile error. Tracking slice borrows is a
   language-level feature, out of scope here.
-- **README not rewritten.** `README.md` still shows the pre-migration import
-  form (`~import "$koru/gzip"`, dotted `~koru.gzip:`). This pass migrated
-  `index.kz` procs to the required `|zig` host tag and added the streaming API +
-  tests; a full README refresh is a separate documentation pass.
 
 ## Toolchain findings
 
-1. **The whole worktree predates the `~proc name|zig` host-tag migration
-   (KORU110).** Every package here (`curl`, `docker`, `gzip`, `pq`, `sqlite3`,
-   `vaxis`) uses bare `~proc name { … }`, which the current compiler rejects:
-   `error[KORU110]: tor 'open' is called but its ~proc declaration has no
-   |variant tag`. The exemplar's own gate-2 command (`koruc run
-   sqlite3/tests/basic.kz`) does **not** produce `Opened and closed!` against
-   this compiler for that reason — it errors on KORU110. I migrated `gzip` (my
-   target) to `|zig`; the other packages remain on the old form. Repro:
-   `koruc run sqlite3/tests/basic.kz`.
-
-2. **"Forgot to discharge" is not caught for the common case — the
+1. **"Forgot to discharge" is not caught for the common case — the
    resource-safety pillar is softer than the catalog implies.** The phantom
    checker does *not* reject a top-level flow that mints an obligation and simply
    never discharges it, *when a discharge tor exists*. Minimal repro (built
@@ -305,10 +280,6 @@ placement:
    enforced), not "forgot close" (which is not) — otherwise the negative test
    silently compiles and the "obligations bite" claim is hollow. My negative
    test targets use-after-free accordingly.
-
-3. **Error message quality is good where it fires.** The wrong-state rejection
-   is a clean, koru-level diagnostic naming the expected/actual phantom state
-   and the argument — no raw Zig leaked through. No complaint there.
 
 ## Proof of life
 

@@ -78,3 +78,43 @@ removed.)
   outside packages that define it — would turn the whole belief into a wall. It
   needs the ownership exception above, which is why it is not a two-line grep.
 - How much of the *fleet's* prose is in this state? Only koru-libs was swept here.
+
+## Sharpened same day: it is not prose that rots, it is prose about what you did not change
+
+Cutting the stale passages surfaced a clean discriminator between notes that age
+well and notes that turn into lies, and it is not length or age.
+
+`docker/LIFT_NOTES.md` and `curl/LIFT_NOTES.md` both discuss the KORU110 host-tag
+migration and both read fine years later, because they describe **what that pass
+changed**: *"Fixed by tagging all four with `|zig`."* Past tense, about its own
+work, closed. Nothing another session does can falsify it.
+
+`gzip/LIFT_NOTES.md` discussed the same migration and had rotted into three
+falsehoods, because it described **the state of things it did not touch**:
+
+- *"The whole worktree predates the migration… Every package here uses bare
+  `~proc name { … }`… `koruc run sqlite3/tests/basic.kz` does **not** produce
+  `Opened and closed!`."* Run 2026-08-05: it prints `Opened and closed!`.
+- *"README not rewritten. `README.md` still shows the pre-migration import
+  form… a full README refresh is a separate documentation pass."* The README was
+  rewritten in the same session that found this note.
+- A paragraph cataloguing README drift that had since been fixed.
+
+Every one was **true when written**. Each became false when someone else did the
+work it was describing — and none of them had any way to notice.
+
+So the rule is not "delete old notes." It is:
+
+- **A writeup may describe what it changed. It may not describe what it left
+  alone.** The first is a closed record; the second is an uncheckable assertion
+  about a moving repo, and it will be wrong before anyone reads it.
+- **A deferred TODO in prose is the worst case of this**, because it is a claim
+  about the future state of work someone else will do. "X is still broken, a
+  separate pass" is false the moment that pass lands, and the person who lands it
+  has no reason to grep notes files.
+- **"Preserving the record" is not a reason to keep it.** Git holds the record,
+  losslessly, and the working tree is a *context surface* that agents and humans
+  read as current. Prose kept for history in a live file is not history; it is
+  a lie with a timestamp, and it costs more than it preserves. (Lars, 2026-08-05,
+  overruling exactly this instinct: *"falsifying the record is not a problem
+  compared to poison context, git remembers."*)
