@@ -1,0 +1,105 @@
+// POSITIVE, and the gate-2 artifact for this module: Unikraft's reader-writer
+// lock driven from Koru inside a unikernel, against the real `lib/uklock`
+// `rwlock.c` the kernel linked.
+//
+//   available                                        <- the heap bracket opens
+//   probe                                            <- the five-test layout proof
+//   create -> write.acquire -> write.release
+//          -> read.acquire  -> read.release  -> destroy
+//   create -> hold.skipped -> destroy                <- the named escape
+//   available                                        <- the heap bracket closes
+//
+// WHAT THE CONSOLE PROVES, none of which `--check` can:
+//
+//   1. THE SIZE OF `struct uk_rwlock` WAS MEASURED, NOT ASSUMED, and the number
+//      it measured is on the console. `probe` paints a 512-byte scratch block
+//      with a canary, hands it to `uk_rwlock_init_config`, and scans down for
+//      the highest byte the C touched. That number is where `create`'s
+//      allocation size comes from. It matters: `struct uk_waitq` embeds a
+//      `__spinlock`, which is SIZE ZERO without `CONFIG_HAVE_SMP`
+//      (`include/uk/arch/spinlock.h:97`), so the same header is 48 bytes here
+//      and 72 in an SMP image, and no symbol reports which.
+//      `probe` also refuses unless a 64-byte guard at the top of the scratch is
+//      untouched, an undefined config bit comes back out of offset 12, and
+//      `nactive` walks 0, 1, 0, -1, 0 across rlock/runlock/wlock/wunlock.
+//   2. `nactive` REACHED -1. That is the value only `uk_rwlock_wlock` produces
+//      (rwlock.c:87) and no other Unikraft primitive does, so it is what
+//      distinguishes "we linked rwlock.c" from "we linked something with the
+//      right names".
+//   3. THE FOUR HOT TORS RAN IN A REAL LOCK, on a real scheduler, in order:
+//      write.acquire -> write.release -> read.acquire -> read.release. Each is
+//      one C call and nothing else.
+//   4. `hold.skipped` COSTS THE HONEST PROGRAM NOTHING. The second lock is
+//      created and never taken; it says so in one greppable word and compiles.
+//      Without that word the same program is refused —
+//      `negative_destroy_without_hold.kz`.
+//   5. THE HEAP BRACKETS EXACTLY. `create` is a `memalign` and `destroy` is a
+//      `free`; two locks made and two released must leave the number where it
+//      started. `uklock` has no destructor of its own, so this line is the only
+//      thing that can show `destroy` is not leaking one allocation per lock.
+//
+// The bracket uses `unikraft/alloc`, a shipped sibling. That is composition,
+// not duplication: this module allocates through nolibc `memalign`, which is
+// ukalloc's default heap, so `unikraft/alloc:available` is measuring the pool
+// `unikraft/lock` draws from.
+//
+// Build and boot: see ../README.md.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/lock
+~import unikraft/alloc
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_LOCK=1
+}
+
+// `LIBUKLOCK` is `default n` (lib/uklock/Config.uk:5) and selects `LIBUKSCHED`,
+// which the rwlock's wait queues need. `LIBUKLOCK_RWLOCK` is `default y` once
+// `LIBUKLOCK` is on, and is named here anyway so the image does not depend on
+// an upstream default staying where it is.
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKLOCK: 'y'
+    CONFIG_LIBUKLOCK_RWLOCK: 'y'
+    CONFIG_LIBUKSCHED: 'y'
+    CONFIG_LIBUKSCHEDCOOP: 'y'
+}
+
+~unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start:  {{ at_start:d }} bytes free")
+
+~unikraft/lock:probe
+| ready proof |> std/io:print.ln("uk_rwlock:      {{ proof.bytes:d }} B measured (uk_rwlock_init_config wrote through byte {{ proof.wrote:d }})")
+    |> std/io:print.ln("identity:       {{ proof.witness:s }}")
+    |> unikraft/lock:create(proof.locks)
+        | lock guard |> unikraft/lock:write.acquire(lock: guard): exclusive
+            |> std/io:print.ln("write.acquire:  uk_rwlock_wlock — nactive is -1, no reader can enter")
+            |> unikraft/lock:write.release(lock: exclusive): rested
+                |> unikraft/lock:read.acquire(lock: rested): shared
+                    |> std/io:print.ln("read.acquire:   uk_rwlock_rlock — nactive is 1")
+                    |> unikraft/lock:read.release(lock: shared): done
+                        |> std/io:print.ln("read.release:   the mode is in the type, so wunlock here would not compile")
+                        |> unikraft/lock:destroy(lock: done)
+        | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")
+
+~unikraft/lock:probe
+| ready proof |> unikraft/lock:create(proof.locks)
+    | lock spare |> unikraft/lock:hold.skipped(lock: spare): admitted
+        |> std/io:print.ln("hold.skipped:   a lock built and never entered, said out loud")
+        |> unikraft/lock:destroy(lock: admitted)
+    | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")
+
+~unikraft/alloc:available(): at_end |> std/io:print.ln("heap at end:    {{ at_end:d }} bytes free")

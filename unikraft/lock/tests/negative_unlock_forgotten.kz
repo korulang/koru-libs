@@ -1,0 +1,53 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Resource 'shared' obligation <reading!> was not discharged
+
+// NEGATIVE (must FAIL to compile): take the read lock and never give it back.
+//
+// This one is worth its own file because of what it is NOT. `unikraft/alloc`
+// deliberately does not claim "forgetting to free is a compile error", and its
+// README says why: a dropped `<live!>` block has exactly one unattended terminal
+// disposer, so the compiler INSERTS the `free` and reports nothing. Correct
+// behaviour, but an insertion is not a catch, and stating it as one would be a
+// claim the module cannot support.
+//
+// `unikraft/lock` CAN make the claim, and it is the same mechanism reaching the
+// opposite outcome rather than a different mechanism. `<reading>`'s only
+// consumer is `read.release`, and `read.release` is not a disposal — it mints
+// `<idle!>`, another live obligation. There is therefore nothing for
+// auto-discharge to elect, and a dropped hold is reported:
+//
+//     error[KORU030]: Resource 'shared' obligation <reading!> was not
+//                     discharged. Call: read.release
+//
+// The three-way split, stated exactly, because the differences are the point:
+//
+//   * forget to UNLOCK          -> compile ERROR (this file; `<writing!>` the same)
+//   * forget to USE a new lock  -> compile ERROR (negative_destroy_without_hold.kz)
+//   * forget to DESTROY an idle lock -> compile-time INSERTION, silent, no leak
+//
+// The C's position: a held rwlock that is never released is not a memory error
+// and no assertion in `uklock` can see it. `rwlock.c` has nothing to check —
+// from inside the lock, a critical section that has not ended yet and one that
+// will never end are the same state. It shows up as the NEXT acquirer hanging,
+// in a different thread, with a stack that does not mention the function that
+// forgot.
+//
+// EXPECTED: error[KORU030]: Resource 'shared' obligation <reading!> was not
+//           discharged. Call: read.release
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/lock
+~import std/io
+
+~unikraft/lock:probe
+| ready proof |> unikraft/lock:create(proof.locks)
+    | lock guard |> unikraft/lock:read.acquire(lock: guard): shared
+        |> std/io:print.ln("the critical section, and then nothing gives the lock back")
+    | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")

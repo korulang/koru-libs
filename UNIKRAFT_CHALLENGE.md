@@ -143,6 +143,16 @@ contestant knows the slot is gone.
   second-module exception, exercised. Its contribution is not a lifted assertion
   — the page interface has none a caller can violate — but the `num_pages`
   parameter that no longer exists.
+- **[lock](unikraft/lock/README.md)** — `uklock`'s READER-WRITER lock behind four
+  states, 7 tors, and a `struct uk_rwlock` whose SIZE IS MEASURED on the running
+  image rather than transcribed. Two contributions. (1) The linkability verdict:
+  15 allowlist lines are 5 usable functions — 2 of the 15 exist nowhere in the
+  tree, and the mutex and semaphore export their constructors while leaving every
+  verb `static inline`, so they are refused with reasons rather than half-lifted.
+  (2) A mirrored `sizeof` was written, booted and was WRONG by 24 bytes —
+  `__spinlock` is size ZERO without `CONFIG_HAVE_SMP` — which is why the size is
+  now derived by canary probe. Retires the runlock/wunlock assertion pair, and
+  forgetting to unlock is a compile ERROR rather than an insertion.
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -210,7 +220,7 @@ measurement and the column would lie if it did not say so:
 | `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` + `unikraft/pages` | **TAKEN** — three replays landed rival readings and the merge shipped as TWO modules: bytes in `unikraft/alloc`, pages in `unikraft/pages`. Read both. Its lesson is recorded under Duplicate prevention. |
 | `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | mappings |
 | `ukblkdev` | allowlist | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
-| `uklock` | allowlist | 15 | 19 | `unikraft/lock` | acquire/release on every path |
+| `uklock` | allowlist | 15 | 19 | `unikraft/lock` | **TAKEN** — the rwlock, and read its linkability section before trusting any `linkable` count: 2 of those 15 allowlist lines name symbols that exist NOWHERE in the tree, and the mutex/semaphore halves export constructors with every verb `static inline`. 5 functions are usable. |
 | `ukfile` | **open** | 10 | 56 | `unikraft/file` | no allowlist, so all 10 link — but they are `nop`/`pollq` helpers and the real surface IS the inlines. Thin. |
 
 `gate: open` means no `exportsyms.uk`, so everything the library defines is
