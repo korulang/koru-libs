@@ -263,10 +263,44 @@ Measured 2026-08-05; all four are in `BUILD.md` with the evidence:
 - **A killed build leaves zero-byte `.ld.o` files** that then fail forever as
   `input file is empty`. Looks like a toolchain bug; is not.
 
-And one that is ours, not Unikraft's: **Koru's print puts a 65,536-byte buffer on
-the stack**, which is exactly Unikraft's default 64 KB boot stack
-(`STACK_SIZE_PAGE_ORDER=4`). `koru/unikraft:kconfig` emits order 6 for you; if you
-hand-roll a Kraftfile, carry it.
+And two that are ours, not Unikraft's.
+
+**Koru's print puts a 65,536-byte buffer on the stack**, which is exactly
+Unikraft's default 64 KB boot stack (`STACK_SIZE_PAGE_ORDER=4`).
+`koru/unikraft:kconfig` emits order 6 for you; if you hand-roll a Kraftfile,
+carry it.
+
+**Every entry file you write declares the `unikraft` namespace in its own
+source.** The shipped lifts all carry it, so copy the block from any of their
+tests:
+
+```
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+```
+
+That resolves the namespace to the tree the file is *in*. Without it the alias
+falls through to koruc's built-in default, which probes
+`{{ KORU_HOME }}/koru-libs/unikraft` and `{{ KORU_HOME }}/../koru-libs/unikraft`
+(`koru/src/config.zig:242-247`) — the **main checkout**, never your worktree.
+Since you work in a worktree, that is always the wrong tree. Both failure modes
+were measured 2026-08-06, in a real worktree:
+
+- A **new** module — your lift — fails as `KORU002 module not found:
+  'unikraft/<yours>'`. Loud, but loud in the wrong place: on the `ukalloc` wave
+  it made a contestant's gate-3 negatives refuse for the wrong reason, and a
+  `KORU002` where you expected a `KORU030` reads exactly like "the obligation
+  wall does not work."
+- An **existing** module — a lift you are revising — is worse: it resolves
+  *silently* to main's copy. Measured by breaking a local
+  `unikraft/pages/index.kz` on purpose: with the declaration the compiler cites
+  **your** file and refuses; without it that same broken file passes `--check`,
+  because your edit was never read. You would be testing main and believing you
+  tested yourself.
+
+So: if `--check` disagrees with the file in front of you, find out which file
+koruc actually opened before you believe either of them.
 
 ### If the toolchain rejects your clean code — STOP, report, never route around
 
@@ -329,7 +363,21 @@ cannot see is closed, which is how one library ends up lifted twice.
 
 ## Tending log
 
-- 2026-08-06 — took the SYNTH_CHALLENGE's dedup shape (Lars's call). Three things
+- 2026-08-06 — closed the worktree-alias hole, which had been costing replays
+  without ever being written down. All 16 test entry files across `alloc`,
+  `blk` and `pages` now declare `unikraft: {{ ENTRY }}/../..` in their own
+  source via `std/compiler:paths`, and the brief requires it of every new entry
+  file. **`koru.json` is retired** (Lars, this session) — the first version of
+  this fix put the alias in the repo-root `koru.json`, which worked and was the
+  wrong shape; an alias belongs in the program that needs it. Both failure modes
+  were measured in a real worktree rather than asserted: a NEW module fails
+  `KORU002` — which on the `ukalloc` wave made gate-3 negatives refuse for the
+  wrong reason and read like a broken obligation wall — and an EXISTING module
+  resolves **silently** to the main checkout, so the revision you are testing is
+  not the file you are editing. The second half was previously unrecorded and is
+  the dangerous one. Earned by a replay reporting it as "a real toolchain issue"
+  and it being fixed nowhere; a trap known to three sessions and no file is not
+  known. — walk Three things
   changed. (1) An in-file **Shipped catalog** section, one line per landed lift,
   which every replay appends to — previously the catalog was only discoverable by
   listing directories, so "is this slot taken" cost a filesystem read the brief

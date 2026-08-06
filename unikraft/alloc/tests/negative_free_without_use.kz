@@ -35,6 +35,13 @@
 //           'unikraft.alloc:live' but got 'unikraft.alloc:raw!'
 //           for argument 'block'
 
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
 ~import unikraft/alloc
 ~import std/io
 

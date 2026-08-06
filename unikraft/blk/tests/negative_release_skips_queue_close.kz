@@ -15,6 +15,13 @@
 // (blkdev.c:551-552). It runs once per queue, on every unconfigure, in debug
 // builds only. Here it is the shape of the chain and costs nothing.
 
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
 ~import unikraft/blk
 ~import std/io
 

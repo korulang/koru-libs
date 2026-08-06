@@ -53,6 +53,13 @@
 // that reached a README, a status report, and a commissioned bugfix before anyone
 // read the emitted code. See
 // `koru/concepts/frag-a-reproducible-failure-localises-the-symptom-not-the-defect.md`.
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
 ~import unikraft/alloc
 ~import std/io
 

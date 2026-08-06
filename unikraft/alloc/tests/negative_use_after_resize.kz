@@ -26,6 +26,13 @@
 // EXPECTED: error[KORU030]: Use-after-discharge: binding 'filled' was already
 //           discharged and cannot be used
 
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
 ~import unikraft/alloc
 ~import std/io
 

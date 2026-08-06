@@ -20,6 +20,13 @@
 // the device starts says so in a word you can grep for. What this rejects is
 // the SILENT no-op. See boot_lifecycle.kz for the same chain with a transfer.
 
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
 ~import unikraft/blk
 ~import std/io
 
