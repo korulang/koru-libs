@@ -124,6 +124,8 @@ session.end:    root put, was_last true
 disconnect:     rc 0
 session.skipped: a mount opened and never attached to, said out loud
 disconnect:     rc 0
+walk.skipped:   a tree attached and never walked into, said out loud
+disconnect:     rc 0
 ```
 
 And the write is on the host filesystem afterwards:
@@ -149,12 +151,14 @@ KORU WROTE THIS OVER 9P -- uk_9p_write through unikraft/ninep, three nested obli
 - The read/write/read triple is a real Tread, Twrite and Tread against a host
   directory, and the last one returns what the unikernel wrote.
 - `session.skipped` is a second connection, versioned and never attached to,
-  saying so in one greppable word. Without that word the same program is refused
-  — `tests/negative_disconnect_without_session.kz`.
+  and `walk.skipped` is a third that attaches and walks nowhere. Both are the
+  named escapes from the module's two asymmetry gates, each said in one
+  greppable word. Without those words the same programs are refused —
+  `tests/negative_disconnect_without_session.kz` for the first.
 
 | | |
 |---|---:|
-| Koru freestanding static archive | 26,568 B |
+| Koru freestanding static archive | 28,952 B |
 | bootable unikernel image | 202,304 B |
 | RAM used in the run above | 64 MB |
 

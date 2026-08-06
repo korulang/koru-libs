@@ -11,7 +11,8 @@
 //     -> session.end                             <- Root -> Dev
 //   -> disconnect
 //   connect -> version -> reply.release -> session.skipped -> disconnect
-//                                                <- the named escape
+//   connect -> version -> reply.release -> attach -> walk.skipped -> session.end
+//                                                <- both named escapes
 //
 // WHAT THE CONSOLE PROVES, none of which `--check` can:
 //
@@ -139,6 +140,27 @@
             |> std/io:print.ln("session.skipped: a mount opened and never attached to, said out loud")
             |> unikraft/ninep:disconnect(dev: unused): rc
                 |> std/io:print.ln("disconnect:     rc {{ rc:d }}")
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }} ({{ e.errno:d }})")
+        |> unikraft/ninep:session.skipped(e.dev): spent
+            |> unikraft/ninep:disconnect(dev: spent)
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }} ({{ e.errno:d }})")
+
+// The SECOND named escape, on a third connection: attached to the tree and no
+// path in it ever walked. `session.end` accepts only <!rooted>, and without
+// this word `<attached!>` has no way to reach it.
+~unikraft/ninep:connect(tag: "korufs")
+| ok third |> unikraft/ninep:version(dev: third, requested: "9P2000.L")
+    | negotiated v |> unikraft/ninep:reply.release(v.reply)
+        | ok rel |> unikraft/ninep:attach(rel.dev, uname: "korunaut", aname: "")
+            | ok tree |> unikraft/ninep:walk.skipped(root: tree): unwalked
+                |> std/io:print.ln("walk.skipped:   a tree attached and never walked into, said out loud")
+                |> unikraft/ninep:session.end(root: unwalked)
+                    | ok ended |> unikraft/ninep:disconnect(ended.dev): rc
+                        |> std/io:print.ln("disconnect:     rc {{ rc:d }}")
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }} ({{ e.errno:d }})")
+                |> unikraft/ninep:session.skipped(e.dev): spent
+                    |> unikraft/ninep:disconnect(dev: spent)
     | refused e |> std/io:print.ln("version: {{ e.reason:s }} ({{ e.errno:d }})")
         |> unikraft/ninep:session.skipped(e.dev): spent
             |> unikraft/ninep:disconnect(dev: spent)
