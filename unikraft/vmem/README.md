@@ -442,6 +442,39 @@ The 29 KB over baseline is `LIBUKVMEM` + `LIBUKPAGING` + `LIBUKFALLOC` +
 **No boot-time number and no "faster than C" claim** — both forbidden by the
 brief, and neither benchmark exists.
 
+## Pillar 2, read out of the emitted program rather than asserted
+
+`koruc boot_vmem.kz` writes `output_emitted.zig`, and the phantom machinery is
+not in it. `commit`'s handler is the proc body and nothing else:
+
+```zig
+pub fn handler(__koru_event_input: Input) Output {
+    const area = __koru_event_input.area;
+    var va = area.start;
+    const rc = uk_vma_map(area.vas, &va, area.len, PROT_RW, MAP_REPLACE,
+                          areaName(area), &uk_vma_anon_ops, null);
+    if (rc != 0) { return .{ .refused = … }; }
+    return .{ .ok = area };
+}
+```
+
+And the emitted `Area` carries no state field:
+
+```zig
+const Area = extern struct {
+    vas: *Vas, start: usize, len: usize, name: [10]u8, hex: [18]u8,
+};
+```
+
+`vas`, `start` and `len` are what any C author would keep; `name` is the
+merge-prevention described above, which a C author wanting the same invariant
+would also keep; `hex` is 18 bytes of console formatting and is the one thing
+here a C version would not have. **Five states, twelve tors, zero run-time state
+words.** `reserved` and `frozen` appear in the emitted file only inside comments,
+binding names and printed strings.
+
+---
+
 ## Gate 3 — three misuses that fail to compile
 
 Phantom validation fires in the **emit** pass, not in `--check`. All three pass
