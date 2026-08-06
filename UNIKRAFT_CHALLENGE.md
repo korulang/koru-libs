@@ -285,7 +285,29 @@ Five cases, and they are not obvious:
    was never declared or defined is not an error and nothing warns. `uklock`
    lists `uk_rwlock_upgrade` and `uk_rwlock_downgrade`; the only occurrences of
    either name in the whole tree are those two lines. Grep for a definition
-   before you count a symbol as surface. Measured 2026-08-06: **19 such lines
+   before you count a symbol as surface.
+5. **A listed symbol may be a `static inline`**, which emits no global for objcopy
+   to keep, so the line is inert. 29 such lines across 4 libraries — `ukring`
+   lists 12 and exactly 2 link.
+6. **A listed name may appear twice.** `uk9p` has 46 non-blank lines and 44
+   distinct names (`uk_9pdev_set_msize`/`get_msize` are each listed twice).
+   Duplicates are invisible to both the phantom check and the inert check and
+   inflate in the same direction as both, so `sort -u` the list before you count
+   it — and prefer `nm -g` on the built object, which is the only measurement
+   that cannot be fooled by any of cases 4, 5 or 6.
+
+**And one question none of the six cases asks: can the call be SURVIVED?**
+Linkability is about whether a call can be *made*. `uk_allocpool_free` is on its
+allowlist, has a real definition, links cleanly — and reaches
+`UK_CRASH("Unregistering from \`lib/ukalloc\` not implemented.")` at
+`pool.c:390` before it reaches its `uk_free`. **`UK_CRASH` is NOT gated on
+`CONFIG_LIBUKDEBUG_ENABLE_ASSERT` the way `UK_ASSERT` is** (`crash.h:18` against
+`assert.h:50`), so it halts the machine in debug and release alike, and the two
+asserts above it are unreachable in every build. **Grep your target for
+`UK_CRASH` and `UK_BUGON`, not only `UK_ASSERT`** — an assertion guarding a call
+nobody can complete is not an assertion you can retire, and a shelf row that
+counts it is wrong. That row was wrong; a contestant found it by binding the
+function and booting it. Measured 2026-08-06: **19 such lines
    across 8 libraries**, including two in a TAKEN slot each (`ukalloc`'s
    `uk_palloc_compat`/`uk_pfree_compat`, `uksched`'s `uk_sched_create`). Beware
    the inverse false positive: `ubsan`'s 34 handlers and `ukstore`'s two event

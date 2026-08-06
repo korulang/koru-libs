@@ -211,7 +211,11 @@ Full recipe, run clean in an empty directory. Traps and their evidence:
 `/Users/larsde/src/koru/examples/unikraft/BUILD.md`.
 
 ```sh
-cp tests/{boot_lifecycle.kz,wrapper.zig,main.c,mkdisk.py} /tmp/blk && cd /tmp/blk
+# copy the WHOLE unikraft/ tree and keep this file's depth: every entry file
+# declares `unikraft: {{ ENTRY }}/../..` in its own source, so a flat directory
+# is not a module tree and the import fails KORU002.
+mkdir /tmp/blk && cp -R unikraft /tmp/blk/
+cd /tmp/blk/unikraft/blk/tests
 
 koruc boot_lifecycle.kz unikraft gen        # -> Makefile.uk + Kraftfile
 koruc boot_lifecycle.kz                     # -> output_emitted.zig
