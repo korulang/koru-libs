@@ -137,18 +137,25 @@ Three cases, and they are not obvious:
    needs a C shim (an added call frame, against pillar 2) or a hand-mirrored
    struct (an ABI guess). This is independent of cases 1 and 2.
 
-Measured shelf (`unikraft` HEAD `3fdffba8`) — **linkable** is case 1's count, or
-case 2's defined-in-`.c` count:
+Measured shelf (`unikraft` HEAD `3fdffba8`). **`gate` says which of the three
+cases the library is in, and therefore what `linkable` counted** — an allowlist's
+length, or the functions the library defines. The two are not the same
+measurement and the column would lie if it did not say so:
 
-| C library | linkable | `static inline` | Koru module | shape |
-|---|---:|---:|---|---|
-| `uksched` | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
-| `uknetdev` | 33 | 12 | `unikraft/net` | state machine — **but see below** |
-| `ukalloc` | 25 | 25 | `unikraft/alloc` | symmetric pair; a good test of *not* over-modelling |
-| `ukvmem` | 20 | 16 | `unikraft/vmem` | mappings |
-| `ukblkdev` | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
-| `uklock` | 15 | 19 | `unikraft/lock` | acquire/release on every path |
-| `ukfile` | 11 | 56 | `unikraft/file` | no allowlist, so all 11 link — but the interesting surface IS the inlines; thin |
+| C library | gate | linkable | `static inline` | Koru module | shape |
+|---|---|---:|---:|---|---|
+| `uksched` | allowlist | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
+| `uknetdev` | allowlist | 33 | 12 | `unikraft/net` | state machine — **but see below** |
+| `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` | symmetric pair; a good test of *not* over-modelling |
+| `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | mappings |
+| `ukblkdev` | allowlist | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
+| `uklock` | allowlist | 15 | 19 | `unikraft/lock` | acquire/release on every path |
+| `ukfile` | **open** | 10 | 56 | `unikraft/file` | no allowlist, so all 10 link — but they are `nop`/`pollq` helpers and the real surface IS the inlines. Thin. |
+
+`gate: open` means no `exportsyms.uk`, so everything the library defines is
+linkable — the permissive case, not the empty one. Twenty of Unikraft's libraries
+are `open`; only the seven above were measured, so if you want a target outside
+this table, run the three-case check yourself rather than assuming.
 
 **`uknetdev` is a trap, and it cost the first replay an investigation to find.**
 Its lifecycle is exported, but its *hot path* is not: `uk_netdev_rx_one` and

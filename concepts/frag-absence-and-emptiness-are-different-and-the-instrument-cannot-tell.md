@@ -56,11 +56,15 @@ produced the original.
   by. Treat the second pass as a fresh claim requiring fresh evidence, not as
   cleanup.
 
-## Open
+## Resolved the same day: name the measurement in the row
 
-- The shelf table now mixes two counts — an allowlist length for libraries that
-  have one, a defined-in-`.c` count for those that do not. That is *correct* and
-  it is *not obvious from the column header*. A reader who does not read the
-  three-case rule above it will misread the numbers the same way I did. Whether a
-  table can carry a fact whose meaning changes per row is unresolved; splitting
-  the column may be the honest fix.
+The shelf table carried two different measurements in one column — an allowlist
+length for libraries that have one, a defined-in-`.c` count for those that do not
+— and that is exactly the ambiguity this belief is about, reproduced one level up
+in the artifact written to warn about it.
+
+The fix was not a footnote. A `gate` column now names which case each row is in
+(`allowlist` / `open`), so the number cannot be read without reading what
+produced it. **A number whose meaning varies by row needs the discriminator IN
+the row, not in prose above the table** — prose above a table is not read by
+someone scanning the table, which is the only way anyone reads a shelf.
