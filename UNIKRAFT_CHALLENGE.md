@@ -84,6 +84,22 @@ Read the repo-root standards first: `/Users/larsde/src/koru/CLAUDE.md` and
    makes unnecessary, and which you could not.** A lift that adds a wrapper
    without removing a runtime check has not done this challenge's job.
 
+**The one exception, and it is a shipping lane, not a lower bar.** Where the open
+question about a target is *reachability* — can this thing be linked, mirrored and
+booted from Koru at all — you may ship a **naive wrap** that answers exactly that
+and stops. It unblocks the target for everyone. Two conditions, both hard:
+
+1. **Say it is one, in the first paragraph of your README and in your catalog
+   line.** A naive wrap that reads like a finished lift is the thing this whole
+   brief exists to prevent.
+2. **Claim nothing you did not earn.** If you retired no assertions, the census
+   says so and reports zero. An honest zero is a fine result; a padded one poisons
+   the catalog.
+
+The idiomatic pass is then a *later replay that revises that module in place* —
+which the one-module-per-sublibrary rule below already provides for. Ruled by Lars
+2026-08-06: wrap naively, get unblocked, rub the Koru idioms on it afterwards.
+
 An entry that buys one pillar by sacrificing another does not ship. Refusing that
 trade is the whole craft.
 
@@ -125,6 +141,16 @@ are also the list of things you may not bring again.
 
 One line per landed lift. **Append yours when you ship** — that is how the next
 contestant knows the slot is gone.
+
+**Later entries SUPERSEDE earlier ones where they disagree, and the catalog is
+read newest-first for method.** This is not a menu of equally-valid house styles.
+Earned the expensive way: the mirror lesson — that `@offsetOf` assertions prove a
+transcription agrees with itself and say nothing about the C — was stated in
+`blk`'s README and acted on by `pages`, and a third lift still repeated it,
+because two entries describing different approaches read as a choice rather than
+as one correcting the other. If your reading contradicts a shipped entry, you are
+either superseding it (say so in your README, in a line naming the entry) or you
+have missed why it did what it did.
 
 - **[blk](unikraft/blk/README.md)** — `ukblkdev` behind an 8-state ratchet, 11
   tors. Lifecycle *and* transfers proven: a booted image reads a host-planted
@@ -224,9 +250,25 @@ Three cases, and they are not obvious:
    **everything the library defines links.** Twenty libraries are in this state.
    An absent allowlist is the permissive case, not the empty one — do not read a
    missing file as "exports nothing."
-3. **`static inline` in a header** → no symbol is emitted either way. Reaching it
-   needs a C shim (an added call frame, against pillar 2) or a hand-mirrored
-   struct (an ABI guess). This is independent of cases 1 and 2.
+3. **`static inline` in a header** → no symbol is emitted either way, **but the
+   keyword is not the verdict.** Ask what the inline *closes over*:
+   - It closes over nothing but exported symbols → **reconstructible.** Four of
+     `ukvmem`'s five are `return uk_vma_map(…, &uk_vma_<kind>_ops, …)`: an
+     exported function plus an exported data symbol. Emit the same call with the
+     same arguments — no shim, no added frame, no ABI guess. Free.
+   - It closes over something with no symbol — a Kconfig integer
+     (`uk_vma_map_stack`), a `static` in another compilation unit, a refcounted
+     structure it walks through struct fields (`uk_netdev_rx_one`) → **genuinely
+     unreachable** without a shim or a mirror.
+   Same keyword, opposite verdicts, and the `static inline` column in the shelf
+   below counts BOTH. Read it as "surface that needs a decision", never as a
+   budget of unreachable functions.
+4. **A listed symbol may not exist.** `exportsyms.uk` is an allowlist consumed by
+   `objcopy --keep-global-symbols`, which is a **filter** — naming a symbol that
+   was never declared or defined is not an error and nothing warns. `uklock`
+   lists `uk_rwlock_upgrade` and `uk_rwlock_downgrade`; the only occurrences of
+   either name in the whole tree are those two lines. Grep for a definition
+   before you count a symbol as surface.
 
 Measured shelf (`unikraft` HEAD `3fdffba8`). **`gate` says which of the three
 cases the library is in, and therefore what `linkable` counted** — an allowlist's
@@ -392,6 +434,38 @@ README. A landed module that is not in that list is a slot the next contestant
 cannot see is closed, which is how one library ends up lifted twice.
 
 ## Tending log
+
+- 2026-08-06 — the wave-3 pass, three edits all paid for by replays that had
+  already shipped. (1) **The linkability rule's case 3 splits.** `static inline`
+  was being read as a budget of unreachable surface; `ukvmem` showed the keyword
+  is not the verdict and what the inline CLOSES OVER is. Four of its five are an
+  exported call plus an exported data symbol and cost nothing to reconstruct; the
+  fifth closes over Kconfig integers and is genuinely out of reach. This
+  re-explains `uknetdev` too — its hot path is unreachable because it walks
+  refcounted netbufs through struct fields, not because of the keyword — and it
+  means **the shelf's numbers are now known to be measuring the wrong thing and
+  need re-measuring against the corrected rule.** (2) **A fourth linkability
+  hazard**: an allowlist can name symbols that do not exist. `uklock` lists
+  `uk_rwlock_upgrade`/`downgrade`; the only hits in the tree are those two lines,
+  because objcopy is a filter and naming a phantom is not an error. (3) **The
+  catalog now states that later entries SUPERSEDE earlier ones**, because the
+  mirror lesson was recorded twice and a third lift still repeated it — two
+  entries describing different approaches read as a menu, not as a correction.
+  Also landed this session and not a tuning: the worktree-alias trap, now under
+  *Four traps*, and `koru.json`'s retirement in favour of `std/compiler:paths`.
+  — walk
+- 2026-08-06 — **naive-wrap lane opened, ruled by Lars.** Pillar 5 said a wrapper
+  that removes no runtime check has not done the job, and that stays the bar. But
+  where the open question is *reachability*, a naive wrap that answers it and
+  stops is now shippable, on two hard conditions: it must SAY it is one in the
+  README's first paragraph and its catalog line, and it must claim nothing it did
+  not earn — an honest zero-assertions census is fine, a padded one is not. The
+  idiomatic pass is a later replay revising that module in place, which the
+  one-module-per-sublibrary rule already provides for. Rationale in his words:
+  wrap naively, get unblocked, rub the Koru idioms on it afterwards. This trades
+  depth-per-entry for breadth-of-shelf on purpose, and the honesty conditions are
+  what stop it from becoming the wrapper-with-a-safety-badge the brief was
+  written against. — walk
 
 - 2026-08-06 — closed the worktree-alias hole, which had been costing replays
   without ever being written down. All 16 test entry files across `alloc`,
