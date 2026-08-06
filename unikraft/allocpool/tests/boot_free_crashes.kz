@@ -1,0 +1,54 @@
+// POSITIVE IN THE COMPILER, FATAL ON THE MACHINE — and that is the finding.
+//
+// This program is legal: `create` mints `<owned!>` and `free` accepts exactly
+// `<owned!>`, so the pairing rule is satisfied and every object is back (there
+// are none). It compiles clean through the emit pass, and then the unikernel
+// dies on the call.
+//
+//     void uk_allocpool_free(struct uk_allocpool *p)
+//     {
+//             UK_ASSERT(p->parent);                        /* pool.c:383 */
+//             UK_ASSERT(p->free_obj_count == p->obj_count);/* pool.c:386 */
+//             UK_CRASH("Unregistering from `lib/ukalloc` not implemented.\n");
+//             uk_free(p->parent, p->base);                 /* never reached */
+//     }
+//
+// `UK_CRASH` is `uk_pr_crit` + `uk_crash_trigger()` (ukdebug crash.h:18-22),
+// with no `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` around it — unlike `UK_ASSERT`,
+// which this image compiles to `do {} while(0)`. So the library's only
+// destructor halts the machine in every build, and both of the assertions above
+// it are unreachable in practice.
+//
+// This is why `unikraft/allocpool:keep` exists and why `boot_allocpool.kz` ends
+// both of its pools with it. The console this program produces is in
+// ../README.md. It is the one artifact on this shelf whose success criterion is
+// that the machine stops.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+~unikraft/allocpool:create(objects: 4, bytes: 64, alignment: 8)
+| pool op |> unikraft/allocpool:census(pool: op): c
+    |> std/io:print.ln("owned pool: {{ c.free:d }}/{{ c.capacity:d }} free — now calling uk_allocpool_free")
+    |> unikraft/allocpool:free(pool: op)
+    |> std/io:print.ln("this line is unreachable on a real machine")
+| refused why |> std/io:print.ln("{{ why:s }}")
+| unavailable why |> std/io:print.ln("{{ why:s }}")

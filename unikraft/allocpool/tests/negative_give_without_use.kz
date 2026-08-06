@@ -1,0 +1,35 @@
+// NEGATIVE — pillar 4 on the object: take one and hand it straight back.
+// `give` accepts only `<!used>`, and `<used!>` is reachable only through
+// `write`, `read` or the named escape `untouched`.
+//
+// The control is the same program with `untouched` in it — that is the second
+// flow of boot_allocpool.kz, which compiles and boots.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+~unikraft/allocpool:create(objects: 4, bytes: 64, alignment: 8)
+| pool op |> unikraft/allocpool:take(pool: op)
+    | obj o |> unikraft/allocpool:give(pool: op, obj: o)
+        |> unikraft/allocpool:keep(pool: op)
+        |> std/io:print.ln("an object taken and returned without ever being used")
+    | empty why |> std/io:print.ln("{{ why:s }}") |> unikraft/allocpool:keep(pool: op)
+| refused why |> std/io:print.ln("{{ why:s }}")
+| unavailable why |> std/io:print.ln("{{ why:s }}")

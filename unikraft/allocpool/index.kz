@@ -1,0 +1,628 @@
+// @korulang/unikraft-allocpool — Unikraft's fixed-size object pool
+// (`ukallocpool`), lifted.
+//
+//   import unikraft/allocpool
+//
+// This is NOT a naive wrap. Reachability was never the open question here:
+// `lib/ukallocpool` has 12 allowlist lines, 12 real definitions, and ZERO
+// `static inline`s in its public header. Everything links. The open question was
+// PROVENANCE, and that is what this module is about.
+//
+// WHAT THIS IS. `ukallocpool` hands out fixed-size objects from one contiguous
+// slab, LIFO, with no per-object metadata. It has TWO CONSTRUCTORS and ONE
+// DESTRUCTOR, and the destructor is legal for exactly one of the two:
+//
+//     uk_allocpool_alloc(parent, …)  -> a pool that owns its slab
+//     uk_allocpool_init(base, len, …) -> a pool placed in memory YOU own
+//     uk_allocpool_free(p)            -> legal ONLY for the first
+//
+// The C says so in an assertion and in a comment above it (pool.c:379-383):
+//
+//     /* If we do not have a parent, this pool was created with
+//      * uk_allocpool_init(). Such a pool cannot be free'd with
+//      * this function since we are not the owner of the allocation */
+//     UK_ASSERT(p->parent);
+//
+// `p->parent` is private, set only by `uk_allocpool_alloc` (pool.c:373), and
+// `UK_ASSERT` is `do {} while(0)` in every image this shelf builds. So in a
+// shipped unikernel the rule is not merely unchecked — it is UNCHECKABLE from
+// the outside, because the field that decides it is not reachable. Hand a
+// `uk_allocpool_init` pool to `uk_allocpool_free` and it calls `uk_free` on an
+// address the byte allocator never handed out.
+//
+// THE SECOND RULE, three lines below it (pool.c:385-386):
+//
+//     /* Make sure we got all objects back */
+//     UK_ASSERT(p->free_obj_count == p->obj_count);
+//
+// Drain before free. Also a counter comparison, also compiled out.
+//
+// ── AND THE MEASUREMENT THAT REFRAMES BOTH ─────────────────────────────────
+//
+// `uk_allocpool_free` CANNOT RUN. Four lines below the second assertion, before
+// it reaches `uk_free`, sits pool.c:390:
+//
+//     UK_CRASH("Unregistering from `lib/ukalloc` not implemented.\n");
+//
+// `UK_CRASH` is NOT gated on `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` — read
+// `lib/ukdebug/include/uk/crash.h:18-22`: it is `uk_pr_crit` followed by
+// `uk_crash_trigger()`, unconditionally, in every build. So the library's only
+// destructor halts the machine in debug AND in release, and BOTH of the rules
+// above are unreachable in the C: you die before you can violate either.
+//
+// WHY the author did that is legible from the FIXME immediately above it
+// (pool.c:388) and from `uk_alloc_init_malloc` (alloc_impl.h:227), which every
+// pool constructor runs: **a pool REGISTERS ITSELF into `_uk_alloc_head`'s
+// chain, and `lib/ukalloc` has no unregister.** Freeing the slab would leave a
+// live list node pointing into freed memory, and `uk_alloc_availmem_total`
+// walks that chain. Crashing is the honest choice available in C. It is also
+// why this lift's `keep` is not a convenience — see below.
+//
+// This is measured, not read off the shipped console: tests/boot_free_crashes.kz
+// calls `free` on an owned pool and the console prints the crash. It is the one
+// artifact in this shelf whose success criterion is that the machine stops.
+//
+// ── THE SHAPE ──────────────────────────────────────────────────────────────
+//
+//     create     mints  *Pool<owned!>                  uk_allocpool_alloc
+//     host       mints  *Pool<hosted!>                 uk_allocpool_init
+//     take       (pool bare)  mints *Obj<fresh!>       uk_allocpool_take
+//     write      needs  *Obj<!fresh|!used>  mints <used!>   (no C call)
+//     read       needs  *Obj<!used>         mints <used!>   (no C call)
+//     untouched  needs  *Obj<!fresh>        mints <used!>   (NO C CALL — escape)
+//     give       needs  *Obj<!used>                     uk_allocpool_return
+//     census     (pool bare)                            availcount/maxcount/objlen
+//     free       needs  *Pool<!owned>                   uk_allocpool_free  ← crashes
+//     keep       needs  *Pool<!owned|!hosted>           (NO C CALL — the truth)
+//
+// ── THE INSTRUMENT, AND WHY IT IS PHANTOM STATES AND NOT TWO HANDLE TYPES ──
+//
+// The brief leaves this to the contestant, so: **one handle type, two phantom
+// states, and every operational tor takes the pool through a BARE parameter.**
+//
+// The argument is mechanical, not aesthetic. `take`, `give`, `write`, `read`
+// and `census` are provenance-BLIND — where a pool came from has no bearing on
+// whether you may take an object from it. A bare `pool: *Pool` parameter neither
+// reads nor spends the phantom state (measured; see below), so ONE set of
+// operational tors serves both provenances at zero duplication. Two handle types
+// would have forced `take`/`give`/`write`/`read`/`census` to exist twice — ten
+// tors where five do — to encode a distinction none of the ten consults.
+//
+// **Put the distinction where it is consulted.** It is consulted in exactly one
+// place, `free`, and a phantom state is precisely a fact carried to the site
+// that consults it.
+//
+// The counter-argument, stated because it is the better half of the case for
+// types: a phantom state models "what may I do next" and normally TRANSITIONS,
+// and provenance never does — a pool's origin is fixed at birth, which is what a
+// type is for. That is true, and it is why the two states here are terminal:
+// nothing in this module transitions `owned` to `hosted` or back. What decided
+// it is that the alternative was not "a type instead of a state" but "a type
+// instead of a state, plus a duplicate of every verb", and pillar 1 is developer
+// experience.
+//
+// This was measured before it was chosen, not after. A bare `*Pool` parameter
+// against a `<owned!>` binding compiles, threads the obligation through
+// arbitrarily many `take`/`give` pairs, and still refuses at the end if the pool
+// is dropped. The probe is `tests/pool_threads_through_operations.kz`.
+//
+// ── WHAT THE COMPILER REFUSES, AND WHAT ARGUMENT MAKES IT REFUSE ───────────
+//
+//   1. THE PAIRING. `free` accepts `*Pool<!owned>`. Only `create` mints
+//      `<owned!>`. So
+//
+//          host(…) | pool p |> … |> free(p)
+//
+//      is `error[KORU030]: Phantom state mismatch: expected
+//      'unikraft.allocpool:owned' but got 'unikraft.allocpool:hosted!'`.
+//      pool.c:383, lifted. tests/negative_free_hosted_pool.kz.
+//
+//   2. DRAIN BEFORE FREE, and it falls out of two facts rather than a counter.
+//      `give` is a TWO-parameter disposer, so auto-discharge can never elect it;
+//      an object that is not explicitly returned is always `KORU030 … obligation
+//      <fresh!>/<used!> was not discharged`. And `free`/`keep` CONSUME the pool,
+//      so a `give` after either is `Use-after-discharge: binding 'p' …`.
+//      Together: every object taken must be returned, and it must be returned
+//      before the pool ends. pool.c:386, lifted — with no counter, in a build
+//      where the C has no counter either. tests/negative_object_outstanding.kz.
+//
+//   3. THE ASYMMETRY (pillar 4), placed on the OBJECT. `give` accepts only
+//      `<!used>`, and `<used!>` is reachable only through `write`, `read` or the
+//      named escape `untouched`. `take` immediately followed by `give` does not
+//      compile. tests/negative_give_without_use.kz.
+//
+// ── WHERE PILLAR 4 IS REFUSED, AND WHY ─────────────────────────────────────
+//
+// **The POOL gets no use-before-finalize gate.** `create(…) |> keep(…)` — a pool
+// nothing was ever taken from — compiles. That is a deliberate refusal and the
+// reason is that the pool has TWO orthogonal facts and one state axis: where it
+// came from (permanent, penalty = `uk_free` on an address the allocator never
+// issued) and whether it was ever used (monotone, penalty = a few KiB reserved
+// and not used). One axis, two candidates, and it goes to the one whose
+// violation corrupts the heap. Ratcheting the pool would have required `take` to
+// spend and re-mint the pool state, which is the duplication argued away above.
+//
+// `unikraft/vmem` made the same shape of call — pillar 4 on the committed half,
+// refused on the reservation half — for the same kind of reason.
+//
+// ── WHY `keep` IS NOT A CONVENIENCE ────────────────────────────────────────
+//
+// `keep` runs no C call and mints nothing. It is how a pool's obligation is
+// discharged when the pool outlives the program, which in Unikraft is EVERY
+// POOL, because `uk_allocpool_free` crashes and there is no unregister. It is
+// also what gives `<owned>` two disposals, and that is load-bearing: with two,
+// dropping a pool is
+//
+//     error[KORU030]: Resource 'p' <owned!> has multiple discharge options:
+//                     keep, free. Discharge explicitly.
+//
+// With one it would be silently auto-inserted. This is the dividend
+// `unikraft/alloc` recorded — a named escape buys a DIAGNOSTIC, not just a grep
+// — applied on purpose rather than discovered.
+//
+//     grep -r "allocpool:keep"   ->   "which pools live for the life of the machine"
+//
+// `<hosted>` has only `keep`, so a dropped hosted pool IS auto-inserted rather
+// than reported. Stated because it is an asymmetry in the guarantee, not in the
+// prose: there is no honest second disposal for a hosted pool, and inventing one
+// to buy a diagnostic would be inventing a C call that does not exist.
+//
+// ── DEDUP AGAINST `unikraft/alloc` AND `unikraft/pages` ────────────────────
+//
+// Both are allocators; so is this. The overlap is real and is confined to the
+// object contents axis, which this module deliberately does NOT re-argue:
+// `fresh`/`used` here is the same instrument as `alloc`'s `raw`/`live` and
+// `pages`' `blank`/`filled`, for the same reason, and `untouched` is the same
+// named escape with the same spelling because a third word for one idea is a
+// worse outcome than a repeated one. That axis is not this lift's contribution
+// and is not claimed as one.
+//
+// What is NOT in either neighbour:
+//
+//   * **Two constructors and one destructor.** `ukalloc` has one of each;
+//     `uk_palloc`/`uk_pfree` likewise. Neither has a provenance rule, so
+//     neither has anything resembling `free`'s `<!owned>` gate.
+//   * **Drain-before-destroy.** A `*Block` and a `*Pages` region have no
+//     sub-resources. A pool's objects are sub-resources of the pool, and the
+//     rule that they must all be back before it ends has no analogue there.
+//   * **No handle header, and that is a deliberate divergence.** `alloc` and
+//     `pages` both put a header struct in front of the caller's region.
+//     A POOL'S CONTRACT IS ABOUT EXACT SIZES — N objects of exactly L bytes,
+//     that is the whole reason to use one — so silently spending
+//     `alignUp(16, align)` bytes of every object on a lift's bookkeeping would
+//     be the lift lying about the machine. Instead `write`, `read` and `give`
+//     take the pool as a second argument and read the length back with
+//     `uk_allocpool_objlen`, one exported call, no bytes. Ceremony at the call
+//     site, zero cost in the image.
+//   * **`Pool` and `Obj` are `opaque`.** No struct is mirrored, no offset is
+//     claimed, nothing is transcribed. `pages`, `sched` and `lock` each had to
+//     pay a mirror proof; this one has nothing to prove because every fact it
+//     needs has an exported accessor.
+//
+// ── WHAT IS DELIBERATELY NOT BOUND ─────────────────────────────────────────
+//
+//   * **`uk_allocpool2ukalloc`.** It hands out a `struct uk_alloc *` so the pool
+//     can be driven through `uk_malloc`/`uk_free`. That converts every object
+//     into an untracked `void *` with no obligation and no state — the exact
+//     hole this module exists to close — and it re-opens `pool_malloc`'s
+//     `UK_ASSERT(size <= p->obj_len)` (pool.c:169), a caller rule that the
+//     typed surface does not have because `write` is bounded by `objlen`.
+//     Binding it would be handing back the footgun with a bow on it.
+//   * **`uk_allocpool_take_batch` / `uk_allocpool_return_batch`.** One call
+//     yielding N independently-owed objects into a C array is not a shape a
+//     phantom obligation can carry — the compiler would have to track an
+//     array of obligations whose length is a runtime value. A `batch` that
+//     handed back one handle for N objects would be a different resource with
+//     a different rule, honestly modelled and not equivalent to the C. Not
+//     attempted, and no assertion of theirs is counted as retired
+//     (pool.c:207-208, :235-236).
+//   * **`uk_allocpool_reqmem` as a public tor.** It is a sizing helper whose
+//     only consumer is a constructor, and both constructors here call it
+//     internally. Exposing it would invite a caller to compute a length and
+//     then pass a different one.
+//
+// ── ONE HONEST LIMIT ───────────────────────────────────────────────────────
+//
+// `give(pool, obj)` does NOT prove the object came from THAT pool. With two
+// pools in scope, crossing them is spellable, and it is exactly what
+// `_prepend_free_obj`'s `UK_ASSERT(p->free_obj_count < p->obj_count)` and
+// `UK_ASSERT(IS_ALIGNED(obj, p->obj_align))` (pool.c:114, :115) exist to catch.
+// Proving it needs an object type parameterised by its pool, which this
+// language does not have for phantom handles. Those two assertions are counted
+// as NOT RETIRED in README.md, and this paragraph is why.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Linkability, settled the way the linker settles it, and it is the easy case:
+// `lib/ukallocpool/exportsyms.uk` EXISTS — case 1 — with **12 lines**. All 12
+// name a real, non-static definition in `pool.c` (checked by grep, so case 4
+// is zero). The public header contains **zero `static inline`s**, so case 5 is
+// zero and case 3 does not arise at all. `links = 12`, and this module binds 9
+// of them; the other 3 are refused above with reasons.
+//
+// No token pasting anywhere in the library, so the case-4 inverse trap does not
+// apply either. `lib/ukallocpool` is BYTE-IDENTICAL between our fork at
+// `3fdffba8` and Unikraft stable 0.21.0 "Ijiraq" — `pool.c` and `exportsyms.uk`
+// both diffed clean — so the version trap on the shelf does not apply here and
+// what is measured against the fork is what the `version: stable` Kraftfile
+// builds.
+
+const std = @import("std");
+
+const UkAlloc = opaque {};
+
+// `struct uk_allocpool` is opaque in the public header (allocpool.h:47) and
+// stays opaque here. Every fact this lift needs — free count, capacity, object
+// length — has an exported accessor, so there is nothing to mirror and no
+// offset to claim.
+const Pool = opaque {};
+
+// One object out of the pool. A bare address into the slab: the pool keeps no
+// per-object metadata and neither does this lift. See the header note on why
+// there is no handle header.
+const Obj = opaque {};
+
+// The default allocator. `uk_alloc_get_default()` is `static inline`
+// (ukalloc alloc.h:136-139) and returns exactly this exported global, so
+// reading the variable is the same load the inline performs. NULL until ukboot
+// registers an allocator.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+extern fn uk_allocpool_reqmem(obj_count: c_uint, obj_len: usize, obj_align: usize) usize;
+extern fn uk_allocpool_alloc(parent: *UkAlloc, obj_count: c_uint, obj_len: usize, obj_align: usize) ?*Pool;
+extern fn uk_allocpool_init(base: *anyopaque, len: usize, obj_len: usize, obj_align: usize) ?*Pool;
+extern fn uk_allocpool_free(p: *Pool) void;
+extern fn uk_allocpool_take(p: *Pool) ?*anyopaque;
+extern fn uk_allocpool_return(p: *Pool, obj: *anyopaque) void;
+extern fn uk_allocpool_availcount(p: *Pool) c_uint;
+extern fn uk_allocpool_maxcount(p: *Pool) c_uint;
+extern fn uk_allocpool_objlen(p: *Pool) usize;
+
+// ============================================================================
+// THE HOSTED SLAB
+// ============================================================================
+//
+// `uk_allocpool_init` places a pool in memory the CALLER owns, which is the
+// whole point of its existing beside `uk_allocpool_alloc`. In a unikernel that
+// memory is characteristically not heap memory — it is a statically reserved
+// region, sized at build time, present before the allocator is. This module
+// provides exactly that, in its own `.bss`, because it is the case the C's
+// second constructor is FOR and because it makes the provenance rule
+// demonstrable inside one module with no cross-module handle passing.
+//
+// THE SIZE IS A DECLARED CONSTANT, not a computed one, and it is stated rather
+// than buried: 8 KiB. `host` refuses any request `uk_allocpool_reqmem` sizes
+// above it, naming both numbers. There is no growth path and no fallback to the
+// heap — that would make `host` and `create` the same tor wearing two names,
+// which would make the provenance rule fiction.
+const ARENA_LEN: usize = 8192;
+
+var arena: [ARENA_LEN]u8 align(16) = undefined;
+
+// The arena may be hosted ONCE per boot, and this flag is not bookkeeping
+// hygiene — it prevents a hang.
+//
+// `uk_allocpool_init` ends in `uk_alloc_init_malloc` (alloc_impl.h:206-228),
+// whose last statement is `uk_alloc_register(a)`. `uk_alloc_register`
+// (ukalloc alloc.c:57-71) walks to the tail of `_uk_alloc_head`'s chain and
+// appends. Re-initialising a pool AT THE SAME ADDRESS therefore walks to a tail
+// that IS the node being appended, and writes `this->next = a` with `this == a`
+// — a self-loop. `uk_alloc_availmem_total` walks that chain
+// (ukalloc alloc.c:594-603) and would never return.
+//
+// Derived by reading `uk_alloc_register` and `uk_alloc_init_malloc`, NOT
+// measured on a booted image: demonstrating a hang is not a console line. It is
+// refused rather than risked, and the refusal says which mechanism it is
+// avoiding.
+var arena_hosted: bool = false;
+
+// ============================================================================
+// CONSTRUCT
+// ============================================================================
+
+// `uk_allocpool_alloc` — a pool whose slab comes from the default allocator, so
+// the pool owns it. Mints `<owned!>`, the ONE state `free` accepts.
+//
+// Three arms, not two, and for the reason `unikraft/alloc:default` splits its
+// own: `uk_allocpool_alloc` answers "ukboot never registered an allocator" and
+// "the allocator could not find the bytes" with the same NULL, and they are
+// different problems with different fixes. Conflating them would be a silent
+// fallback in the shelf's sense — a report that reads like the real one.
+//
+// The emitted call is one `uk_allocpool_alloc`. The `uk_allocpool_reqmem` +
+// `uk_malloc` + `uk_allocpool_init` sequence happens inside it (pool.c:362-374),
+// which is where it belongs; this lift does not re-implement it.
+//
+// `objects`, `bytes` and `align` are checked here BEFORE the call, because
+// `uk_allocpool_reqmem` and `uk_allocpool_init` both open with
+// `UK_ASSERT(POWER_OF_2(obj_align))` (pool.c:264, :298) and that assertion is
+// compiled out. A non-power-of-two alignment reaches `ALIGN_UP` as a mask and
+// silently produces a pool with garbage geometry. This is the one place the lift
+// keeps a check the C only asserts, rather than making it unspellable.
+~pub tor create { objects: u32, bytes: u64, alignment: u64 }
+| pool *Pool<owned!>
+| refused string
+| unavailable string
+
+~proc create|zig {
+    const a = _uk_alloc_head orelse {
+        return .{ .unavailable = "no allocator registered: ukboot has not run, or CONFIG_LIBUKALLOC is off" };
+    };
+    if (objects == 0) {
+        return .{ .refused = "a pool of zero objects: uk_allocpool_init reports obj_count == 0 as ENOSPC (pool.c:323) and there would be nothing to take" };
+    }
+    if (bytes == 0) {
+        return .{ .refused = "a zero-byte object: uk_allocpool_init would silently widen it to sizeof(struct uk_list_head) (pool.c:306) and the pool would not have the geometry that was asked for" };
+    }
+    if (alignment == 0 or (alignment & (alignment - 1)) != 0) {
+        return .{ .refused = "obj_align must be a power of two: pool.c:264 and pool.c:298 assert it and the assertion is compiled out in this image, after which ALIGN_UP is a mask over a non-mask" };
+    }
+    const n: c_uint = @intCast(objects);
+    const len: usize = @intCast(bytes);
+    const al: usize = @intCast(alignment);
+    const p = uk_allocpool_alloc(a, n, len, al) orelse {
+        return .{ .refused = "uk_allocpool_alloc returned NULL: the parent allocator could not supply the slab, or the geometry does not fit one" };
+    };
+    return .{ .pool = p };
+}
+
+// `uk_allocpool_init` — a pool placed in this program's static arena. Mints
+// `<hosted!>`, which `free` does not accept and never will.
+//
+// The slab is NOT this pool's to release, which is precisely what pool.c:383
+// says and precisely what the phantom state carries. There is no `dissolve`
+// tor and its absence is deliberate: the arena cannot be re-hosted (see
+// `arena_hosted`), the registration cannot be undone (pool.c:388's FIXME), so
+// there is nothing a release could honestly do. `keep` is the disposal.
+//
+// The length handed to `uk_allocpool_init` is `uk_allocpool_reqmem`'s answer
+// and not `ARENA_LEN`, so a hosted pool has the geometry that was asked for
+// rather than however many objects happen to fit the arena. The unused tail
+// stays unused.
+~pub tor host { objects: u32, bytes: u64, alignment: u64 }
+| pool *Pool<hosted!>
+| refused string
+| busy string
+
+~proc host|zig {
+    if (arena_hosted) {
+        return .{ .busy = "the static arena already holds a pool: uk_allocpool_init registers the pool with uk_alloc_register (alloc_impl.h:227), and re-registering the same address makes _uk_alloc_head's chain self-loop, after which uk_alloc_availmem_total never returns" };
+    }
+    if (objects == 0) {
+        return .{ .refused = "a pool of zero objects: uk_allocpool_init reports obj_count == 0 as ENOSPC (pool.c:323) and there would be nothing to take" };
+    }
+    if (bytes == 0) {
+        return .{ .refused = "a zero-byte object: uk_allocpool_init would silently widen it to sizeof(struct uk_list_head) (pool.c:306) and the pool would not have the geometry that was asked for" };
+    }
+    if (alignment == 0 or (alignment & (alignment - 1)) != 0) {
+        return .{ .refused = "obj_align must be a power of two: pool.c:264 and pool.c:298 assert it and the assertion is compiled out in this image, after which ALIGN_UP is a mask over a non-mask" };
+    }
+    const n: c_uint = @intCast(objects);
+    const len: usize = @intCast(bytes);
+    const al: usize = @intCast(alignment);
+    const need = uk_allocpool_reqmem(n, len, al);
+    if (need > ARENA_LEN) {
+        return .{ .refused = "the requested pool does not fit this module's static arena; uk_allocpool_reqmem asked for more than the 8192 bytes reserved, and there is no growth path because a hosted pool that silently moved to the heap would be a pool this module reported the wrong provenance for" };
+    }
+    const p = uk_allocpool_init(@ptrCast(&arena), need, len, al) orelse {
+        return .{ .refused = "uk_allocpool_init returned NULL over the static arena: the geometry does not fit the length uk_allocpool_reqmem computed for it" };
+    };
+    arena_hosted = true;
+    return .{ .pool = p };
+}
+
+// ============================================================================
+// READ THE POOL
+// ============================================================================
+
+// `uk_allocpool_availcount`, `uk_allocpool_maxcount` and `uk_allocpool_objlen`,
+// as one reading. Three exported calls, no state taken and none minted: knowing
+// how full a pool is constrains nothing about what you may do next.
+//
+// This is the bracket instrument. Two censuses around a program's whole use of
+// a pool, with `free` equal at both ends, are the RUN-TIME evidence that every
+// object came back — which is a different claim from the compile-time one, and
+// the boot test makes both.
+//
+// `objlen` is the ALIGNED object length (`obj_alen`, pool.c:313), which is what
+// `write` and `read` are bounded by and may be larger than the `bytes` a
+// constructor was given. Reported as what it is rather than as what was asked
+// for, because the difference is exactly the slack a caller may legally use.
+~pub tor census { pool: *Pool } -> { free: u32, capacity: u32, objlen: u64 }
+
+~proc census|zig {
+    return .{
+        .free = @intCast(uk_allocpool_availcount(pool)),
+        .capacity = @intCast(uk_allocpool_maxcount(pool)),
+        .objlen = @intCast(uk_allocpool_objlen(pool)),
+    };
+}
+
+// ============================================================================
+// TAKE AND GIVE BACK
+// ============================================================================
+
+// `uk_allocpool_take`. Mints `<fresh!>`.
+//
+// The pool parameter is BARE — no state read, no state spent. That is the whole
+// reason one handle type carries both provenances; see the header note.
+//
+// AN EXHAUSTED POOL NEVER BECOMES AN OBJECT. `uk_allocpool_take` returns NULL
+// with `errno = ENOMEM` (pool.c:132-134) and the header documents it
+// (allocpool.h:163). The hazard the C leaves open is the next line of the
+// caller's program: `uk_allocpool_return(p, NULL)` walks into
+// `_prepend_free_obj`, whose `UK_ASSERT(obj)` (pool.c:113) is compiled out, and
+// links a list entry at address 0. Here NULL takes the `| empty` arm and no
+// `*Obj` is minted, so there is no NULL to hand back.
+//
+// `<fresh>` is a real state and not ceremony: the pool is LIFO and does not
+// clear objects, so a taken object's first `sizeof(struct uk_list_head)` bytes
+// are the freelist links `_prepend_free_obj` wrote when it was last returned
+// (pool.c:117-118). Reading a fresh object reads the allocator's own pointers.
+~pub tor take { pool: *Pool }
+| obj *Obj<fresh!>
+| empty string
+
+~proc take|zig {
+    const raw = uk_allocpool_take(pool) orelse {
+        return .{ .empty = "the pool has no free objects left; uk_allocpool_take returned NULL with errno ENOMEM" };
+    };
+    return .{ .obj = @ptrCast(raw) };
+}
+
+// Copy `bytes` into the object from offset 0 and mint `<used!>`. No C call —
+// the pool hands out addresses, it does not touch contents.
+//
+// The bound is `uk_allocpool_objlen(pool)`, read at the call rather than stored
+// in a header. That is the divergence from `unikraft/alloc` and
+// `unikraft/pages` argued in the header note: a pool's contract is exact sizes,
+// so no byte of an object belongs to this lift.
+//
+// A refusal hands the object back as `<fresh!>`. Nothing was copied, so nothing
+// is provably initialised, and a refused write must not satisfy the asymmetry
+// gate — otherwise take + an over-long write + give is a hole straight through
+// it. Same call `unikraft/alloc:write` makes, same reason.
+~pub tor write { pool: *Pool, obj: *Obj<!fresh|!used>, bytes: string }
+| ok *Obj<used!>
+| rejected { obj: *Obj<fresh!>, reason: string }
+
+~proc write|zig {
+    if (bytes.len == 0) {
+        return .{ .rejected = .{ .obj = obj, .reason = "write of zero bytes" } };
+    }
+    const cap = uk_allocpool_objlen(pool);
+    if (bytes.len > cap) {
+        return .{ .rejected = .{ .obj = obj, .reason = "write is longer than the pool's object length" } };
+    }
+    const region: [*]u8 = @ptrCast(obj);
+    for (0..bytes.len) |i| region[i] = bytes[i];
+    return .{ .ok = obj };
+}
+
+// Borrow `len` bytes from offset `at`. `bytes` is a BORROW of the object's own
+// memory — valid until the next `write` or `give`, never freed by the caller,
+// never a second obligation. Same discipline as `alloc`'s and `gzip`'s views.
+//
+// Accepts ONLY `<!used>`. An object straight out of `take` is `<fresh!>` and
+// cannot reach this tor, which is the freelist-pointer read described on `take`.
+//
+// The bound is the object length. Unlike `unikraft/alloc:read`, which is bounded
+// by how much was written, there is no `used` counter here — there is nowhere to
+// keep one without a header, and a header is what this module refuses to charge
+// for. So `read` can return slack the caller did not write, and the state gate
+// is what makes that honest: the object was written by SOMETHING in this
+// program before it could be read at all. Stated as a limit in README.md.
+~pub tor read { pool: *Pool, obj: *Obj<!used>, at: u64, len: u64 }
+| view { obj: *Obj<used!>, bytes: string }
+| rejected { obj: *Obj<used!>, reason: string }
+
+~proc read|zig {
+    if (len == 0) {
+        return .{ .rejected = .{ .obj = obj, .reason = "read of zero bytes" } };
+    }
+    const from: usize = @intCast(at);
+    const count: usize = @intCast(len);
+    const end = from + count;
+    const cap = uk_allocpool_objlen(pool);
+    if (end < from or end > cap) {
+        return .{ .rejected = .{ .obj = obj, .reason = "read runs past the pool's object length" } };
+    }
+    const region: [*]u8 = @ptrCast(obj);
+    return .{ .view = .{ .obj = obj, .bytes = region[from..end] } };
+}
+
+// THE NAMED ESCAPE from the asymmetry gate, for objects.
+//
+// `give` accepts only `<!used>`, so an object taken and handed straight back
+// does not compile. That is the gate — but taking an object to prove the pool
+// has capacity, or to hold a slot so a later `take` cannot lose the race, is a
+// legitimate thing to do with a pool, and this is how it says so out loud.
+//
+// Runs no C call. What it changes is what may be written next, and what grep
+// can find:
+//
+//     grep -r "allocpool:untouched"  ->  "where do we take objects we never fill"
+//
+// Same word as `unikraft/alloc:untouched` and `unikraft/pages:untouched`, on
+// purpose. `unused` reads as *finished with*, which is the state an object is in
+// immediately BEFORE `give` and the wrong suggestion at a site whose meaning is
+// "I never wrote here". A third spelling for one idea would be worse than a
+// repeated one.
+~pub tor untouched { obj: *Obj<!fresh> } -> *Obj<used!>
+
+~proc untouched|zig {
+    return obj;
+}
+
+// `uk_allocpool_return`. Accepts only `<!used>` and CONSUMES it, so returning
+// the same object twice is a `Use-after-discharge` compile error — and a
+// double-return is not a benign mistake here: `_prepend_free_obj` links the
+// object into the free list a second time and increments `free_obj_count` past
+// `obj_count`, which is the `UK_ASSERT` at pool.c:114 and is heap corruption
+// without it.
+//
+// No failure arm: `uk_allocpool_return` returns void and cannot fail. Inventing
+// one would be a lie about what the C does.
+//
+// The pool is BARE here, deliberately: `give` must be callable on a pool in
+// either provenance, and its second argument is the one carrying the proof.
+~pub tor give { pool: *Pool, obj: *Obj<!used> }
+
+~proc give|zig {
+    uk_allocpool_return(pool, @ptrCast(obj));
+}
+
+// ============================================================================
+// END THE POOL
+// ============================================================================
+
+// `uk_allocpool_free`, gated on `<!owned>` — the provenance rule, lifted.
+//
+// **THIS CALL HALTS THE MACHINE, IN EVERY BUILD.** `uk_allocpool_free` reaches
+// `UK_CRASH("Unregistering from `lib/ukalloc` not implemented.\n")` at
+// pool.c:390 before it reaches `uk_free`, and `UK_CRASH` is not gated on
+// `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` (ukdebug crash.h:18-22). That is the C's
+// state today, it is measured on a booted image in
+// `tests/boot_free_crashes.kz`, and this tor neither hides it nor substitutes
+// anything for it. `keep` is what a working program uses.
+//
+// It is bound anyway, and that is the point. The provenance rule is a rule
+// ABOUT THIS FUNCTION; a lift that declined to bind it would be claiming to
+// have lifted an assertion guarding a call it never makes. Here the assertion
+// is dissolved for real: `<owned!>` is minted only by `create`, so
+// `uk_allocpool_free` cannot receive a pool `uk_allocpool_init` built, in any
+// program this module can express.
+//
+// Note what the two assertions below the gate become. pool.c:383 is retired by
+// the state. pool.c:386 is retired by the object obligations, which are all
+// discharged before this tor can be reached because `give` needs the pool and
+// this tor consumes it. So by the time control reaches `uk_allocpool_free`,
+// both of its assertions are already true by construction — and it still
+// crashes, on the third line, for a reason neither assertion is about.
+~pub tor free { pool: *Pool<!owned> }
+
+~proc free|zig {
+    uk_allocpool_free(pool);
+}
+
+// The pool lives for the life of the machine. No C call, and that is the honest
+// emission: nothing happens, and the object file says nothing happens.
+//
+// This is not a convenience and not a loophole — in Unikraft today it is the
+// ONLY way a pool can end, because `uk_allocpool_free` crashes (see `free`) and
+// `lib/ukalloc` has no unregister for the entry every pool constructor adds to
+// `_uk_alloc_head` (pool.c:388's own FIXME). A long-lived pool is also the
+// normal shape: pools are built at boot, sized once, and used until the machine
+// stops.
+//
+// It accepts BOTH provenances because the fact it records — "this pool is never
+// released" — is true of both, and because it is what gives `<owned>` a second
+// disposal so that DROPPING a pool is a diagnostic rather than a silent
+// insertion. See the header note.
+~pub tor keep { pool: *Pool<!owned|!hosted> }
+
+~proc keep|zig {
+    _ = pool;
+}

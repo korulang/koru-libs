@@ -194,6 +194,20 @@ have missed why it did what it did.
   no memory. Two kernel constants no symbol exports — the page size and
   `UK_PAGING_VADDR_ANY` — are DERIVED BY BEHAVIOURAL PROBE rather than assumed;
   the console prints `0xbaadbaad80000000`. Census 20 retired / 16 not, per site.
+- **[allocpool](unikraft/allocpool/README.md)** — `ukallocpool` behind a
+  PROVENANCE rule: two constructors, one destructor, and `free` accepts only the
+  `<owned!>` a `uk_allocpool_alloc` pool is minted in, so freeing a
+  `uk_allocpool_init` pool is a `KORU030`. 11 tors, 4 states on two axes that
+  never mix, no struct mirror. Not a naive wrap — everything in this library
+  links. Settles the brief's open question by MEASUREMENT: a bare `pool: *Pool`
+  parameter neither reads nor spends a phantom state, so ONE handle type carries
+  both provenances where two types would have doubled five verbs. Drain-before-
+  free needs no counter — `give` is a two-argument disposer auto-discharge can
+  never elect. **And the headline is a finding about the C: `uk_allocpool_free`
+  reaches an ungated `UK_CRASH` (pool.c:390) before it reaches `uk_free`, so the
+  library's only destructor halts the machine in EVERY build and both of its
+  assertions are unreachable — booted, with the crash console.** Census 7
+  retired / 2 converted into live refusals / 14 not, per site.
 - **[lock](unikraft/lock/README.md)** — `uklock`'s READER-WRITER lock behind four
   states, 7 tors, and a `struct uk_rwlock` whose SIZE IS MEASURED on the running
   image rather than transcribed. Two contributions. (1) The linkability verdict:
@@ -346,7 +360,7 @@ was an unfiltered line count. Both are replaced.
 | `ukpaging` | allowlist | 15 | 0 | 0 | **15** | 8F/3A | 140 | yes | `pt_init → pt_set_active → page_map/page_unmap → pt_free`, plus the `page_kmap`/`page_kunmap` pair. Second-highest assert count. The 3 A are control-register reads; the other 8 inlines are pure arithmetic and free. |
 | `ukconsole` | allowlist | 17 | 0 | 0 | **17** | 2M | 26 | **partly** | `register → out/in → unregister` plus async callback register/unregister. **10 of the 17 are fork-only**; against 0.21.0 this is a 7-symbol library with no `unregister`, which deletes the asymmetry that makes it interesting. |
 | `uklcpu` | allowlist | 29 | 0 | 16 | **13** | 20F/12M/3N | 25 | yes | SMP + interrupt-flag primitives. The `save_irqf`/`restore_irqf` pair is a real nesting discipline, but it is one of the 16 **inert** lines, and most of the rest is `cli`/`sti`. Poor target despite the headline 29. |
-| `ukallocpool` | allowlist | 12 | 0 | 0 | **12** | — | 23 | yes | **The best small unclaimed target.** Two asserts in `uk_allocpool_free` (`pool.c:383,386`) are the whole challenge in miniature: a pool built by `uk_allocpool_init` may *never* be freed by `uk_allocpool_free` (only one built by `uk_allocpool_alloc` may), and every object `take`n must be `return`ed first. Two constructors, one destructor, and picking the wrong pair vanishes at `-DNDEBUG`. Zero inlines. |
+| `ukallocpool` | allowlist | 12 | 0 | 0 | **12** | — | 23 | yes | **TAKEN** (`unikraft/allocpool`) — Two asserts in `uk_allocpool_free` (`pool.c:383,386`) are the whole challenge in miniature: a pool built by `uk_allocpool_init` may *never* be freed by `uk_allocpool_free` (only one built by `uk_allocpool_alloc` may), and every object `take`n must be `return`ed first. Two constructors, one destructor, and picking the wrong pair vanishes at `-DNDEBUG`. Zero inlines. **Corrected by the lift:** the second assert is unreachable and so is the first — `uk_allocpool_free` hits an ungated `UK_CRASH` (pool.c:390) before `uk_free`, in every build, measured on a booted image. |
 | `ukmpi` | allowlist | 10 | 0 | 0 | **10** | — | 15 | yes | Mailbox. `uk_mbox_free` asserts `m->readpos == m->writepos` (`mbox.c:38`) — **drain before free** — and takes the allocator again, so the create/free allocator pairing is an unwritten rule too. `post`/`recv` × blocking/`_try`/`_to` is a clean exercise in branch payload vs. state. Zero inlines. |
 | `ukintctlr` | allowlist | 11 | 0 | 0 | **11** | — | 21 | yes | Interrupts — an organ nothing shipped touches. `irq_alloc`/`irq_free` over a bitmap (leakable), `irq_register`/`irq_unregister` over handler slots, and `register` *unmasks* the line so `unregister` must re-mask. `uk_intctlr_init` before any of it, enforced by nothing: the read path is `uk_intctlr->ops->…` and a null there is a dead machine, which is the `ukvmem` shape. Zero inlines. |
 | `uksglist` | allowlist | 11 | 0 | 0 | **11** | 2M | 8 | yes | `alloc → append… → free` with `split`/`join`/`clone`/`slice`. A build-then-use ordering over a segment array; the two inlines are `init`/`reset`. |

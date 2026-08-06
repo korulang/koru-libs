@@ -1,0 +1,53 @@
+// POSITIVE, and the PROBE behind this lift's central design choice: a pool
+// handle whose phantom state is `<owned!>` is passed to `take`, `write`, `read`,
+// `give` and `census` through a BARE `pool: *Pool` parameter, four times over,
+// and the obligation is still live at the end — `keep` discharges it.
+//
+// That is the measurement that ruled out two handle types. A bare parameter
+// neither reads nor spends the state, so ONE set of operational tors serves both
+// provenances; with two types, `take`/`write`/`read`/`give`/`census` would each
+// have had to exist twice to encode a distinction none of them consults.
+//
+// Compiles clean through the emit pass. Its negative twin is
+// negative_pool_dropped.kz: remove the final `keep` and the same program is
+// refused, which is what proves the obligation was threaded rather than lost.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+~unikraft/allocpool:create(objects: 4, bytes: 64, alignment: 8)
+| pool op |> unikraft/allocpool:take(pool: op)
+    | obj a |> unikraft/allocpool:write(pool: op, obj: a, bytes: "first")
+        | ok fa |> unikraft/allocpool:give(pool: op, obj: fa)
+            |> unikraft/allocpool:take(pool: op)
+                | obj b |> unikraft/allocpool:write(pool: op, obj: b, bytes: "second")
+                    | ok fb |> unikraft/allocpool:read(pool: op, obj: fb, at: 0, len: 6)
+                        | view v |> std/io:print.ln("threaded: {{ v.bytes:s }}")
+                            |> unikraft/allocpool:give(pool: op, v.obj)
+                            |> unikraft/allocpool:census(pool: op): c
+                                |> std/io:print.ln("threaded: {{ c.free:d }}/{{ c.capacity:d }} free")
+                                |> unikraft/allocpool:keep(pool: op)
+                        | rejected r |> unikraft/allocpool:give(pool: op, r.obj) |> unikraft/allocpool:keep(pool: op)
+                    | rejected r |> unikraft/allocpool:untouched(r.obj): u |> unikraft/allocpool:give(pool: op, obj: u) |> unikraft/allocpool:keep(pool: op)
+                | empty why |> std/io:print.ln("{{ why:s }}") |> unikraft/allocpool:keep(pool: op)
+        | rejected r |> unikraft/allocpool:untouched(r.obj): u |> unikraft/allocpool:give(pool: op, obj: u) |> unikraft/allocpool:keep(pool: op)
+    | empty why |> std/io:print.ln("{{ why:s }}") |> unikraft/allocpool:keep(pool: op)
+| refused why |> std/io:print.ln("{{ why:s }}")
+| unavailable why |> std/io:print.ln("{{ why:s }}")
