@@ -1,0 +1,40 @@
+// POSITIVE, and the control for negative_stop_without_transfer.kz: the SAME
+// chain, with the intent stated.
+//
+// The asymmetry gate rejects the silent no-op — a disk brought up and torn
+// down without a transfer — but it does not forbid the legitimate case.
+// `blk:io.skipped` mints <used!> and runs no C call, so a health check that
+// only wants to know the device configures, arms and starts says exactly that,
+// in a word that greps.
+//
+// This proves the gate costs the honest program nothing: only the accidental
+// bring-up-and-discard is caught. The pair is the block-device twin of gzip's
+// deflate_finish_without_push.kz / deflate_empty_via_push.kz.
+//
+// Compiles clean through the emit pass; needs a unikernel to run (see
+// boot_lifecycle.kz).
+
+~import unikraft/blk
+~import std/io
+
+~unikraft/blk:get(id: 0)
+| device disk |> unikraft/blk:configure(disk.dev)
+    | ok cfg |> unikraft/blk:queue.open(dev: cfg, transfer: 1)
+        | ok armed |> unikraft/blk:start(dev: armed)
+            | ok run |> unikraft/blk:io.skipped(dev: run): checked |> unikraft/blk:stop(dev: checked)
+                | ok stopped |> unikraft/blk:queue.close(dev: stopped)
+                    | ok drained |> unikraft/blk:release(dev: drained)
+                        | ok |> std/io:print.ln("blk0 starts and stops; no I/O attempted")
+                        | failed x |> unikraft/blk:abandon(x.dev)
+                    | failed x |> unikraft/blk:abandon(x.dev)
+                | failed x |> unikraft/blk:abandon(x.dev)
+            | refused e |> unikraft/blk:queue.close(e.dev)
+                | ok dr |> unikraft/blk:release(dev: dr)
+                    | ok |> _
+                    | failed x |> unikraft/blk:abandon(x.dev)
+                | failed x |> unikraft/blk:abandon(x.dev)
+        | refused e |> unikraft/blk:release(e.dev)
+            | ok |> _
+            | failed x |> unikraft/blk:abandon(x.dev)
+    | refused e |> unikraft/blk:abandon(e.dev)
+| missing why |> std/io:print.ln("blk0 unavailable: {{ why:s }}")

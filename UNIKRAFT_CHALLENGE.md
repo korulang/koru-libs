@@ -120,31 +120,48 @@ Before choosing, read the catalog: every directory under `unikraft/` with an
 `index.kz` is a shipped or in-flight lift. Read their READMEs and their tests.
 Bring something not already there.
 
-Measured shelf — resource-bearing surface, public functions per library
-(`unikraft` HEAD `3fdffba8`):
+**Check linkability BEFORE you fall in love with a target**, and check it the way
+the LINKER does, not the way a header reads. A Koru lift compiles to a
+*separately linked* freestanding archive, so it can only call symbols that exist.
+Three cases, and they are not obvious:
 
-| C library | fns | Koru module | shape |
-|---|---:|---|---|
-| `uksched` | 79 | `unikraft/sched` | threads; ordering + lifetime |
-| `ukfile` | 75 | `unikraft/file` | handles; open/close family |
-| `uknetdev` | 61 | `unikraft/net` | **the exemplar target** — explicit state machine, per-packet netbufs |
-| `ukalloc` | 52 | `unikraft/alloc` | symmetric pair; a good test of *not* over-modelling |
-| `ukblkdev` | 36 | `unikraft/blk` | netdev-shaped, smaller |
-| `ukvmem` | 32 | `unikraft/vmem` | mappings |
-| `uklock` | 30 | `unikraft/lock` | classic acquire/release on every path |
+1. **`lib/<name>/exportsyms.uk` exists** → that file IS the allowlist. Unikraft
+   runs `objcopy --keep-global-symbols=<that file>` and localizes everything
+   else. Only the listed symbols link.
+2. **`exportsyms.uk` is absent** → `addprefix` over an empty list yields no flag
+   at all (`support/build/Makefile.rules:1043`), objcopy localizes *nothing*, and
+   **everything the library defines links.** Twenty libraries are in this state.
+   An absent allowlist is the permissive case, not the empty one — do not read a
+   missing file as "exports nothing."
+3. **`static inline` in a header** → no symbol is emitted either way. Reaching it
+   needs a C shim (an added call frame, against pillar 2) or a hand-mirrored
+   struct (an ABI guess). This is independent of cases 1 and 2.
 
-**Naming: drop the `uk` prefix and the transliteration.** The C library is
-`uknetdev`; the Koru module is `unikraft/net`, imported as `import unikraft/net`.
-`unikraft` is a platform namespace beside `std`, not a shelf under `koru` — a
-caller is naming the operating system they are inside, not a third-party
-dependency they picked. If the DX pillar means anything it means a consumer never
-types `uknetdev`.
+Measured shelf (`unikraft` HEAD `3fdffba8`) — **linkable** is case 1's count, or
+case 2's defined-in-`.c` count:
 
-`uknetdev` + `netbuf` together carry every obligation shape you will ever need —
-ratchet, nested sub-resource (queues), paired toggle (`rxq_intr_enable/disable`),
-**refcount** (`uk_netbuf_ref`, where "discharge exactly once" stops being true),
-ownership transfer (`tx_one` consumes the buffer), chain/unchain. If you take it,
-you are writing the template; scope to a slice and say what you left.
+| C library | linkable | `static inline` | Koru module | shape |
+|---|---:|---:|---|---|
+| `uksched` | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
+| `uknetdev` | 33 | 12 | `unikraft/net` | state machine — **but see below** |
+| `ukalloc` | 25 | 25 | `unikraft/alloc` | symmetric pair; a good test of *not* over-modelling |
+| `ukvmem` | 20 | 16 | `unikraft/vmem` | mappings |
+| `ukblkdev` | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
+| `uklock` | 15 | 19 | `unikraft/lock` | acquire/release on every path |
+| `ukfile` | 11 | 56 | `unikraft/file` | no allowlist, so all 11 link — but the interesting surface IS the inlines; thin |
+
+**`uknetdev` is a trap, and it cost the first replay an investigation to find.**
+Its lifecycle is exported, but its *hot path* is not: `uk_netdev_rx_one` and
+`uk_netdev_tx_one` are `static inline` (`netdev.h:476`, `:546`). So the per-packet
+half — the interesting half, the one with the refcounted netbufs — cannot be
+reached from a Koru archive without a shim or an ABI guess. Lift its lifecycle if
+you want; do not promise the transfers.
+
+`ukblkdev` is what `uknetdev` looked like from a distance: the same explicit state
+machine and nested queue sub-resource, and it exports its **whole** surface
+including `uk_blkdev_queue_submit_one` and `uk_blkdev_queue_finish_reqs`, so the
+lifecycle *and* the transfers are provable end to end. It is already taken. The
+shelf above is what remains.
 
 ### What "done" looks like (the gates)
 
@@ -239,6 +256,13 @@ with `index.kz`, `tests/`, and `README.md`. The catalog is the repo.
 
 ## Tending log
 
+- 2026-08-06 — first replay landed `unikraft/blk` and corrected the shelf: the
+  column was header DECLARATIONS, not linkable symbols. `ukfile` showed as the
+  second-richest target; correcting THAT introduced a second error (a missing
+  exportsyms.uk is the PERMISSIVE case — everything links — not the empty one),
+  caught by Lars asking why anything would be unliftable. `uknetdev`, named the exemplar, has
+  a `static inline` hot path. Added the linkability rule and the exports column.
+  Tuning earned by a replay, which is what a first replay is for. — walk
 - 2026-08-06 — planted. Split from `LIFT_CHALLENGE` because gate 2 (`koruc run`)
   cannot prove a unikernel, and because Unikraft's unit is a sublibrary, not a
   library. Carries the obligation-asymmetry rule, the `invalid!` shape, and the

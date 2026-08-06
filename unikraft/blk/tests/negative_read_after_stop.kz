@@ -1,0 +1,72 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): a transfer on a stopped device.
+//
+// `stop` moves the handle to <stopped!>; `read` accepts only <!running|!used>.
+// Submitting to a device whose virtqueue has been taken down is a use-after-
+// teardown, and the type system catches it before the program runs.
+//
+// The C's guard is `UK_ASSERT(dev->_data->state == UK_BLKDEV_RUNNING)` in
+// `uk_blkdev_queue_submit_one` (blkdev.c:391) — real, correct, and absent from
+// every build with `CONFIG_LIBUKDEBUG_ENABLE_ASSERT=n`. Without it the driver
+// dereferences `dev->_queue[0]` for a queue that `queue.close` is about to
+// free.
+
+~import unikraft/blk
+~import std/io
+
+~unikraft/blk:get(id: 0)
+| device disk |> unikraft/blk:configure(disk.dev)
+    | ok cfg |> unikraft/blk:queue.open(dev: cfg, transfer: 1)
+        | ok armed |> unikraft/blk:start(dev: armed)
+            | ok run |> unikraft/blk:read(dev: run, sector: 0, sectors: 1)
+                | data first |> unikraft/blk:stop(first.dev)
+                    | ok stopped |> unikraft/blk:read(dev: stopped, sector: 0, sectors: 1)
+                        | data second |> std/io:print.ln("should never get here")
+                            |> unikraft/blk:stop(second.dev)
+                                | ok s |> unikraft/blk:queue.close(dev: s)
+                                    | ok dr |> unikraft/blk:release(dev: dr)
+                                        | ok |> _
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                        | failed e |> unikraft/blk:stop(e.dev)
+                            | ok s |> unikraft/blk:queue.close(dev: s)
+                                | ok dr |> unikraft/blk:release(dev: dr)
+                                    | ok |> _
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                            | failed x |> unikraft/blk:abandon(x.dev)
+                        | rejected r |> unikraft/blk:io.skipped(r.dev): u |> unikraft/blk:stop(dev: u)
+                            | ok s |> unikraft/blk:queue.close(dev: s)
+                                | ok dr |> unikraft/blk:release(dev: dr)
+                                    | ok |> _
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                            | failed x |> unikraft/blk:abandon(x.dev)
+                    | failed x |> unikraft/blk:abandon(x.dev)
+                | failed e |> unikraft/blk:stop(e.dev)
+                    | ok s |> unikraft/blk:queue.close(dev: s)
+                        | ok dr |> unikraft/blk:release(dev: dr)
+                            | ok |> _
+                            | failed x |> unikraft/blk:abandon(x.dev)
+                        | failed x |> unikraft/blk:abandon(x.dev)
+                    | failed x |> unikraft/blk:abandon(x.dev)
+                | rejected r |> unikraft/blk:io.skipped(r.dev): u |> unikraft/blk:stop(dev: u)
+                    | ok s |> unikraft/blk:queue.close(dev: s)
+                        | ok dr |> unikraft/blk:release(dev: dr)
+                            | ok |> _
+                            | failed x |> unikraft/blk:abandon(x.dev)
+                        | failed x |> unikraft/blk:abandon(x.dev)
+                    | failed x |> unikraft/blk:abandon(x.dev)
+            | refused e |> unikraft/blk:queue.close(e.dev)
+                | ok dr |> unikraft/blk:release(dev: dr)
+                    | ok |> _
+                    | failed x |> unikraft/blk:abandon(x.dev)
+                | failed x |> unikraft/blk:abandon(x.dev)
+        | refused e |> unikraft/blk:release(e.dev)
+            | ok |> _
+            | failed x |> unikraft/blk:abandon(x.dev)
+    | refused e |> unikraft/blk:abandon(e.dev)
+| missing why |> std/io:print.ln("blk0 unavailable: {{ why:s }}")

@@ -1,0 +1,126 @@
+// POSITIVE, and the gate-2 artifact: the whole ukblkdev state machine, driven
+// from Koru, inside a unikernel, against a real virtio-blk disk.
+//
+//   get -> configure -> queue.open -> start
+//        -> read -> write -> flush -> read
+//        -> stop -> queue.close -> release
+//
+// Every arrow is a phantom transition the compiler checked before this program
+// existed, and every step is one exported ukblkdev call with nothing around it.
+// The second `read` is what proves `<!running|!used>` re-entry: a transfer may
+// follow a transfer.
+//
+// Build and boot: see ../README.md.
+
+// `~import unikraft` is DELIBERATELY ABSENT. Importing `unikraft/blk` already
+// pulls `unikraft/index.kz` into scope on its own, and writing the parent
+// import as well registers the module twice — the comptime backend then fails
+// with `duplicate struct member name 'image_event'`. Both halves of that are
+// toolchain defects, pinned with controls in ../README.md.
+~import unikraft/blk
+~import std/io
+
+// The body must be non-empty: an empty Source block emits `.text = ` with no
+// initializer and the comptime backend fails to compile. Repro and file:line
+// in ../README.md, "What the toolchain got wrong".
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_BLK=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKBLKDEV: 'y'
+    CONFIG_LIBVIRTIO_BLK: 'y'
+    CONFIG_LIBVIRTIO_PCI: 'y'
+    CONFIG_LIBVIRTIO_BUS: 'y'
+}
+
+~unikraft/blk:get(id: 0)
+| device disk |> std/io:print.ln("blk0: {{ disk.sectors:d }} sectors x {{ disk.sector_size:d }} B, max {{ disk.max_transfer:d }} sectors/req")
+    |> unikraft/blk:configure(disk.dev)
+        | ok cfg |> unikraft/blk:queue.open(dev: cfg, transfer: 1)
+            | ok armed |> unikraft/blk:start(dev: armed)
+                | ok run |> unikraft/blk:read(dev: run, sector: 0, sectors: 1)
+                    | data first |> std/io:print.ln("read  s0: {{ first.bytes:s }}")
+                        |> unikraft/blk:write(first.dev, sector: 1, bytes: "KORU WROTE SECTOR ONE THROUGH unikraft/blk -- submit_one + finish_reqs, no sync_io, no interrupt. ==============================================================================================================================================================================================================================================================================================================================================================================================================================")
+                            | ok written |> unikraft/blk:flush(dev: written)
+                                | ok flushed |> unikraft/blk:read(dev: flushed, sector: 1, sectors: 1)
+                                    | data back |> std/io:print.ln("read  s1: {{ back.bytes:s }}")
+                                        |> unikraft/blk:stop(back.dev)
+                                            | ok stopped |> unikraft/blk:queue.close(dev: stopped)
+                                                | ok drained |> unikraft/blk:release(dev: drained)
+                                                    | ok |> std/io:print.ln("lifecycle complete")
+                                                    | failed e |> std/io:print.ln("release: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:abandon(e.dev)
+                                                | failed e |> std/io:print.ln("queue.close: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:abandon(e.dev)
+                                            | failed e |> std/io:print.ln("stop: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:abandon(e.dev)
+                                    | failed e |> std/io:print.ln("read s1: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:stop(e.dev)
+                                        | ok s |> unikraft/blk:queue.close(dev: s)
+                                            | ok dr |> unikraft/blk:release(dev: dr)
+                                                | ok |> _
+                                                | failed x |> unikraft/blk:abandon(x.dev)
+                                            | failed x |> unikraft/blk:abandon(x.dev)
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                    | rejected r |> std/io:print.ln("read s1 rejected: {{ r.reason:s }}") |> unikraft/blk:io.skipped(r.dev): u |> unikraft/blk:stop(dev: u)
+                                        | ok s |> unikraft/blk:queue.close(dev: s)
+                                            | ok dr |> unikraft/blk:release(dev: dr)
+                                                | ok |> _
+                                                | failed x |> unikraft/blk:abandon(x.dev)
+                                            | failed x |> unikraft/blk:abandon(x.dev)
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                | failed e |> std/io:print.ln("flush: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:stop(e.dev)
+                                    | ok s |> unikraft/blk:queue.close(dev: s)
+                                        | ok dr |> unikraft/blk:release(dev: dr)
+                                            | ok |> _
+                                            | failed x |> unikraft/blk:abandon(x.dev)
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                                | rejected r |> std/io:print.ln("flush rejected: {{ r.reason:s }}") |> unikraft/blk:io.skipped(r.dev): u |> unikraft/blk:stop(dev: u)
+                                    | ok s |> unikraft/blk:queue.close(dev: s)
+                                        | ok dr |> unikraft/blk:release(dev: dr)
+                                            | ok |> _
+                                            | failed x |> unikraft/blk:abandon(x.dev)
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                            | failed e |> std/io:print.ln("write: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:stop(e.dev)
+                                | ok s |> unikraft/blk:queue.close(dev: s)
+                                    | ok dr |> unikraft/blk:release(dev: dr)
+                                        | ok |> _
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                            | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}") |> unikraft/blk:io.skipped(r.dev): u |> unikraft/blk:stop(dev: u)
+                                | ok s |> unikraft/blk:queue.close(dev: s)
+                                    | ok dr |> unikraft/blk:release(dev: dr)
+                                        | ok |> _
+                                        | failed x |> unikraft/blk:abandon(x.dev)
+                                    | failed x |> unikraft/blk:abandon(x.dev)
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                    | failed e |> std/io:print.ln("read s0: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:stop(e.dev)
+                        | ok s |> unikraft/blk:queue.close(dev: s)
+                            | ok dr |> unikraft/blk:release(dev: dr)
+                                | ok |> _
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                            | failed x |> unikraft/blk:abandon(x.dev)
+                        | failed x |> unikraft/blk:abandon(x.dev)
+                    | rejected r |> std/io:print.ln("read s0 rejected: {{ r.reason:s }}") |> unikraft/blk:io.skipped(r.dev): u |> unikraft/blk:stop(dev: u)
+                        | ok s |> unikraft/blk:queue.close(dev: s)
+                            | ok dr |> unikraft/blk:release(dev: dr)
+                                | ok |> _
+                                | failed x |> unikraft/blk:abandon(x.dev)
+                            | failed x |> unikraft/blk:abandon(x.dev)
+                        | failed x |> unikraft/blk:abandon(x.dev)
+                | refused e |> std/io:print.ln("start: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:queue.close(e.dev)
+                    | ok dr |> unikraft/blk:release(dev: dr)
+                        | ok |> _
+                        | failed x |> unikraft/blk:abandon(x.dev)
+                    | failed x |> unikraft/blk:abandon(x.dev)
+            | refused e |> std/io:print.ln("queue.open: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:release(e.dev)
+                | ok |> _
+                | failed x |> unikraft/blk:abandon(x.dev)
+        | refused e |> std/io:print.ln("configure: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/blk:abandon(e.dev)
+| missing why |> std/io:print.ln("blk0 unavailable: {{ why:s }}")

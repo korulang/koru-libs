@@ -1,0 +1,631 @@
+// @korulang/unikraft-blk — Unikraft's block device layer (`ukblkdev`), lifted.
+//
+//   import unikraft/blk
+//
+// WHAT THIS IS. `lib/ukblkdev` is an 18-function C API around a four-state
+// device machine (INVALID -> UNCONFIGURED -> CONFIGURED -> RUNNING) with a
+// request queue hanging off it. The ordering between those states is written
+// down 105 times as `UK_ASSERT`, and `UK_ASSERT` expands to `do {} while(0)`
+// whenever `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` is off — which is every image
+// anyone ships. This module transcribes that ordering into phantom states, so
+// the compiler refuses the programs the assertions were written to catch, and
+// the emitted code carries no check at all.
+//
+// THE RATCHET. One handle, eight states, one direction:
+//
+//     get         mints  <attached!>                     uk_blkdev_get
+//     configure   needs  <!attached>  mints <configured!> uk_blkdev_configure
+//     queue.open  needs  <!configured> mints <armed!>     uk_blkdev_queue_configure
+//     start       needs  <!armed>     mints <running!>    uk_blkdev_start
+//     read/write  needs  <!running|!used> mints <used!>   uk_blkdev_queue_submit_one
+//     stop        needs  <!used>      mints <stopped!>    uk_blkdev_stop
+//     queue.close needs  <!stopped>   mints <drained!>    uk_blkdev_queue_unconfigure
+//     release     needs  <!drained>                       uk_blkdev_unconfigure
+//
+// THE ASYMMETRY (pillar 4, and the reason `used` is a state of its own).
+// `stop` accepts ONLY <!used>, and <used!> is minted ONLY by a transfer. So
+//
+//     start(d) | ok r |> stop(dev: r)
+//
+// does not compile — you cannot spin a disk up and tear it down without ever
+// touching it. This is the block-device twin of gzip's `fed` gate
+// (koru-libs/gzip/index.kz:258, where `finish` accepts only <!fed> and only
+// `push` mints it) and of the transaction showcase's `exec`-gates-`commit`
+// rule (koru tests/.../2104_14_open_tx_commit_close/db.kz, where `close` takes
+// <!active> and not <!connected>). RAII guarantees a resource is CLEANED UP;
+// it cannot force it to be USED. The obligation forces both.
+//
+// The escape hatch is deliberate, named and greppable: `blk:io.skipped`. A
+// health check that only wants to know the device starts writes it out loud,
+// and `grep -r "blk:io.skipped"` answers "did we bring up disks we never read".
+//
+// WHERE THE RATCHET IS NOT APPLIED. `count` and the geometry ride along with
+// `get`; neither takes or mints an obligation, because reading how many disks
+// there are constrains nothing about what you may do next. The staging buffer
+// is likewise NOT a second obligation: it is owned by the device handle and
+// its `bytes` slice is a borrow valid until the next transfer or teardown,
+// exactly as gzip's `finish` lends the caller its output buffer until
+// `release`. One live obligation per device, never two.
+//
+// FAILURE ARMS carry the handle back in the state that names the C cleanup
+// still owed, so the correct continuation is the only one that type-checks:
+//
+//     configure  refused -> <stuck!>    nothing ran; only `abandon` accepts it
+//     queue.open refused -> <drained!>  device CONFIGURED, no queue; `release`
+//     start      refused -> <stopped!>  device CONFIGURED with a queue; `queue.close`
+//     read/write failed  -> <used!>     the device errored; tear down or retry
+//     read/write rejected-> <running!>  never reached the device; fix the call
+//     stop/queue.close/release failed -> <stuck!>   only `abandon` accepts it
+//
+// Two of those reuse a state the happy path already has — a failed `start`
+// leaves the device in exactly the shape `stop` produces — which is what keeps
+// the state count at eight instead of fourteen.
+//
+// `rejected` hands back <running!> and NOT <used!> on purpose. A transfer the
+// lift refused before submitting never touched the device, so it must not
+// satisfy the asymmetry gate. The cost is real and deliberate: an oversize
+// read spends the `used` you had earned.
+//
+// ONE QUEUE. `CONFIG_LIBUKBLKDEV_MAXNBQUEUES` defaults to 1 and virtio-blk
+// reports `max_queues=1`, so this lift models exactly one request queue and
+// never asks the caller for a queue id. See README.md for what multi-queue
+// would need.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Only symbols listed in `lib/ukblkdev/exportsyms.uk` appear here. Nothing in
+// this module reaches a `static inline` header function, so the archive links
+// against a stock unikernel with no shim, no wrapper and no extra call frame.
+
+const UkBlkdev = opaque {};
+const UkAlloc = opaque {};
+
+// `uk_alloc_get_default()` is `static inline` and returns this exported global
+// (lib/ukalloc/include/uk/alloc.h:136, lib/ukalloc/exportsyms.uk:22). Reading
+// the variable is the same load the inline function performs.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+extern fn uk_blkdev_count() c_uint;
+extern fn uk_blkdev_get(id: c_uint) ?*UkBlkdev;
+extern fn uk_blkdev_get_info(dev: *UkBlkdev, dev_info: *BlkInfo) c_int;
+extern fn uk_blkdev_configure(dev: *UkBlkdev, conf: *const BlkConf) c_int;
+extern fn uk_blkdev_queue_get_info(dev: *UkBlkdev, queue_id: u16, q_info: *QueueInfo) c_int;
+extern fn uk_blkdev_queue_configure(dev: *UkBlkdev, queue_id: u16, nb_desc: u16, conf: *const QueueConf) c_int;
+extern fn uk_blkdev_start(dev: *UkBlkdev) c_int;
+extern fn uk_blkdev_queue_finish_reqs(dev: *UkBlkdev, queue_id: u16) c_int;
+extern fn uk_blkdev_queue_submit_one(dev: *UkBlkdev, queue_id: u16, req: *BlkReq) c_int;
+extern fn uk_blkdev_stop(dev: *UkBlkdev) c_int;
+extern fn uk_blkdev_queue_unconfigure(dev: *UkBlkdev, queue_id: u16) c_int;
+extern fn uk_blkdev_unconfigure(dev: *UkBlkdev) c_int;
+
+// nolibc, backed by ukalloc's default allocator.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+extern fn memalign(alignment: usize, size: usize) ?*anyopaque;
+
+// enum uk_blkreq_op — lib/ukblkdev/include/uk/blkreq.h:66
+const OP_READ: c_int = 0;
+const OP_WRITE: c_int = 1;
+const OP_FFLUSH: c_int = 4;
+
+// enum uk_blkreq_state — blkreq.h:58
+const REQ_FINISHED: c_int = 0;
+const REQ_UNFINISHED: c_int = 1;
+
+// UK_BLKDEV_STATUS_SUCCESS — blkdev_core.h:187
+const STATUS_SUCCESS: c_int = 0x1;
+
+// The only queue this lift configures. See the header note on MAXNBQUEUES.
+const QUEUE: u16 = 0;
+
+// --- POD parameter structs, mirrored from lib/ukblkdev/include/uk/blkdev_core.h
+
+const BlkConf = extern struct { nb_queues: u16 }; // :82
+const BlkInfo = extern struct { max_queues: u16 }; // :90
+const QueueInfo = extern struct { // :98
+    nb_max: u16,
+    nb_min: u16,
+    nb_align: u16,
+    nb_is_power_of_two: c_int,
+};
+const QueueConf = extern struct { // :136
+    a: ?*UkAlloc,
+    callback: ?*const fn (*UkBlkdev, u16, ?*anyopaque) callconv(.c) void,
+    callback_cookie: ?*anyopaque,
+};
+
+// --- The one ABI dependency this lift cannot avoid.
+//
+// `struct uk_blkdev.capabilities` (blkdev_core.h:295) holds the geometry —
+// sector count, sector size, access mode, per-request ceiling, DMA alignment —
+// and ukblkdev exports NO accessor for it. `uk_blkdev_get_info` returns only
+// `max_queues`. So the geometry is reachable only by knowing where the field
+// sits. The offsets below were measured against a built kernel (see
+// README.md, "The one place ukblkdev cannot be bound"), and the comptime block
+// turns any layout change into a compile error rather than silent corruption.
+
+const Cap = extern struct { // blkdev_core.h:230
+    sectors: usize,
+    ssize: usize,
+    mode: c_int,
+    max_sectors_per_req: usize,
+    ioalign: u16,
+};
+
+const BlkPub = extern struct { // the public prefix of struct uk_blkdev, :287
+    submit_one: ?*anyopaque,
+    finish_reqs: ?*anyopaque,
+    _data: ?*anyopaque,
+    capabilities: Cap,
+};
+
+comptime {
+    if (@offsetOf(Cap, "sectors") != 0) @compileError("uk_blkdev_cap.sectors moved");
+    if (@offsetOf(Cap, "ssize") != 8) @compileError("uk_blkdev_cap.ssize moved");
+    if (@offsetOf(Cap, "mode") != 16) @compileError("uk_blkdev_cap.mode moved");
+    if (@offsetOf(Cap, "max_sectors_per_req") != 24) @compileError("uk_blkdev_cap.max_sectors_per_req moved");
+    if (@offsetOf(Cap, "ioalign") != 32) @compileError("uk_blkdev_cap.ioalign moved");
+    if (@sizeOf(Cap) != 40) @compileError("uk_blkdev_cap changed size");
+    if (@offsetOf(BlkPub, "capabilities") != 24) @compileError("uk_blkdev.capabilities moved");
+}
+
+// --- struct uk_blkreq, mirrored from blkreq.h:88.
+//
+// This one the lift OWNS: it allocates the request on its own stack, fills
+// every field, and the driver reads them back. `uk_blkreq_init` is a static
+// inline that does exactly these seven stores. Offsets measured the same way
+// as `Cap`, asserted the same way.
+
+const BlkReq = extern struct {
+    operation: c_int,
+    start_sector: usize,
+    nb_sectors: usize,
+    aio_buf: ?*anyopaque,
+    cb: ?*const fn (*BlkReq, ?*anyopaque) callconv(.c) void,
+    cb_cookie: ?*anyopaque,
+    state: c_int, // __atomic { int counter; }
+    result: c_int,
+};
+
+comptime {
+    if (@offsetOf(BlkReq, "operation") != 0) @compileError("uk_blkreq.operation moved");
+    if (@offsetOf(BlkReq, "start_sector") != 8) @compileError("uk_blkreq.start_sector moved");
+    if (@offsetOf(BlkReq, "nb_sectors") != 16) @compileError("uk_blkreq.nb_sectors moved");
+    if (@offsetOf(BlkReq, "aio_buf") != 24) @compileError("uk_blkreq.aio_buf moved");
+    if (@offsetOf(BlkReq, "cb") != 32) @compileError("uk_blkreq.cb moved");
+    if (@offsetOf(BlkReq, "cb_cookie") != 40) @compileError("uk_blkreq.cb_cookie moved");
+    if (@offsetOf(BlkReq, "state") != 48) @compileError("uk_blkreq.state moved");
+    if (@offsetOf(BlkReq, "result") != 52) @compileError("uk_blkreq.result moved");
+    if (@sizeOf(BlkReq) != 56) @compileError("uk_blkreq changed size");
+}
+
+// O_RDONLY is 0 on every Unikraft target; the driver stores O_RDONLY / O_WRONLY
+// / O_RDWR straight into `cap.mode` (drivers/virtio/blk/virtio_blk.c:202).
+const O_RDONLY: c_int = 0;
+
+// ============================================================================
+// THE HANDLE
+// ============================================================================
+//
+// A caller never sees `struct uk_blkdev *`. This wrapper carries the device
+// pointer, the geometry read once at `get`, and the staging buffer the queue
+// owns. It is the thing the phantom states are attached to; `release` and
+// `abandon` are the only two tors that free it, and both consume an obligation.
+
+const Device = struct {
+    dev: *UkBlkdev,
+    buf: ?[*]u8,
+    buf_bytes: usize,
+    buf_sectors: usize,
+    ssize: usize,
+    sectors: usize,
+    max_per_req: usize,
+    ioalign: u16,
+};
+
+fn capsOf(dev: *UkBlkdev) *const Cap {
+    const pub_prefix: *const BlkPub = @ptrCast(@alignCast(dev));
+    return &pub_prefix.capabilities;
+}
+
+// One transfer, start to finish, over the two exported queue calls.
+//
+// WHY NOT `uk_blkdev_sync_io`. It is exported, it does exactly this, and it
+// DEADLOCKS on the second request of any program. `virtio_blkdev_recv_done`
+// (drivers/virtio/blk/virtio_blk.c:469) disables the queue interrupt on entry,
+// and `virtio_blkdev_complete_reqs` (:448) re-arms it only if the application
+// previously called `uk_blkdev_queue_intr_enable` — which is `static inline`
+// (blkdev.h:274) and absent from `exportsyms.uk`, so a separately-compiled
+// archive cannot call it at all. One interrupt fires, ever; `sync_io`'s
+// semaphore is never upped again and the caller sleeps forever. Measured in C,
+// not inferred: the same three transfers hang under `sync_io` and complete
+// under submit-and-reap. See README.md, "The upstream deadlock".
+//
+// So the queue is configured with NO event callback (a null callback is legal —
+// blkdev.c:231 — and makes `uk_blkdev_drv_queue_event` a no-op,
+// blkdev_driver.h:93), and completions are reaped here. Nothing runs in
+// interrupt context, so there is no reentrancy on the virtqueue.
+//
+// This waits without a bound, exactly as `uk_blkdev_sync_io`'s
+// `uk_semaphore_down` does. A timeout would be a policy the C does not have
+// and an arm that lies about what happened; a device that never completes a
+// request is a dead device either way.
+fn runTransfer(d: *Device, op: c_int, sector: usize, nb: usize) c_int {
+    var req = BlkReq{
+        .operation = op,
+        .start_sector = sector,
+        .nb_sectors = nb,
+        .aio_buf = @ptrCast(d.buf.?),
+        .cb = null,
+        .cb_cookie = null,
+        .state = REQ_UNFINISHED,
+        .result = 0,
+    };
+
+    const status = uk_blkdev_queue_submit_one(d.dev, QUEUE, &req);
+    // Unikraft's own `uk_blkdev_status_successful` is `(status & 0x1)`, which
+    // reads TRUE for any odd negative errno (-EIO is -5, and -5 & 1 == 1).
+    // Check the sign first.
+    if (status < 0) return status;
+    if ((status & STATUS_SUCCESS) == 0) return -5; // -EIO: submitted, not accepted
+
+    while (@atomicLoad(c_int, &req.state, .acquire) != REQ_FINISHED) {
+        const rc = uk_blkdev_queue_finish_reqs(d.dev, QUEUE);
+        if (rc < 0) return rc;
+    }
+    return req.result;
+}
+
+fn destroy(d: *Device) void {
+    if (d.buf) |b| free(@ptrCast(b));
+    free(@ptrCast(d));
+}
+
+// ============================================================================
+// ACQUIRE
+// ============================================================================
+
+// How many block devices the platform registered. No obligation: knowing the
+// count constrains nothing about what you may do next.
+~pub tor count { } -> u32
+
+~proc count|zig {
+    return @intCast(uk_blkdev_count());
+}
+
+// Take device `id`. The geometry rides along in the branch payload because a
+// caller who is about to size a transfer needs it before anything else can
+// happen, and because the C hands it out only through a `static inline`
+// accessor that is not linkable from a separately-compiled archive.
+//
+// WHEN THE GEOMETRY IS VALID. `uk_blkdev_capabilities` (blkdev.h:236) asserts
+// `state >= UK_BLKDEV_RUNNING`, which would put the sector size out of reach
+// until after `start` — too late to size anything. Both in-tree drivers
+// populate `capabilities` before they register the device: virtio-blk in
+// `virtio_blkdev_feature_negotiate` (virtio_blk.c:951, called from `add_dev`)
+// and xen blkfront in `blkfront_xb_get_capabilities` (blkfront_xs.c:174, via
+// `blkfront_xb_init`, also before `uk_blkdev_drv_register`). So the field is
+// final by the time any caller can hold the device. A driver that filled it
+// later would hand out zeroes, so a zero sector size is REFUSED here rather
+// than propagated.
+//
+// Mints <attached!>. The ONLY tor that accepts <!attached> is `configure`:
+// there is deliberately no `blk:drop`, so `get` immediately followed by a
+// release is not a program that exists.
+//
+// One failure arm with a reason, not three arms: no device, unpopulated
+// geometry and a failed allocation all leave the caller with nothing to do,
+// and the brief's rule is that the state answers "what may I do now" while the
+// payload answers "what happened".
+~pub tor get { id: u32 }
+| device {
+    dev: *Device<attached!>,
+    sectors: u64,
+    sector_size: u32,
+    max_transfer: u64,
+    writable: bool
+}
+| missing string
+
+~proc get|zig {
+    const raw = uk_blkdev_get(@intCast(id)) orelse {
+        return .{ .missing = "no block device registered under that id" };
+    };
+    const cap = capsOf(raw);
+    if (cap.ssize == 0 or cap.sectors == 0) {
+        return .{ .missing = "the driver has not populated the device geometry" };
+    }
+
+    const mem = malloc(@sizeOf(Device)) orelse {
+        return .{ .missing = "out of memory allocating the device handle" };
+    };
+    const d: *Device = @ptrCast(@alignCast(mem));
+    d.* = Device{
+        .dev = raw,
+        .buf = null,
+        .buf_bytes = 0,
+        .buf_sectors = 0,
+        .ssize = cap.ssize,
+        .sectors = cap.sectors,
+        .max_per_req = cap.max_sectors_per_req,
+        .ioalign = cap.ioalign,
+    };
+    return .{ .device = .{
+        .dev = d,
+        .sectors = @intCast(cap.sectors),
+        .sector_size = @intCast(cap.ssize),
+        .max_transfer = @intCast(cap.max_sectors_per_req),
+        .writable = cap.mode != O_RDONLY,
+    } };
+}
+
+// ============================================================================
+// BRING UP
+// ============================================================================
+
+// uk_blkdev_configure with nb_queues = 1. Lifts blkdev.c:368 (`start` asserts
+// CONFIGURED) and blkdev.c:324 (`queue_configure`'s -EINVAL state branch):
+// neither `start` nor `queue.open` accepts <!attached>, so neither can run
+// before this one.
+~pub tor configure { dev: *Device<!attached> }
+| ok *Device<configured!>
+| refused { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc configure|zig {
+    const conf = BlkConf{ .nb_queues = 1 };
+    const rc = uk_blkdev_configure(dev.dev, &conf);
+    if (rc != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_blkdev_configure rejected the device" } };
+    }
+    return .{ .ok = dev };
+}
+
+// uk_blkdev_queue_configure, plus the staging buffer the transfers will use.
+//
+// `transfer` is the largest transfer, in sectors, this device will ever do. It
+// sizes one DMA-aligned buffer owned by the handle for the queue's whole
+// lifetime, which is why there is no second obligation for I/O memory.
+//
+// The descriptor count is not the caller's problem: the lift asks
+// `uk_blkdev_queue_get_info` and uses the device's own maximum, which is the
+// call a careful C author makes and forgets.
+//
+// A failure hands back <drained!> — the device is CONFIGURED with no queue,
+// which is exactly the state `queue.close` produces, so `release` is the only
+// continuation that type-checks.
+~pub tor queue.open { dev: *Device<!configured>, transfer: u32 }
+| ok *Device<armed!>
+| refused { dev: *Device<drained!>, errno: i32, reason: string }
+
+~proc queue.open|zig {
+    if (transfer == 0) {
+        return .{ .refused = .{ .dev = dev, .errno = -22, .reason = "queue.open needs transfer >= 1 sector" } };
+    }
+    if (@as(usize, transfer) > dev.max_per_req) {
+        return .{ .refused = .{ .dev = dev, .errno = -22, .reason = "transfer exceeds the device's max_sectors_per_req" } };
+    }
+
+    var q_info = QueueInfo{ .nb_max = 0, .nb_min = 0, .nb_align = 0, .nb_is_power_of_two = 0 };
+    const qrc = uk_blkdev_queue_get_info(dev.dev, QUEUE, &q_info);
+    if (qrc != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(qrc), .reason = "uk_blkdev_queue_get_info failed" } };
+    }
+
+    // Over-aligning always satisfies a weaker requirement; a device that
+    // reports an alignment below a machine word gets a machine word.
+    const want: usize = if (dev.ioalign < @alignOf(usize)) @alignOf(usize) else dev.ioalign;
+    const bytes = @as(usize, transfer) * dev.ssize;
+    const raw = memalign(want, bytes) orelse {
+        return .{ .refused = .{ .dev = dev, .errno = -12, .reason = "out of memory allocating the staging buffer" } };
+    };
+
+    // No event callback: completions are reaped by `runTransfer`, never in
+    // interrupt context. A null callback with a null cookie is what
+    // blkdev.c:231 asserts for, and it makes `uk_blkdev_drv_queue_event` a
+    // no-op (blkdev_driver.h:93).
+    const conf = QueueConf{
+        .a = _uk_alloc_head,
+        .callback = null,
+        .callback_cookie = null,
+    };
+    const rc = uk_blkdev_queue_configure(dev.dev, QUEUE, q_info.nb_max, &conf);
+    if (rc != 0) {
+        free(raw);
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_blkdev_queue_configure rejected the queue" } };
+    }
+
+    dev.buf = @ptrCast(raw);
+    dev.buf_bytes = bytes;
+    dev.buf_sectors = transfer;
+    return .{ .ok = dev };
+}
+
+// uk_blkdev_start. Lifts blkdev.c:368 outright — <!armed> is reachable only
+// through `queue.open`, and `start` consumes it, so starting an unconfigured
+// device and starting a running one are both unspellable.
+//
+// A failure hands back <stopped!>: the device is CONFIGURED with a live queue,
+// which is precisely what `stop` produces, so `queue.close` is next.
+~pub tor start { dev: *Device<!armed> }
+| ok *Device<running!>
+| refused { dev: *Device<stopped!>, errno: i32, reason: string }
+
+~proc start|zig {
+    const rc = uk_blkdev_start(dev.dev);
+    if (rc != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_blkdev_start failed" } };
+    }
+    return .{ .ok = dev };
+}
+
+// ============================================================================
+// TRANSFER
+// ============================================================================
+
+// Read `sectors` sectors starting at `sector`. `bytes` is a BORROW of the
+// handle's staging buffer: valid until the next transfer or until teardown,
+// never freed by the caller, never a second obligation.
+//
+// Lifts blkdev.c:391 and :392 (`queue_submit_one` asserts RUNNING and a live
+// queue) and blkdev.c:405/:406 on the reap side. <!running|!used> is
+// unreachable before `start` and unreachable after `stop`, so a transfer
+// outside the running window does not compile.
+~pub tor read { dev: *Device<!running|!used>, sector: u64, sectors: u32 }
+| data { dev: *Device<used!>, bytes: string }
+| failed { dev: *Device<used!>, errno: i32, reason: string }
+| rejected { dev: *Device<running!>, reason: string }
+
+~proc read|zig {
+    const buf = dev.buf orelse {
+        return .{ .rejected = .{ .dev = dev, .reason = "no staging buffer: queue.open did not run" } };
+    };
+    if (sectors == 0) {
+        return .{ .rejected = .{ .dev = dev, .reason = "read of zero sectors" } };
+    }
+    if (@as(usize, sectors) > dev.buf_sectors) {
+        return .{ .rejected = .{ .dev = dev, .reason = "read exceeds the transfer size declared at queue.open" } };
+    }
+    if (@as(usize, sector) + @as(usize, sectors) > dev.sectors) {
+        return .{ .rejected = .{ .dev = dev, .reason = "read runs past the end of the device" } };
+    }
+
+    const rc = runTransfer(dev, OP_READ, @intCast(sector), @intCast(sectors));
+    if (rc != 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(rc), .reason = "block read failed" } };
+    }
+    return .{ .data = .{ .dev = dev, .bytes = buf[0 .. @as(usize, sectors) * dev.ssize] } };
+}
+
+// Write `bytes` starting at `sector`. A block device writes whole sectors and
+// there is no way to write part of one, so a short tail is zero-filled — stated
+// here because it is the medium's semantics, not a convenience.
+~pub tor write { dev: *Device<!running|!used>, sector: u64, bytes: string }
+| ok *Device<used!>
+| failed { dev: *Device<used!>, errno: i32, reason: string }
+| rejected { dev: *Device<running!>, reason: string }
+
+~proc write|zig {
+    const buf = dev.buf orelse {
+        return .{ .rejected = .{ .dev = dev, .reason = "no staging buffer: queue.open did not run" } };
+    };
+    if (bytes.len == 0) {
+        return .{ .rejected = .{ .dev = dev, .reason = "write of zero bytes" } };
+    }
+    if (bytes.len > dev.buf_bytes) {
+        return .{ .rejected = .{ .dev = dev, .reason = "write exceeds the transfer size declared at queue.open" } };
+    }
+
+    const nb = (bytes.len + dev.ssize - 1) / dev.ssize;
+    if (@as(usize, sector) + nb > dev.sectors) {
+        return .{ .rejected = .{ .dev = dev, .reason = "write runs past the end of the device" } };
+    }
+
+    const span = nb * dev.ssize;
+    for (0..bytes.len) |i| buf[i] = bytes[i];
+    for (bytes.len..span) |i| buf[i] = 0;
+
+    const rc = runTransfer(dev, OP_WRITE, @intCast(sector), nb);
+    if (rc != 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(rc), .reason = "block write failed" } };
+    }
+    return .{ .ok = dev };
+}
+
+// Flush the device's volatile write cache.
+~pub tor flush { dev: *Device<!running|!used> }
+| ok *Device<used!>
+| failed { dev: *Device<used!>, errno: i32, reason: string }
+| rejected { dev: *Device<running!>, reason: string }
+
+~proc flush|zig {
+    if (dev.buf == null) {
+        return .{ .rejected = .{ .dev = dev, .reason = "no staging buffer: queue.open did not run" } };
+    }
+    const rc = runTransfer(dev, OP_FFLUSH, 0, 0);
+    if (rc != 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(rc), .reason = "cache flush failed" } };
+    }
+    return .{ .ok = dev };
+}
+
+// THE NAMED ESCAPE from the asymmetry gate. `stop` accepts only <!used>, and
+// only a transfer mints it, so a device brought up and never touched cannot be
+// torn down. That is the point — but a health check that only wants to know
+// the device starts is legitimate, and this is how it says so out loud.
+//
+// Deliberately greppable: `grep -r "blk:io.skipped"` answers "which programs
+// bring up a disk and read nothing". It runs no C call, which is the honest
+// emission — nothing happened.
+~pub tor io.skipped { dev: *Device<!running> } -> *Device<used!>
+
+~proc io.skipped|zig {
+    return dev;
+}
+
+// ============================================================================
+// TEAR DOWN
+// ============================================================================
+
+// uk_blkdev_stop. Lifts blkdev.c:476 (`stop` asserts RUNNING): a second `stop`
+// has nothing to consume, and a `stop` before `start` cannot be spelled.
+//
+// A driver that refuses to stop leaves nothing safe to do with the device, so
+// the failure arm lands in <stuck!> and `abandon` is the only continuation.
+~pub tor stop { dev: *Device<!used> }
+| ok *Device<stopped!>
+| failed { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc stop|zig {
+    const rc = uk_blkdev_stop(dev.dev);
+    if (rc != 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_blkdev_stop failed" } };
+    }
+    return .{ .ok = dev };
+}
+
+// uk_blkdev_queue_unconfigure, and the staging buffer goes back. Lifts
+// blkdev.c:502 (asserts CONFIGURED, i.e. stopped first) and :503 (asserts the
+// queue is live, i.e. no double unconfigure).
+~pub tor queue.close { dev: *Device<!stopped> }
+| ok *Device<drained!>
+| failed { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc queue.close|zig {
+    const rc = uk_blkdev_queue_unconfigure(dev.dev, QUEUE);
+    if (rc != 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_blkdev_queue_unconfigure failed" } };
+    }
+    if (dev.buf) |b| free(@ptrCast(b));
+    dev.buf = null;
+    dev.buf_bytes = 0;
+    dev.buf_sectors = 0;
+    return .{ .ok = dev };
+}
+
+// uk_blkdev_unconfigure, and the handle is gone. Lifts blkdev.c:550 (asserts
+// CONFIGURED, i.e. stopped) and :551-552 (asserts every queue slot is already
+// NULL, i.e. `queue.close` ran first) — the second of those is a loop over
+// every queue in the C, and here it is the shape of the chain.
+~pub tor release { dev: *Device<!drained> }
+| ok
+| failed { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc release|zig {
+    const rc = uk_blkdev_unconfigure(dev.dev);
+    if (rc != 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_blkdev_unconfigure failed" } };
+    }
+    destroy(dev);
+    return .{ .ok = .{} };
+}
+
+// The one way out of <stuck!>: the C device is left exactly where the driver
+// left it, and only the Koru-side handle is released. Named rather than
+// implicit so that "we gave up on a device" is a grep, not an inference.
+~pub tor abandon { dev: *Device<!stuck> }
+
+~proc abandon|zig {
+    destroy(dev);
+}

@@ -1,0 +1,21 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: was not discharged
+
+// NEGATIVE (must FAIL to compile): take a device and walk away.
+//
+// `get` mints <attached!>, an obligation. Nothing here discharges it, so the
+// virtio queue stays configured, the staging buffer never comes back, and the
+// Koru handle leaks. The compiler names the obligation and refuses.
+//
+// There is deliberately no `blk:drop` that would let this compile: the only
+// tor accepting <!attached> is `configure`, and the only tor that frees a
+// handle without doing anything to the C device is `abandon`, which accepts
+// <!stuck> — a state only a FAILURE arm mints. That is pillar 4's asymmetry at
+// the acquisition end: you cannot get a device just to give it back.
+
+~import unikraft/blk
+~import std/io
+
+~unikraft/blk:get(id: 0)
+| device disk |> std/io:print.ln("blk0 has {{ disk.sectors:d }} sectors")
+| missing why |> std/io:print.ln("blk0 unavailable: {{ why:s }}")
