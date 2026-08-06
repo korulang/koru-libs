@@ -116,9 +116,57 @@ trade is the whole craft.
 
 ### Duplicate prevention & variance
 
-Before choosing, read the catalog: every directory under `unikraft/` with an
-`index.kz` is a shipped or in-flight lift. Read their READMEs and their tests.
-Bring something not already there.
+**Step one, before you read anything else in this section: list `unikraft/` and
+read the SHIPPED CATALOG below.** Every entry there is a slot that is closed.
+Read those modules' READMEs and their tests — they are the house style, and they
+are also the list of things you may not bring again.
+
+#### Shipped catalog
+
+One line per landed lift. **Append yours when you ship** — that is how the next
+contestant knows the slot is gone.
+
+- **[blk](unikraft/blk/README.md)** — `ukblkdev` behind an 8-state ratchet, 11
+  tors. Lifecycle *and* transfers proven: a booted image reads a host-planted
+  sector and writes one back, verified with `dd` on the host disk afterwards.
+  The reference for how far a ratchet is worth taking.
+
+#### The rule that keeps the catalog from turning into an argument
+
+**One module per sublibrary.** A replay CLAIMS a sublibrary; the catalog holds one
+`unikraft/<name>/` per C library, not rival readings of the same one. So:
+
+- **If the slot is taken, take a different sublibrary.** Not a different opinion
+  about a taken one.
+- **If you believe a shipped lift is WRONG**, that is a real and welcome finding —
+  but the contribution is a *revision to that module*, argued in its own README
+  and its own tests, never a second module for the same library. Say so plainly
+  in your writeup and change the existing one.
+- **A second module is legitimate only when it lifts a genuinely different C
+  API.** `uk_palloc`/`uk_pfree` is a different API from `uk_malloc`/`uk_free` — a
+  different unit and a different allocator entry point — so `unikraft/pages`
+  beside `unikraft/alloc` is right, while a second `unikraft/alloc` is not.
+  `unikraft/blk` sits beside `unikraft/index.kz` today; nesting is the convention.
+
+Worked example of the trap, because "bring something different" is easy to read
+too narrowly: `ukblkdev` is shipped. Do **not** lift `ukblkdev` again with a
+different state count, and do not reach for a target *because* it also has a
+queue and a device lifecycle — that is the same contribution wearing another
+library's name. Take something with a different SHAPE: threads and ordering
+(`uksched`), address mappings (`ukvmem`), acquire/release on every path
+(`uklock`).
+
+**Variance across contestants is the single most important measure of success**,
+and variance means a different organ of the OS, not a different opinion about one.
+
+Why this is spelled out at this length: on 2026-08-06 three contestants were
+handed the SAME sublibrary deliberately, to test whether the restraint rule below
+reads as clearly as the asymmetry rule. It does — all three refused to ratchet a
+symmetric pair. But it produced three rival interfaces for one slot, and choosing
+between them turned out to be mostly a false question: two of the three
+differences had a right answer, and the third dissolved once it was noticed that
+a strict design plus a named escape hatch already contains the permissive one.
+Rival whole-APIs export our indecision to users. The catalog grows by breadth.
 
 **Check linkability BEFORE you fall in love with a target**, and check it the way
 the LINKER does, not the way a header reads. A Koru lift compiles to a
@@ -146,7 +194,7 @@ measurement and the column would lie if it did not say so:
 |---|---|---:|---:|---|---|
 | `uksched` | allowlist | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
 | `uknetdev` | allowlist | 33 | 12 | `unikraft/net` | state machine — **but see below** |
-| `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` | symmetric pair; a good test of *not* over-modelling |
+| `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` | **IN FLIGHT 2026-08-06** — three replays landed rival readings; a merge is being chosen. Do not take it. Its lesson is recorded under Duplicate prevention. |
 | `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | mappings |
 | `ukblkdev` | allowlist | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
 | `uklock` | allowlist | 15 | 19 | `unikraft/lock` | acquire/release on every path |
@@ -250,19 +298,55 @@ work — that control costs under a minute and it is the step that gets skipped.
 
 1. Read the standards, then `BUILD.md`.
 2. Read `gzip/index.kz:258` and `2104_14/db.kz` — the asymmetry, twice.
-3. List `unikraft/*/` and read what is there. Dedup.
-4. Pick a target from the shelf. Grep it for `UK_ASSERT` and state branches
-   before you design anything — that grep IS the state machine.
+3. **List `unikraft/*/` and read the Shipped catalog section.** Those slots are
+   closed. If you think one of them is wrong, revise THAT module — do not open a
+   second one for the same C library.
+4. Claim an unclaimed sublibrary from the shelf. Grep it for `UK_ASSERT` and real
+   state branches before you design anything — that grep IS the state machine.
 5. Build. Ground every Koru construct in a passing test.
 6. Boot it. Run the gates. Write the writeup. Stop — do not start a second.
 
 ---
 
 **Catalog upkeep**: a shipped lift is a directory under `unikraft/<name>/`
-with `index.kz`, `tests/`, and `README.md`. The catalog is the repo.
+with `index.kz`, `tests/`, and `README.md`. The catalog is the repo — AND you add
+your one-line entry to the **Shipped catalog** section above, pointing at your
+README. A landed module that is not in that list is a slot the next contestant
+cannot see is closed, which is how one library ends up lifted twice.
 
 ## Tending log
 
+- 2026-08-06 — took the SYNTH_CHALLENGE's dedup shape (Lars's call). Three things
+  changed. (1) An in-file **Shipped catalog** section, one line per landed lift,
+  which every replay appends to — previously the catalog was only discoverable by
+  listing directories, so "is this slot taken" cost a filesystem read the brief
+  never told anyone to do. (2) **One module per sublibrary**, stated outright,
+  with the escape named: a shipped lift you think is wrong gets REVISED, and a
+  second module is legitimate only for a genuinely different C API
+  (`uk_palloc` vs `uk_malloc`). (3) A worked negative example, because "bring
+  something different" reads too narrowly — the trap is taking a target *because*
+  it also has a queue and a device lifecycle, which is the same contribution
+  wearing another name.
+
+  Earned the expensive way. The `ukalloc` wave was dispatched with ONE target
+  handed to three contestants, deliberately, to test whether the restraint rule
+  reads as clearly as the asymmetry rule. That experiment succeeded — 3/3 refused
+  to ratchet a symmetric pair, and each named its refusals — but it also produced
+  three rival interfaces for one slot, which the brief had no rule for because the
+  generator was never meant to be dispatched that way. **The collision was the
+  dispatch's fault, not the brief's**; the dedup step would have sent three
+  contestants to three sublibraries. What the brief genuinely lacked was any
+  statement of what to do when a target admits rival readings, and that gap is now
+  closed rather than left for the next wave to re-fight.
+
+  Arbiter-side, and deliberately NOT in the sealed brief because it is process:
+  when running a wave, either let each contestant pick from the shelf (the synth
+  shape, and the default) or assign DISTINCT sublibraries. Handing one target to
+  several contestants is a legitimate instrument for testing whether a RULE in the
+  brief reads clearly — it is the only way to get a sample — but it buys a
+  methodology answer at the price of catalog growth, and the resulting entries
+  compete rather than accumulate. Spend it knowingly, and say up front that at
+  most one of the outputs can land. — walk
 - 2026-08-06 — first replay landed `unikraft/blk` and corrected the shelf: the
   column was header DECLARATIONS, not linkable symbols. `ukfile` showed as the
   second-richest target; correcting THAT introduced a second error (a missing
