@@ -1,7 +1,0 @@
-{
-  "name": "pq-tests",
-  "version": "0.1.0",
-  "paths": {
-    "koru": "../.."
-  }
-}
