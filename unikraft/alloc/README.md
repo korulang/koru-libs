@@ -293,13 +293,11 @@ Full recipe, run clean in an empty directory. Traps and their evidence:
 `/Users/larsde/src/koru/examples/unikraft/BUILD.md`.
 
 ```sh
-mkdir /tmp/ukalloc && cp tests/{boot_alloc.kz,wrapper.zig,main.c} /tmp/ukalloc
-cd /tmp/ukalloc
-
-# while developing in a worktree — see "toolchain defect 3" below
-cat > koru.json <<'EOF'
-{ "paths": { "unikraft": "/abs/path/to/worktree/unikraft" } }
-EOF
+# copy the WHOLE unikraft/ tree, not three files into a flat dir: the entry
+# file declares `unikraft: {{ ENTRY }}/../..` in its own source, so it has to
+# keep its depth.
+mkdir /tmp/ukalloc && cp -R unikraft /tmp/ukalloc/
+cd /tmp/ukalloc/unikraft/alloc/tests
 
 koruc boot_alloc.kz unikraft gen        # -> Makefile.uk + Kraftfile
 koruc boot_alloc.kz                     # -> output_emitted.zig
@@ -581,10 +579,13 @@ main checkout.** `src/config.zig:242-247` seeds it to
 which git worktree you are standing in. A lift developed in a worktree is
 invisible to `~import unikraft/<name>` until it merges, and the failure is
 `KORU002: module not found` for the new directory while the already-merged
-siblings resolve fine. Override with `koru.json`:
+siblings resolve fine. Every entry file in this tree therefore declares the
+namespace in its own source, which resolves to the tree the file is in:
 
-```json
-{ "paths": { "unikraft": "/abs/path/to/worktree/unikraft" } }
+```
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
 ```
 
 ## Files

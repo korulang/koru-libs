@@ -174,12 +174,11 @@ bracketed reading over both would still balance. Two images, two brackets, two
 independent proofs. The cost is one extra ~23-second build.
 
 ```sh
-mkdir /tmp/ukpages && cp tests/{boot_pages.kz,wrapper.zig,main.c} /tmp/ukpages
-cd /tmp/ukpages
-
-cat > koru.json <<'EOF'
-{ "paths": { "unikraft": "/abs/path/to/worktree/unikraft" } }
-EOF
+# copy the WHOLE unikraft/ tree, not three files into a flat dir: the entry
+# file declares `unikraft: {{ ENTRY }}/../..` in its own source, so it has to
+# keep its depth.
+mkdir /tmp/ukpages && cp -R unikraft /tmp/ukpages/
+cd /tmp/ukpages/unikraft/pages/tests
 
 koruc boot_pages.kz unikraft gen
 koruc boot_pages.kz                     # host link fails on Unikraft symbols;
