@@ -641,50 +641,40 @@ obligation, and the `ERR_get_error()` queue becomes honest effect branches.
 
 **C library:** `libcurl` - Industry standard HTTP client, supports all protocols
 
-**API design:**
+> **Superseded — curl shipped.** This section is the original proposal, kept for
+> the record. The API below is the surface that actually exists in
+> `curl/index.kz`, not the sketch that was proposed; read `curl/README.md` for
+> the full edition.
+
+**API design (as shipped):**
 ```koru
-~import "$koru/curl"
+import koru/curl
 
-// Simple GET request
-~koru.curl:get(url: "https://api.example.com", allocator: alloc)
-| response r |> // r is Response<!not_closed> - MUST close!
-| error e |> ...
+// Simple GET — the response carries an obligation
+koru/curl:get(url: "https://api.example.com", allocator: alloc)
+| ok r |> koru/curl:close(resp: r)
+| err e |> _
 
-// POST with headers
-~koru.curl:post(url: "https://api.example.com", body: data, headers: headers, allocator: alloc)
-| response r |> // r: Response<!not_closed>
-| error e |> ...
-
-// You MUST fulfill the obligation
-~koru.curl:close(resp: response)
-| closed {}
-
-// Full example
-~koru.curl:get(url: "https://api.example.com/users/123", allocator: alloc)
-| resp r |>
-    ~koru.curl:read.body(resp: r, allocator: alloc)
-    | body b |>
-        std.io:print("Got response: {s}", args: [b])
-        ~koru.curl:close(resp: r)
-        | closed c |>
-            std.io:print("Connection closed\n")
-| error e |>
-    std.io:print.ln("Request failed: {s}", args: [e.msg])
+// POST
+koru/curl:post(url: "https://api.example.com", body: data, allocator: alloc)
+| ok r |> koru/curl:close(resp: r)
+| err e |> _
 ```
 
-**Phantom type state machine:**
-1. `Request[not_sent]` - Initial state
-2. `Response<!not_closed>` - After send, obligation to close
-3. `closed` - Final state, obligation fulfilled
+**Phantom obligations (as shipped):**
 
-**The compiler enforces cleanup!**
-```koru
-// This won't compile - forgot to close:
-~koru.curl:get(url: "https://...", allocator: alloc)
-| resp r |>
-    std.io:print("Got {s}", args: [r.body])  // ERROR: r is !not_closed
-    // Missing: ~koru.curl:close(resp: r)  // Won't compile
-```
+| Type | Meaning |
+|---|---|
+| `*Response<open!>` | response is live; one `close` is owed |
+| `*Multi<empty!>` / `*Multi<open!>` | multi-handle, before and after the first `add` |
+| `*Pending<open!>` | a started multi transfer, awaiting `poll` |
+
+`multi.add` takes `*Multi<!empty\|!open>` — the disjunction that lets the first
+`add` and every subsequent one share a signature while still forbidding an `add`
+to a handle that was never created.
+
+**The compiler enforces cleanup.** Drop the response without closing it and the
+build fails — see `curl/tests/` for the negative test that proves it bites.
 
 **Implementation tasks:**
 1. Wrap libcurl easy handle (FFI bindings)

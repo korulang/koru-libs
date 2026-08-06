@@ -1,83 +1,121 @@
 # @korulang/sqlite3
 
-SQLite3 bindings for [Koru](https://korulang.org) with phantom type obligations.
+SQLite3 lifted into Koru with phantom obligations — the compiler will not let you
+forget to close a connection, or read a column from a statement that isn't on a row.
+
+This package is the LIFT challenge's exemplar. Everything below is transcribed from
+`index.kz` and the passing tests in `tests/`; nothing here is written from memory.
 
 ## Installation
 
 ```bash
-koruc app.kz i
+koruc app.k i
 ```
 
-In your `app.kz`:
+In your program:
+
 ```koru
-~std.package:requires.npm { "@korulang/sqlite3": "^0.0.1" }
+std/package:requires.npm { "@korulang/sqlite3": "^0.0.1" }
 ```
 
 ## Requirements
 
-- SQLite3 development libraries installed on your system
-  - macOS: `brew install sqlite3` (usually pre-installed)
-  - Ubuntu/Debian: `apt install libsqlite3-dev`
-  - Fedora: `dnf install sqlite-devel`
+SQLite3 development libraries on your system:
+
+- macOS: `brew install sqlite3` (usually pre-installed)
+- Ubuntu/Debian: `apt install libsqlite3-dev`
+- Fedora: `dnf install sqlite-devel`
 
 ## Usage
 
-```koru
-~import "$koru/sqlite"
+Open, execute, close — the shape from `tests/chained_exec.kz`, which passes:
 
-// Open a database (in-memory or file)
-~koru.sqlite:open(path: ":memory:")
-| db d |>
-    // Execute SQL
-    koru.sqlite:exec(d.conn, "CREATE TABLE users (id INTEGER, name TEXT)")
-    | ok c |>
-        koru.sqlite:exec(c.conn, "INSERT INTO users VALUES (1, 'Alice')")
-        | ok c2 |>
-            // Query with prepared statements
-            koru.sqlite:query(c2.conn, "SELECT * FROM users")
-            | row r |>
-                koru.sqlite:col.int(r.stmt, 0)
-                | value v |>
-                    koru.sqlite:col.text(v.stmt, 1)
-                    | value t |>
-                        // Use t.text here (borrowed from statement)
-                        koru.sqlite:next(r.conn, t.stmt)
-                        | done conn |>
-                            koru.sqlite:close(conn.conn)
-                            | closed |> _
-            | empty c3 |>
-                koru.sqlite:close(c3.conn)
-                | closed |> _
-| err e |> _
+```koru
+import koru/sqlite3
+import std/io
+
+koru/sqlite3:open(path: ":memory:")
+| db d |> koru/sqlite3:exec(conn: d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
+    | ok |> koru/sqlite3:exec(conn: d, sql: "INSERT INTO users VALUES (1, 'Alice')")
+        | ok |> koru/sqlite3:close(conn: d) |> std/io:print.ln("Done!")
+        | err e |> koru/sqlite3:close(conn: d) |> std/io:print.ln("Insert error: {{ e.msg:s }}")
+    | err e |> koru/sqlite3:close(conn: d) |> std/io:print.ln("Create error: {{ e.msg:s }}")
+| err _ |> std/io:print.ln("Open error")
 ```
+
+Every arm closes the connection. That is not politeness — omit one and the program
+does not build.
+
+Inside the repo the tests import `libs/sqlite3` (a repo-local alias). A consumer
+uses `koru/sqlite3`, which resolves to the installed `koru-libs`.
 
 ## API
 
-### Connection Management
+Read the phantom states carefully; the polarity is the whole design.
 
-- `open { path: []const u8 }` - Open database, returns `| db { conn<opened!> }` or `| err`
-- `close { conn<!opened> }` - Close connection, returns `| closed`
+### Connection
 
-### Query Execution
+| Tor | Signature | Arms |
+|---|---|---|
+| `open` | `{ path: string }` | `\| db *Connection<opened!>` · `\| err { code, msg }` |
+| `close` | `{ conn: *Connection<!opened> }` | — |
+| `exec` | `{ conn: *Connection<opened>, sql: string }` | `\| ok` · `\| err { code, msg }` |
 
-- `exec { conn<opened!>, sql }` - Execute SQL without results, returns `| ok { conn }` or `| err`
-- `query { conn<opened!>, sql }` - Prepare and step, returns `| row { conn, stmt<prepared!> }`, `| empty`, or `| err`
-- `next { conn<opened!>, stmt<prepared!> }` - Get next row, returns `| row`, `| done`, or `| err`
+`open` **mints** `opened!`. `close` **discharges** it (`<!opened>`). `exec` takes a
+**bare** `<opened>` — it borrows the connection and does not consume the obligation,
+so you still owe exactly one `close` afterwards.
 
-### Column Access
+### Rows
 
-- `col.int { stmt<prepared!>, index }` - Get integer column
-- `col.text { stmt<prepared!>, index }` - Get text column (borrowed pointer, valid until next step)
-- `col.real { stmt<prepared!>, index }` - Get float column
+| Tor | Signature | Arms |
+|---|---|---|
+| `query.literal` | `{ conn: *Connection<!opened>, sql: string }` | `! row` · `\| done *Connection<opened!>` · `\| err { conn, code, msg }` |
+| `next` | `{ conn: *Connection<!opened>, stmt: *Statement<!prepared> }` | `\| row { conn, stmt }` · `\| done` · `\| err` |
+| `release.row` | `{ stmt: *Statement<!row> }` | — |
 
-## Phantom Types
+Note that every arm — including `err` — hands the connection back as
+`*Connection<opened!>`. A failed query does not invalidate the connection; you still
+owe the close.
 
-This library uses Koru's phantom type system for compile-time safety:
+### Columns
 
-- `Connection<opened!>` - Connection is open, must be closed
-- `Statement<prepared!>` - Statement is prepared, will be auto-finalized
+| Tor | Signature | Returns |
+|---|---|---|
+| `col.int` | `{ stmt: *Statement<row>, index: i32 }` | `i64` |
+| `col.text` | `{ stmt: *Statement<row>, index: i32 }` | `string` |
+| `col.real` | `{ stmt: *Statement<row>, index: i32 }` | `f64` |
 
-The compiler ensures you can't use a closed connection or forget to close an open one.
+The column readers take `*Statement<row>` — a **borrow of the row state**, not
+`<prepared!>`. You cannot read a column off a statement that is not currently
+positioned on a row, and reading does not consume the row.
+
+### Finalizers
+
+| Tor | Signature |
+|---|---|
+| `finalize.stmt` | `{ stmt: *Statement<!prepared> }` |
+| `finalize.text` | `{ text: string<!text> }` |
+
+`finalize.text` is worth a second look: the obligation is on a **string**. Text
+columns are borrowed from the statement and are only valid until the next step, so
+the borrow is tracked in the type rather than left to the reader's memory.
+
+## Status
+
+`tests/basic.kz` and `tests/chained_exec.kz` pass and run end-to-end.
+
+`tests/query_parameterized.kz` is **red**, and its header says why: the inlined
+`! row` effect-branch body references the bare `Statement` type, which is out of
+scope at the inline site. Row iteration via `! row` is therefore documented here
+but not yet demonstrated running — do not copy it as a working shape until that
+codegen gap closes.
+
+## Phantom obligations
+
+- `*Connection<opened!>` — open, and one `close` is owed
+- `*Statement<prepared!>` — prepared, finalization owed
+- `*Statement<row>` — positioned on a row; borrowed by the column readers
+- `string<!text>` — borrowed text, valid only until the next step
 
 ## License
 

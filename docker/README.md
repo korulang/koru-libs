@@ -5,8 +5,8 @@ Docker DSL for Koru - declarative images, typed container lifecycle.
 ## Installation
 
 ```koru
-~import "$std/package"
-~std.package:requires.npm { "@korulang/docker": "^0.0.1" }
+~import std/package
+~std/package:requires.npm { "@korulang/docker": "^0.0.1" }
 ```
 
 Then: `koruc app.kz i`
@@ -16,7 +16,7 @@ Then: `koruc app.kz i`
 ### Declarative Image Definition
 
 ```koru
-~import "$koru/docker"
+~import koru/docker
 
 // Declare image at compile time — the block is a raw Dockerfile Source,
 // collected during AST walking by `koruc <file>.kz docker build`.

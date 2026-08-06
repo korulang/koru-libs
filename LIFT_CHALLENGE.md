@@ -3,7 +3,7 @@ challenge: lift
 kind: generator
 status: standing
 yields: one new @korulang C-library lift, or a quality pass closing a lift's worst gap
-catalog: '*/package.json'
+catalog: '*/index.kz'
 family: lift
 ---
 

@@ -12,7 +12,7 @@ koruc app.kz i
 
 In your `app.kz`:
 ```koru
-~std.package:requires.npm { "@korulang/gzip": "^0.0.1" }
+~std/package:requires.npm { "@korulang/gzip": "^0.0.1" }
 ```
 
 Requires zlib installed on your system (available by default on macOS/Linux).

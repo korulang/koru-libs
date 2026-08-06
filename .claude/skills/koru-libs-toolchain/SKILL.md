@@ -16,9 +16,14 @@ wrapped behind Koru's type system (phantom obligations, compile-time validation)
 Philosophy (from `ECOSYSTEM.md`): *don't reinvent — wrap excellent libraries and
 expose them through Koru's types.* Packages publish to npm under `@korulang/*`.
 
-Each package is a top-level dir: `ai`, `commander`, `curl`, `docker`, `gzip`, `pq`
-(postgres/libpq), `sqlite3`, `vaxis` (TUI). `koru/` is a sandboxed interpreter tool,
-not a wrapper lib. `examples/` exercises the libs.
+Each package is a top-level dir with an `index.kz`: `ai`, `curl`, `docker`, `evp`,
+`gzip`, `mini`, `openssl`, `pcre2`, `pq` (postgres/libpq), `raylib`, `regressions`,
+`sqlite3`, `sse`, `unikraft`, `vaxis` (TUI), `yaml`, `yyjson`. `koru/` is a sandboxed
+interpreter tool, not a wrapper lib. `examples/` exercises the libs.
+
+**The `index.kz` is what makes a directory a package** — a `package.json` alone is a
+claim, not a lift. (`commander/` was exactly that and was removed 2026-08-05: a
+manifest and a README for an entry file that never existed.)
 
 A package = `index.kz` (the public API entry) + `tests/*.kz` + `package.json`
 (`@korulang/<name>`, `koru.entry`) + `README.md`.

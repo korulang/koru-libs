@@ -134,7 +134,7 @@ through `koruc run` in a brand-new scratch directory with no shared cache:
 ~import std/io
 const std = @import("std");
 
-~event run-cmd { argv0: []const u8 }
+~tor run-cmd { argv0: []const u8 }
 | ok i32
 | failed { code: i32, msg: []const u8 }
 

@@ -88,7 +88,7 @@ The power of Koru's interpreter model is that you can create **bespoke interpret
 
 ```koru
 // koru-admin.kz - Full power interpreter
-~std.runtime:register(scope: "admin") {
+~std/runtime:register(scope: "admin") {
     print
     println
     fs.read_file
@@ -101,7 +101,7 @@ The power of Koru's interpreter model is that you can create **bespoke interpret
 
 ```koru
 // koru-sandbox.kz - Safe for untrusted input
-~std.runtime:register(scope: "sandbox") {
+~std/runtime:register(scope: "sandbox") {
     print
     println
     // That's it. No fs, no http, no exec.
@@ -146,7 +146,7 @@ Tors have costs. Execution has limits. Like Ethereum gas, but for your API.
 ### Scope Registration with Costs
 
 ```koru
-~std.runtime:register(scope: "api") {
+~std/runtime:register(scope: "api") {
     fs:open(10)      // costs 10
     fs:read(5)       // costs 5
     fs:close(1)      // costs 1
@@ -157,7 +157,7 @@ Tors have costs. Execution has limits. Like Ethereum gas, but for your API.
 ### Running with a Budget
 
 ```koru
-~std.interpreter:run(
+~std/interpreter:run(
     source: user_code,
     dispatcher: d,
     cost_fn: get_event_cost_api,

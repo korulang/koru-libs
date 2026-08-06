@@ -288,9 +288,9 @@ placement:
    clean, no error):
 
    ```koru
-   ~event init {} | ok *Stream<open!>
+   ~tor init {} | ok *Stream<open!>
    ~proc init|zig { … return .{ .ok = s }; }
-   ~event finish { s: *Stream<!open> }        // a discharge event DOES exist
+   ~tor finish { s: *Stream<!open> }          // a discharge tor DOES exist
    ~proc finish|zig { … }
    ~init() | ok s |> std/io:print.ln("forgot finish")   // <open!> dropped — COMPILES
    ```

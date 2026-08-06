@@ -98,13 +98,13 @@ The primary connection lifecycle. We expose two connection styles:
 Connection pooling is out of scope for this library — that lives at a higher
 level. We model a single connection honestly.
 
-#### Future: `koru.pq:config` abstract tor
+#### Future: `koru/pq:config` abstract tor
 
 The right pattern for library configuration is an abstract tor the library
 consumes, satisfied by user code via assignment:
 
 ```
-~koru.pq:config = config {
+~koru/pq:config = config {
     "connection": "host=localhost port=5432 ...",
 }
 ```
@@ -112,12 +112,12 @@ consumes, satisfied by user code via assignment:
 Composing with the environment:
 
 ```
-~koru.pq:config = std.env:get("DATABASE_URL")
+~koru/pq:config = std/env:get("DATABASE_URL")
 | str url |> config { "connection": url }
 ```
 
 The library provides sensible defaults; user code overrides only what it needs.
-This is deferred — for now `koru.pq:sql` takes an explicit `conn` string argument.
+This is deferred — for now `koru/pq:sql` takes an explicit `conn` string argument.
 
 ### 2. Queries
 Three query styles:
