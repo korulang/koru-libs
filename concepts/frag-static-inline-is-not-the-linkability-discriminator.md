@@ -47,23 +47,61 @@ them. Same keyword, opposite verdict.
 
 **Ask what the inline closes over, not whether it is inline.**
 
-- Closes over **exported symbols only** → free. Reconstruct it; the emitted code
-  is what a careful C author's would be.
-- Closes over **compile-time constants of the kernel**, file statics, or the
-  layout of a private struct → shim or ABI guess, and the case-3 warning holds.
+The first statement of this belief split the answer two ways — free, or out of
+reach. Re-measuring the whole of `lib/` against it showed the second half was
+still banking two unlike costs under one word, so the split is **three**:
 
-`uk_netdev_rx_one` is in the second class because it walks refcounted netbufs
-through struct fields, not because of its storage class. That was always the
-reason; the rule was written down one level too shallow, and one level too
-shallow is exactly the depth at which a rule sends the next reader to the wrong
-answer.
+- Closes over **exported symbols only** → **free**. Reconstruct it; the emitted
+  code is what a careful C author's would be.
+- Reads or calls through **struct fields** → **a mirror**, which is a layout
+  question, not a linkability one. A struct offset is not a symbol you lack; it
+  is a number you can measure, and three shipped lifts have measured it and
+  proved it (`pages` against exported symbol addresses, `sched` by walking an
+  invariant, `lock` by canary probe). An **indirect call through a
+  function-pointer field belongs here** — `dev->rx_one(…)` wants an offset and a
+  public typedef, not a symbol.
+- Closes over something with **neither a symbol nor an offset** → genuinely out
+  of reach: a Kconfig integer baked into the kernel, a file static in another
+  compilation unit, or inline assembly, where there is nothing to call at all
+  and only something to re-emit.
+
+### The reversal this cost
+
+The first version of this belief said `uk_netdev_rx_one` "is in the second class
+because it walks refcounted netbufs through struct fields". The observation was
+right; the conclusion inverted. Walking struct fields is what puts it in the
+*mirror* class — the class we already know how to pay for — and the brief had
+been telling contestants for a wave not to promise `uknetdev`'s transfers on the
+strength of it.
+
+With `UK_ASSERT` compiled out, which is the config every lift builds, the whole
+body is `dev->rx_one(dev, dev->_rx_queue[qid], pkt)`. A probe unikernel printing
+`offsetof` settled the layout in under a minute: `struct uk_netdev` is 64 bytes,
+`rx_one` at 8, `_rx_queue` at 32, and **every Kconfig-conditional member is at
+the tail**, so the mirror does not move when they flip. `uk_netdev_state_get` is
+exported, so it can even be proved by value witness.
+
+So a rule stated one level too shallow does not just misfile the instance it was
+derived from — restating it one level deeper reopened a target that had been
+written off, and the write-off had already been copied into a brief as guidance.
 
 ## What follows
 
 - **A shelf column that counts `static inline` is counting the wrong thing.** The
   number is a hazard estimate, not a budget: sixteen inlines that all forward to
   exported entry points cost nothing, and one that embeds a Kconfig integer costs
-  the feature.
+  the feature. Re-measured across all 87 `lib/` directories, the split is
+  lopsided in the *permissive* direction — most inline surface is mirror-class,
+  and pure-NO surface is rare.
+- **Measure the body that survives your build, not the body in the file.** Asserts
+  are the largest single source of false dependency: every `CONFIG_` name that
+  wrote off `uk_netdev_rx_one` appears inside a `UK_ASSERT` that compiles to
+  `do {} while(0)`.
+- **The same shallowness has two more instances in the same file format.** An
+  `exportsyms.uk` line can name a symbol that does not exist (19 across 10
+  libraries), and it can name one that exists only as a `static inline` and so
+  emits no global at all (33 across 6). Both inflate a "linkable" count, and
+  neither is visible to a reading of the keyword or of the list.
 - **The check is a five-minute read of the header, and it must happen before the
   target is picked, not after.** Reading `vma_types.h` is what turned "ukvmem's
   usable API is behind a wall" into "ukvmem's usable API is three exported calls
