@@ -286,7 +286,7 @@ Five cases, and they are not obvious:
    lists `uk_rwlock_upgrade` and `uk_rwlock_downgrade`; the only occurrences of
    either name in the whole tree are those two lines. Grep for a definition
    before you count a symbol as surface. Measured 2026-08-06: **19 such lines
-   across 10 libraries**, including two in a TAKEN slot each (`ukalloc`'s
+   across 8 libraries**, including two in a TAKEN slot each (`ukalloc`'s
    `uk_palloc_compat`/`uk_pfree_compat`, `uksched`'s `uk_sched_create`). Beware
    the inverse false positive: `ubsan`'s 34 handlers and `ukstore`'s two event
    symbols are built by `##` token-pasting and never appear literally — a name
@@ -295,7 +295,7 @@ Five cases, and they are not obvious:
 5. **A listed symbol may exist only as a `static inline`** — and then the
    allowlist line is **inert**, because the compilation unit emits no global for
    it and objcopy has nothing to keep. This is case 3 and case 4 colliding, and
-   it is the one that most inflates a `linkable` count. **33 lines across 6
+   it is the one that most inflates a `linkable` count. **29 lines across 4
    libraries** are in this state. `ukring` is the extreme: 12 allowlist lines,
    **10 of them `static inline`**, so exactly `uk_ring_alloc` and `uk_ring_free`
    link and the entire ring API is offsets. `uklcpu` lists 29 and 16 are inert.
@@ -700,7 +700,7 @@ cannot see is closed, which is how one library ends up lifted twice.
 
   (2) **A fifth linkability hazard: an allowlist line can name a `static
   inline`,** and then it is inert, because no global is emitted for objcopy to
-  keep. **33 lines across 6 libraries.** `ukring` lists 12 and exactly 2 link;
+  keep. **29 lines across 4 libraries.** `ukring` lists 12 and exactly 2 link;
   `uklcpu` lists 29 and 16 are inert. This is the hazard that most inflates a
   `linkable` count and it is invisible to both the case-3 and the case-4 check.
 

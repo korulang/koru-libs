@@ -98,9 +98,9 @@ written off, and the write-off had already been copied into a brief as guidance.
   wrote off `uk_netdev_rx_one` appears inside a `UK_ASSERT` that compiles to
   `do {} while(0)`.
 - **The same shallowness has two more instances in the same file format.** An
-  `exportsyms.uk` line can name a symbol that does not exist (19 across 10
+  `exportsyms.uk` line can name a symbol that does not exist (19 across 8
   libraries), and it can name one that exists only as a `static inline` and so
-  emits no global at all (33 across 6). Both inflate a "linkable" count, and
+  emits no global at all (29 across 4). Both inflate a "linkable" count, and
   neither is visible to a reading of the keyword or of the list.
 - **The check is a five-minute read of the header, and it must happen before the
   target is picked, not after.** Reading `vma_types.h` is what turned "ukvmem's
