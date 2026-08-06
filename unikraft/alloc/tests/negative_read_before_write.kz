@@ -1,0 +1,51 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): read heap memory that nothing has written.
+//
+// `read` accepts only <!live>. `take` mints <raw!>. Nothing bridges the two
+// except an operation that actually puts bytes in the allocation, so reading a
+// fresh `uk_malloc` is a compile error.
+//
+// THIS IS THE ONE PLACE 02a WAS OVERRULED. Its lift minted a single <held!> from
+// all three constructors and let `read` accept it, on the argument that "whether
+// the bytes are zero is a property of the value, not of what you may do next".
+// That argument is right about ZEROness and wrong about DEFINEDness: whether the
+// memory has contents at all is exactly a statement about what you may legally
+// do next, and it is the only thing separating `uk_malloc`'s doc comment
+// (alloc.h:150, "Allocate an object of `size` bytes") from `uk_calloc`'s
+// (alloc.h:176, "and zero out its memory").
+//
+// The C cannot object here and has no assertion to lift. `uk_malloc_ifpages`
+// hands back a slice of a buddy-allocated page whose previous tenant's bytes are
+// still in it — alloc.c:154-176 writes nothing but the 32-byte metadata header
+// BEFORE the returned pointer. In C this is a diagnostic-free read of whatever
+// was last freed there, and it is the bug class MSan and Valgrind's
+// "uninitialised value" check exist for. Here it costs zero extra states: the
+// same <raw> that carries pillar 4's asymmetry
+// (negative_free_without_use.kz) carries this.
+//
+// The honest way to get a readable buffer with no write is `take.zeroed`, which
+// is `uk_calloc` — a different C function that really does write every byte. See
+// boot_alloc.kz, which reads 32 bytes of a `take.zeroed` block with no `write`
+// anywhere in front of it and boots.
+//
+// The limit, stated: <live> is per-BLOCK, not per-byte, and `read` is bounded by
+// `used`. What this catches is the block that was never written at all.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.alloc:live' but got 'unikraft.alloc:raw!'
+//           for argument 'block'
+
+~import unikraft/alloc
+~import std/io
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 64)
+    | block scratch |> unikraft/alloc:read(block: scratch, at: 0, len: 64)
+        | view seen |> std/io:print.ln("should never get here: {{ seen.bytes:s }}")
+            |> unikraft/alloc:free(seen.block)
+        | rejected r |> std/io:print.ln("read rejected: {{ r.reason:s }}")
+            |> unikraft/alloc:free(r.block)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")

@@ -1,0 +1,35 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): read a page region nothing has written.
+//
+// `read` accepts only <!filled>. `take` mints <blank!>. The buddy allocator does
+// not zero the pages it hands out — `bbuddy_palloc` splits a free run and
+// returns it with whatever the previous tenant left in it — so reading a fresh
+// `uk_palloc` region is a read of freed memory's contents.
+//
+// This is worse at page granularity than at byte granularity, and for a reason
+// specific to how a buddy allocator recycles: a freshly-split 8 KiB run is very
+// likely to be memory some other subsystem was using seconds ago, in whole
+// pages, rather than a scrap of a partially-reused malloc arena. There is no
+// `uk_pcalloc`; the page interface has no zeroing constructor at all. So unlike
+// `unikraft/alloc`, this module offers no honest way past the gate except
+// writing — which is why `untouched` exists and why it does not pretend the
+// region is readable.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.pages:filled' but got 'unikraft.pages:blank!'
+//           for argument 'pages'
+
+~import unikraft/pages
+~import std/io
+
+~unikraft/pages:default
+| ready pager |> unikraft/pages:take(pager, count: 2)
+    | pages region |> unikraft/pages:read(pages: region, at: 0, len: 64)
+        | view seen |> std/io:print.ln("should never get here: {{ seen.bytes:s }}")
+            |> unikraft/pages:give(seen.pages)
+        | rejected r |> std/io:print.ln("read rejected: {{ r.reason:s }}")
+            |> unikraft/pages:give(r.pages)
+    | exhausted e |> std/io:print.ln("take({{ e.count:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no page allocator: {{ why:s }}")

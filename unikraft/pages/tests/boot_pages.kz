@@ -1,0 +1,70 @@
+// POSITIVE, and the gate-2 artifact for this module: `uk_palloc` / `uk_pfree`
+// driven from Koru inside a unikernel, against the real binary-buddy allocator
+// ukboot registered.
+//
+//   default        <- runs the four-test layout proof; the ONLY source of a Pager
+//   available      <- the bracket opens, in PAGES
+//   take(2) -> write -> read -> give
+//   available      <- the bracket closes
+//
+// WHY THIS IS ITS OWN IMAGE and does not ride along with
+// `../../alloc/tests/boot_alloc.kz`: the two modules are separate lifts of
+// separate C entry points, and an image that imported both would prove them
+// only jointly. If the page path were broken in a way the byte path masked — a
+// `pfree` with the wrong count freeing memory the byte allocator then handed
+// out — a single bracketed reading over both would still balance. Two images,
+// two brackets, two independent proofs. The cost is one extra 15-second build.
+//
+// WHAT THE CONSOLE PROVES:
+//
+//   1. The LAYOUT PROOF passed on a real image. `default` compares six slots of
+//      `struct uk_alloc` against six exported symbol addresses before it will
+//      produce a `*Pager`. Reaching the `| ready` arm at all is that proof
+//      passing; a mismatch prints the reason and takes nothing.
+//   2. THE PAGE SIZE WAS DERIVED, not assumed. It is printed. `__PAGE_SIZE` is a
+//      compile-time constant of the kernel that no symbol exports, so a lift
+//      either derives it from the ratio of the two exported availability totals
+//      or guesses. This one derives it, and the console shows the number it got.
+//   3. THE FREE-PAGE COUNT BRACKETS THE PROGRAM and comes back EQUAL. `uk_pfree`
+//      takes a page count, alloc.h:342-347 says it must describe the region
+//      `palloc` handed out, and NOTHING in ukalloc asserts that. This lift never
+//      asks the caller for it. Two equal numbers on the console are what proves
+//      the recorded count was the right one — a wrong count would either leak
+//      pages (second number smaller) or merge buddies it does not own.
+//
+// Build and boot: see ../README.md.
+
+~import unikraft/pages
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_PAGES=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+}
+
+~unikraft/pages:default
+| ready pager |> unikraft/pages:available(pager)
+    | ok before |> std/io:print.ln("pages at start: {{ before.pages:d }} free x {{ before.page_size:d }} B/page (size derived, not assumed)")
+        |> unikraft/pages:take(pager, count: 2)
+            | pages region |> unikraft/pages:write(pages: region, at: 0, bytes: "two raw pages straight out of uk_palloc")
+                | ok written |> unikraft/pages:read(pages: written, at: 0, len: 39)
+                    | view seen |> std/io:print.ln("take(2):        {{ seen.bytes:s }}")
+                        |> unikraft/pages:give(seen.pages)
+                        |> unikraft/pages:available(pager)
+                            | ok after |> std/io:print.ln("pages at end:   {{ after.pages:d }} free x {{ after.page_size:d }} B/page")
+                            | unsupported why |> std/io:print.ln("pavailmem: {{ why:s }}")
+                    | rejected r |> std/io:print.ln("read rejected: {{ r.reason:s }}")
+                        |> unikraft/pages:give(r.pages)
+                | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}")
+                    |> unikraft/pages:untouched(r.pages): u |> unikraft/pages:give(pages: u)
+            | exhausted e |> std/io:print.ln("take({{ e.count:d }}) failed: {{ e.reason:s }}")
+    | unsupported why |> std/io:print.ln("pavailmem: {{ why:s }}")
+| unavailable why |> std/io:print.ln("no page allocator: {{ why:s }}")

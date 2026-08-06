@@ -1,0 +1,436 @@
+// @korulang/unikraft-pages — Unikraft's page allocator (`uk_palloc`/`uk_pfree`),
+// lifted.
+//
+//   import unikraft/pages
+//
+// WHY THIS IS ITS OWN MODULE AND NOT PART OF `unikraft/alloc`. The catalog rule
+// is one module per sublibrary, with one stated exception: "a second module is
+// legitimate only when it lifts a genuinely different C API. `uk_palloc`/
+// `uk_pfree` is a different API from `uk_malloc`/`uk_free` — a different unit
+// and a different allocator entry point." This is that case, and three concrete
+// differences make it more than a naming argument:
+//
+//   1. THE UNIT IS A PAGE, not a byte. `uk_palloc(a, num_pages)` and
+//      `uk_pfree(a, ptr, num_pages)` count in pages, and the page size is a
+//      compile-time constant of the KERNEL (`__PAGE_SIZE`) that no symbol
+//      exports. A lift has to derive it or refuse.
+//   2. THE RELEASE RULE IS SPLITTABLE. alloc.h:344-347: "pages obtained in a
+//      single palloc may be freed through any combination of pfree calls, as
+//      long as each page gets freed exactly once." Nothing in `uk_malloc`'s
+//      contract resembles that; a byte block is freed once, whole.
+//   3. THE LINKABILITY CASE IS DIFFERENT, and it is the reason this module has
+//      a struct mirror while `unikraft/alloc` has none. `unikraft/alloc` calls
+//      exported `uk_*_ifpages` implementations directly. There is no exported
+//      implementation of `palloc`: the backend's own `bbuddy_palloc` /
+//      `bbuddy_pfree` are file statics, and the only exported `uk_palloc_compat`
+//      / `uk_pfree_compat` are the FALLBACKS for allocators that have malloc and
+//      no page interface (alloc.c:296-320) — the opposite of what a page-backed
+//      allocator's table holds. The real page interface is reachable only
+//      through `struct uk_alloc`, so this module mirrors the table and PROVES
+//      the mirror before it uses it. See `default`.
+//
+// WHAT THE C ASSERTS HERE, WHICH IS NOTHING. The `num_pages` rule above has no
+// `UK_ASSERT` anywhere. Neither does "must be non-zero". `uk_pfree` on a
+// page-backed allocator goes straight into `bbuddy_pfree`, which merges buddies
+// using the count you hand it. Pass the wrong count and the allocator merges
+// memory it does not own — heap corruption, no diagnostic, in release and debug
+// alike. The two assertions that DO exist near this path (alloc.c:198-199,
+// `metadata->base != NULL` and `metadata->num_pages != 0`) are inside
+// `uk_free_ifpages` and are about the byte allocator's own metadata, not about
+// anything a caller supplied.
+//
+// So this lift's contribution is not transcribing an assertion. It is that
+// **the parameter which could be wrong does not exist**: `take` records the
+// count, `give` reads it back, and no tor in this module ever asks a caller for
+// a page count at release.
+//
+// THE TWO STATES, the same shape `unikraft/alloc` uses and for the same reason:
+//
+//     take       mints  <blank!>                        uk_palloc (through the table)
+//     write      needs  <!blank|!filled>  mints <filled!>  (no C call)
+//     read       needs  <!filled>         mints <filled!>  (no C call)
+//     untouched  needs  <!blank>          mints <filled!>  (NO C CALL — the escape)
+//     give       needs  <!filled>                        uk_pfree (through the table)
+//
+// The asymmetry matters MORE here than for bytes, not less. A page region is the
+// coarsest allocation a unikernel makes — a two-page reservation is 8 KiB out of
+// a 2 MB floor — so "we took pages and never used them" is a question worth
+// being able to grep for, and `pages:untouched` is the answer. The buddy
+// allocator does not zero pages either, so reading a region nothing has written
+// is a read of whatever the last tenant left there; `<blank>` refuses it.
+//
+// `untouched` rather than `unused`, same as `unikraft/alloc`: "unused" reads as
+// *finished with*, which is the state immediately before `give` and precisely
+// the wrong suggestion at a site whose meaning is "I never wrote here".
+//
+// WHAT THIS LIFT DOES NOT MODEL.
+//
+//   * THE SPLITTABLE RELEASE. alloc.h:344-347 permits giving back a 4-page
+//     region as four separate `pfree`s. This module gives back exactly what it
+//     took, in one call. A splittable obligation — one `<filled!>` becoming two,
+//     each separately owed — is a real design and it is not this one; modelling
+//     it half-way (a `split` that mints two handles the compiler cannot prove
+//     partition the original) would be worse than saying no. Stated as a claim
+//     not made, in README.md.
+//   * THE PAGE SIZE IS DERIVED, NEVER ASSUMED. If it cannot be derived, `default`
+//     refuses. There is no "assume 4096".
+//   * NO OBLIGATION ON THE PAGER. Same argument as `unikraft/alloc`'s `Heap`: an
+//     allocator is registered at boot and never given back, so an obligation on
+//     it could not be discharged. The proof that one exists rides on being
+//     inside the `| ready` arm.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// `lib/ukalloc/exportsyms.uk` exists (case 1 of the brief's three-case rule),
+// 25 lines. Everything below is on it.
+
+const UkAlloc = opaque {};
+
+// exportsyms.uk:22. `uk_alloc_get_default` is `static inline` (alloc.h:136), so
+// reading the variable is the same load the inline performs.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+// The six that `uk_alloc_init_palloc` (alloc_impl.h:260-281) installs
+// unconditionally in every page-backed allocator's table. Used here purely as
+// IDENTITY WITNESSES — their addresses are what the layout proof compares
+// against. This module never calls them.
+extern fn uk_malloc_ifpages(a: *UkAlloc, size: usize) ?*anyopaque;
+extern fn uk_calloc_compat(a: *UkAlloc, nmemb: usize, size: usize) ?*anyopaque;
+extern fn uk_realloc_ifpages(a: *UkAlloc, ptr: ?*anyopaque, size: usize) ?*anyopaque;
+extern fn uk_posix_memalign_ifpages(a: *UkAlloc, memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
+extern fn uk_memalign_compat(a: *UkAlloc, alignment: usize, size: usize) ?*anyopaque;
+extern fn uk_free_ifpages(a: *UkAlloc, ptr: ?*anyopaque) void;
+
+// The two the page-accounting backends install. Identity witnesses for the
+// IFMALLOC shift detector — see `default`, test 4.
+extern fn uk_alloc_availmem_ifpages(a: *UkAlloc) isize;
+extern fn uk_alloc_maxalloc_ifpages(a: *UkAlloc) isize;
+
+// Real exported functions with no allocator argument and no layout dependency.
+// Their ratio IS the page size — see `default`.
+extern fn uk_alloc_availmem_total() usize;
+extern fn uk_alloc_pavailmem_total() c_ulong;
+
+// --- struct uk_alloc's public prefix, mirrored from include/uk/alloc.h:91.
+//
+// Declaration order is malloc, calloc, realloc, posix_memalign, memalign, free,
+// [free_backend, malloc_backend if CONFIG_LIBUKALLOC_IFMALLOC], palloc, pfree,
+// maxalloc, availmem, pmaxalloc, pavailmem, addmem. Everything after that
+// (`_stats`, `next`, `priv[]`) is past what this lift reads.
+
+const MallocFn = *const fn (*UkAlloc, usize) callconv(.c) ?*anyopaque;
+const CallocFn = *const fn (*UkAlloc, usize, usize) callconv(.c) ?*anyopaque;
+const ReallocFn = *const fn (*UkAlloc, ?*anyopaque, usize) callconv(.c) ?*anyopaque;
+const PosixMemalignFn = *const fn (*UkAlloc, *?*anyopaque, usize, usize) callconv(.c) c_int;
+const MemalignFn = *const fn (*UkAlloc, usize, usize) callconv(.c) ?*anyopaque;
+const FreeFn = *const fn (*UkAlloc, ?*anyopaque) callconv(.c) void;
+const PallocFn = *const fn (*UkAlloc, c_ulong) callconv(.c) ?*anyopaque;
+const PfreeFn = *const fn (*UkAlloc, ?*anyopaque, c_ulong) callconv(.c) void;
+const GetSizeFn = *const fn (*UkAlloc) callconv(.c) isize;
+const GetPSizeFn = *const fn (*UkAlloc) callconv(.c) c_long;
+
+const Table = extern struct {
+    malloc: ?MallocFn,
+    calloc: ?CallocFn,
+    realloc: ?ReallocFn,
+    posix_memalign: ?PosixMemalignFn,
+    memalign: ?MemalignFn,
+    free: ?FreeFn,
+    palloc: ?PallocFn,
+    pfree: ?PfreeFn,
+    maxalloc: ?GetSizeFn,
+    availmem: ?GetSizeFn,
+    pmaxalloc: ?GetPSizeFn,
+    pavailmem: ?GetPSizeFn,
+};
+
+comptime {
+    if (@offsetOf(Table, "malloc") != 0) @compileError("uk_alloc.malloc moved");
+    if (@offsetOf(Table, "calloc") != 8) @compileError("uk_alloc.calloc moved");
+    if (@offsetOf(Table, "realloc") != 16) @compileError("uk_alloc.realloc moved");
+    if (@offsetOf(Table, "posix_memalign") != 24) @compileError("uk_alloc.posix_memalign moved");
+    if (@offsetOf(Table, "memalign") != 32) @compileError("uk_alloc.memalign moved");
+    if (@offsetOf(Table, "free") != 40) @compileError("uk_alloc.free moved");
+    if (@offsetOf(Table, "palloc") != 48) @compileError("uk_alloc.palloc moved");
+    if (@offsetOf(Table, "pfree") != 56) @compileError("uk_alloc.pfree moved");
+    if (@offsetOf(Table, "maxalloc") != 64) @compileError("uk_alloc.maxalloc moved");
+    if (@offsetOf(Table, "availmem") != 72) @compileError("uk_alloc.availmem moved");
+    if (@offsetOf(Table, "pmaxalloc") != 80) @compileError("uk_alloc.pmaxalloc moved");
+    if (@offsetOf(Table, "pavailmem") != 88) @compileError("uk_alloc.pavailmem moved");
+}
+
+// ============================================================================
+// THE PAGER, AND THE LAYOUT PROOF THAT PRODUCES IT
+// ============================================================================
+//
+// A mirrored struct is an ABI CLAIM, and an ABI claim that is wrong corrupts
+// memory silently. `unikraft/blk` mirrors `struct uk_blkdev.capabilities` and
+// guards it with `@offsetOf` assertions — which prove the mirror is
+// self-consistent and say nothing about the C it is mirroring. Here the C can be
+// interrogated at run time, so it is. Four tests, all in `default`:
+//
+//   1. `_uk_alloc_head` is non-NULL — an allocator is registered.
+//   2. Slots 0..40 hold, in order, the addresses of `uk_malloc_ifpages`,
+//      `uk_calloc_compat`, `uk_realloc_ifpages`, `uk_posix_memalign_ifpages`,
+//      `uk_memalign_compat` and `uk_free_ifpages`. Six exported symbols whose
+//      addresses this archive knows. Only `uk_alloc_init_palloc` produces that
+//      exact sequence, so a match proves BOTH that the first six fields are
+//      where alloc.h says AND that the default allocator is page-backed.
+//   3. `palloc` and `pfree` at slots 48/56 are non-NULL.
+//   4. Slots 80/88 do NOT hold `uk_alloc_maxalloc_ifpages` /
+//      `uk_alloc_availmem_ifpages`. This is the `CONFIG_LIBUKALLOC_IFMALLOC`
+//      detector: that option inserts two pointers after `free`, shifting
+//      everything below by 16 bytes, which is exactly where those two symbols
+//      would land. Test 2 cannot see the shift because it is entirely above the
+//      inserted fields; test 4 is what closes it.
+//
+// If any test fails, `default` takes `| unavailable`, and because `default` is
+// the only source of a `*Pager` and `take` is the only source of a `*Pages`,
+// nothing in this module can be used at all. There is no degraded path: no
+// fallback to byte allocation, no "assume the common layout", no zero returned
+// in place of an answer. The refusal names which test failed.
+//
+// Cost: four to twelve pointer compares, once per `default`. A program calls
+// `default` once and threads the `*Pager`.
+//
+// Single-threaded by construction: `ukboot` registers the allocator before
+// `main`, and the tests are pure reads.
+
+const Pager = extern struct {
+    a: *UkAlloc,
+    t: *const Table,
+    page: usize,
+};
+
+// The caller's handle on a page region.
+//
+// `count` is the field that retires alloc.h:342-347's unasserted "num_pages must
+// describe the region you were given" rule: the caller cannot supply it, because
+// `give` never asks. `span` is `count * page` and is what bounds `write` and
+// `read`.
+//
+// THE COST, STATED. This handle is a `uk_malloc_ifpages` allocation beside the
+// page region — one extra byte allocation per page reservation. It cannot ride
+// inside the region: the first bytes of a page region are exactly what a caller
+// asking for PAGES wants page-aligned, and stealing them would defeat the reason
+// to call `palloc` instead of `malloc`. A careful C author who wanted the same
+// guarantee would keep the same struct.
+const Pages = extern struct {
+    a: *UkAlloc,
+    t: *const Table,
+    ptr: [*]u8,
+    count: usize,
+    span: usize,
+};
+
+var pager: Pager = undefined;
+
+fn addr(p: anytype) usize {
+    return @intFromPtr(p);
+}
+
+// ============================================================================
+// ACQUIRE THE PAGE ALLOCATOR
+// ============================================================================
+
+// The default allocator's page interface, proven, or an explicit refusal naming
+// which proof failed.
+//
+// Same two-arm split as `unikraft/alloc:default`, for the same reason: "no
+// allocator registered" and "this allocator cannot do pages" are different
+// problems from "out of pages", and the C reports all three as one NULL.
+~pub tor default { }
+| ready *Pager
+| unavailable string
+
+~proc default|zig {
+    const a = _uk_alloc_head orelse {
+        return .{ .unavailable = "no allocator registered: ukboot has not run, or CONFIG_LIBUKALLOC is off" };
+    };
+    const t: *const Table = @ptrCast(@alignCast(a));
+
+    if (addr(t.malloc) != addr(&uk_malloc_ifpages) or
+        addr(t.calloc) != addr(&uk_calloc_compat) or
+        addr(t.realloc) != addr(&uk_realloc_ifpages) or
+        addr(t.posix_memalign) != addr(&uk_posix_memalign_ifpages) or
+        addr(t.memalign) != addr(&uk_memalign_compat) or
+        addr(t.free) != addr(&uk_free_ifpages))
+    {
+        return .{ .unavailable = "the default allocator was not registered by uk_alloc_init_palloc: struct uk_alloc's first six slots are not the exported uk_*_ifpages/uk_*_compat implementations, so unikraft/pages refuses to guess the layout" };
+    }
+
+    if (t.palloc == null or t.pfree == null) {
+        return .{ .unavailable = "struct uk_alloc.palloc/.pfree read as NULL, which uk_alloc_init_palloc never produces: the layout below `free` is not what this lift mirrors" };
+    }
+
+    if (addr(t.pmaxalloc) == addr(&uk_alloc_maxalloc_ifpages) or
+        addr(t.pavailmem) == addr(&uk_alloc_availmem_ifpages))
+    {
+        return .{ .unavailable = "struct uk_alloc is 16 bytes wider than this lift mirrors: CONFIG_LIBUKALLOC_IFMALLOC is on and inserts free_backend/malloc_backend after `free`" };
+    }
+
+    // The page size, DERIVED rather than assumed. `uk_alloc_availmem_ifpages` is
+    // `pavailmem << __PAGE_SHIFT` exactly (alloc.c:354), so the ratio of the two
+    // exported totals IS the page size. Both are ordinary exported functions
+    // taking no argument, so this costs no ABI claim.
+    const bytes_free = uk_alloc_availmem_total();
+    const pages_free = @as(usize, uk_alloc_pavailmem_total());
+    if (pages_free == 0) {
+        return .{ .unavailable = "this allocator reports no free pages, so the page size cannot be derived and unikraft/pages refuses to assume one" };
+    }
+    const derived = bytes_free / pages_free;
+    // A page size is a power of two and at least 4 KiB on every target Unikraft
+    // builds for. Anything else means the two totals were not measuring the same
+    // heap, and pages are refused rather than guessed.
+    if (derived < 4096 or (derived & (derived - 1)) != 0) {
+        return .{ .unavailable = "the derived page size is not a power of two of at least 4 KiB, so the two availability totals are not measuring the same heap" };
+    }
+
+    pager = Pager{ .a = a, .t = t, .page = derived };
+    return .{ .ready = &pager };
+}
+
+// Free pages, and the page size this lift derived. A caller about to call `take`
+// needs both, and neither is reachable from a stock image any other way:
+// `uk_alloc_pavailmem` is `static inline` and `__PAGE_SIZE` is a compile-time
+// constant of the kernel, not a symbol.
+//
+// `| unsupported` rather than a zero. `uk_alloc_pavailmem` returns `-ENOTSUP`
+// when the backend has no accessor (alloc.h:389-400), and that negative read as
+// a `__ssz` is a very large positive number if anyone forgets to check. An
+// allocator that cannot answer says so.
+//
+// No obligation: knowing how many pages are free constrains nothing about what
+// you may do next.
+~pub tor available { pager: *Pager }
+| ok { pages: u64, page_size: u64 }
+| unsupported string
+
+~proc available|zig {
+    const f = pager.t.pavailmem orelse {
+        return .{ .unsupported = "this allocator does not implement pavailmem" };
+    };
+    const v = f(pager.a);
+    if (v < 0) {
+        return .{ .unsupported = "uk_alloc_pavailmem returned an error code" };
+    }
+    return .{ .ok = .{ .pages = @intCast(v), .page_size = @intCast(pager.page) } };
+}
+
+// ============================================================================
+// TAKE AND GIVE BACK
+// ============================================================================
+
+// `uk_palloc(a, count)`, through the proven table. Mints <blank!>.
+//
+// A zero-page request is refused before the call. alloc.h:342 states `num_pages`
+// "must be non-zero" and asserts it nowhere; `bbuddy_palloc(a, 0)` computes
+// `order = 0` and hands out a page anyway, so forwarding it would hand back a
+// region whose recorded count says zero and whose `give` would then free
+// nothing. One report per problem.
+~pub tor take { pager: *Pager, count: u64 }
+| pages *Pages<blank!>
+| exhausted { count: u64, reason: string }
+
+~proc take|zig {
+    if (count == 0) {
+        return .{ .exhausted = .{ .count = count, .reason = "zero-page reservation: alloc.h:342 requires num_pages to be non-zero and nothing in ukalloc checks it" } };
+    }
+    const n: usize = @intCast(count);
+    if (n > ~@as(usize, 0) / pager.page) {
+        return .{ .exhausted = .{ .count = count, .reason = "page count times page size overflows the address space" } };
+    }
+    const raw = pager.t.palloc.?(pager.a, @as(c_ulong, n)) orelse {
+        return .{ .exhausted = .{ .count = count, .reason = "uk_palloc could not satisfy the request" } };
+    };
+    const hdr = uk_malloc_ifpages(pager.a, @sizeOf(Pages)) orelse {
+        pager.t.pfree.?(pager.a, raw, @as(c_ulong, n));
+        return .{ .exhausted = .{ .count = count, .reason = "uk_malloc could not satisfy the pages handle; the reservation was given straight back" } };
+    };
+    const p: *Pages = @ptrCast(@alignCast(hdr));
+    p.* = Pages{
+        .a = pager.a,
+        .t = pager.t,
+        .ptr = @ptrCast(raw),
+        .count = n,
+        .span = n * pager.page,
+    };
+    return .{ .pages = p };
+}
+
+// Copy `bytes` into the region at offset `at`. Mints <filled!>. No C call.
+//
+// `rejected` hands the handle back in <blank!> and NOT <filled!>: a write the
+// lift refused before touching a byte must not satisfy the asymmetry gate. The
+// cost is the same one `unikraft/alloc` pays and states — an out-of-range write
+// spends the `filled` you had earned. The alternative is a hole in the gate.
+~pub tor write { pages: *Pages<!blank|!filled>, at: u64, bytes: string }
+| ok *Pages<filled!>
+| rejected { pages: *Pages<blank!>, reason: string }
+
+~proc write|zig {
+    if (bytes.len == 0) {
+        return .{ .rejected = .{ .pages = pages, .reason = "write of zero bytes" } };
+    }
+    const off: usize = @intCast(at);
+    if (off >= pages.span or bytes.len > pages.span - off) {
+        return .{ .rejected = .{ .pages = pages, .reason = "write runs past the end of the page region" } };
+    }
+    for (0..bytes.len) |i| pages.ptr[off + i] = bytes[i];
+    return .{ .ok = pages };
+}
+
+// Borrow `len` bytes at offset `at`. `bytes` is a BORROW of the region, valid
+// until the next `write` or `give`, never freed by the caller, never a second
+// obligation.
+//
+// Accepts ONLY <!filled>. The buddy allocator does not zero pages, so reading a
+// region nothing has written is a read of whatever the last tenant left there.
+//
+// The range is explicit rather than implied, and it matters more here than for
+// bytes: a two-page region is 8 KiB of which a caller has usually written a few
+// dozen bytes, and handing the whole span back by default would be handing back
+// the untouched tail as if it were data.
+~pub tor read { pages: *Pages<!filled>, at: u64, len: u64 }
+| view { pages: *Pages<filled!>, bytes: string }
+| rejected { pages: *Pages<filled!>, reason: string }
+
+~proc read|zig {
+    if (len == 0) {
+        return .{ .rejected = .{ .pages = pages, .reason = "read of zero bytes" } };
+    }
+    const off: usize = @intCast(at);
+    const want: usize = @intCast(len);
+    if (off >= pages.span or want > pages.span - off) {
+        return .{ .rejected = .{ .pages = pages, .reason = "read runs past the end of the page region" } };
+    }
+    return .{ .view = .{ .pages = pages, .bytes = pages.ptr[off .. off + want] } };
+}
+
+// THE NAMED ESCAPE from the asymmetry gate, for pages. Same word as
+// `unikraft/alloc:untouched`, same rule, same grep:
+//
+//     grep -r "pages:untouched"   ->   "where do we reserve pages we never write to"
+//
+// Runs no C call. A guard region, or a reservation held so a later `palloc`
+// cannot take the run, is legitimate and says so in one word.
+~pub tor untouched { pages: *Pages<!blank> } -> *Pages<filled!>
+
+~proc untouched|zig {
+    return pages;
+}
+
+// `uk_pfree(a, ptr, count)` with the count this lift recorded at `take`, plus
+// the handle's own byte allocation.
+//
+// Accepts ONLY <!filled>, and consumes it, so double-give is unspellable.
+//
+// No failure arm: `uk_pfree` returns void and cannot fail.
+~pub tor give { pages: *Pages<!filled> }
+
+~proc give|zig {
+    pages.t.pfree.?(pages.a, @ptrCast(pages.ptr), @as(c_ulong, pages.count));
+    uk_free_ifpages(pages.a, @ptrCast(pages));
+}

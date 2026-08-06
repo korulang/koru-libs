@@ -1,0 +1,39 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): reserve pages and give them straight back.
+//
+// `give` accepts only <!filled>, and <filled!> is minted only by `write`, `read`
+// or the named escape `untouched`. So reserving two pages and releasing them
+// without ever touching them is a program you cannot write.
+//
+// The asymmetry matters MORE at page granularity than at byte granularity. A
+// two-page reservation is 8 KiB out of a unikernel's 2 MB RAM floor — 0.4% of
+// the machine, taken and returned with no work done. The same shape in bytes is
+// 64 bytes and a shrug. If the gate is worth having anywhere, it is worth having
+// here, and the escape is worth being able to grep for here most of all:
+//
+//     grep -r "pages:untouched"
+//
+// The C has nothing to say about it. `uk_palloc(a, 2)` followed by
+// `uk_pfree(a, p, 2)` is correct, warning-free and does no work. There is no
+// `UK_ASSERT` in ukalloc that objects, and there could not be — the allocator
+// cannot know whether the caller read the region.
+//
+// The legitimate case stays expressible and stays loud: a guard region, or a run
+// held so a later `palloc` cannot take it, says `unikraft/pages:untouched` and
+// compiles. What this rejects is the SILENT no-op.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.pages:filled' but got 'unikraft.pages:blank!'
+//           for argument 'pages'
+
+~import unikraft/pages
+~import std/io
+
+~unikraft/pages:default
+| ready pager |> unikraft/pages:take(pager, count: 2)
+    | pages region |> unikraft/pages:give(pages: region)
+        |> std/io:print.ln("should never get here")
+    | exhausted e |> std/io:print.ln("take({{ e.count:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no page allocator: {{ why:s }}")

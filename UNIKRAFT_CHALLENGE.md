@@ -130,6 +130,19 @@ contestant knows the slot is gone.
   tors. Lifecycle *and* transfers proven: a booted image reads a host-planted
   sector and writes one back, verified with `dd` on the host disk afterwards.
   The reference for how far a ratchet is worth taking.
+- **[alloc](unikraft/alloc/README.md)** — `ukalloc`'s object allocator behind two
+  states, 10 tors, no struct mirror. A MERGE of three independent replays rather
+  than a pick of one, with each piece attributed. Strict `free` plus the named
+  escape `alloc:untouched`; `take.aligned` boots a 4096-aligned buffer with the
+  block header in front of it. The reference for how far restraint is worth
+  taking, and for auditing an assert census instead of banking it — 19 of 38
+  retired, 19 not, per site.
+- **[pages](unikraft/pages/README.md)** — `uk_palloc`/`uk_pfree` behind two
+  states, 7 tors, and a `struct uk_alloc` mirror PROVEN at run time against six
+  exported symbol addresses before it is used. The catalog's stated
+  second-module exception, exercised. Its contribution is not a lifted assertion
+  — the page interface has none a caller can violate — but the `num_pages`
+  parameter that no longer exists.
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -194,7 +207,7 @@ measurement and the column would lie if it did not say so:
 |---|---|---:|---:|---|---|
 | `uksched` | allowlist | 42 | 27 | `unikraft/sched` | threads; ordering + lifetime |
 | `uknetdev` | allowlist | 33 | 12 | `unikraft/net` | state machine — **but see below** |
-| `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` | **IN FLIGHT 2026-08-06** — three replays landed rival readings; a merge is being chosen. Do not take it. Its lesson is recorded under Duplicate prevention. |
+| `ukalloc` | allowlist | 25 | 25 | `unikraft/alloc` + `unikraft/pages` | **TAKEN** — three replays landed rival readings and the merge shipped as TWO modules: bytes in `unikraft/alloc`, pages in `unikraft/pages`. Read both. Its lesson is recorded under Duplicate prevention. |
 | `ukvmem` | allowlist | 20 | 16 | `unikraft/vmem` | mappings |
 | `ukblkdev` | allowlist | 18 | 5 | `unikraft/blk` | **TAKEN** — the first lift; read it before you start |
 | `uklock` | allowlist | 15 | 19 | `unikraft/lock` | acquire/release on every path |

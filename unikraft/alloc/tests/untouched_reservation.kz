@@ -1,0 +1,63 @@
+// POSITIVE CONTROL for negative_free_without_use.kz, and the proof that the
+// named escape is REAL rather than a story told in a README.
+//
+// This is the same program the negative rejects — allocate, hand it straight
+// back, never write a byte — with the one word that makes it legal:
+//
+//     unikraft/alloc:untouched
+//
+// It compiles clean through the emit pass and it boots. That is what proves the
+// asymmetry gate costs the honest program nothing: not an argument, a build.
+//
+// IT RUNS NO C CALL. `~proc untouched|zig` is `return block;` and nothing else,
+// so the emitted object does exactly what the source says happened — nothing.
+// What the word changes is (a) what the compiler will let you write next and
+// (b) what `grep -r "alloc:untouched"` can find. The console below shows the
+// same bracketed availability reading as boot_alloc.kz: the reservation is made,
+// declared untouched, released, and the heap comes back to where it started.
+//
+// THE SECOND ALLOCATION IS THE POINT, and it is why this file allocates twice.
+// The first block is genuinely never written. The second is written. Both reach
+// `free`, by different routes, in the same program — which is the shape a real
+// program has, and the shape that shows the escape is a route and not a
+// blanket.
+//
+// Build and boot: see ../README.md.
+
+~import unikraft/alloc
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOC=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+}
+
+~unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start: {{ at_start:d }} bytes free")
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 4096)
+    | block reserved |> unikraft/alloc:untouched(block: reserved): spoken
+        |> std/io:print.ln("4 KiB reserved and released without a write, on purpose")
+        |> unikraft/alloc:free(block: spoken)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 4096)
+    | block used |> unikraft/alloc:write(block: used, bytes: "and this one really was written")
+        | ok w |> std/io:print.ln("4 KiB written and released the ordinary way")
+            |> unikraft/alloc:free(block: w)
+        | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}")
+            |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
+
+~unikraft/alloc:available(): at_end |> std/io:print.ln("heap at end:   {{ at_end:d }} bytes free")

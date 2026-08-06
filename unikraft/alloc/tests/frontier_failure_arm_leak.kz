@@ -1,0 +1,107 @@
+// FRONTIER — this file SHOULD fail to compile and TODAY IT COMPILES.
+//
+// Carried across from the 02b replay (`unikraft-replay-02b/unikraft/alloc/
+// tests/frontier_failure_arm_leak.kz`), re-pointed at the merged module and
+// RE-VERIFIED against it. It is pinned here failing-forward, with the minimal
+// repro and the controls, as the honest edge of this lift. Do not delete it to
+// make the directory green; when the compiler gap below closes, this file starts
+// refusing and the pin has done its job.
+//
+// A fix is commissioned in another session. This file is the pin, not the fix.
+//
+// ---------------------------------------------------------------------------
+// THE GAP: only a tor's FIRST declared branch has its payload obligations
+// tracked for discharge. A handle handed back on the second or any later branch
+// can be bound and discarded, and no diagnostic fires.
+// ---------------------------------------------------------------------------
+//
+// This matters far beyond `unikraft/alloc`, because handing the handle back on a
+// failure arm is the shape the UNIKRAFT_CHALLENGE brief itself prescribes: "A
+// failure arm hands the handle back in a NEW state when the failure changes what
+// is legal next." Every lift that follows that rule has an untracked leak on
+// exactly the path a human reviewer skips.
+//
+// WHAT THIS FILE DOES. `resize` is asked for 8 MiB from a 64 MiB heap whose
+// largest free run is smaller than that once the buddy allocator's own rounding
+// is counted. It refuses, hands the ORIGINAL allocation back as `e.block` in
+// <live!>, and this program prints the reason and walks away. The allocation is
+// never freed. Expected: KORU030 undischarged, naming `unikraft.alloc:free`.
+// Actual: compiles clean, leaks at runtime.
+//
+// WHAT STILL HOLDS, verified separately and not weakened by this gap:
+//   * The failure-arm handle cannot be used WRONGLY — a state mismatch on it
+//     does fire (control R4 below).
+//   * The arm cannot be IGNORED — Koru requires every branch to be handled.
+//   * `negative_use_after_resize.kz` proves the old binding cannot be read after
+//     a SUCCESSFUL resize.
+// So the hole is precisely "bind it and drop it", not "misuse it".
+//
+// WHICH OF THIS MODULE'S GUARANTEES REST ON THE UN-ENFORCED ARMS — the honest
+// list, also carried in ../README.md:
+//   * `resize | refused` handing back the original in <live!>. THE HEADLINE
+//     CLAIM of this lift. Dropping it compiles.
+//   * `write | rejected` handing back <raw!>, and `read | rejected` handing back
+//     <live!>. Both are droppable today.
+// Everything on a FIRST arm is enforced: `take | block`, `take.zeroed | block`,
+// `take.aligned | block`, `write | ok`, `read | view`, `resize | ok`.
+//
+// ---------------------------------------------------------------------------
+// MINIMAL REPRO — 8 lines, on the SHIPPED `unikraft/blk` lift, not on this one.
+// Verified before attributing, per the brief. Save as `r3.kz`, `koruc r3.kz`:
+//
+//     ~import unikraft/blk
+//     ~import std/io
+//
+//     ~unikraft/blk:get(id: 0)
+//     | device disk |> unikraft/blk:configure(disk.dev)
+//         | ok cfg |> _
+//         | refused e |> _
+//     | missing why |> std/io:print.ln("{{ why:s }}")
+//
+// One diagnostic where there should be two:
+//
+//     error[KORU030]: Resource 'cfg' obligation <configured!> was not
+//                     discharged. Call: queue.open
+//
+// `cfg` is `*Device<configured!>` on arm 1 and is reported. `e.dev` is
+// `*Device<stuck!>` on arm 2, whose only consumer is `blk:abandon`, and is NOT
+// reported — in the same flow, in the same compile.
+//
+// CONTROLS, all run against the same shipped `blk`:
+//
+//   R1  blk's own negative_device_never_discharged.kz — arm 1 of the FIRST tor,
+//       struct payload, handle dropped.
+//       -> FIRES: "Resource 'dev' obligation <attached!> was not discharged."
+//       So the mechanism works, and struct-payload FIELDS are tracked.
+//
+//   R5  `blk:read` mid-chain, all three arms dropped. Arm 1 is `| data
+//       { dev: *Device<used!>, bytes }`.
+//       -> FIRES for arm 1 only: "Resource 'dev' obligation <used!> was not
+//       discharged. Call: stop". `| failed e` and `| rejected r` carry <used!>
+//       and <running!> in the same position and are silent.
+//       So it is not "mid-chain" and not "struct payload" — it is ARM POSITION.
+//
+//   R4  same as R3 but arm 1 discharges via `blk:abandon(dev: cfg)`, which wants
+//       <!stuck> and gets <configured!>.
+//       -> FIRES: "Phantom state mismatch: expected 'unikraft.blk:stuck' but got
+//       'unikraft.blk:configured!'". So the STATE wall on later arms is intact;
+//       it is only the DISCHARGE wall that is missing.
+//
+// Measured 2026-08-06 by the 02b replay with /Users/larsde/src/koru/zig-out/bin/
+// koruc against koru-libs `unikraft/blk` as shipped, and re-measured the same
+// day against this merged module. Not diagnosed further here — the repro is the
+// deliverable, and reading the pass that owns it is the compiler's business.
+// ---------------------------------------------------------------------------
+
+~import unikraft/alloc
+~import std/io
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 64)
+    | block scratch |> unikraft/alloc:write(block: scratch, bytes: "sixty-four bytes about to be asked to become eight mib")
+        | ok filled |> unikraft/alloc:resize(block: filled, bytes: 8388608)
+            | ok grown |> unikraft/alloc:free(block: grown)
+            | refused e |> std/io:print.ln("resize refused: {{ e.reason:s }}")
+        | rejected r |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")

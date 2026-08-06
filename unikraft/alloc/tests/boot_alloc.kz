@@ -1,0 +1,101 @@
+// POSITIVE, and the gate-2 artifact: ukalloc driven from Koru inside a
+// unikernel, against the real binary-buddy allocator ukboot registered.
+//
+//   available                                            <- the bracket opens
+//   default -> take -> write -> read -> resize -> read -> free
+//   default -> take.zeroed -> read -> free               <- read with NO write
+//   default -> take.aligned(4096) -> write -> read -> free
+//   available                                            <- the bracket closes
+//
+// FOUR THINGS THE CONSOLE PROVES, none of which `--check` can:
+//
+//   1. `resize` preserved the contents. The second line is read back AFTER
+//      `uk_realloc_ifpages` moved a 64-byte block to 4096 bytes. That is why
+//      `resize` takes and mints `live` rather than conservatively downgrading
+//      to `raw`.
+//   2. `take.zeroed` is read with no `write` in front of it. It compiles only
+//      because `take.zeroed` mints <live!>; swap it for `take` and the program
+//      is refused (negative_read_before_write.kz).
+//   3. `take.aligned` boots. A 4096-aligned request is served, written and read
+//      back through a header that sits IN FRONT of the aligned payload — the
+//      design 02c judged impossible and 02a disproved. What the console shows
+//      is that it runs and that `free` recovers the right base: if the header
+//      arithmetic were wrong, `uk_free_ifpages` would page-align down to the
+//      wrong metadata and the bracket in (4) would not close. The alignment of
+//      the address itself is not printed, and is therefore not claimed here.
+//   4. THE TWO `available` READINGS BRACKET THE WHOLE PROGRAM and come back
+//      EQUAL. A leak is visible as a number that failed to return: an omitted
+//      `free`, an aligned block released with the wrong base, a `pfree` with
+//      the wrong count would each show up as a smaller second number. The
+//      compiler's guarantees are about what can be WRITTEN; this line is about
+//      what actually RAN.
+//
+// Build and boot: see ../README.md.
+
+// `~import unikraft` is DELIBERATELY ABSENT: importing `unikraft/alloc` already
+// pulls `unikraft/index.kz` into scope, and writing both registers the module
+// twice. Pinned in ../../blk/README.md as toolchain defect 2.
+~import unikraft/alloc
+~import std/io
+
+// The body must be non-empty: an empty Source block emits invalid Zig.
+// Pinned in ../../blk/README.md as toolchain defect 1.
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOC=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+}
+
+~unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start: {{ at_start:d }} bytes free")
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 64)
+    | block scratch |> unikraft/alloc:write(block: scratch, bytes: "koru put these 48 bytes into a ukalloc block ok")
+        | ok filled |> unikraft/alloc:read(block: filled, at: 0, len: 47)
+            | view small |> std/io:print.ln("take(64):        {{ small.bytes:s }}")
+                |> unikraft/alloc:resize(small.block, bytes: 4096)
+                    | ok grown |> unikraft/alloc:read(block: grown, at: 0, len: 47)
+                        | view kept |> std/io:print.ln("resize(4096):    {{ kept.bytes:s }}")
+                            |> unikraft/alloc:free(kept.block)
+                        | rejected r |> std/io:print.ln("read after resize rejected: {{ r.reason:s }}")
+                            |> unikraft/alloc:free(r.block)
+                    | refused e |> std/io:print.ln("resize refused: {{ e.reason:s }}")
+                        |> unikraft/alloc:free(e.block)
+            | rejected r |> std/io:print.ln("read rejected: {{ r.reason:s }}")
+                |> unikraft/alloc:free(r.block)
+        | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}")
+            |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take.zeroed(heap, bytes: 32)
+    | block zeroed |> unikraft/alloc:read(block: zeroed, at: 0, len: 32)
+        | view fresh |> std/io:print.ln("take.zeroed(32): read 32 bytes with no write first — calloc mints live")
+            |> unikraft/alloc:free(fresh.block)
+        | rejected r |> std/io:print.ln("zeroed read rejected: {{ r.reason:s }}")
+            |> unikraft/alloc:free(r.block)
+    | exhausted e |> std/io:print.ln("take.zeroed({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take.aligned(heap, bytes: 512, alignment: 4096)
+    | block dma |> unikraft/alloc:write(block: dma, bytes: "a 4096-aligned DMA buffer, header in front of it")
+        | ok ready |> unikraft/alloc:read(block: ready, at: 0, len: 48)
+            | view seen |> std/io:print.ln("take.aligned:    {{ seen.bytes:s }}")
+                |> unikraft/alloc:free(seen.block)
+            | rejected r |> std/io:print.ln("aligned read rejected: {{ r.reason:s }}")
+                |> unikraft/alloc:free(r.block)
+        | rejected r |> std/io:print.ln("aligned write rejected: {{ r.reason:s }}")
+            |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+    | refused e |> std/io:print.ln("take.aligned({{ e.bytes:d }}) refused: {{ e.reason:s }} (errno {{ e.errno:d }})")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
+
+~unikraft/alloc:available(): at_end |> std/io:print.ln("heap at end:   {{ at_end:d }} bytes free")

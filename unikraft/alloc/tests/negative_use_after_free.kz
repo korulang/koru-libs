@@ -1,0 +1,38 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge
+
+// NEGATIVE (must FAIL to compile): write to a block after it was freed.
+//
+// `free` consumes the block. The binding is spent, so naming it again does not
+// compile — which makes use-after-free and double-free the same unspellable
+// shape, discharged by the same rule rather than by two separate checks.
+//
+// The C's nearest equivalent is `uk_free_ifpages` asserting
+// `metadata->base != __NULL` and `metadata->num_pages != 0` (alloc.c:198-199) on
+// a page the buddy allocator has already taken back — a heuristic reading freed
+// memory, and `do {} while(0)` in every shipped image. Before those two ever
+// run, alloc.c:109's `UK_ASSERT(ptr >= __PAGE_SIZE + 32)` is the only thing
+// standing between `uk_free` and a pointer it never allocated, and it is a
+// plausibility test on an integer.
+//
+// This lift retires all three as a class, not by checking harder but by making
+// the only source of a `*Block` be one of the three `take`s and the only
+// consumer be one `free`.
+//
+// EXPECTED: error[KORU030]: Use-after-discharge: binding 'written' was already
+//           discharged and cannot be used
+
+~import unikraft/alloc
+~import std/io
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 64)
+    | block scratch |> unikraft/alloc:write(block: scratch, bytes: "written once, freed once, written twice")
+        | ok written |> unikraft/alloc:free(block: written)
+            |> unikraft/alloc:write(block: written, bytes: "use after free")
+                | ok again |> unikraft/alloc:free(block: again)
+                | rejected r |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+        | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}")
+            |> unikraft/alloc:untouched(r.block): u |> unikraft/alloc:free(block: u)
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")

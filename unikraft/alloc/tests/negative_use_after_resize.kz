@@ -1,0 +1,38 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge
+
+// NEGATIVE (must FAIL to compile): keep the pointer you handed to realloc.
+//
+// alloc.h:211 is the entire enforcement the C has: "The value of `ptr` should no
+// longer be used after this call completes successfully." A sentence in a doc
+// comment. No assertion, no branch, no debug build catches a use-after-realloc,
+// and `uk_realloc_ifpages` really does free the old allocation on the success
+// path (alloc.c:232), so the old pointer really is dangling.
+//
+// Here `resize` CONSUMES the block and mints a fresh one, so the pre-resize
+// binding is spent and naming it again does not compile. The type and the
+// machine agree: this lift's `Block` header lives inside the allocation, so a
+// moved block genuinely invalidates the old handle.
+//
+// The other half of the same rule is not testable as a negative and is worth
+// naming here: on FAILURE the old block is still live and still owed, and
+// `p = uk_realloc(a, p, n)` throws away the only pointer to it. `| refused` is
+// the only place the original can come back. It is named, it is owned, and Koru
+// requires the arm to be handled — but see frontier_failure_arm_leak.kz for the
+// one part of that guarantee the compiler does not currently enforce.
+//
+// EXPECTED: error[KORU030]: Use-after-discharge: binding 'filled' was already
+//           discharged and cannot be used
+
+~import unikraft/alloc
+~import std/io
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take.zeroed(heap, bytes: 64)
+    | block filled |> unikraft/alloc:resize(block: filled, bytes: 4096)
+        | ok grown |> std/io:print.ln("grown")
+            |> unikraft/alloc:free(block: filled)
+        | refused e |> std/io:print.ln("resize refused: {{ e.reason:s }}")
+            |> unikraft/alloc:free(e.block)
+    | exhausted e |> std/io:print.ln("take.zeroed({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")

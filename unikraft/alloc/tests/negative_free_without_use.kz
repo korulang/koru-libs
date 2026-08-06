@@ -1,0 +1,46 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): allocate memory and hand it straight back.
+//
+// THIS IS THE STRICT GATE, and it is the ruling that overruled 02c. That lift
+// deliberately let `take` -> `free` compile, on three arguments: a heap
+// allocation's use IS the reservation; the early-exit shape is ubiquitous; and
+// ukalloc contains no assertion objecting to it, so there is nothing to lift.
+//
+// All three are true, and the ruling still went the other way, because a strict
+// `free` plus a NAMED escape already CONTAINS the permissive design. Every
+// program the permissive `free` accepts, this module accepts with one extra word
+// in it — `alloc:untouched` — and that word buys something the permissive design
+// cannot offer at any price:
+//
+//     grep -r "alloc:untouched"
+//
+// answers "where do we reserve memory we never write to", which is a question a
+// unikernel with a 2 MB RAM floor genuinely asks. A permissive `free` cannot
+// answer it, because the silent no-op and the deliberate reservation are spelled
+// identically. The containment is asymmetric, so the strict reading wins.
+//
+// What the C does instead: nothing at all. `uk_malloc(a, 64)` followed by
+// `uk_free(a, p)` is a well-formed, warning-free, sanitizer-clean C program that
+// does no work. There is no `UK_ASSERT` for it and there could not be — the
+// allocator has no idea whether you touched the memory. This is the one place in
+// this lift where a phantom obligation is not transcribing an assertion Unikraft
+// wrote, but keeping a guarantee Unikraft never had.
+//
+// See untouched_reservation.kz for the same program spelled honestly, which
+// compiles clean and boots. What this file rejects is the SILENT no-op.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.alloc:live' but got 'unikraft.alloc:raw!'
+//           for argument 'block'
+
+~import unikraft/alloc
+~import std/io
+
+~unikraft/alloc:default
+| ready heap |> unikraft/alloc:take(heap, bytes: 64)
+    | block scratch |> unikraft/alloc:free(block: scratch)
+        |> std/io:print.ln("should never get here")
+    | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
