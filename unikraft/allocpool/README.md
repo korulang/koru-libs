@@ -16,7 +16,7 @@
 constructors, one destructor, and picking the wrong pairing is undefined at
 `-DNDEBUG` — and that is what this module is about.
 
-Eleven tors, four phantom states, no struct mirror, one named escape, and
+Ten tors, four phantom states, no struct mirror, two named escapes, and
 **7 of 23 `UK_ASSERT`s retired outright, 2 converted into live refusals, 14 not
 retired**, each attributed per site below.
 
