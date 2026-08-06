@@ -1,0 +1,48 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge
+
+// NEGATIVE (must FAIL to compile): take the lock again after destroying it.
+//
+// `destroy` consumes the handle, so the binding is discharged and cannot be
+// named afterwards. Double-destroy is the same unspellable shape.
+//
+// THE C HAS NO DEFENCE HERE AT ALL, not even a compiled-out one. There is no
+// `uk_rwlock_destroy` to assert in — a `struct uk_rwlock` is caller-owned
+// storage, and Unikraft's own answer to "how do I dispose of one" is that every
+// rwlock in the tree is a static or lives inside a longer-lived object. When a
+// caller does allocate one, the free is the caller's, and `uk_rwlock_rlock` on
+// the freed storage reads whatever the allocator put back into `nactive`:
+//
+//   * a recycled non-negative word admits the reader into a lock that no longer
+//     exists, and `rwl->nactive++` writes into the allocator's freelist;
+//   * a recycled negative word makes the reader wait forever on a wait queue
+//     whose `struct uk_list_head` now points at freed memory, and the first
+//     `uk_waitq_wake_up` walks it.
+//
+// The five `UK_ASSERT(rwl)` sites in `rwlock.c` do not help: the pointer is not
+// null, it is stale, and no assertion in `uklock` can tell those apart.
+//
+// EXPECTED: error[KORU030]: Use-after-discharge: binding 'done' was already
+//           discharged and cannot be used
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/lock
+~import std/io
+
+~unikraft/lock:probe
+| ready proof |> unikraft/lock:create(proof.locks)
+    | lock guard |> unikraft/lock:read.acquire(lock: guard): shared
+        |> unikraft/lock:read.release(lock: shared): done
+            |> unikraft/lock:destroy(lock: done)
+            |> unikraft/lock:read.acquire(lock: done): again
+                |> std/io:print.ln("should never get here")
+                |> unikraft/lock:read.release(lock: again): back
+                    |> unikraft/lock:destroy(lock: back)
+    | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")

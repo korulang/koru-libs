@@ -1,0 +1,47 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): build a lock and throw it away without ever
+// taking it. This is pillar 4's asymmetry for `uklock`.
+//
+// `destroy` accepts only <!idle>, and <idle!> is minted only by `read.release`,
+// `write.release` or the named escape `hold.skipped`. So a lock that was created
+// and never entered has no way out.
+//
+// THE C HAS NOTHING TO SAY ABOUT IT, and could not have.
+// `uk_rwlock_init_config` on a struct nobody ever locks is correct, silent and
+// warning-free; there is no destructor to assert in, because `uklock` has none.
+// The mistake is not a memory error, it is a DESIGN error: a lock exists to
+// serialize a critical section, so a lock with no critical section means either
+// the section was deleted and the lock outlived it, or the section exists and
+// somebody forgot to take the lock around it. The second reading is a data race
+// that no amount of testing finds.
+//
+// The legitimate case stays expressible and stays loud. A lock built on a path
+// that turns out not to need it says `unikraft/lock:hold.skipped` and compiles —
+// `boot_lock.kz` does exactly that, and boots. What this rejects is the SILENT
+// version, where the deliberate no-op and the forgotten critical section are
+// spelled identically.
+//
+//     grep -r "lock:hold.skipped"   ->   "which locks do we build and never enter"
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.lock:idle' but got 'unikraft.lock:fresh!'
+//           for argument 'lock'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/lock
+~import std/io
+
+~unikraft/lock:probe
+| ready proof |> unikraft/lock:create(proof.locks)
+    | lock guard |> unikraft/lock:destroy(lock: guard)
+        |> std/io:print.ln("should never get here")
+    | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")

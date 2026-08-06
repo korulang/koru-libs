@@ -1,0 +1,52 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): take the write lock while already holding it.
+//
+// `write.acquire` accepts <!fresh|!idle> and NOT <!writing>, so the second call
+// has nothing to consume.
+//
+// THE C'S POSITION ON THIS IS CONTRADICTORY, which is what makes it worth a
+// negative test rather than a footnote:
+//
+//   * `rwlock.h:24` defines `UK_RWLOCK_CONFIG_WRITE_RECURSE`, a config flag
+//     whose entire purpose is to enable recursive write locking.
+//   * `rwlock.c:22` says, in the implementation's own words, "TODO: The
+//     implementation does not support recursive write locking".
+//   * `rwlock.c:23` asserts the flag is NOT set — which in every shipped image
+//     is `do {} while(0)`.
+//
+// So the header offers a feature the implementation does not have, and the
+// guard against asking for it is compiled out of production. Ask for it and the
+// second `uk_rwlock_wlock` waits for `nactive == 0` (rwlock.c:76) while holding
+// `nactive == -1`, which only this thread could clear, and which it is now
+// blocked from reaching. A self-deadlock with no output.
+//
+// This lift closes both halves. The flag has no parameter to pass — `create`
+// always calls `uk_rwlock_init_config(l, 0)`, so `UK_RWLOCK_CONFIG_WRITE_RECURSE`
+// is unspellable rather than checked. And the call that would deadlock has no
+// type, which is what this file pins.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           '!unikraft.lock:fresh|!unikraft.lock:idle' but got
+//           'unikraft.lock:writing!' for argument 'lock'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/lock
+~import std/io
+
+~unikraft/lock:probe
+| ready proof |> unikraft/lock:create(proof.locks)
+    | lock guard |> unikraft/lock:write.acquire(lock: guard): once
+        |> unikraft/lock:write.acquire(lock: once): twice
+            |> std/io:print.ln("should never get here")
+            |> unikraft/lock:write.release(lock: twice): done
+                |> unikraft/lock:destroy(lock: done)
+    | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")

@@ -1,0 +1,479 @@
+// @korulang/unikraft-lock — Unikraft's `uklock`, lifted at the one place it can
+// honestly be lifted: the READER-WRITER LOCK.
+//
+//   import unikraft/lock
+//
+// WHAT `uklock` ACTUALLY EXPORTS, and why this module is a rwlock module rather
+// than a lock module. `lib/uklock/exportsyms.uk` exists, so the brief's case 1
+// applies: that file IS the allowlist and nothing else links. It has 15 lines.
+// Read as a linker reads it rather than as a header reads it, those 15 lines
+// contain exactly ONE complete, callable API:
+//
+//   * `uk_rwlock_init_config`, `_rlock`, `_wlock`, `_runlock`, `_wunlock` —
+//     five real functions in `rwlock.c`, the whole reader-writer surface. THIS
+//     MODULE.
+//   * `uk_rwlock_upgrade`, `uk_rwlock_downgrade` — **on the allowlist and
+//     nowhere else in the tree.** `grep -rn "rwlock_upgrade\|rwlock_downgrade"`
+//     over all of `unikraft` at HEAD 3fdffba8 returns exactly two hits, both in
+//     `exportsyms.uk` itself. There is no declaration, no definition, no caller.
+//     The allowlist promises two symbols the library does not have. An
+//     allowlist is not an inventory.
+//   * `uk_mutex_init_config`, `uk_semaphore_init` — constructors whose
+//     OPERATIONS are `static inline` (`mutex.h:163` `uk_mutex_lock`, `:186`
+//     `uk_mutex_trylock`, `:227` `uk_mutex_unlock`; `semaphore.h:53`
+//     `uk_semaphore_down`, `:157` `uk_semaphore_up`, and four more). A lift of
+//     `uk_mutex_init_config` alone hands a caller a mutex it can never lock.
+//     REFUSED — see README.md, "Claims I do not make".
+//   * `_uk_mutex_lock_wait`, `_uk_mutex_unlock_wait`, `_uk_mutex_trylock_wait` —
+//     the SLOW-PATH HALVES of those inlines. `_uk_mutex_lock_wait(m, tid, v)`
+//     is entered only after the caller's compare-exchange has already failed
+//     and `v` holds the observed word; calling it standalone is not "lock", it
+//     is the contended branch with its precondition unmet. REFUSED.
+//   * `uk_mutex_get_metrics`, `_uk_mutex_metrics`, `_uk_mutex_metrics_lock` —
+//     `CONFIG_LIBUKLOCK_MUTEX_METRICS` is `default n` (`Config.uk:41`), so in a
+//     stock image these three are on the allowlist and absent from the binary.
+//
+// So the shelf's "15 linkable" is 5 usable functions, 2 phantoms, 3 slow-path
+// halves, 3 metrics symbols that are usually not there, and 2 constructors with
+// no reachable verbs. That is the `uknetdev` trap in another library: the
+// lifecycle exports and the operations do not. Here the reader-writer lock is
+// the half that survives it whole, and it is also the half with the ordering
+// rule worth lifting.
+//
+// THE ORDERING RULE, and it is a real one. `uk_rwlock_runlock` and
+// `uk_rwlock_wunlock` take the SAME argument, return the same void, and are
+// spelled four characters apart. They are not interchangeable:
+//
+//     rwlock.c:98   UK_ASSERT(rwl->nactive > 0)    // runlock: a READ lock is held
+//     rwlock.c:120  UK_ASSERT(rwl->nactive == -1)  // wunlock: a WRITE lock is held
+//
+// Cross them and, with `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` off — which is every
+// image anyone ships — nothing objects and the lock is destroyed:
+//
+//   * `wlock` then `runlock` drives `nactive` from -1 to **-2**. From there
+//     `nactive >= 0` is false forever, so no reader ever enters again, and
+//     `nactive == 0` is false forever, so no writer does either. The lock is
+//     permanently dead and the program hangs at the next acquire, arbitrarily
+//     far from the mistake.
+//   * `rlock` then `wunlock` drives `nactive` from 1 to **0**. The lock now
+//     reads as free while a reader is inside it, so the next writer is admitted
+//     concurrently with that reader. Silent data race, no hang, no diagnostic.
+//
+// That is the assertion pair this module makes structural, and it is the reason
+// the two hold-modes are two phantom states rather than one `held`.
+//
+// THE RATCHET. One handle, four states:
+//
+//     create         mints <fresh!>                       uk_rwlock_init_config(l, 0)
+//     read.acquire   needs <!fresh|!idle>  mints <reading!>  uk_rwlock_rlock
+//     read.release   needs <!reading>      mints <idle!>     uk_rwlock_runlock
+//     write.acquire  needs <!fresh|!idle>  mints <writing!>  uk_rwlock_wlock
+//     write.release  needs <!writing>      mints <idle!>     uk_rwlock_wunlock
+//     hold.skipped   needs <!fresh>        mints <idle!>     NO C CALL — the escape
+//     destroy        needs <!idle>                          free (uklock has no destructor)
+//
+// The mode is the first token of the tor name on purpose: `grep -r "lock:write"`
+// answers "where does this program take the write lock", which is the question
+// a reader of concurrent code actually asks and which `unlock` cannot answer.
+//
+// THE ASYMMETRY (pillar 4). `destroy` accepts ONLY <!idle>, and <idle!> is
+// minted only by a release — that is, only after the lock was really taken. So
+//
+//     create(locks) | lock l |> destroy(lock: l)
+//
+// does not compile. This is the shape `2104_14_open_tx_commit_close/db.kz` uses
+// (`close` takes <!active> and not <!connected>) and gzip's `fed` gate
+// (`koru-libs/gzip/index.kz:258`). The escape is named and greppable —
+// `lock:hold.skipped` — exactly as `blk:io.skipped` and `alloc:untouched` are,
+// because a lock nobody ever takes is a live allocation and a design question,
+// and the honest program should be able to say so in one word.
+//
+// WHERE I DECIDED THE C HAS NO ORDERING RULE, and refused to ratchet. Three
+// places, stated because pillar 4 asks for the refusals as loudly as the ratchets:
+//
+//   1. **Acquire and release are a symmetric pair within a mode.** There is no
+//      `read.acquire` -> `read.used` -> `read.release` chain. Taking a read lock
+//      and releasing it without reading anything is a legitimate idiom — it is
+//      how you wait for a writer to finish — and `rwlock.c` asserts nothing about
+//      it. The gate that exists is on the LOCK OBJECT (`hold.skipped`), never on
+//      an individual critical section. Ratcheting the pair would be ceremony.
+//   2. **Nothing counts.** `uk_rwlock_rlock` admits N concurrent readers and
+//      `nactive` counts them. A phantom state cannot count, and pretending
+//      otherwise by minting `reading1`/`reading2` would be a lie about what is
+//      proven. One handle here means one holder; see README.md.
+//   3. **No failure arms on the four hot tors.** `rlock`, `wlock`, `runlock` and
+//      `wunlock` all return `void`. They cannot fail — they block. So the hot
+//      path is four bare-return tors with no branch, no payload and no state
+//      beyond the one that carries the mode. The brief's rule that obligation-on-
+//      failure scales inversely with resource frequency lands here as: the rare
+//      thing (`create`, once per lock) has the failure arm, the frequent thing
+//      (every critical section) has none, and that is not a choice this lift
+//      made — it is what the C signatures already say.
+//
+// WHAT `create` DOES NOT OFFER. `uk_rwlock_init_config`'s `config_flags` has
+// exactly one defined bit, `UK_RWLOCK_CONFIG_WRITE_RECURSE` (`rwlock.h:24`), and
+// `rwlock.c:23` asserts it is NOT set — "the implementation does not support
+// recursive write locking", in the C's own TODO. With asserts off that assertion
+// is `do {} while(0)` and the flag is accepted, at which point the second `wlock`
+// waits for `nactive == 0` while holding `nactive == -1`: a self-deadlock. This
+// module has no parameter for it. `create` always passes 0. The flag is not
+// refused at run time; it is unspellable.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Every symbol below is on `lib/uklock/exportsyms.uk`. Nothing in this module
+// reaches a `static inline`, so the archive links against a stock unikernel with
+// no shim, no wrapper and no extra call frame.
+
+extern fn uk_rwlock_init_config(rwl: *Lock, config_flags: c_uint) void;
+extern fn uk_rwlock_rlock(rwl: *Lock) void;
+extern fn uk_rwlock_wlock(rwl: *Lock) void;
+extern fn uk_rwlock_runlock(rwl: *Lock) void;
+extern fn uk_rwlock_wunlock(rwl: *Lock) void;
+
+// nolibc, backed by ukalloc's default allocator. `struct __align(8) uk_rwlock`
+// (rwlock.h:27) is 8-aligned, so the storage comes from `memalign`.
+extern fn memalign(alignment: usize, size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+
+// ============================================================================
+// THE MIRROR, AND THE PROOF THAT REPLACES THE GUESS
+// ============================================================================
+//
+// `uklock` exports no allocator and no sizing symbol: `struct uk_rwlock` is a
+// caller-provided object, so a lift MUST know how big it is. That is an ABI
+// claim, and the shelf's own history says an ABI claim that is wrong corrupts
+// memory silently. `unikraft/blk` guards its mirrors with `@offsetOf` — which
+// proves the mirror is self-consistent and says nothing about the C.
+// `unikraft/pages` interrogates the C at run time instead, and that is the
+// pattern this module follows.
+//
+// THE SIZE IS NOT MIRRORED. IT IS MEASURED. That is not stylistic caution — a
+// mirrored `sizeof` was written first, booted, and was WRONG by 24 bytes:
+//
+//     struct uk_waitq { struct uk_list_head waiters; __spinlock lock; };
+//
+// and `__spinlock` is `struct __spinlock { volatile int lock; }` under
+// `CONFIG_HAVE_SMP` and `typedef struct __spinlock { /* empty */ }` — SIZE ZERO
+// — without it (`include/uk/arch/spinlock.h:35` vs `:97`). A single-core image,
+// which is the default and is what boots here, therefore has a 48-byte
+// `struct uk_rwlock` where an SMP image has 72. `uklock`'s own Kconfig does not
+// mention SMP, `rwlock.h` does not mention it, and no symbol reports it. A lift
+// that transcribed the header and asserted `@sizeOf == 72` would have been
+// self-consistently, confidently wrong in every image anyone actually builds.
+//
+// So this module mirrors ONLY THE FIELDS IT READS, and those are the four
+// leading `int`-sized counters whose offsets the C ABI fixes on every target
+// Unikraft supports. Everything from offset 16 down — the spinlock and the two
+// wait queues — is never named here and never assumed; its extent is measured by
+// `probe` on the running image.
+const Lock = extern struct {
+    nactive: c_int, // 0   -1 == a writer holds it; n > 0 == n readers
+    npending_reads: c_uint, // 4
+    npending_writes: c_uint, // 8
+    config_flags: c_uint, // 12
+    // Below here: `struct uk_spinlock sl`, `struct uk_waitq shared`,
+    // `struct uk_waitq exclusive` (rwlock.h:33-37). Not mirrored. Not read.
+};
+
+comptime {
+    if (@offsetOf(Lock, "nactive") != 0) @compileError("uk_rwlock.nactive moved");
+    if (@offsetOf(Lock, "npending_reads") != 4) @compileError("uk_rwlock.npending_reads moved");
+    if (@offsetOf(Lock, "npending_writes") != 8) @compileError("uk_rwlock.npending_writes moved");
+    if (@offsetOf(Lock, "config_flags") != 12) @compileError("uk_rwlock.config_flags moved");
+}
+
+// `struct __align(8) uk_rwlock` — rwlock.h:23. The alignment IS in the header,
+// spelled out, and unlike the size it does not move with a Kconfig option. It is
+// the one layout number this module takes from the source rather than from the
+// running image, and the partial mirror above is only 4-aligned, so it cannot be
+// derived from `@alignOf`.
+const ALIGN: usize = 8;
+
+// The byte the probe paints over the whole scratch allocation before handing it
+// to the C. Any value works; 0xA5 is chosen because it is neither 0 nor a
+// plausible pointer byte, so a stale read of it is obvious in a memory dump.
+const CANARY: u8 = 0xA5;
+
+// The probe's scratch block, and the untouched tail it insists on finding.
+//
+// The point of the guard is CONTAINMENT: a `struct uk_rwlock` too big for this
+// lift's expectations writes INSIDE the scratch block rather than past it, so
+// the mismatch is detected where it would otherwise have been the silent
+// corruption of whatever the allocator handed out next. Neither number is a
+// claim about any layout. SCRATCH is how much room the measurement gets; GUARD
+// is how much of it must come back untouched before the measurement is believed.
+const SCRATCH: usize = 512;
+const GUARD: usize = 64;
+
+// An undefined config bit, used once as an offset witness. `rwlock.h:24` defines
+// exactly one flag, `UK_RWLOCK_CONFIG_WRITE_RECURSE = 0x01`, and
+// `uk_rwlock_is_write_recursive` masks bit 0 only. Bit 1 therefore travels from
+// `init`'s argument into `config_flags` and is read by nothing — which makes it
+// the one field below the first word whose offset the C can be made to confirm.
+const WITNESS_FLAG: c_uint = 0x02;
+
+// ============================================================================
+// THE CAPABILITY
+// ============================================================================
+
+// The measured `struct uk_rwlock` of THIS image, and the proof that it was
+// measured rather than assumed. `create` is the only source of a `*Lock` and it
+// needs one of these, so nothing in this module can run before the measurement
+// has.
+const Locks = extern struct {
+    bytes: usize, // what `create` allocates — derived, see `probe`
+    wrote: usize, // the highest byte `uk_rwlock_init_config` touched, + 1
+};
+
+var locks: Locks = undefined;
+
+// ============================================================================
+// MEASURE THE LAYOUT
+// ============================================================================
+
+// Hand the C a canary-painted block, watch what it writes, and refuse unless
+// what comes back is `rwlock.c`'s behaviour. Five tests, each with its own
+// refusal:
+//
+//   1. SCRATCH. `memalign(8, 512)` succeeds and all 512 bytes are painted 0xA5.
+//   2. THE EXTENT IS MEASURED. After `uk_rwlock_init_config`, scan down from the
+//      top for the highest byte that is no longer the canary. That index plus
+//      one is how far the C's own initializer reached, and it is where the size
+//      of `struct uk_rwlock` comes from — not from a header, not from a
+//      `@sizeOf`. `uk_rwlock_init_config` writes every field the struct has
+//      (rwlock.c:15-27: four stores, `uk_spin_init`, two `uk_waitq_init`), so
+//      the last byte it touches is the last byte of the last field.
+//   3. THE MEASUREMENT IS CONTAINED. At least GUARD bytes at the top of the
+//      scratch block are still canary, and the measurement is non-zero. A zero
+//      says the linked symbol wrote nothing; a measurement running into the
+//      guard says the struct is bigger than this lift budgeted room to measure,
+//      and both are refused rather than rounded off. Because the guard is INSIDE
+//      the allocation, an oversized struct is detected here instead of silently
+//      corrupting whatever the allocator handed out next.
+//   4. THE FLAG LANDS AT 12. Init with `0x02`, an undefined bit that
+//      `uk_rwlock_is_write_recursive` does not mask and nothing else reads, then
+//      read `config_flags` back through the partial mirror. This is the only
+//      offset below the first word that the C can be made to confirm, and with
+//      the three counters reading zero it pins all four mirrored fields.
+//   5. `nactive` MOVES THE WAY rwlock.c SAYS. Re-init with 0, then walk
+//      rlock -> runlock -> wlock -> wunlock and read offset 0 after each:
+//      0, 1, 0, -1, 0. `wlock`'s -1 is the strongest single witness in the set —
+//      it is a value no other lock primitive in Unikraft produces, so seeing it
+//      proves the symbols this archive linked are `rwlock.c`'s and not something
+//      else that happened to satisfy the name.
+//
+// Test 5 costs four real lock operations at start-up, once per image. They
+// cannot block: `_uk_waitq_wait_until` (wait.h:106) is `while (!(condition))`,
+// and on a lock nobody else holds every condition is already true, so the
+// scheduler is never entered. A program calls `probe` once and threads the
+// `*Locks`.
+//
+// There is no degraded path. If any test fails, `probe` takes `| unsupported`
+// naming which one, and because `create` is the only source of a `*Lock` and it
+// needs the `*Locks`, nothing in this module can be used at all. There is no
+// "assume 72", and the first draft of this file proves why there must not be:
+// it assumed 72, and 48 is the answer on a single-core image.
+~pub tor probe { }
+| ready { locks: *Locks, bytes: u64, wrote: u64, witness: string }
+| unsupported string
+
+~proc probe|zig {
+    const raw = memalign(ALIGN, SCRATCH) orelse {
+        return .{ .unsupported = "out of memory allocating the layout-probe scratch block" };
+    };
+    const bytes: [*]u8 = @ptrCast(raw);
+    for (0..SCRATCH) |i| bytes[i] = CANARY;
+
+    const m: *Lock = @ptrCast(@alignCast(raw));
+
+    uk_rwlock_init_config(m, WITNESS_FLAG);
+
+    // Test 2 — how far the initializer reached.
+    var wrote: usize = SCRATCH;
+    while (wrote > 0 and bytes[wrote - 1] == CANARY) : (wrote -= 1) {}
+
+    // Test 3 — the measurement is contained, at both ends.
+    if (wrote == 0) {
+        free(raw);
+        return .{ .unsupported = "uk_rwlock_init_config wrote nothing: the linked symbol is not lib/uklock's initializer" };
+    }
+    if (wrote + GUARD > SCRATCH) {
+        free(raw);
+        return .{ .unsupported = "struct uk_rwlock is larger than this lift budgeted room to measure: uk_rwlock_init_config reached into the probe's guard region, so its extent is not established and no lock is handed out" };
+    }
+
+    // Test 4 — config_flags is at offset 12 and the counters at 0, 4 and 8.
+    if (m.config_flags != WITNESS_FLAG) {
+        free(raw);
+        return .{ .unsupported = "struct uk_rwlock.config_flags is not at offset 12: the value handed to uk_rwlock_init_config did not come back out of the mirrored field" };
+    }
+    if (m.nactive != 0 or m.npending_reads != 0 or m.npending_writes != 0) {
+        free(raw);
+        return .{ .unsupported = "uk_rwlock_init_config did not zero the three counters at offsets 0, 4 and 8" };
+    }
+
+    // Test 5 — the identity witness. Re-initialize with the flag this module
+    // actually uses, then watch nactive.
+    uk_rwlock_init_config(m, 0);
+    const at_init = m.nactive;
+    uk_rwlock_rlock(m);
+    const at_rlock = m.nactive;
+    uk_rwlock_runlock(m);
+    const at_runlock = m.nactive;
+    uk_rwlock_wlock(m);
+    const at_wlock = m.nactive;
+    uk_rwlock_wunlock(m);
+    const at_wunlock = m.nactive;
+    free(raw);
+
+    if (at_init != 0 or at_rlock != 1 or at_runlock != 0 or at_wlock != -1 or at_wunlock != 0) {
+        return .{ .unsupported = "the linked uk_rwlock_* symbols do not drive nactive the way rwlock.c does: expected 0, 1, 0, -1, 0 across init/rlock/runlock/wlock/wunlock" };
+    }
+
+    // Rounded up to the alignment `rwlock.h:23` declares. Trailing padding is by
+    // definition never written, so the scan cannot see it — and rounding up is
+    // what covers it. At most ALIGN-1 bytes wider than the struct, never
+    // narrower than anything the C touches.
+    const size = (wrote + ALIGN - 1) & ~(ALIGN - 1);
+    locks = Locks{ .bytes = size, .wrote = wrote };
+    return .{ .ready = .{
+        .locks = &locks,
+        .bytes = @intCast(size),
+        .wrote = @intCast(wrote),
+        .witness = "nactive: init 0, rlock 1, runlock 0, wlock -1, wunlock 0",
+    } };
+}
+
+// ============================================================================
+// THE LOCK
+// ============================================================================
+
+// `uk_rwlock_init_config(l, 0)` over storage this module owns. Mints <fresh!>.
+//
+// A caller never sees a `struct uk_rwlock *` and never supplies its storage,
+// which is the whole reason the C's five `UK_ASSERT(rwl)` sites have nothing
+// left to catch: the pointer is minted here, from a checked allocation, and the
+// only way to name one is to hold the handle this branch produces.
+//
+// The flags argument is not exposed. See the header note on
+// `UK_RWLOCK_CONFIG_WRITE_RECURSE`.
+//
+// One failure arm with a reason rather than a state: an allocation that did not
+// happen leaves nothing to hand back, so there is no obligation to carry.
+~pub tor create { locks: *Locks }
+| lock *Lock<fresh!>
+| unavailable string
+
+~proc create|zig {
+    const raw = memalign(ALIGN, locks.bytes) orelse {
+        return .{ .unavailable = "out of memory allocating a uk_rwlock" };
+    };
+    const l: *Lock = @ptrCast(@alignCast(raw));
+    uk_rwlock_init_config(l, 0);
+    return .{ .lock = l };
+}
+
+// `uk_rwlock_rlock`. Mints <reading!>.
+//
+// Accepts <!fresh|!idle> — a lock that is initialized and not currently held by
+// this program. It does NOT accept <!reading>, so recursive read locking cannot
+// be spelled. That refusal is not transcribed from an assertion, because there
+// is none: `rlock` twice on one thread is silently legal in the C, sets
+// `nactive` to 2, and deadlocks the moment a writer arrives between the two
+// calls — the second `rlock` waits on `npending_writes > 0` (rwlock.c:53) while
+// the writer waits on `nactive == 0` (rwlock.c:76), and neither can move. The C
+// has a comment about reader/writer starvation at rwlock.c:41-50 and no check.
+//
+// No failure arm: `uk_rwlock_rlock` returns void. It blocks or it succeeds.
+~pub tor read.acquire { lock: *Lock<!fresh|!idle> } -> *Lock<reading!>
+
+~proc read.acquire|zig {
+    uk_rwlock_rlock(lock);
+    return lock;
+}
+
+// `uk_rwlock_runlock`. Accepts ONLY <!reading>, which is the lift of
+// rwlock.c:98 (`UK_ASSERT(rwl->nactive > 0)`).
+//
+// A <writing!> handle does not type-check here, so the -1 -> -2 corruption
+// described in the header is unspellable rather than asserted. A second
+// `read.release` does not type-check either: this tor consumes the <!reading>
+// and mints <idle!>.
+~pub tor read.release { lock: *Lock<!reading> } -> *Lock<idle!>
+
+~proc read.release|zig {
+    uk_rwlock_runlock(lock);
+    return lock;
+}
+
+// `uk_rwlock_wlock`. Mints <writing!>.
+//
+// Accepts <!fresh|!idle> and NOT <!writing>, so recursive write locking cannot
+// be spelled. The C's position on that is contradictory and worth stating:
+// `rwlock.h:24` defines a flag to enable it, `rwlock.c:22` calls it a TODO, and
+// `rwlock.c:23` asserts the flag is off — which in a shipped image is
+// `do {} while(0)`. So the C offers the feature, does not implement it, and
+// stops warning about it in exactly the builds people run. Here the flag has no
+// spelling and the second `wlock` has no type.
+//
+// No failure arm: `uk_rwlock_wlock` returns void.
+~pub tor write.acquire { lock: *Lock<!fresh|!idle> } -> *Lock<writing!>
+
+~proc write.acquire|zig {
+    uk_rwlock_wlock(lock);
+    return lock;
+}
+
+// `uk_rwlock_wunlock`. Accepts ONLY <!writing>, which is the lift of
+// rwlock.c:120 (`UK_ASSERT(rwl->nactive == -1)`).
+//
+// This is the arm of the pair that fails SILENTLY in C rather than loudly: a
+// `runlock`-shaped mistake hangs the next acquirer, but calling `wunlock` while
+// holding a read lock takes `nactive` from 1 to 0 and admits a writer alongside
+// the reader still inside. No hang, no assert in a shipped image, a data race
+// that reproduces on someone else's machine.
+~pub tor write.release { lock: *Lock<!writing> } -> *Lock<idle!>
+
+~proc write.release|zig {
+    uk_rwlock_wunlock(lock);
+    return lock;
+}
+
+// THE NAMED ESCAPE from the asymmetry gate. `destroy` accepts only <!idle>, and
+// only a release mints it, so a lock that was created and never taken cannot be
+// destroyed. That is the point — but a lock created on a path that turns out not
+// to need it is legitimate, and this is how a program says so out loud.
+//
+// Deliberately greppable: `grep -r "lock:hold.skipped"` answers "which programs
+// build a lock and never enter it", which in a unikernel is a question about a
+// live allocation AND about whether the critical section it was written for
+// still exists.
+// It runs no C call, which is the honest emission — nothing happened.
+~pub tor hold.skipped { lock: *Lock<!fresh> } -> *Lock<idle!>
+
+~proc hold.skipped|zig {
+    return lock;
+}
+
+// The storage goes back. Accepts ONLY <!idle> and consumes it.
+//
+// There is NO C call here, and that is not an omission: `uklock` has no
+// destructor for a `struct uk_rwlock`. It is a plain object with two intrusive
+// wait queues, and Unikraft's own answer to "how do I dispose of one" is that
+// you do not — every rwlock in the tree is a static or lives inside a longer
+// lived struct. The only thing owed is the allocation `create` made, so that is
+// the only thing this tor does.
+//
+// Destroying a lock a thread is still waiting on would be a real bug and this
+// module cannot catch it: the waiters are other threads, and no phantom state
+// on this handle knows about them. Stated as a claim not made, in README.md.
+//
+// No failure arm: `free` returns void and cannot fail.
+~pub tor destroy { lock: *Lock<!idle> }
+
+~proc destroy|zig {
+    free(@ptrCast(lock));
+}

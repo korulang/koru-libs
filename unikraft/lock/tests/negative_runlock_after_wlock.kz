@@ -1,0 +1,48 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): take the WRITE lock and release it as a
+// READER. The mirror image of `negative_wunlock_after_rlock.kz`, and the reason
+// this lift spends two phantom states on the hold rather than one.
+//
+// `read.release` accepts only <!reading>, minted only by `read.acquire`.
+//
+// WHAT THE C DOES INSTEAD. `uk_rwlock_runlock` asserts `rwl->nactive > 0`
+// (rwlock.c:98) and then decrements. Called while a writer holds the lock,
+// `nactive` goes from -1 to **-2**, and from there:
+//
+//   * `uk_rwlock_rlock` waits on `nactive >= 0` (rwlock.c:58) — never true again.
+//   * `uk_rwlock_wlock` waits on `nactive == 0` (rwlock.c:76) — never true again.
+//
+// Nothing ever clears it, because the only two writers of `nactive` back to a
+// sane value are the very calls that are now blocked. The lock is permanently
+// dead. With asserts off, the symptom is a hang at some LATER acquire, in
+// whichever thread happens to reach it first — arbitrarily far in time and in
+// call stack from the line that caused it.
+//
+// The two states are not decoration around a symmetric pair. `runlock` and
+// `wunlock` are two different operations that share a signature, and the type is
+// the only place the difference can live.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.lock:reading' but got 'unikraft.lock:writing!'
+//           for argument 'lock'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/lock
+~import std/io
+
+~unikraft/lock:probe
+| ready proof |> unikraft/lock:create(proof.locks)
+    | lock guard |> unikraft/lock:write.acquire(lock: guard): exclusive
+        |> unikraft/lock:read.release(lock: exclusive): done
+            |> std/io:print.ln("should never get here")
+            |> unikraft/lock:destroy(lock: done)
+    | unavailable why |> std/io:print.ln("create failed: {{ why:s }}")
+| unsupported why |> std/io:print.ln("uk_rwlock layout refused: {{ why:s }}")
