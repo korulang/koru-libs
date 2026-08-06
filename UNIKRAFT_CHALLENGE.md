@@ -194,6 +194,17 @@ have missed why it did what it did.
   no memory. Two kernel constants no symbol exports — the page size and
   `UK_PAGING_VADDR_ANY` — are DERIVED BY BEHAVIOURAL PROBE rather than assumed;
   the console prints `0xbaadbaad80000000`. Census 20 retired / 16 not, per site.
+- **[ninep](unikraft/ninep/README.md)** — `uk9p` behind THREE NESTED
+  RESOURCES, 14 tors, 11 states. Answers the catalog's open question about how
+  obligations compose across a nesting with one rule applied at every level:
+  **the parent handle is CONSUMED by the child's constructor and RE-MINTED by
+  the child's destructor**, so `disconnect` while a file is open is a
+  `Use-after-discharge` rather than a state check, and there is no terminal
+  disposer anywhere — a leak at any of the three depths is REPORTED, never
+  silently inserted. Boots against QEMU's virtio-9p server and round-trips a
+  host file. 7 of 21 asserts retired per site, including `9pdev.c:118`, the
+  library's only cross-resource rule; 14 not. Corrects the shelf's linkability
+  row twice — see its shelf entry.
 - **[lock](unikraft/lock/README.md)** — `uklock`'s READER-WRITER lock behind four
   states, 7 tors, and a `struct uk_rwlock` whose SIZE IS MEASURED on the running
   image rather than transcribed. Two contributions. (1) The linkability verdict:
@@ -342,7 +353,7 @@ was an unfiltered line count. Both are replaced.
 | `uknetdev` | allowlist | 33 | 0 | 2 | **31** | 12M | 170 | yes | **OPEN, and newly so — see below.** Highest assert count in the tree. Every one of its 12 inlines is MIRROR; **none is NO**. |
 | `ukstore` | allowlist | 39 | 0 | 0 | **39** | — | 28 | yes | Refcounted object registry: `obj_alloc → _obj_add → acquire ⇄ release`, plus an 11-type × 3-verb typed getter/setter matrix that is a comptime-codegen exercise rather than a wrapper. **Zero inlines** — the whole surface links. Nothing shipped has this shape. |
 | `ukvsockdev` | allowlist | 21 | 0 | 0 | **21** | 7M | 39 | **no** | Device lifecycle *and* a per-connection lifecycle (`conn_request → conn_response → conn_shutdown`/`conn_reset`) *and* a buffer (`init → append → read → destroy`). Excellent shape — **and it does not exist in 0.21.0.** You cannot boot it with `version: stable`. Do not claim this slot without first proving you can build against the fork. |
-| `uk9p` | allowlist | 46 | 0 | 0 | **46** | 14M | 21 | yes | Three nested resources with an explicit state enum each: device (`UK_9PDEV_CONNECTED`/`DISCONNECTING`), request (`UK_9PREQ_INITIALIZED → READY → SENT → RECEIVED`), and refcounted fids (`uk_9pfid_get`/`put`). `uk_9pdev_request` asserts `dev->state == UK_9PDEV_CONNECTED` at `9pdev.c:265`. The richest unclaimed ordering in the tree. |
+| `uk9p` | allowlist | 46 | 0 | 0 | **44** | 14M | 21 | yes | **TAKEN** (`unikraft/ninep`) — three nested resources. **Corrected twice.** (1) `links` is **44, not 46**: `uk_9pdev_set_msize` and `uk_9pdev_get_msize` are each listed TWICE, which is a SIXTH hazard beside the brief's five — an allowlist can repeat a name. Verified by `nm -g libuk9p.o`: exactly 44 `T` symbols, an exact set match with the de-duplicated allowlist. (2) The allowlist is **not closed under the state machine it exposes**: `uk_9preq_ready` (`9preq.c:87`) — the ONLY transition out of `UK_9PREQ_INITIALIZED`, which the exported `uk_9pdev_req_create` is the only producer of — is absent from it and is `t` in the object. Three other real functions likewise. So the request state machine is unreachable from a separate archive and the lift binds `uk_9p_*`. |
 | `ukpaging` | allowlist | 15 | 0 | 0 | **15** | 8F/3A | 140 | yes | `pt_init → pt_set_active → page_map/page_unmap → pt_free`, plus the `page_kmap`/`page_kunmap` pair. Second-highest assert count. The 3 A are control-register reads; the other 8 inlines are pure arithmetic and free. |
 | `ukconsole` | allowlist | 17 | 0 | 0 | **17** | 2M | 26 | **partly** | `register → out/in → unregister` plus async callback register/unregister. **10 of the 17 are fork-only**; against 0.21.0 this is a 7-symbol library with no `unregister`, which deletes the asymmetry that makes it interesting. |
 | `uklcpu` | allowlist | 29 | 0 | 16 | **13** | 20F/12M/3N | 25 | yes | SMP + interrupt-flag primitives. The `save_irqf`/`restore_irqf` pair is a real nesting discipline, but it is one of the 16 **inert** lines, and most of the rest is `cli`/`sti`. Poor target despite the headline 29. |
@@ -481,7 +492,7 @@ reading.
 | `ramfs` | allowlist | 0 | 0 | 0 | **0** | — | 1 | yes |
 | `syscall_shim` | open | — | 0 | 0 | **5** | 2F/2M/2N | 19 | yes |
 | `ubsan` | allowlist | 34 | 0 | 0 | **34** | — | 2 | yes |
-| `uk9p` | allowlist | 46 | 0 | 0 | **46** | 14M | 21 | yes |
+| `uk9p` | allowlist | 46 | 0 | 0 | **44** | 14M | 21 | yes |
 | `ukalloc` | allowlist | 25 | 2 | 0 | **23** | 1F/24M | 45 | yes |
 | `ukallocbbuddy` | allowlist | 1 | 0 | 0 | **1** | — | 24 | yes |
 | `ukallocpool` | allowlist | 12 | 0 | 0 | **12** | — | 23 | yes |
