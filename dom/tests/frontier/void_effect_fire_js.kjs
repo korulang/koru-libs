@@ -1,0 +1,15 @@
+// MINIMAL REPRO — a VOID (payloadless) effect op fired from a |js proc body
+// emits `const _auto_N = ;` — syntactically invalid JavaScript.
+// Shape mirrors 400_110 exactly, with the op's payload removed.
+
+~import std/io
+
+~pub tor boot {}
+! ready
+
+~proc boot|js {
+    ready();
+}
+
+~boot()
+! ready |> std/io:print.ln("ready fired")
