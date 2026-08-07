@@ -1,0 +1,40 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): start an interface whose queues were never
+// configured.
+//
+// `start` accepts ONLY <!armed>, and <armed!> is minted ONLY by `queues.open`.
+// `configure` mints <configured!>, so this chain hands `start` the wrong state.
+//
+// What the C does instead: it STARTS. `uk_netdev_start`'s only guard is
+// `if (dev->_data->state != UK_NETDEV_CONFIGURED) return -EINVAL`
+// (netdev.c:601), and this device IS CONFIGURED — the check passes. The device
+// goes to UK_NETDEV_RUNNING with `_rx_queue[0]` and `_tx_queue[0]` still null,
+// and the first `uk_netdev_rx_one` then walks a null queue pointer into the
+// driver. The assertion that would have caught it, `UK_ASSERT(dev->_rx_queue
+// [queue_id] && !PTRISERR(...))` at netdev.h:484, is `do {} while(0)` in every
+// image anyone ships.
+//
+// So this is not a redundant type check over a C check. It is the ordering rule
+// uknetdev states in an assertion and deletes at -DNDEBUG.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft/net:get(id: 0)
+| link a |> unikraft/net:probe(a.dev)
+    | ok p |> unikraft/net:configure(dev: p)
+        | ok c |> unikraft/net:start(c.dev)
+            | ok r |> unikraft/net:traffic.skipped(dev: r): held |> unikraft/net:park(dev: held)
+            | refused e |> unikraft/net:abandon(e.dev)
+        | refused e |> unikraft/net:abandon(e.dev)
+    | refused e |> unikraft/net:abandon(e.dev)
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")

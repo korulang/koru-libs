@@ -204,6 +204,27 @@ have missed why it did what it did.
   `__spinlock` is size ZERO without `CONFIG_HAVE_SMP` — which is why the size is
   now derived by canary probe. Retires the runlock/wunlock assertion pair, and
   forgetting to unlock is a compile ERROR rather than an insertion.
+- **[net](unikraft/net/README.md)** — `uknetdev` behind a 7-state ratchet, 13
+  tors. **NOT a naive wrap**: lifecycle AND transfers, with a booted image that
+  sends an Ethernet frame out one virtio-net device through `dev->tx_one` and
+  receives it byte-for-byte on a second through `dev->rx_one`, plus the
+  host-side pcap. 23 of 170 retired, per site, including the two per-packet
+  state checks. Answers the brief's packet-versus-device question with a line
+  taken from the C: **the ratchet is the DEVICE's, the packet carries an
+  obligation and no ceremony** — a transmitted netbuf is not an obligation at all
+  because `tx_one`'s contract transfers ownership inside one call, a received one
+  is, and the compiler AUTO-INSERTS its `uk_netbuf_free` rather than erroring.
+  Two corrections to the catalog. (1) **`uknetdev` has no teardown**: all 33
+  allowlist lines are acquire, configure, query or transfer, so the terminus
+  `park` makes NO C call and the asymmetry gate sits on it. (2) `blk`'s "netdev's
+  hot path is not a thing to ship first" is superseded — the mirror is proved by
+  FOUR witnesses (state agreement at three values against the exported
+  `uk_netdev_state_get`; a call-through comparison on `ops->mtu_get`; a
+  snapshot-free forward scan that DERIVES `CONFIG_LIBUKNETDEV_MAXNBQUEUES`, which
+  no symbol exports; and declaration order from those anchors). Also measured:
+  **a virtqueue smaller than the device maximum silently loses every frame**
+  (legacy virtio-pci never writes a queue size), so `queues.open` has no
+  descriptor parameter.
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -361,7 +382,7 @@ was an unfiltered line count. Both are replaced.
 | `ukvmem` | allowlist | 20 | 0 | 0 | **20** | 4F/7M/1N | 128 | yes | **TAKEN** (`unikraft/vmem`) — mappings. The split that corrected this whole rule: the four `uk_vma_reserve*`/`map_anon`/`map_dma` inlines are FREE, and `uk_vma_map_stack` alone is NO, on two Kconfig guard-page integers. |
 | `ukblkdev` | allowlist | 18 | 0 | 0 | **18** | 5M | 105 | yes | **TAKEN** (`unikraft/blk`) — the first lift; read it before you start. |
 | `uklock` | allowlist | 15 | 2 | 0 | **13** | 13M/3A/1N | 30 | yes | **TAKEN** (`unikraft/lock`) — the rwlock. 13 link, but only **5** are rwlock verbs a lift can use: the mutex and semaphore halves export constructors and leave every verb `static inline`. The 3 A are the arm64 ticketlock (`ldaxr`/`stlxr`). |
-| `uknetdev` | allowlist | 33 | 0 | 2 | **31** | 12M | 170 | yes | **OPEN, and newly so — see below.** Highest assert count in the tree. Every one of its 12 inlines is MIRROR; **none is NO**. |
+| `uknetdev` | allowlist | 33 | 0 | 2 | **31** | 12M | 170 | yes | **TAKEN** (`unikraft/net`) — lifecycle *and* transfers, the mirror proved by four witnesses on the booted machine. Every one of its 12 inlines is MIRROR; **none is NO**. **Corrected by that lift:** the library has **no teardown at all** — all 33 lines are acquire, configure, query or transfer — so its ratchet ends in a tor that makes no C call, and the asymmetry gate sits there. |
 | `ukstore` | allowlist | 39 | 0 | 0 | **39** | — | 28 | yes | Refcounted object registry: `obj_alloc → _obj_add → acquire ⇄ release`, plus an 11-type × 3-verb typed getter/setter matrix that is a comptime-codegen exercise rather than a wrapper. **Zero inlines** — the whole surface links. Nothing shipped has this shape. |
 | `ukvsockdev` | allowlist | 21 | 0 | 0 | **21** | 7M | 39 | **no** | Device lifecycle *and* a per-connection lifecycle (`conn_request → conn_response → conn_shutdown`/`conn_reset`) *and* a buffer (`init → append → read → destroy`). Excellent shape — **and it does not exist in 0.21.0.** You cannot boot it with `version: stable`. Do not claim this slot without first proving you can build against the fork. |
 | `uk9p` | allowlist | 46 | 0 | 0 | **46** | 14M | 21 | yes | Three nested resources with an explicit state enum each: device (`UK_9PDEV_CONNECTED`/`DISCONNECTING`), request (`UK_9PREQ_INITIALIZED → READY → SENT → RECEIVED`), and refcounted fids (`uk_9pfid_get`/`put`). `uk_9pdev_request` asserts `dev->state == UK_9PDEV_CONNECTED` at `9pdev.c:265`. The richest unclaimed ordering in the tree. |
@@ -446,11 +467,17 @@ Netbuf allocation and release are fully exported (`uk_netbuf_alloc_buf`,
 not the only road. The old note's "refcounted netbufs" was the right observation
 attached to the wrong conclusion.
 
-So: **`uknetdev`'s transfers ARE reachable, and this is the shelf's biggest
-opening.** 170 asserts — the most of any library in the tree — over a state
+So: **`uknetdev`'s transfers ARE reachable**, and that was the shelf's biggest
+opening. 170 asserts — the most of any library in the tree — over a state
 machine the C writes down and deletes at `-DNDEBUG`. What a contestant owes is
 the mirror proof, not an apology for attempting it. `lib/uknetdev` is
 byte-identical between the fork and 0.21.0, so the probe above answers for both.
+
+**CLAIMED and closed** by `unikraft/net`, which reproduced this probe
+independently, proved the mirror on the booted machine with four witnesses rather
+than trusting the numbers, and sent a frame between two virtio-net devices. Its
+README carries one correction the note above did not know: the library has **no
+teardown**, which changes the shape of any ratchet built on it.
 
 `ukblkdev` is what `uknetdev` looked like from a distance: the same explicit state
 machine and nested queue sub-resource, and it exports its **whole** surface

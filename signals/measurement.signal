@@ -1,0 +1,6 @@
+name: measurement
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a number or behaviour was established by running something, replacing a reading or an assumption

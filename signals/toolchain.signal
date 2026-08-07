@@ -1,0 +1,6 @@
+name: toolchain
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a defect in koruc or the build seam, surfaced by honest library code and pinned with a repro rather than routed around
