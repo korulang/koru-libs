@@ -1,0 +1,15 @@
+// koru/dom |js facet — the host bodies for the events declared in index.k.
+// Same facet layout the suite pins in 140_009/140_010: one stem, per-target
+// implementation files, merged at import.
+
+~proc run|js {
+    document.title = title;
+    document.addEventListener("click", (ev) => {
+        const el = ev.target.closest("[data-action]");
+        if (el === null) return;
+        const action = parseInt(el.getAttribute("data-action"), 10);
+        const idAttr = el.getAttribute("data-id");
+        const id = idAttr === null ? 0 : parseInt(idAttr, 10);
+        click({ action: action, id: id });
+    });
+}

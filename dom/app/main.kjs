@@ -1,0 +1,41 @@
+// Vehicle |js facet — the two host escapes the app carries, each here
+// because a named wall keeps it out of Koru:
+//
+// make-label — the reference's random three-word label (Main.js:18-73,
+//   _random at Main.js:3-5, mirrored exactly). Escaped because the pick is
+//   Math.random (host) and the assembled label cannot live in the store
+//   (char[N] columns have no JS lowering — see main.k header).
+//
+// append-row — the krausest row markup (Main.js:7-9 rowTemplate, verbatim).
+//   Escaped because Koru has no markup surface on this target yet: the vaxis
+//   `component` transform is the porting candidate and is round-2 work.
+
+const rowTemplate = document.createElement("tr");
+rowTemplate.innerHTML =
+  "<td class='col-md-1'> </td><td class='col-md-4'><a> </a></td><td class='col-md-1'><a><span class='glyphicon glyphicon-remove' aria-hidden='true'></span></a></td><td class='col-md-6'></td>";
+
+const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
+const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
+const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
+
+function domRandom(max) {
+    return Math.round(Math.random() * 1000) % max;
+}
+
+~proc make-label|js {
+    return adjectives[domRandom(adjectives.length)] + " " + colours[domRandom(colours.length)] + " " + nouns[domRandom(nouns.length)];
+}
+
+~proc append-row|js {
+    const tr = rowTemplate.cloneNode(true);
+    tr.setAttribute("data-id", String(id));
+    tr.childNodes[0].textContent = String(id);
+    const labelAnchor = tr.childNodes[1].firstChild;
+    labelAnchor.textContent = label;
+    labelAnchor.setAttribute("data-action", "8");
+    labelAnchor.setAttribute("data-id", String(id));
+    const removeAnchor = tr.childNodes[2].firstChild;
+    removeAnchor.setAttribute("data-action", "7");
+    removeAnchor.setAttribute("data-id", String(id));
+    document.getElementById("tbody").appendChild(tr);
+}
