@@ -51,28 +51,84 @@ function loadResults(file) {
   return r;
 }
 
-// js_escape: fraction of non-blank vehicle source lines carrying a `|js` host
-// escape. The second headline metric — the feature-mining count.
+// js_escape: the fraction of the vehicle that fell out to host JavaScript
+// rather than being expressible in Koru. The second headline metric — the
+// feature-mining count.
+//
+// Definition (round 1, generator fixed to match the facet layout the vehicle
+// actually uses — the original only walked .k/.kz and grepped for `|js`, so a
+// vehicle whose escapes live in .kjs facet files reported near-zero):
+//   - files: every .k, .kz, .kjs under --vehicle-src;
+//   - lines counted: non-blank, non-comment (trimmed `//`-leading excluded);
+//   - .k files are pure Koru — every counted line is a Koru line;
+//   - in .kz/.kjs host files, a counted line is KORU when it is `~`-mode
+//     surface (trimmed line starts with `~`), HOST otherwise — top-level host
+//     lines and the bodies of `~proc …|<target> { … }` blocks (tracked by
+//     brace balance from the proc header). The proc header itself counts as
+//     ESCAPED: it is the line that declares the escape.
+//   - js_escape = host_lines / (host_lines + koru_lines).
+// Scope note: the classifier covers the facet layout (declarations in .k,
+// host bodies in .kjs/.kz). Effect-branch continuation lines under a ~tor
+// inside a HOST file would misclassify as host; the vehicle declares events
+// in .k facets where the question cannot arise.
 function computeJsEscape(srcDir) {
-  let total = 0;
-  let escaped = 0;
+  let koru = 0;
+  let host = 0;
+  const classifyHostFile = (text) => {
+    let depth = 0; // brace depth inside a ~proc host body
+    for (const raw of text.split("\n")) {
+      const line = raw.trim();
+      if (line === "" || line.startsWith("//")) continue;
+      if (depth > 0) {
+        host++;
+        for (const ch of line) {
+          if (ch === "{") depth++;
+          else if (ch === "}") depth--;
+        }
+        continue;
+      }
+      if (line.startsWith("~")) {
+        if (/^~proc\b.*\|[a-z]+/.test(line)) {
+          host++; // the escape declaration itself
+          let d = 0;
+          for (const ch of line) {
+            if (ch === "{") d++;
+            else if (ch === "}") d--;
+          }
+          if (d > 0) depth = d;
+        } else {
+          koru++;
+        }
+      } else {
+        host++;
+      }
+    }
+  };
+  // The vehicle is the shipping surface: the instrument (closer/, board/),
+  // pinned-defect repros (tests/), and dependency trees are not vehicle source.
+  const SKIP_DIRS = new Set(["closer", "board", "tests", "node_modules", "zig-out", ".zig-cache"]);
   const walk = (dir) => {
     for (const entry of readdirSync(dir)) {
       const p = path.join(dir, entry);
       const st = statSync(p);
-      if (st.isDirectory()) walk(p);
-      else if (/\.(k|kz)$/.test(entry)) {
-        for (const line of readFileSync(p, "utf8").split("\n")) {
-          if (line.trim() === "") continue;
-          total++;
-          if (/\|js\b/.test(line)) escaped++;
+      if (st.isDirectory()) {
+        if (!SKIP_DIRS.has(entry)) walk(p);
+      }
+      else if (/\.k$/.test(entry)) {
+        for (const raw of readFileSync(p, "utf8").split("\n")) {
+          const line = raw.trim();
+          if (line === "" || line.startsWith("//")) continue;
+          koru++;
         }
+      } else if (/\.(kz|kjs)$/.test(entry)) {
+        classifyHostFile(readFileSync(p, "utf8"));
       }
     }
   };
   walk(srcDir);
-  if (total === 0) throw new Error(`no .k/.kz source lines found under ${srcDir} — cannot compute js_escape`);
-  return { fraction: escaped / total, escaped_lines: escaped, total_lines: total };
+  const total = koru + host;
+  if (total === 0) throw new Error(`no .k/.kz/.kjs source lines found under ${srcDir} — cannot compute js_escape`);
+  return { fraction: host / total, escaped_lines: host, total_lines: total };
 }
 
 async function main() {
