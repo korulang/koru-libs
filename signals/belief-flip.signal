@@ -1,0 +1,6 @@
+name: belief-flip
+kind: inferred
+shape: categorical
+face: in
+membrane: true
+note: a held belief reversed under measurement — not that it was never right, but that running the thing showed the opposite
