@@ -1,0 +1,126 @@
+// POSITIVE, and the gate-2 artifact: both of `ukallocpool`'s constructors driven
+// from Koru inside a unikernel, against the real binary-buddy allocator ukboot
+// registered.
+//
+//   host   -> census -> take -> write -> read -> give -> census -> keep
+//   create -> census -> take -> untouched -> give                      <- the escape
+//                    -> take -> write -> read -> give -> census -> keep
+//
+// WHAT THE CONSOLE PROVES THAT `--check` CANNOT:
+//
+//   1. BOTH CONSTRUCTORS RUN, in one image, side by side. `host` places a pool
+//      in this module's static arena via `uk_allocpool_init`; `create` builds one
+//      on the default allocator via `uk_allocpool_alloc`. They are the two halves
+//      of the provenance rule, and the only thing separating their pools
+//      afterwards is a phantom state.
+//   2. THE CENSUS BRACKETS CLOSE. Each pool prints its free count before any
+//      object is taken and after every object is back, and the two numbers are
+//      equal. An object that failed to return shows up as a smaller second
+//      number — that is `uk_allocpool_free`'s drained assertion (pool.c:386)
+//      measured at run time, beside the compile-time refusal that makes it
+//      unreachable.
+//   3. `objlen` IS THE ALIGNED LENGTH, not the requested one. The hosted pool
+//      asks for 64-byte objects at 8-byte alignment and reports what the C
+//      actually laid out (pool.c:313). A lift that echoed the request back would
+//      be reporting its own input.
+//   4. THE NAMED ESCAPE RUNS. `untouched` takes an object, proves the pool had
+//      capacity, and gives it straight back — the program
+//      `negative_give_without_use.kz` refuses, spelled honestly. It emits no C
+//      call, so the only evidence it exists is that this program compiles and
+//      the census still balances.
+//
+// NEITHER POOL IS FREED, and that is not an omission. `uk_allocpool_free`
+// unconditionally reaches `UK_CRASH` (pool.c:390) — see
+// `boot_free_crashes.kz`, which is the same call and the crash console.
+// `keep` is what a working Unikraft program does.
+//
+// Build and boot: see ../README.md.
+
+// `~import unikraft` is DELIBERATELY ABSENT: importing `unikraft/allocpool`
+// already pulls `unikraft/index.kz` into scope, and writing both registers the
+// module twice. Pinned in ../../blk/README.md as toolchain defect 2.
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+// The body must be non-empty: an empty Source block emits invalid Zig.
+// Pinned in ../../blk/README.md as toolchain defect 1.
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+// ---- the HOSTED pool: uk_allocpool_init over this module's static arena ----
+
+~unikraft/allocpool:host(objects: 8, bytes: 64, alignment: 8)
+| pool hp |> unikraft/allocpool:census(pool: hp): opening
+    |> std/io:print.ln("hosted  open:  {{ opening.free:d }}/{{ opening.capacity:d }} free, objlen {{ opening.objlen:d }} B")
+    |> unikraft/allocpool:take(pool: hp)
+        | obj o |> unikraft/allocpool:write(pool: hp, obj: o, bytes: "an object out of a uk_allocpool_init pool")
+            | ok filled |> unikraft/allocpool:read(pool: hp, obj: filled, at: 0, len: 41)
+                | view seen |> std/io:print.ln("hosted  take:  {{ seen.bytes:s }}")
+                    |> unikraft/allocpool:give(pool: hp, seen.obj)
+                    |> unikraft/allocpool:census(pool: hp): closing
+                        |> std/io:print.ln("hosted  close: {{ closing.free:d }}/{{ closing.capacity:d }} free")
+                        |> unikraft/allocpool:keep(pool: hp)
+                | rejected r |> std/io:print.ln("hosted read rejected: {{ r.reason:s }}")
+                    |> unikraft/allocpool:give(pool: hp, r.obj)
+                    |> unikraft/allocpool:keep(pool: hp)
+            | rejected r |> std/io:print.ln("hosted write rejected: {{ r.reason:s }}")
+                |> unikraft/allocpool:untouched(r.obj): u
+                    |> unikraft/allocpool:give(pool: hp, obj: u)
+                    |> unikraft/allocpool:keep(pool: hp)
+        | empty why |> std/io:print.ln("hosted take: {{ why:s }}")
+            |> unikraft/allocpool:keep(pool: hp)
+| refused why |> std/io:print.ln("host refused: {{ why:s }}")
+| busy why |> std/io:print.ln("host busy: {{ why:s }}")
+
+// ---- the OWNED pool: uk_allocpool_alloc on the default allocator ----
+//
+// Two takes. The first is the named escape — an object taken to prove capacity
+// and never written. The second is an ordinary write/read round trip. Both come
+// back before the closing census.
+
+~unikraft/allocpool:create(objects: 16, bytes: 128, alignment: 8)
+| pool op |> unikraft/allocpool:census(pool: op): opening
+    |> std/io:print.ln("owned   open:  {{ opening.free:d }}/{{ opening.capacity:d }} free, objlen {{ opening.objlen:d }} B")
+    |> unikraft/allocpool:take(pool: op)
+        | obj probe |> unikraft/allocpool:untouched(obj: probe): reserved
+            |> std/io:print.ln("owned   probe: one object taken and returned unwritten, on purpose")
+            |> unikraft/allocpool:give(pool: op, obj: reserved)
+            |> unikraft/allocpool:take(pool: op)
+                | obj o |> unikraft/allocpool:write(pool: op, obj: o, bytes: "an object out of a uk_allocpool_alloc pool")
+                    | ok filled |> unikraft/allocpool:read(pool: op, obj: filled, at: 0, len: 42)
+                        | view seen |> std/io:print.ln("owned   take:  {{ seen.bytes:s }}")
+                            |> unikraft/allocpool:give(pool: op, seen.obj)
+                            |> unikraft/allocpool:census(pool: op): closing
+                                |> std/io:print.ln("owned   close: {{ closing.free:d }}/{{ closing.capacity:d }} free")
+                                |> unikraft/allocpool:keep(pool: op)
+                        | rejected r |> std/io:print.ln("owned read rejected: {{ r.reason:s }}")
+                            |> unikraft/allocpool:give(pool: op, r.obj)
+                            |> unikraft/allocpool:keep(pool: op)
+                    | rejected r |> std/io:print.ln("owned write rejected: {{ r.reason:s }}")
+                        |> unikraft/allocpool:untouched(r.obj): u
+                            |> unikraft/allocpool:give(pool: op, obj: u)
+                            |> unikraft/allocpool:keep(pool: op)
+                | empty why |> std/io:print.ln("owned take: {{ why:s }}")
+                    |> unikraft/allocpool:keep(pool: op)
+        | empty why |> std/io:print.ln("owned probe: {{ why:s }}")
+            |> unikraft/allocpool:keep(pool: op)
+| refused why |> std/io:print.ln("create refused: {{ why:s }}")
+| unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")

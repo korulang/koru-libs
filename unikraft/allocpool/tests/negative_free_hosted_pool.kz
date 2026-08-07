@@ -1,0 +1,40 @@
+// NEGATIVE — the lift's thesis: a pool built by `uk_allocpool_init` handed to
+// `uk_allocpool_free`. pool.c:379-383 says this is illegal, in a comment and in
+// an assertion that is `do {} while(0)` in this image; the field it reads
+// (`p->parent`) is private, so nothing outside the library can check it.
+//
+// Here `free` accepts `*Pool<!owned>` and only `create` mints `<owned!>`, so
+// the wrong pairing is not a program that exists.
+//
+// Refused in the EMIT pass, not by `--check`. The control is boot_allocpool.kz,
+// which is this same program with `keep` in place of `free`, and which boots.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+~unikraft/allocpool:host(objects: 4, bytes: 64, alignment: 8)
+| pool hp |> unikraft/allocpool:take(pool: hp)
+    | obj o |> unikraft/allocpool:untouched(obj: o): u
+        |> unikraft/allocpool:give(pool: hp, obj: u)
+        |> unikraft/allocpool:free(pool: hp)
+        |> std/io:print.ln("freed a pool this program does not own the memory of")
+    | empty why |> std/io:print.ln("{{ why:s }}") |> unikraft/allocpool:keep(pool: hp)
+| refused why |> std/io:print.ln("{{ why:s }}")
+| busy why |> std/io:print.ln("{{ why:s }}")

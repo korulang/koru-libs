@@ -1,0 +1,38 @@
+// NEGATIVE — an object still out when the pool ends. pool.c:385-386:
+//
+//     /* Make sure we got all objects back */
+//     UK_ASSERT(p->free_obj_count == p->obj_count);
+//
+// a counter comparison, compiled out in this image. Here there is no counter:
+// `give` is a two-argument disposer, so auto-discharge can never elect it, and
+// an object that is not explicitly returned is always reported.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+~unikraft/allocpool:create(objects: 4, bytes: 64, alignment: 8)
+| pool op |> unikraft/allocpool:take(pool: op)
+    | obj o |> unikraft/allocpool:write(pool: op, obj: o, bytes: "taken and never returned")
+        | ok filled |> unikraft/allocpool:keep(pool: op)
+            |> std/io:print.ln("the pool ended with an object still out")
+        | rejected r |> unikraft/allocpool:untouched(r.obj): u |> unikraft/allocpool:give(pool: op, obj: u) |> unikraft/allocpool:keep(pool: op)
+    | empty why |> std/io:print.ln("{{ why:s }}") |> unikraft/allocpool:keep(pool: op)
+| refused why |> std/io:print.ln("{{ why:s }}")
+| unavailable why |> std/io:print.ln("{{ why:s }}")

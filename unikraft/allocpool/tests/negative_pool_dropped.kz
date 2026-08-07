@@ -1,0 +1,32 @@
+// NEGATIVE — the pool itself dropped. This is what the named escape `keep` buys
+// beyond a grep: `<owned>` has TWO disposals, so auto-discharge cannot elect
+// one and the compiler reports instead of silently inserting.
+//
+// `unikraft/alloc` recorded that dividend after the fact; here it is the reason
+// `keep` exists in the shape it does.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/allocpool
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_ALLOCPOOL=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKALLOCPOOL: 'y'
+}
+
+~unikraft/allocpool:create(objects: 4, bytes: 64, alignment: 8)
+| pool op |> unikraft/allocpool:census(pool: op): c
+    |> std/io:print.ln("{{ c.free:d }} free, and the pool is never disposed of")
+| refused why |> std/io:print.ln("{{ why:s }}")
+| unavailable why |> std/io:print.ln("{{ why:s }}")
