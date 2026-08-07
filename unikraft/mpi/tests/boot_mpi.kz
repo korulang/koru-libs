@@ -1,0 +1,224 @@
+// POSITIVE, and the gate-2 artifact for this module: Unikraft's mailbox
+// driven from Koru inside a unikernel, against the real `lib/ukmpi` `mbox.c`
+// the kernel linked. Six short flows rather than one long one, each isolating
+// one part of the surface so the branch structure stays readable:
+//
+//   A  create(4) -> post x2, post.try x2 (fills it) -> drain refuses
+//      -> recv x4 (drains it) -> drain -> release
+//   B  create(1) -> post.try (fills it) -> post.try (full)
+//      -> post.timeout (times out, still full) -> recv -> drain -> release
+//   C  create(2), NOTHING POSTED -> recv.try (empty) -> recv.timeout (times
+//      out) -> drain (ok on a ring that never held a message) -> release
+//   D  create(2) -> post.try-isr -> recv.try-isr -> drain -> release
+//   E  create(2) -> post x1 -> drain (REFUSES: 1 pending) -> recv x1
+//      -> drain (ok) -> release          <- mbox.c:38's assert, caught live
+//   F  create(2) -> post x1 -> abandon (no drain) — the named escape
+//
+// WHAT THE CONSOLE PROVES, none of which `--check` can:
+//
+//   1. `post`/`post.try`/`post.timeout`/`post.try-isr` and their `recv`
+//      twins are FOUR DIFFERENT C ENTRY POINTS (`uk_mbox_post`,
+//      `uk_mbox_post_try`, `uk_mbox_post_to`, `uk_mbox_post_try_isr`, and
+//      the matching `recv` family), driven through a real
+//      `uk_semaphore`-backed ring on a real scheduler, not a mock.
+//   2. THE RING ACTUALLY FILLS AND ACTUALLY EMPTIES: flow B's `capacity: 1`
+//      mailbox accepts exactly one post and then `post.try` returns `full`
+//      — the console shows the C's own `-ENOBUFS` boundary, not an assumed
+//      one. `post.timeout` against a full ring genuinely blocks and
+//      genuinely times out.
+//   3. `pending` TRACKS REALITY. This lift's only view into "is the ring
+//      empty" is a counter it keeps itself (mbox.c exposes none); flow A
+//      prints it against a ring holding 4 messages before draining any.
+//   4. FLOW E IS THE CENTRAL PROOF: `drain` REFUSES WITH THE MESSAGE STILL
+//      IN THE RING, then SUCCEEDS once it is gone — live evidence that
+//      `mbox.c:38` (`UK_ASSERT(m->readpos == m->writepos)`) cannot fire
+//      from anything this module's surface can reach, because the C call
+//      inside `release` never runs at all until `drain` has already
+//      confirmed the ring is empty.
+//   5. FLOW C IS THE PILLAR-4 DIVERGENCE FROM `unikraft/alloc` MADE
+//      CONCRETE: a mailbox created and released having carried zero
+//      messages compiles and boots clean — `readpos == writepos` at 0 == 0
+//      satisfies the C's own assert, so this lift does not force a
+//      post/recv before release the way `blk` forces a transfer before
+//      `stop`.
+//   6. FLOW F PROVES `abandon` COSTS NOTHING EXTRA: a mailbox with a real
+//      message still queued is torn down without ever calling
+//      `uk_mbox_free`, the honest alternative to hanging forever on `drain`
+//      or corrupting the ring the way the bare C assert-off build would.
+//   7. THE HEAP BRACKETS. `create` is one `uk_mbox_create` (which itself
+//      calls into the allocator) plus one `malloc` for the handle wrapper;
+//      `release`/`abandon` each free exactly the wrapper `create` made.
+//      Six mailboxes made and six torn down must leave the pool where it
+//      started.
+//
+// The bracket uses `unikraft/alloc`, a shipped sibling — composition, not
+// duplication: `uk_mbox_create`/`uk_mbox_free` go through `_uk_alloc_head`,
+// the same default heap `unikraft/alloc:available` already measures.
+//
+// Build and boot: see ../README.md.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/mpi
+~import unikraft/alloc
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_MPI=1
+}
+
+// `LIBUKMPI_MBOX` (default n, lib/ukmpi/Config.uk:10) selects LIBUKALLOC,
+// LIBUKLOCK and LIBUKLOCK_SEMAPHORE; LIBUKLOCK itself selects LIBUKSCHED for
+// its wait queues. All named explicitly, matching `unikraft/lock`'s kconfig,
+// so this image does not depend on an upstream default staying put.
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKLOCK: 'y'
+    CONFIG_LIBUKLOCK_SEMAPHORE: 'y'
+    CONFIG_LIBUKSCHED: 'y'
+    CONFIG_LIBUKSCHEDCOOP: 'y'
+    CONFIG_LIBUKMPI: 'y'
+    CONFIG_LIBUKMPI_MBOX: 'y'
+}
+
+~unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start:  {{ at_start:d }} bytes free")
+
+~std/io:print.ln("== flow A: fill via post + post.try, drain refuses, drain full receive ==")
+
+~unikraft/mpi:create(capacity: 4)
+| ok a0 |> std/io:print.ln("create:         capacity 4, mailbox open")
+    |> unikraft/mpi:post(mbox: a0, token: 101): a1
+        |> std/io:print.ln("post:           uk_mbox_post — token 101 queued (blocking, slot was free)")
+        |> unikraft/mpi:post(mbox: a1, token: 102): a2
+            |> std/io:print.ln("post:           uk_mbox_post — token 102 queued")
+            |> unikraft/mpi:post.try(mbox: a2, token: 103)
+            | ok a3 |> std/io:print.ln("post.try:       ok — token 103 queued")
+                |> unikraft/mpi:post.try(mbox: a3, token: 104)
+                | ok a4 |> std/io:print.ln("post.try:       ok — token 104 queued, ring full (capacity 4)")
+                    |> unikraft/mpi:pending(mbox: a4): ap1
+                        |> std/io:print.ln("pending:        {{ ap1.count:d }} messages outstanding (expect 4)")
+                        |> unikraft/mpi:drain(ap1.mbox)
+                        | ok wrong_a |> std/io:print.ln("drain:          UNEXPECTED ok with messages still queued")
+                            |> unikraft/mpi:release(mbox: wrong_a)
+                        | pending ap2 |> std/io:print.ln("drain:          pending — refused with {{ ap2.count:d }} message(s) still in the ring (expect 4)")
+                            |> unikraft/mpi:recv(ap2.mbox): ar1
+                                |> std/io:print.ln("recv:           uk_mbox_recv — got token {{ ar1.token:d }} (expect 101, FIFO)")
+                                |> unikraft/mpi:recv(ar1.mbox): ar2
+                                    |> std/io:print.ln("recv:           got token {{ ar2.token:d }} (expect 102)")
+                                    |> unikraft/mpi:recv(ar2.mbox): ar3
+                                        |> std/io:print.ln("recv:           got token {{ ar3.token:d }} (expect 103)")
+                                        |> unikraft/mpi:recv(ar3.mbox): ar4
+                                            |> std/io:print.ln("recv:           got token {{ ar4.token:d }} (expect 104), ring now empty")
+                                            |> unikraft/mpi:drain(ar4.mbox)
+                                            | ok a5 |> std/io:print.ln("drain:          ok — mbox.c:38's assert is unreachable from here, checked BEFORE uk_mbox_free ever runs")
+                                                |> unikraft/mpi:release(mbox: a5)
+                                            | pending stuck_a |> std/io:print.ln("drain:          UNEXPECTED refusal — {{ stuck_a.count:d }} still pending")
+                                                |> unikraft/mpi:abandon(stuck_a.mbox)
+                | full wrongfull_a |> std/io:print.ln("post.try:       UNEXPECTED full — ring should have room for a 4th message")
+                    |> unikraft/mpi:abandon(mbox: wrongfull_a)
+            | full wrongfull_b |> std/io:print.ln("post.try:       UNEXPECTED full — ring should have room for a 3rd message")
+                |> unikraft/mpi:abandon(mbox: wrongfull_b)
+| failed why_a |> std/io:print.ln("create failed:  {{ why_a:s }}")
+
+~std/io:print.ln("== flow B: post.try full, post.timeout times out ==")
+
+~unikraft/mpi:create(capacity: 1)
+| ok b0 |> std/io:print.ln("create:         capacity 1, mailbox open")
+    |> unikraft/mpi:post.try(mbox: b0, token: 201)
+    | ok b1 |> std/io:print.ln("post.try:       ok — token 201 queued, ring full (capacity 1)")
+        |> unikraft/mpi:post.try(mbox: b1, token: 202)
+        | full b2 |> std/io:print.ln("post.try:       full — uk_mbox_post_try returned -ENOBUFS, ring already at capacity")
+            |> unikraft/mpi:post.timeout(mbox: b2, token: 202, timeout_ns: 5000000)
+            | ok wrong_b |> std/io:print.ln("post.timeout:   UNEXPECTED ok — ring should still be full")
+                |> unikraft/mpi:abandon(wrong_b.mbox)
+            | timeout b3 |> std/io:print.ln("post.timeout:   timeout — 5ms elapsed, uk_mbox_post_to returned __NSEC_MAX, ring still full")
+                |> unikraft/mpi:recv(mbox: b3): b4
+                    |> std/io:print.ln("recv:           got token {{ b4.token:d }} (expect 201), ring now empty")
+                    |> unikraft/mpi:drain(b4.mbox)
+                    | ok b5 |> std/io:print.ln("drain:          ok")
+                        |> unikraft/mpi:release(mbox: b5)
+                    | pending stuck_b |> std/io:print.ln("drain:          UNEXPECTED refusal — {{ stuck_b.count:d }} still pending")
+                        |> unikraft/mpi:abandon(stuck_b.mbox)
+        | ok wrongok_b |> std/io:print.ln("post.try:       UNEXPECTED ok — ring should already be full")
+            |> unikraft/mpi:abandon(mbox: wrongok_b)
+    | full wrongfull_b0 |> std/io:print.ln("post.try:       UNEXPECTED full — the very first post into an empty capacity-1 ring")
+        |> unikraft/mpi:abandon(mbox: wrongfull_b0)
+| failed why_b |> std/io:print.ln("create failed:  {{ why_b:s }}")
+
+~std/io:print.ln("== flow C: recv.try empty, recv.timeout times out, zero-message release ==")
+
+~unikraft/mpi:create(capacity: 2)
+| ok c0 |> std/io:print.ln("create:         capacity 2, mailbox open, nothing posted yet")
+    |> unikraft/mpi:recv.try(mbox: c0)
+    | ok wrongok_c |> std/io:print.ln("recv.try:       UNEXPECTED ok — nothing was ever posted")
+        |> unikraft/mpi:abandon(wrongok_c.mbox)
+    | empty c1 |> std/io:print.ln("recv.try:       empty — uk_mbox_recv_try returned -ENOMSG on a never-touched ring")
+        |> unikraft/mpi:recv.timeout(mbox: c1, timeout_ns: 5000000)
+        | ok wrong2_c |> std/io:print.ln("recv.timeout:   UNEXPECTED ok — nothing was ever posted")
+            |> unikraft/mpi:abandon(wrong2_c.mbox)
+        | timeout c2 |> std/io:print.ln("recv.timeout:   timeout — 5ms elapsed, uk_mbox_recv_to returned __NSEC_MAX")
+            |> unikraft/mpi:drain(mbox: c2)
+            | ok c3 |> std/io:print.ln("drain:          ok — readpos == writepos at 0 == 0, a mailbox that carried zero messages is a legal release (index.kz: \"where pillar 4 does not apply\")")
+                |> unikraft/mpi:release(mbox: c3)
+            | pending stuck_c |> std/io:print.ln("drain:          UNEXPECTED refusal — {{ stuck_c.count:d }} pending on an untouched ring")
+                |> unikraft/mpi:abandon(stuck_c.mbox)
+| failed why_c |> std/io:print.ln("create failed:  {{ why_c:s }}")
+
+~std/io:print.ln("== flow D: the isr-safe try variants ==")
+
+~unikraft/mpi:create(capacity: 2)
+| ok d0 |> std/io:print.ln("create:         capacity 2, mailbox open")
+    |> unikraft/mpi:post.try-isr(mbox: d0, token: 301)
+    | ok d1 |> std/io:print.ln("post.try-isr:   ok — uk_mbox_post_try_isr — token 301 queued from ordinary thread context")
+        |> unikraft/mpi:recv.try-isr(mbox: d1)
+        | ok d2 |> std/io:print.ln("recv.try-isr:   ok — uk_mbox_recv_try_isr — got token {{ d2.token:d }} (expect 301)")
+            |> unikraft/mpi:drain(d2.mbox)
+            | ok d3 |> std/io:print.ln("drain:          ok")
+                |> unikraft/mpi:release(mbox: d3)
+            | pending stuck_d |> std/io:print.ln("drain:          UNEXPECTED refusal — {{ stuck_d.count:d }} still pending")
+                |> unikraft/mpi:abandon(stuck_d.mbox)
+        | empty wrongempty_d |> std/io:print.ln("recv.try-isr:   UNEXPECTED empty — a message was just posted")
+            |> unikraft/mpi:abandon(mbox: wrongempty_d)
+    | full wrongfull_d |> std/io:print.ln("post.try-isr:   UNEXPECTED full — capacity 2, ring should be empty")
+        |> unikraft/mpi:abandon(mbox: wrongfull_d)
+| failed why_d |> std/io:print.ln("create failed:  {{ why_d:s }}")
+
+~std/io:print.ln("== flow E: the drain gate, caught live — mbox.c:38 in miniature ==")
+
+~unikraft/mpi:create(capacity: 2)
+| ok e0 |> std/io:print.ln("create:         capacity 2 mailbox for the drain-gate demo")
+    |> unikraft/mpi:post(mbox: e0, token: 401): e1
+        |> std/io:print.ln("post:           token 401 queued, nothing received yet")
+        |> unikraft/mpi:drain(mbox: e1)
+        | ok wrongly_e |> std/io:print.ln("drain:          UNEXPECTED ok — a message is still queued")
+            |> unikraft/mpi:release(mbox: wrongly_e)
+        | pending e2 |> std/io:print.ln("drain:          pending — refused with {{ e2.count:d }} message(s) still in the ring (expect 1) — mbox.c:38's assert is EXACTLY this check, made loud here instead of silent there")
+            |> unikraft/mpi:recv(e2.mbox): e3
+                |> std/io:print.ln("recv:           got token {{ e3.token:d }} (expect 401), ring now empty")
+                |> unikraft/mpi:drain(e3.mbox)
+                | ok e4 |> std/io:print.ln("drain:          ok — now that it is actually empty")
+                    |> unikraft/mpi:release(mbox: e4)
+                | pending stuck_e |> std/io:print.ln("drain:          UNEXPECTED refusal — {{ stuck_e.count:d }} still pending")
+                    |> unikraft/mpi:abandon(stuck_e.mbox)
+| failed why_e |> std/io:print.ln("create failed:  {{ why_e:s }}")
+
+~std/io:print.ln("== flow F: abandon — the named escape from an undrained mailbox ==")
+
+~unikraft/mpi:create(capacity: 2)
+| ok f0 |> std/io:print.ln("create:         capacity 2 mailbox for the abandon demo")
+    |> unikraft/mpi:post(mbox: f0, token: 501): f1
+        |> std/io:print.ln("post:           token 501 queued, then abandoned without draining — the C ring and its one message are intentionally leaked, this lift's own handle wrapper is not")
+        |> unikraft/mpi:abandon(mbox: f1)
+| failed why_f |> std/io:print.ln("create failed:  {{ why_f:s }}")
+
+~unikraft/alloc:available(): at_end |> std/io:print.ln("heap at end:    {{ at_end:d }} bytes free")

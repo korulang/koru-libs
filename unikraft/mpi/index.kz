@@ -1,0 +1,479 @@
+// @korulang/unikraft-mpi — Unikraft's mailbox (`ukmpi`'s `lib/ukmpi/mbox.c`), lifted.
+//
+//   import unikraft/mpi
+//
+// WHAT THIS IS. `lib/ukmpi` exports exactly 10 functions around one resource,
+// `struct uk_mbox` — a fixed-capacity ring of `void *` slots guarded by a pair
+// of counting semaphores (one token per free slot, one per filled slot). It is
+// Unikraft's inter-thread mailbox: `post` blocks until a slot is free, `recv`
+// blocks until a message arrives, and both come in blocking / `_try` /
+// `_to` (timeout) flavours. `struct uk_mbox` itself is never defined in any
+// public header — `include/uk/mbox.h` only forward-declares `struct uk_mbox;`
+// — so unlike `blk`, `pages`, `sched` and `lock`, THIS LIFT NEEDS NO STRUCT
+// MIRROR AT ALL. Nothing here reads a field of `struct uk_mbox`; every fact
+// this module needs about a mailbox's contents is bookkeeping IT keeps itself,
+// described below.
+//
+// THE ASSERT THAT NAMES THE CHALLENGE: `uk_mbox_free` (mbox.c:38) —
+//
+//     UK_ASSERT(m->readpos == m->writepos);
+//
+// — DRAIN BEFORE FREE. `readpos == writepos` means "every message ever posted
+// has also been received": the ring is empty. With `CONFIG_LIBUKDEBUG_ENABLE_ASSERT`
+// off, which is every image anyone ships, `uk_mbox_free` frees the backing
+// allocation regardless, and any message still sitting in the ring — plus
+// anyone still blocked in `uk_mbox_recv` waiting for one — is left pointing at
+// freed memory. The C's own comment says the plain part out loud: "it is an
+// indication of a programming error... and the developer should be notified."
+// Assert-off, nobody is.
+//
+// THE RATCHET. Two states, not eight — see "Where pillar 4 does NOT apply"
+// below for why this is deliberately smaller than `blk`'s or `vmem`'s.
+//
+//     create   mints  <open!>                                uk_mbox_create
+//     post*    needs  <!open>  mints <open!>  (self-loop)     uk_mbox_post / _try / _to / _try_isr
+//     recv*    needs  <!open>  mints <open!>  (self-loop)     uk_mbox_recv / _try / _to / _try_isr
+//     drain    needs  <!open>  mints <drained!> ON EVIDENCE   NO C CALL — reads this lift's own count
+//              or refuses, handing <open!> back with the count still outstanding
+//     release  needs  <!drained>                              uk_mbox_free
+//     abandon  needs  <!open>                                  NO C CALL — give up, leak the ring
+//
+// HOW `drain` LIFTS `mbox.c:38` WITHOUT A STRUCT MIRROR. `uk_mbox_free`
+// exposes no way to ask a mailbox "are you empty" — there is no accessor for
+// `readpos`/`writepos`, mirrored or otherwise. So this lift keeps its OWN
+// count: every successful `post*` increments `pending`, every successful
+// `recv*` decrements it, both via `@atomicRmw` so the count is safe to touch
+// from more than one Koru caller even though `uk_mbox`'s ring itself already
+// serializes through its semaphores. `drain` is the ONLY tor that can mint
+// `<drained!>`, and it mints it ONLY when `pending == 0` — otherwise it hands
+// the handle straight back in `<open!>`, still holding the obligation, with
+// the outstanding count in the payload. `release` accepts nothing but
+// `<drained!>`. So the program `uk_mbox_free` was written to catch —
+//
+//     create(4): m |> post(mbox: m, token: 1): m2 |> release(mbox: m2)
+//
+// — does not compile: `release` needs `<!drained>` and `m2` is `<open!>`.
+// Inserting `drain(m2)` does not save it either: with one message posted and
+// none received, `drain` refuses and hands `<open!>` back, so the only
+// `release` reachable from there is one that runs after enough `recv*` calls
+// bring `pending` back to zero. A caller who abandons the obligation instead
+// — including by doing nothing and letting `abandon` auto-discharge at scope
+// exit (see below) — never reaches `uk_mbox_free` either: `abandon` runs no
+// C call at all. So `uk_mbox_free` provably never sees an undrained `m`
+// through ANY path this module's surface admits, attended or not.
+//
+// THIS IS A DIFFERENT SHAPE OF LIFT THAN `blk`'S TRANSFER ASYMMETRY, and it
+// is worth being precise about the difference rather than overclaiming the
+// same kind of proof. `blk:stop` needs `<!used>`, and NOTHING mints `<used!>`
+// except a real transfer — the unsafe call is unreachable by construction,
+// zero runtime check, a pure type-level fact. `drain` is not that: whether
+// `pending == 0` is a genuinely dynamic fact this lift cannot know until
+// runtime, so `drain`'s mint is gated on a runtime read of a counter this
+// module maintains, the same "mint on evidence" shape `sched` uses for
+// `<ran!>` (the entry shim raises a flag; here, a successful `recv*` does).
+// What IS proven at compile time, with no runtime component at all, is that
+// `release` is unreachable from anywhere except a successful `drain` — the
+// C's unconditional free becomes a free that can only ever run once this
+// lift's own count says the ring is empty.
+//
+// A CORRECTION, earned by verifying rather than assuming: an earlier draft of
+// this comment claimed a caller who ignores a `pending` refusal is "caught
+// holding an obligation gate 3 will not let the program end with". That is
+// imprecise. `abandon` below is void, takes only `mbox`, and is the UNIQUE
+// such acceptor of `<!open>` — which makes it exactly the shape Koru's
+// auto-discharge pass (`src/auto_discharge_inserter.zig`) splices in
+// unattended at scope exit, silently, under default settings. A program that
+// walks away from an open mailbox compiles clean; it does not leak-detect as
+// a compile error the way a never-discharged `blk:Device` does (`blk:abandon`
+// has the identical shape and is presumably auto-discharged the same way,
+// unexercised there). Confirmed with `--auto-discharge=warn` (prints exactly
+// which call it inserted) and `--auto-discharge=disable` (turns the same
+// program back into a KORU030). This is NOT a compiler defect — auto-discharge
+// is documented, intentional RAII-style cleanup, and "leak the ring, never
+// corrupt it" is the same safe default this lift makes by hand everywhere
+// else. The corrected, honest claim is the one two paragraphs up: `uk_mbox_free`
+// never runs on an undrained ring, attended or not. Whether the KORU OBLIGATION
+// itself is provably discharged on every path is a strictly weaker claim than
+// this lift first made, and README.md's "A load-bearing finding" section
+// carries the full evidence.
+//
+// THE SOUNDNESS BOUNDARY, stated rather than hidden. `pending`'s two writers
+// (`post*`'s increment, `recv*`'s decrement) are not atomic WITH the C call
+// that causes them — there is a window between "the message really landed in
+// the ring" and "this lift's counter reflects it". A `drain` landing in that
+// window against a CONCURRENTLY RUNNING `post` on another thread could read
+// `pending == 0` and mint `<drained!>` a moment before a message actually
+// lands. This matches the assumption the C's own comment makes — teardown
+// happens once producers and consumers have quiesced, not while one is still
+// live — and this lift does not claim more than the assert it replaces did.
+// Freeing a mailbox while something might still be posting to it is not a
+// safe program in the C either.
+//
+// WHERE PILLAR 4 DOES NOT APPLY, and why this reads differently than
+// `unikraft/alloc`'s ruling on the same question. `alloc` IMPOSES an
+// asymmetry the C does not have — `take(); free();` never touching what you
+// allocated is legal C and is refused here anyway, because untouched memory
+// freed unread is pointless by construction; there is no legitimate reason to
+// allocate and never look at what you got. A mailbox does not have that
+// property. `create(4); drain; release;` — a mailbox stood up and torn down
+// having carried zero messages — is not pointless the way an unread
+// allocation is: pre-wiring an event channel that a config path never ends up
+// using, or unwinding cleanly on an error path taken before the first message
+// would have gone out, are both real programs. The C agrees: `readpos ==
+// writepos` at 0 == 0 satisfies the assert with room to spare. So this lift
+// does NOT force a `post`/`recv` before `release` the way `blk` forces a
+// transfer before `stop` — `drain` right after `create` is legal and cheap,
+// and forcing ceremony there would be exactly the "feature-maximalism
+// wearing a safety badge" the brief warns against.
+//
+// NO NAMED ESCAPE HATCH, unlike `blk:io.skipped` or `lock:hold.skipped`. Both
+// of those exist because the gate they bypass costs something real (a device
+// transfer, a lock acquisition) that a caller might legitimately not want to
+// pay. `drain` costs a load of a Koru-owned integer — there is no honest
+// program for which skipping that check buys anything, so this lift does not
+// offer one.
+//
+// THE UNWRITTEN RULE THE ASSERT CENSUS DOES NOT COUNT: `uk_mbox_create` takes
+// an allocator and `uk_mbox_free` takes one too, and nothing in the C checks
+// they are the same one — passing `uk_mbox_free` a DIFFERENT `struct
+// uk_alloc *` than the mailbox was built with hands its backing memory to an
+// allocator that never owned it. No `UK_ASSERT` guards this at all; it is
+// simply not exposed as a choice here. `create` reads `_uk_alloc_head` once
+// and the `Mailbox` handle carries that same pointer to `release`, so a
+// mismatched pairing is not a program this lift's surface can express.
+//
+// THE MESSAGE TYPE. `uk_mbox_post`/`recv` carry `void *msg` — the C never
+// dereferences it, so it is opaque to `ukmpi` itself, not merely to this
+// lift. Koru has no generics (this project's language rules: comptime
+// codegen for containers, not a generics feature), so this lift carries it as
+// `usize`, the pointer-width integer a `void *` bit-pattern already is. A
+// caller who wants a real payload allocates it (`unikraft/alloc`, a shipped
+// sibling, is the natural partner) and posts its address; `0` round-trips as
+// a legitimate token, not as "no message" — this lift never treats it
+// specially.
+//
+// ONE VALUE CHECK THAT DOES NOT BECOME A PHANTOM STATE. `uk_mbox_create`
+// asserts `size <= __L_MAX` (mbox.c:10, `__L_MAX` = `LONG_MAX` = the C `long`
+// max). Phantom states are symbolic, not value-dependent, so this is not
+// lifted the way the ordering rule is — see the census below for how it is
+// handled instead.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Every symbol below is on `lib/ukmpi/exportsyms.uk` (10 lines, 10 links, 0
+// phantom, 0 inert — the shelf's own measurement). `struct uk_mbox` has no
+// public definition anywhere in the tree, so there is nothing here to mirror.
+
+const UkMbox = opaque {};
+const UkAlloc = opaque {};
+
+// `uk_alloc_get_default()` is `static inline` and returns this exported global
+// (lib/ukalloc/include/uk/alloc.h:136, lib/ukalloc/exportsyms.uk:22). Reading
+// the variable is the same load the inline function performs. Same technique
+// `blk`, `alloc`, `pages` and `sched` already use.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+extern fn uk_mbox_create(a: *UkAlloc, size: usize) ?*UkMbox;
+extern fn uk_mbox_free(a: *UkAlloc, m: *UkMbox) void;
+
+extern fn uk_mbox_post(m: *UkMbox, msg: ?*anyopaque) void;
+extern fn uk_mbox_post_try(m: *UkMbox, msg: ?*anyopaque) c_int;
+extern fn uk_mbox_post_to(m: *UkMbox, msg: ?*anyopaque, timeout: u64) u64;
+extern fn uk_mbox_post_try_isr(m: *UkMbox, msg: ?*anyopaque) c_int;
+
+extern fn uk_mbox_recv(m: *UkMbox, msg: *?*anyopaque) void;
+extern fn uk_mbox_recv_try(m: *UkMbox, msg: *?*anyopaque) c_int;
+extern fn uk_mbox_recv_to(m: *UkMbox, msg: *?*anyopaque, timeout: u64) u64;
+extern fn uk_mbox_recv_try_isr(m: *UkMbox, msg: *?*anyopaque) c_int;
+
+// nolibc, backed by ukalloc's default allocator. Named `release`, not `free`,
+// for the tor below so it never collides with this declaration.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+
+// __NSEC_MAX — include/uk/arch/time.h:54, `(__U64_MAX)`. What `_to` returns on
+// a timeout; anything else is elapsed nanoseconds.
+const NSEC_MAX: u64 = 0xFFFFFFFFFFFFFFFF;
+
+comptime {
+    // The retirement of `UK_ASSERT(size <= __L_MAX)` below depends on
+    // `capacity` being a `u32` and `__L_MAX` being the 64-bit `LONG_MAX`
+    // (include/uk/arch/limits.h:147, active on any 64-bit target — this lift
+    // builds x86_64 only, per BUILD.md). If that ever stops holding, this
+    // turns into a build error instead of a silently wrong claim.
+    if (@bitSizeOf(usize) < 64) {
+        @compileError("unikraft/mpi assumes a 64-bit size_t (__L_MAX = LONG_MAX on x86_64); not checked on a narrower target");
+    }
+}
+
+// ============================================================================
+// THE HANDLE
+// ============================================================================
+//
+// Koru-owned, not `extern`: it never crosses into C except through `mbox` and
+// `alloc`, both opaque pointers the C already gave out. `pending` is this
+// lift's entire answer to "is the ring empty" — see the header note.
+
+const Mailbox = struct {
+    mbox: *UkMbox,
+    alloc: *UkAlloc,
+    pending: i64,
+};
+
+fn tokenToPtr(token: usize) ?*anyopaque {
+    if (token == 0) return null;
+    return @ptrFromInt(token);
+}
+
+fn ptrToToken(ptr: ?*anyopaque) usize {
+    if (ptr) |p| return @intFromPtr(p);
+    return 0;
+}
+
+fn destroy(mb: *Mailbox) void {
+    free(@ptrCast(mb));
+}
+
+// ============================================================================
+// CREATE
+// ============================================================================
+
+// uk_mbox_create. `capacity` is the ring's slot count — `size` in the C,
+// which allocates `size + 1` slots internally (mbox.c:16) so the semaphore
+// pair can distinguish full from empty; that off-by-one is the C's own
+// bookkeeping and this lift does not re-expose it as a caller-visible detail.
+//
+// `size <= __L_MAX` (mbox.c:10) is a VALUE check, not an ordering one — see
+// the comptime block above for the only sense in which this lift retires it.
+// Not lifted as a phantom state on principle: the brief's own rule is that
+// symbolic states cannot encode a value comparison, and `blk`'s `nb_queues`
+// bound is the precedent for treating this class as a runtime `refused`/
+// `failed` arm instead. Here it never even reaches that arm on this lift's
+// build target, because `u32::max < __L_MAX` on 64-bit — asserted, not
+// assumed, by the comptime block above.
+//
+// Mints <open!>. No named escape from `create` failing: no allocator, no
+// backing memory, nothing to hand back but a reason.
+~pub tor create { capacity: u32 }
+| ok *Mailbox<open!>
+| failed string
+
+~proc create|zig {
+    const a = _uk_alloc_head orelse {
+        return .{ .failed = "no default allocator registered (_uk_alloc_head is null)" };
+    };
+    const raw = uk_mbox_create(a, @as(usize, capacity)) orelse {
+        return .{ .failed = "uk_mbox_create returned NULL (out of memory)" };
+    };
+    const mem = malloc(@sizeOf(Mailbox)) orelse {
+        uk_mbox_free(a, raw);
+        return .{ .failed = "out of memory allocating the handle wrapper" };
+    };
+    const mb: *Mailbox = @ptrCast(@alignCast(mem));
+    mb.* = Mailbox{ .mbox = raw, .alloc = a, .pending = 0 };
+    return .{ .ok = mb };
+}
+
+// ============================================================================
+// POST — blocking / try / timeout / isr-safe try
+// ============================================================================
+//
+// All four are the SAME self-loop on <!open> -> <open!>: posting changes
+// nothing about what a caller may do next. `mbox.c` guards each with only
+// `UK_ASSERT(m)` (null-pointer hygiene — see the census), so there is no
+// ordering rule left over here for the phantom state to carry; the branch
+// payload is exactly "what happened", per the brief's own rule for this
+// shape.
+
+// uk_mbox_post. Blocks until a slot is free. Cannot fail — a caller who wants
+// a non-blocking or bounded-wait attempt reaches for `post.try`/`post.timeout`
+// instead, which is the same choice the C's own three-function family offers.
+~pub tor post { mbox: *Mailbox<!open>, token: usize } -> *Mailbox<open!>
+
+~proc post|zig {
+    uk_mbox_post(mbox.mbox, tokenToPtr(token));
+    _ = @atomicRmw(i64, &mbox.pending, .Add, 1, .monotonic);
+    return mbox;
+}
+
+// uk_mbox_post_try. Non-blocking: `full` when every slot is taken
+// (uk_semaphore_down_try on the write semaphore fails, C returns -ENOBUFS).
+~pub tor post.try { mbox: *Mailbox<!open>, token: usize }
+| ok *Mailbox<open!>
+| full *Mailbox<open!>
+
+~proc post.try|zig {
+    const rc = uk_mbox_post_try(mbox.mbox, tokenToPtr(token));
+    if (rc != 0) {
+        return .{ .full = mbox };
+    }
+    _ = @atomicRmw(i64, &mbox.pending, .Add, 1, .monotonic);
+    return .{ .ok = mbox };
+}
+
+// uk_mbox_post_to. Blocks at most `timeout_ns`. `waited_ns` is the elapsed
+// time the C itself measured (uk_semaphore_down_to's return value); `timeout`
+// is `uk_mbox_post_to` returning `__NSEC_MAX`.
+~pub tor post.timeout { mbox: *Mailbox<!open>, token: usize, timeout_ns: u64 }
+| ok { mbox: *Mailbox<open!>, waited_ns: u64 }
+| timeout *Mailbox<open!>
+
+~proc post.timeout|zig {
+    const ret = uk_mbox_post_to(mbox.mbox, tokenToPtr(token), timeout_ns);
+    if (ret == NSEC_MAX) {
+        return .{ .timeout = mbox };
+    }
+    _ = @atomicRmw(i64, &mbox.pending, .Add, 1, .monotonic);
+    return .{ .ok = .{ .mbox = mbox, .waited_ns = ret } };
+}
+
+// uk_mbox_post_try_isr. Same non-blocking attempt as `post.try`, over
+// `uk_semaphore_down_try_isr` instead of `uk_semaphore_down_try` — safe to
+// call from interrupt context because it never touches the scheduler. This
+// lift does not set up a Koru-callable interrupt handler, so the boot demo
+// exercises this from ordinary thread context, where it behaves identically;
+// see README.md for what that does and does not prove.
+~pub tor post.try-isr { mbox: *Mailbox<!open>, token: usize }
+| ok *Mailbox<open!>
+| full *Mailbox<open!>
+
+~proc post.try-isr|zig {
+    const rc = uk_mbox_post_try_isr(mbox.mbox, tokenToPtr(token));
+    if (rc != 0) {
+        return .{ .full = mbox };
+    }
+    _ = @atomicRmw(i64, &mbox.pending, .Add, 1, .monotonic);
+    return .{ .ok = mbox };
+}
+
+// ============================================================================
+// RECV — blocking / try / timeout / isr-safe try
+// ============================================================================
+
+// uk_mbox_recv. Blocks until a message arrives. Cannot fail.
+~pub tor recv { mbox: *Mailbox<!open> } -> { mbox: *Mailbox<open!>, token: usize }
+
+~proc recv|zig {
+    var raw: ?*anyopaque = null;
+    uk_mbox_recv(mbox.mbox, &raw);
+    _ = @atomicRmw(i64, &mbox.pending, .Sub, 1, .monotonic);
+    return .{ .mbox = mbox, .token = ptrToToken(raw) };
+}
+
+// uk_mbox_recv_try. Non-blocking: `empty` when nothing is queued
+// (C returns -ENOMSG).
+~pub tor recv.try { mbox: *Mailbox<!open> }
+| ok { mbox: *Mailbox<open!>, token: usize }
+| empty *Mailbox<open!>
+
+~proc recv.try|zig {
+    var raw: ?*anyopaque = null;
+    const rc = uk_mbox_recv_try(mbox.mbox, &raw);
+    if (rc != 0) {
+        return .{ .empty = mbox };
+    }
+    _ = @atomicRmw(i64, &mbox.pending, .Sub, 1, .monotonic);
+    return .{ .ok = .{ .mbox = mbox, .token = ptrToToken(raw) } };
+}
+
+// uk_mbox_recv_to. Blocks at most `timeout_ns`.
+~pub tor recv.timeout { mbox: *Mailbox<!open>, timeout_ns: u64 }
+| ok { mbox: *Mailbox<open!>, token: usize, waited_ns: u64 }
+| timeout *Mailbox<open!>
+
+~proc recv.timeout|zig {
+    var raw: ?*anyopaque = null;
+    const ret = uk_mbox_recv_to(mbox.mbox, &raw, timeout_ns);
+    if (ret == NSEC_MAX) {
+        return .{ .timeout = mbox };
+    }
+    _ = @atomicRmw(i64, &mbox.pending, .Sub, 1, .monotonic);
+    return .{ .ok = .{ .mbox = mbox, .token = ptrToToken(raw), .waited_ns = ret } };
+}
+
+// uk_mbox_recv_try_isr. Same shape as `post.try-isr` — see that tor's note.
+~pub tor recv.try-isr { mbox: *Mailbox<!open> }
+| ok { mbox: *Mailbox<open!>, token: usize }
+| empty *Mailbox<open!>
+
+~proc recv.try-isr|zig {
+    var raw: ?*anyopaque = null;
+    const rc = uk_mbox_recv_try_isr(mbox.mbox, &raw);
+    if (rc != 0) {
+        return .{ .empty = mbox };
+    }
+    _ = @atomicRmw(i64, &mbox.pending, .Sub, 1, .monotonic);
+    return .{ .ok = .{ .mbox = mbox, .token = ptrToToken(raw) } };
+}
+
+// ============================================================================
+// INTROSPECTION — no obligation, same rule blk's `count` and vmem's `lookup` use
+// ============================================================================
+
+// Reads this lift's own counter. No C call, no obligation: knowing how many
+// messages are outstanding constrains nothing about what a caller may do
+// next — `post*`/`recv*` remain legal either way, and so does attempting
+// `drain` (which will simply refuse again if the count is not yet zero).
+~pub tor pending { mbox: *Mailbox<!open> } -> { mbox: *Mailbox<open!>, count: i64 }
+
+~proc pending|zig {
+    const p = @atomicLoad(i64, &mbox.pending, .monotonic);
+    return .{ .mbox = mbox, .count = p };
+}
+
+// ============================================================================
+// DRAIN — the ONLY way to mint <drained!>, on evidence
+// ============================================================================
+//
+// Lifts mbox.c:38 (`uk_mbox_free`: `UK_ASSERT(m->readpos == m->writepos)`).
+// See the header note for the exact shape of this retirement and its
+// soundness boundary. `pending != 0` refuses and hands the SAME obligation
+// straight back — this is a retry point, not a dead end; there is no
+// `abandon` because there is nothing to abandon into. Keep calling `recv*`
+// and try again.
+~pub tor drain { mbox: *Mailbox<!open> }
+| ok *Mailbox<drained!>
+| pending { mbox: *Mailbox<open!>, count: i64 }
+
+~proc drain|zig {
+    const p = @atomicLoad(i64, &mbox.pending, .monotonic);
+    if (p != 0) {
+        return .{ .pending = .{ .mbox = mbox, .count = p } };
+    }
+    return .{ .ok = mbox };
+}
+
+// ============================================================================
+// RELEASE
+// ============================================================================
+//
+// uk_mbox_free. Named `release`, matching `blk`, not `free` — this file
+// already declares the C `free()` used by `destroy` above, and this tor's
+// job is that C call plus this lift's own allocation, so keeping the two
+// spellings apart is not optional here the way it was cosmetic elsewhere.
+//
+// Takes ONLY <!drained>. `uk_mbox_free` is `void` — it cannot fail — so
+// there is no failure arm to design around; the interesting refusal already
+// happened at `drain`.
+~pub tor release { mbox: *Mailbox<!drained> }
+
+~proc release|zig {
+    uk_mbox_free(mbox.alloc, mbox.mbox);
+    destroy(mbox);
+}
+
+// The one way out of <open!> that does not require draining first: give up
+// on the mailbox rather than either corrupt it (calling `uk_mbox_free`
+// directly on an undrained ring would be exactly the bug mbox.c:38 exists to
+// catch) or hang forever retrying `drain`. Frees only this lift's own handle
+// wrapper; the C-side ring and whatever it still holds are deliberately
+// leaked, never freed. Named and greppable, matching `blk:abandon`: "we gave
+// up on a mailbox" should be a search, not an inference from a missing
+// `release` call.
+~pub tor abandon { mbox: *Mailbox<!open> }
+
+~proc abandon|zig {
+    destroy(mbox);
+}
