@@ -1,0 +1,35 @@
+// NEGATIVE, gate 3. Use-after-discharge: free a cloned table twice. The
+// second `pt-free` is not a call the C would even let you MAKE safely --
+// `uk_paging_pt_free` has already unmapped and freed the top-level page, so a
+// second call walks a page table that no longer exists -- but this lift
+// refuses it before that, on the type alone: `clone_a` was CONSUMED by the
+// first `pt-free`, and nothing remints it.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/paging
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_PAGING=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKPAGING: 'y'
+}
+
+~unikraft/paging:active
+| ready pt0 |> unikraft/paging:pt-clone(source: pt0)
+    | ok clone_a |> unikraft/paging:pt-free(pt: clone_a)
+        | ok |> unikraft/paging:pt-free(pt: clone_a)
+            | ok |> std/io:print.ln("this must never compile")
+            | failed ef2 |> unikraft/paging:abandon(ef2.pt)
+        | failed ef |> unikraft/paging:abandon(ef.pt)
+    | refused r |> std/io:print.ln("clone refused: {{ r.reason:s }}")
+| unavailable |> std/io:print.ln("no active page table")

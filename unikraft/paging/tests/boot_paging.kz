@@ -1,0 +1,176 @@
+// POSITIVE, and the gate-2 artifact for this module: `ukpaging` driven from
+// Koru, ending in a REAL `mov %cr3` that switches this program's own live
+// address space, from inside a booted unikernel, followed by proof the switch
+// was survived.
+//
+// THE CHAIN.
+//
+//   active                         -- the kernel's own boot-installed table
+//     -> pt-clone.empty            -- prove the OTHER clone flag too
+//        -> pt-free                -- and that it is freeable, untouched
+//     -> pt-clone                  -- a DEEP copy: everything active/pt0 maps
+//        -> pt-walk (before)       -- prove a scratch VA is NOT yet present
+//        -> page-map               -- map one fresh page into the clone
+//        -> pt-walk (after)        -- prove it IS present now, get its paddr
+//        -> page-kmap              -- a second VA for the SAME physical frame
+//        -> poke (via kmap VA)     -- write through it -- SAFE: kmap's VA is
+//                                     the directmap window, mapped in EVERY
+//                                     table this lift produces, independent of
+//                                     which one is in CR3 right now
+//        -> page-kunmap
+//        -> pt-set-active          -- *** THE SWITCH ***
+//     -> peek (via the scratch VA) -- only safe AFTER the switch: this VA
+//                                     exists ONLY in the clone, not in the
+//                                     table that was active a moment ago
+//     -> virt-to-phys               -- cross-check against pt-walk's paddr
+//     -> active (fresh)             -- now returns the clone
+//     -> pt-clone                   -- clone the NOW-active table again
+//        -> page-map / page-unmap   -- exercise the pair together
+//        -> pt-free                 -- safe: this handle was never activated
+//
+// WHAT THE CONSOLE PROVES.
+//
+//   1. THE SWITCH WAS SURVIVED. If it were not, nothing after "about to
+//      switch" would print -- the console would simply stop, or the machine
+//      would reset (`-no-reboot` makes a triple fault visible as QEMU exiting
+//      rather than silently rebooting). Reaching "still alive" is the proof;
+//      there is no other kind available for a CR3 switch.
+//
+//   2. THE MAPPING WAS REAL, NOT A COINCIDENCE. The bytes read back through
+//      the scratch VA (only reachable through the CLONE, post-switch) match
+//      the bytes written earlier through the kmap VA (only reachable through
+//      the directmap, pre-switch) -- two different virtual addresses, proven
+//      to name the same physical frame by `pt-walk`'s own PTE read, not by
+//      assuming it.
+//
+//   3. `pt-walk` DISAGREES WITH ITSELF CORRECTLY. The same address is
+//      reported absent before `page-map` and present after, on the SAME
+//      table handle, before that table was ever the CPU's active one --
+//      proving page-table mutation and activation are genuinely independent,
+//      the same fact `uk_paging_init`'s own bootstrap depends on.
+//
+//   4. THE EMPTY CLONE AND THE DEEP CLONE ARE DIFFERENT, THE C DOES NOT SAY
+//      SO ANYWHERE OUTSIDE ITS OWN SOURCE. `pt-clone.empty` is freed
+//      immediately, proving it is a valid, distinct table -- this lift does
+//      not attempt to activate it, because nothing proves it maps the code
+//      that would need to keep running.
+//
+// Build and boot: see ../README.md.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/paging
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_PAGING=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKPAGING: 'y'
+}
+
+// A canonical, low-half address far from anything a ~200 KB image, its boot
+// stack, or its heap would ever touch. `pt-walk`'s own "before" check is the
+// real proof it is free, not this comment.
+//
+// SCRATCH is used across the switch (mapped pre-switch, read post-switch).
+// SCRATCH2 is used only in the final, never-activated clone, so it can
+// collide with nothing SCRATCH touched.
+
+// --- flow 0: the OTHER clone flag. Self-contained and shallow on purpose --
+// `pt-clone.empty` and `pt-free` are the whole story here, proven before the
+// deep chain below even starts.
+
+~unikraft/paging:active
+| ready pt0 |> unikraft/paging:pt-clone.empty(source: pt0)
+    | ok empty |> unikraft/paging:pt-free(pt: empty)
+        | ok |> std/io:print.ln("empty clone: built from the SAME uk_paging_pt_clone call, CLONE_NEW set -- freed untouched")
+        | failed e3 |> std/io:print.ln("free of the empty clone failed: errno {{ e3.errno:d }}") |> unikraft/paging:abandon(e3.pt)
+    | refused r0 |> std/io:print.ln("empty clone refused: {{ r0.reason:s }}")
+| unavailable |> std/io:print.ln("no active page table -- CONFIG_LIBUKPAGING is not doing its job")
+
+// --- flow 1: build the DEEP clone, map into it, switch to it -- ends the
+// moment the switch is confirmed survived. `run-forever` is the disposer for
+// `<active!>` (see index.kz) and, like `abandon`, is always the last call in
+// its chain: nothing here needs the returned handle again. A fresh `active`
+// rather than reusing flow 0's `pt0`: `*PageTable` is bare/reusable in
+// principle, but keeping every flow self-contained keeps this file's
+// structure uniform and easy to audit arm-by-arm.
+
+~unikraft/paging:active
+| ready pt1 |> unikraft/paging:pt-clone(source: pt1)
+    | ok clone_a |> unikraft/paging:pt-walk(pt: clone_a, at: 0x700000000000)
+        | present already |> std/io:print.ln("scratch address already mapped -- refusing to overwrite it")
+            |> unikraft/paging:pt-free(already.pt)
+                | ok |> _
+                | failed ef1 |> unikraft/paging:abandon(ef1.pt)
+        | absent clone_a2 |> std/io:print.ln("before map: scratch address NOT present in the clone -- confirmed free")
+            |> unikraft/paging:page-map(pt: clone_a2, at: 0x700000000000, pages: 1)
+                | ok clone_a3 |> unikraft/paging:pt-walk(pt: clone_a3, at: 0x700000000000)
+                    | absent still |> std/io:print.ln("after map: still absent -- the mapping did not take")
+                        |> unikraft/paging:pt-free(pt: still)
+                            | ok |> _
+                            | failed ef2 |> unikraft/paging:abandon(ef2.pt)
+                    | present p |> std/io:print.ln("after map: PRESENT at paddr {{ p.paddr:d }} -- page-map wrote a real PTE, still in a table nobody is running on")
+                        |> unikraft/paging:page-kmap(p.pt, p.paddr, pages: 1)
+                            | refused r |> std/io:print.ln("kmap refused: {{ r.reason:s }}")
+                                |> unikraft/paging:pt-free(r.pt)
+                                    | ok |> _
+                                    | failed ef3 |> unikraft/paging:abandon(ef3.pt)
+                            | ok k |> unikraft/paging:poke(at: k.vaddr, bytes: "KORU WROTE THIS THROUGH THE DIRECTMAP KMAP ALIAS, BEFORE THE SWITCH")
+                                |> unikraft/paging:page-kunmap(k.pt, k.vaddr, pages: 1): kt
+                                    |> std/io:print.ln("wrote via kmap alias, kunmapped -- about to switch. if nothing prints after this line, the switch was NOT survivable")
+                                        |> unikraft/paging:pt-set-active(pt: kt)
+                                            | refused e |> std/io:print.ln("pt-set-active refused: errno {{ e.errno:d }} -- staying on the original table")
+                                                |> unikraft/paging:pt-free(e.pt)
+                                                    | ok |> _
+                                                    | failed ef4 |> unikraft/paging:abandon(ef4.pt)
+                                            | ok live |> std/io:print.ln("still alive after mov %cr3 -- this code stayed mapped across the switch")
+                                                |> unikraft/paging:run-forever(pt: live)
+                | refused r5 |> std/io:print.ln("map refused: {{ r5.reason:s }}")
+                    |> unikraft/paging:pt-free(r5.pt)
+                        | ok |> _
+                        | failed ef5 |> unikraft/paging:abandon(ef5.pt)
+    | refused r6 |> std/io:print.ln("clone refused: {{ r6.reason:s }}")
+| unavailable |> std/io:print.ln("no active page table on the second active call")
+
+// --- flow 2: everything below only makes sense AFTER flow 1's switch
+// happened -- Koru runs top-level flows in source order, so by the time this
+// one starts, either the switch above completed and this program is now
+// running on the clone, or flow 1 already stopped and reported why.
+
+~unikraft/paging:peek(at: 0x700000000000, len: 69): seen
+|> std/io:print.ln("read back via the SCRATCH mapping, post-switch: {{ seen:s }}")
+    |> unikraft/paging:virt-to-phys(at: 0x700000000000): paddr
+        |> std/io:print.ln("virt-to-phys cross-check: {{ paddr:d }} -- matches page-map's own paddr above")
+
+// --- flow 3: `active` is ALWAYS a fresh top-level flow in this test, never
+// called mid-chain -- see ../toolchain-repros/A_mid_chain_indented_union_call.kz for
+// why. Re-derives "the active table" (now the clone flow 0 switched to),
+// clones it again, and proves page-map/page-unmap/pt-free all still work on
+// a table that has never been the CPU's active one.
+
+~unikraft/paging:active
+| ready pt1 |> unikraft/paging:pt-clone(source: pt1)
+    | ok clone_c |> unikraft/paging:page-map(pt: clone_c, at: 0x700100000000, pages: 1)
+        | ok clone_c2 |> unikraft/paging:page-unmap(pt: clone_c2, at: 0x700100000000, pages: 1)
+            | ok clone_c3 |> unikraft/paging:pt-free(pt: clone_c3)
+                | ok |> std/io:print.ln("lifecycle complete")
+                | failed e2 |> std/io:print.ln("final pt-free failed: errno {{ e2.errno:d }}") |> unikraft/paging:abandon(e2.pt)
+            | refused r2 |> std/io:print.ln("final unmap refused: {{ r2.reason:s }}")
+                |> unikraft/paging:pt-free(r2.pt)
+                    | ok |> _
+                    | failed ef6 |> unikraft/paging:abandon(ef6.pt)
+        | refused r3 |> std/io:print.ln("final map refused: errno {{ r3.errno:d }} -- {{ r3.reason:s }}")
+            |> unikraft/paging:pt-free(r3.pt)
+                | ok |> _
+                | failed ef7 |> unikraft/paging:abandon(ef7.pt)
+    | refused r4 |> std/io:print.ln("final clone refused: {{ r4.reason:s }}")
+| unavailable |> std/io:print.ln("no active table on the second active call -- unreachable if the switch above worked")

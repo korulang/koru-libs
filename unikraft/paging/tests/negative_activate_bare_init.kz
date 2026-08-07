@@ -1,0 +1,40 @@
+// NEGATIVE, gate 3. `pt-init` mints `<init!>`. `pt-set-active` accepts only
+// `<!active-safe>`, reachable only through `pt-clone`. This is the headline
+// fatal-and-unasserted rule this lift exists for: `uk_paging_pt_set_active`
+// on a table that maps nothing but the directmap window is a triple fault,
+// and nothing in `paging.c` checks for it -- see index.kz's header note and
+// `uk_paging_init`'s own bootstrap, which carefully maps every boot memory
+// region into `kernel_pt` BEFORE ever activating it.
+//
+// The C cannot object to this program: `uk_paging_pt_set_active` takes any
+// `struct uk_pagetable *` and writes CR3 unconditionally. This lift's types
+// object instead.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/paging
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_PAGING=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKPAGING: 'y'
+}
+
+~unikraft/paging:pt-init(start: 0x1000000, len: 0x100000)
+| ok bare |> unikraft/paging:pt-set-active(pt: bare)
+    | ok live |> std/io:print.ln("this must never compile")
+        |> unikraft/paging:run-forever(pt: live)
+    | refused e |> std/io:print.ln("this must never compile either")
+        |> unikraft/paging:pt-free(e.pt)
+            | ok |> _
+            | failed ef |> unikraft/paging:abandon(ef.pt)
+| refused r |> std/io:print.ln("pt-init refused: {{ r.reason:s }}")

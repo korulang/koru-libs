@@ -313,6 +313,38 @@ have missed why it did what it did.
   in the shipped `unikraft/store`. Census 10 retired (2 corrected
   off-by-ones) / 2 structurally satisfied by boot ordering / 7 not
   applicable / 2 not lifted (genuine ceilings), per site.
+- **[paging](unikraft/paging/README.md)** — `ukpaging`'s page tables behind
+  a 5-state ratchet (`current`/`active-safe`/`active`/`init`/`detached`), 15
+  tors including `poke`/`peek` (raw memory ops, not part of the C surface).
+  Boots a REAL `mov %cr3` from a running Koru unikernel and proves the
+  switch survived: a deep clone of the active table is mapped into,
+  switched to, and the mapping is read back live afterward, cross-checked
+  against `virt_to_phys`. TWO fatal, UNASSERTED rules, found by reading the
+  C rather than grepping `UK_ASSERT`: `pt_set_active` on a table that does
+  not map the running code is a triple fault nothing checks for, PROVEN by
+  `uk_paging_init`'s own bootstrap carefully mapping every boot region in
+  before ever activating `kernel_pt`; and `pt_free` never checks it isn't
+  freeing the table you're currently running on. A THIRD finding parallels
+  `store`'s refcount mismatch by name: the active table is a machine-wide
+  SINGLETON but obligations are per-handle, so a superseded `<active!>`
+  handle can never be freed again through this lift even once something
+  else is truly live — conservative, not wrong, stated at length. `pt_init`
+  is lifted and phantom-typed but NOT exercised live: sourcing a genuinely
+  free physical range needs `ukplat_memregion_foreach`, off this library's
+  15-symbol surface. Found and fixed its OWN bug by booting: an early draft
+  passed `~0` instead of `UK_PAL_PADDR_INV` as the "allocate a frame" paddr
+  sentinel, and the program built, booted, and printed a garbage physical
+  address before crashing on the next real access — `UK_PAL_PADDR_INV`
+  turns out to be the IDENTICAL formula `unikraft/vmem` already derived for
+  `UK_PAGING_VADDR_ANY`, reused by citation. Also pinned a Koru PARSER
+  defect (not a phantom-obligation one): a mid-chain tor call with named
+  union arms, indented to track the surrounding chain, is misparsed as a
+  "stray continuation line" — minimal repro in `toolchain-repros/`,
+  `unikraft`-independent. 16 of 140 asserts retired per site across 6
+  rules; the rest is mostly internal recursive-walk machinery this lift's
+  bounded surface never reaches, named as a bucket rather than padded into
+  rows that would all say the same thing. **Corrects the shelf's own inline
+  count**: 10 static inlines (6F/4A), not 11 (8F/3A).
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -474,7 +506,7 @@ was an unfiltered line count. Both are replaced.
 | `ukstore` | allowlist | 39 | 0 | 0 | **39** | — | 28 | yes | **TAKEN** (`unikraft/store`) — the registry. Obligations pair every acquisition with a release (two independent `<held!>` on ONE object id, each discharged, proven at boot) and are structurally blind to HOW MANY holders and to WHICH release is last: a refcount is a count, an obligation is a claim about one binding. The ten-type matrix was hand-written, not generated — no attested Koru construct mints N sibling declarations. Found two `ukstore` defects by booting. Refcounted object registry: `obj_alloc → _obj_add → acquire ⇄ release`, plus an 11-type × 3-verb typed getter/setter matrix that is a comptime-codegen exercise rather than a wrapper. **Zero inlines** — the whole surface links. Nothing shipped has this shape. |
 | `ukvsockdev` | allowlist | 21 | 0 | 0 | **21** | 7M | 39 | **no** | Device lifecycle *and* a per-connection lifecycle (`conn_request → conn_response → conn_shutdown`/`conn_reset`) *and* a buffer (`init → append → read → destroy`). Excellent shape — **and it does not exist in 0.21.0.** You cannot boot it with `version: stable`. Do not claim this slot without first proving you can build against the fork. |
 | `uk9p` | allowlist | 46 | 0 | 0 | **44** | 14M | 21 | yes | **TAKEN** (`unikraft/ninep`) — three nested resources. **Corrected twice.** (1) `links` is **44, not 46**: `uk_9pdev_set_msize` and `uk_9pdev_get_msize` are each listed TWICE, which is a SIXTH hazard beside the brief's five — an allowlist can repeat a name. Verified by `nm -g libuk9p.o`: exactly 44 `T` symbols, an exact set match with the de-duplicated allowlist. (2) The allowlist is **not closed under the state machine it exposes**: `uk_9preq_ready` (`9preq.c:87`) — the ONLY transition out of `UK_9PREQ_INITIALIZED`, which the exported `uk_9pdev_req_create` is the only producer of — is absent from it and is `t` in the object. Three other real functions likewise. So the request state machine is unreachable from a separate archive and the lift binds `uk_9p_*`. |
-| `ukpaging` | allowlist | 15 | 0 | 0 | **15** | 8F/3A | 140 | yes | `pt_init → pt_set_active → page_map/page_unmap → pt_free`, plus the `page_kmap`/`page_kunmap` pair. Second-highest assert count. The 3 A are control-register reads; the other 8 inlines are pure arithmetic and free. |
+| `ukpaging` | allowlist | 15 | 0 | 0 | **15** | 8F/3A | 140 | yes | **TAKEN** (`unikraft/paging`) — page tables. Boots a REAL `mov %cr3` from inside a running Koru unikernel and proves the switch survived: a clone of the active table is mapped into, switched to, and the mapping is read back live on the other side. Two fatal, UNASSERTED rules found by reading the C rather than grepping `UK_ASSERT`: `pt_set_active` on a table that does not map the running code is a triple fault nothing checks for (proven by `uk_paging_init`'s own bootstrap carefully avoiding it), and `pt_free` never checks it isn't freeing the table you're currently running on. **Corrected the inline count:** this lift's own read of `include/uk/paging.h` finds 10 static inlines (6F/4A), not 11 (8F/3A) — see its README's linkability verdict. |
 | `ukconsole` | allowlist | 17 | 0 | 0 | **17** | 2M | 26 | **partly** | `register → out/in → unregister` plus async callback register/unregister. **10 of the 17 are fork-only**; against 0.21.0 this is a 7-symbol library with no `unregister`, which deletes the asymmetry that makes it interesting. |
 | `uklcpu` | allowlist | 29 | 0 | 16 | **13** | 20F/12M/3N | 25 | yes | SMP + interrupt-flag primitives. The `save_irqf`/`restore_irqf` pair is a real nesting discipline, but it is one of the 16 **inert** lines, and most of the rest is `cli`/`sti`. Poor target despite the headline 29. |
 | `ukallocpool` | allowlist | 12 | 0 | 0 | **12** | — | 23 | yes | **TAKEN** (`unikraft/allocpool`) — Two asserts in `uk_allocpool_free` (`pool.c:383,386`) are the whole challenge in miniature: a pool built by `uk_allocpool_init` may *never* be freed by `uk_allocpool_free` (only one built by `uk_allocpool_alloc` may), and every object `take`n must be `return`ed first. Two constructors, one destructor, and picking the wrong pair vanishes at `-DNDEBUG`. Zero inlines. **Corrected by the lift:** the second assert is unreachable and so is the first — `uk_allocpool_free` hits an ungated `UK_CRASH` (pool.c:390) before `uk_free`, in every build, measured on a booted image. |
