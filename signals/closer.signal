@@ -1,0 +1,6 @@
+name: closer
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a mechanical closer's verdict on the tree — pass/fail/cant-tell counts from a run the committer actually executed, never a recollection of one

@@ -1,0 +1,6 @@
+name: frontier
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a compiler/toolchain wall pinned with a runnable reproduction instead of routed around — the deliverable of an instrument package hitting its limit
