@@ -1,0 +1,99 @@
+// FINDING A — a tor with TWO arms, where only ONE arm re-issues the input's
+// phantom state and the OTHER arm genuinely converts it to a DIFFERENT
+// state, is excluded as a disposal candidate for the state ENTIRELY — even
+// down the arm that legitimately converts it, and even when that arm is
+// called EXPLICITLY in the source (no auto-discharge insertion needed).
+//
+// Root cause, read directly from the compiler source (not guessed):
+// `src/phantom_semantic_checker.zig:296` and `src/auto_discharge_inserter.zig
+// :3057` both define `eventReIssuesObligation`, and both loop over EVERY
+// branch of the tor and return `true` (excluded) as soon as ANY branch
+// re-issues the base state — there is no per-arm distinction, and no check
+// for whether at least one OTHER arm genuinely converts it. `settle` below
+// has exactly that shape: `ok` converts <!built> to <held!> (genuine), and
+// `refused` re-issues <built!> (a self-loop) — so `eventReIssuesObligation`
+// returns true for the whole tor, `settle` is dropped from the candidate
+// list, and the checker later reports "No tor accepts <!built>" even though
+// this file calls `settle(obj)` explicitly and takes its `ok` arm.
+//
+//   koruc A_partial_reissue_excludes_whole_tor.kz
+//
+// Literal output (2026-08-07, koruc built from /Users/larsde/src/koru HEAD
+// at the time of this lift):
+//
+//   error[KORU030]: Resource 'obj' obligation <built!> was not discharged. No tor accepts <!built>.
+//     --> A_partial_reissue_excludes_whole_tor.kz:97:0
+//       |
+//    97 | | ready obj |> settle(obj)
+//       | ^
+//
+//   ❌ Compiler coordination error: Auto-discharge failed (multiple disposal options or no disposal event)
+//
+// `--check` passes both this file and its control — shape-checking does not
+// walk the phantom-obligation flow at all, so this is invisible until the
+// FULL pipeline runs. Verified identical failure (same line, same message)
+// under all three of `koruc <file>`, `koruc build <file>`, `koruc run
+// <file>`. `koruc --check <file>` never reaches it, on either file.
+//
+// `--auto-discharge=disable` hits the SAME bug through the checker's OWN
+// separate copy of `eventReIssuesObligation`
+// (`phantom_semantic_checker.zig:296`, vs the inserter's copy at
+// `auto_discharge_inserter.zig:3057`) — the wording differs slightly
+// (confirming two independent code paths, not one):
+//
+//   error[KORU030]: Resource 'obj' carries obligation <built!> was not discharged. No tor accepts <!built>.
+//     --> A_partial_reissue_excludes_whole_tor.kz:97:0
+//   ❌ Compiler coordination error: Phantom semantic validation failed
+//
+// Does NOT need a cross-module import to fire: this file is single-module,
+// no `~import`, no `|zig` FFI beyond a plain heap allocation, and it still
+// reproduces. My original finding (in unikraft/store's README) was pinned
+// only against a cross-module unikraft lift; this file establishes the
+// defect is NARROWER-SURFACE than that framing implied — it needs no
+// cross-module machinery at all, just the one-tor, two-arm shape above.
+//
+// Flip to A_control_distinct_state.kz — the ONLY change is `refused`'s
+// output state, `*Obj<built!>` -> `*Obj<stuck!>`, plus the matching consumer
+// `abandon` — and it compiles clean through the full pipeline.
+//
+// NOT the same finding as `440_007_reissuing_event_is_not_a_discharger` or
+// `330_118_conserving_tor_is_not_a_disposal_candidate` in
+// /Users/larsde/src/koru/tests/regression, though it is the SAME predicate:
+// both of those pin a tor that reissues on EVERY declared arm (wholly
+// conserving — genuinely has no disposer, and "No tor accepts" is the
+// CORRECT diagnosis there). `330_118`'s own comment states the intended
+// rule: "A CONVERTING tor is a different thing and stays a legitimate
+// candidate... Only same-obligation conservation is disqualifying." `settle`
+// below is NOT wholly conserving — its `ok` arm converts — so by that
+// stated rule it should stay a candidate. It does not, because
+// `eventReIssuesObligation` checks "does ANY arm reissue", not "do ALL arms
+// reissue" or "does at least one arm genuinely convert".
+
+const std = @import("std");
+const Obj = struct { v: i32 };
+
+~pub tor mk { } -> *Obj<built!>
+~proc mk|zig {
+    const o = std.heap.page_allocator.create(Obj) catch unreachable;
+    o.* = Obj{ .v = 1 };
+    return o;
+}
+
+// The ONE line that differs from the control: `refused` mints <built!>
+// again — the SAME single non-union state `settle` also takes as input.
+~pub tor settle { obj: *Obj<!built> }
+| ok *Obj<held!>
+| refused { obj: *Obj<built!>, reason: string }
+~proc settle|zig {
+    return .{ .ok = obj };
+}
+
+~pub tor finish { obj: *Obj<!held> }
+~proc finish|zig {
+    _ = obj;
+}
+
+~mk()
+| ready obj |> settle(obj)
+    | ok held |> finish(obj: held)
+    | refused _ |> _

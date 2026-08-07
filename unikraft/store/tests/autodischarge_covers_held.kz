@@ -1,0 +1,33 @@
+// POSITIVE control, not a negative — and a correction recorded the same way
+// `unikraft/alloc`'s README records its own. My first draft of this file was
+// named `negative_object_never_discharged.kz` and claimed dropping a live
+// <held!> binding without an explicit `release` call must not compile. That
+// claim was WRONG, disproved by compiling this exact program: `<held!>` has
+// exactly ONE unattended terminal disposer (`release`), so auto-discharge
+// silently INSERTS the call rather than reporting a leak — the same
+// mechanism `unikraft/alloc` documents for its own `<live!>` state, keyed by
+// binding name, not by arm position (`src/auto_discharge_inserter.zig`).
+//
+// Verified by reading the emitted Zig: this source contains ZERO literal
+// `unikraft/store:release` calls, and `output_emitted.zig` contains exactly
+// ONE `release_event.handler(.{ .obj = held })` call. Compile, then `grep
+// release_event.handler output_emitted.zig` to reproduce.
+//
+// So, precisely: "forgetting to release a held object is a compile error" is
+// NOT a claim this lift can make — it is a compile-time INSERTION. The
+// negatives that DO hold are `negative_release_without_add.kz` (a genuine
+// state-mismatch refusal: `release` structurally cannot accept <built!>) and
+// `negative_release_twice.kz` (use-after-discharge on an ALREADY-inserted or
+// explicit release).
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/store
+
+~unikraft/store:alloc(name: "auto", id: 4)
+| ready obj |> unikraft/store:add(obj)
+    | ok held |> _
+    | refused e |> unikraft/store:abandon(e.obj)
+| err _ |> _
