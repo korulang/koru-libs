@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: expected 'unikraft.store:held'
+
 // NEGATIVE — the asymmetry gate. `alloc` mints <built!>; `release` accepts
 // only <!held>, never <!built>. Skipping `add` and releasing straight away
 // is not a benign no-op the way an unused `unikraft/alloc:take` is: it would

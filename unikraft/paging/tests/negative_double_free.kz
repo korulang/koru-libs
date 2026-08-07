@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge: binding 'clone_a'
+
 // NEGATIVE, gate 3. Use-after-discharge: free a cloned table twice. The
 // second `pt-free` is not a call the C would even let you MAKE safely --
 // `uk_paging_pt_free` has already unmapped and freed the top-level page, so a

@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: expected '!unikraft.paging:init
+
 // NEGATIVE, gate 3. `pt-free` accepts `<!init|!active-safe|!detached>` and
 // NEVER `<!active>`. `uk_paging_pt_free` never checks whether the table it is
 // about to unmap and free is `pg_active_pt` -- freeing the table this code is

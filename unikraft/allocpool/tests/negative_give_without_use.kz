@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: expected 'unikraft.allocpool:used'
+
 // NEGATIVE — pillar 4 on the object: take one and hand it straight back.
 // `give` accepts only `<!used>`, and `<used!>` is reachable only through
 // `write`, `read` or the named escape `untouched`.

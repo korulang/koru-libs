@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge: binding 'held'
+
 // NEGATIVE — double release. `release` consumes <!held>; a second call on
 // the SAME binding has nothing to consume. This is the refcount ratchet's
 // version of a double-free: the C's own doc comment says "every call must

@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: expected 'unikraft.allocpool:owned'
+
 // NEGATIVE — the lift's thesis: a pool built by `uk_allocpool_init` handed to
 // `uk_allocpool_free`. pool.c:379-383 says this is illegal, in a comment and in
 // an assertion that is `do {} while(0)` in this image; the field it reads

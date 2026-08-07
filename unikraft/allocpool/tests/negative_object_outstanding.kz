@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: obligation <used!> was not discharged
+
 // NEGATIVE — an object still out when the pool ends. pool.c:385-386:
 //
 //     /* Make sure we got all objects back */

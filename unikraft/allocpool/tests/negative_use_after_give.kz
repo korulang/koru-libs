@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge: binding 'u'
+
 // NEGATIVE — the same object returned twice. In the C this links the object
 // into the free list a second time and drives `free_obj_count` past
 // `obj_count`, which is `UK_ASSERT(p->free_obj_count < p->obj_count)`

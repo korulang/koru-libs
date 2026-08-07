@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: multiple discharge options: free, keep
+
 // NEGATIVE — the pool itself dropped. This is what the named escape `keep` buys
 // beyond a grep: `<owned>` has TWO disposals, so auto-discharge cannot elect
 // one and the compiler reports instead of silently inserting.

@@ -1,3 +1,6 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: expected 'unikraft.paging:active-safe'
+
 // NEGATIVE, gate 3. `pt-init` mints `<init!>`. `pt-set-active` accepts only
 // `<!active-safe>`, reachable only through `pt-clone`. This is the headline
 // fatal-and-unasserted rule this lift exists for: `uk_paging_pt_set_active`
