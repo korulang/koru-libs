@@ -1,0 +1,2034 @@
+{
+ "provenance": {
+  "reference": "krausest/js-framework-benchmark (keyed division)",
+  "commit": "247fafa22c1f2caeb4cad179aa64cf444398cbc7",
+  "commit_date": "2026-07-28T18:40:12Z",
+  "commit_message": "incremental run",
+  "confirmed_current": "GitHub API queried 2026-08-07: this commit is the latest touching webdriver-ts/results.json on master",
+  "dataset": "webdriver-ts/results.json (3720 rows = 248 frameworks x 15 benchmarks, raw sample arrays)",
+  "browser": "Chrome 150.0.7871.47 (webdriver-ts-results/src/App.tsx:28); dataset is an incremental run, so individual rows may have been measured under adjacent Chrome versions",
+  "aggregation": "median over each benchmark's published sample array ('total' for CPU benchmarks, 'DEFAULT' for memory/size/first-paint), computed by this pull on 2026-08-07; no number was re-run, estimated, or interpolated",
+  "units": {
+   "cpu_ops": "ms (duration; some ops run under CPU throttling per benchmarksCommon.ts:105-111)",
+   "memory": "MB",
+   "size": "KB; 42_size-compressed is BROTLI of all implementation files excluding /css and http headers (benchmarksSize.ts:20-24)",
+   "first_paint": "ms"
+  },
+  "pulled": "2026-08-07"
+ },
+ "koru_context": {
+  "app": "dom/app (koru JS backend output: output_emitted.js + index.html)",
+  "measured": "2026-08-07 by this pull (gzip -9 / brotli -q 11 on the emitted files)",
+  "js_bytes_uncompressed": 9693,
+  "js_bytes_gzip": 2900,
+  "js_bytes_brotli": 2453,
+  "html_bytes_uncompressed": 2441,
+  "html_bytes_gzip": 690,
+  "html_bytes_brotli": 473,
+  "conformance": "3 of 11 operations (dom/board/latest.md, round 1: 01_run1k, 08_create1k_after1k, 10_html_structure pass)",
+  "js_escape": "66.7% of app lines are host-JS escapes (dom/board/latest.md)",
+  "comparability": "NOT comparable to the table yet: 8 of 11 operations are unimplemented, and missing operations mean missing code, so the size number can only grow. A fair comparison requires 11/11 conformance and measurement under the reference's own size rules (brotli of all implementation files excluding css, benchmarksSize.ts:20-24)."
+ },
+ "build_time_finding": {
+  "finding": "The reference does not measure build time anywhere, and no entry reports one.",
+  "evidence": [
+   "webdriver-ts/src/benchmarksCommon.ts:72-90 \u2014 the complete Benchmark enum: 9 CPU ops, memory (21-26), startup (30), sizes (40). No build-time benchmark exists.",
+   "cli/rebuild-build-single.js and cli/rebuild-all-frameworks.js run each framework's npm build without timing it (no Date.now/hrtime/console.time around the build).",
+   "A repo-wide grep for 'build time'/'compile time' finds only vendored bundle comments (e.g. emscripten output under broken-frameworks/), no measurement."
+  ]
+ },
+ "absences": [
+  "Haskell: miso exists in the repo only under broken-frameworks/keyed/ (miso-ghc-js, miso-ghc-wasm) \u2014 no rows in the current dataset.",
+  "ReScript: rescript-react is under broken-frameworks/keyed/ \u2014 no rows in the current dataset.",
+  "PureScript: no keyed entry exists at this commit at all.",
+  "Store pairings with no current numbers: react-jotai and react-native-onyx are under broken-frameworks/keyed/ \u2014 no rows in the current dataset.",
+  "san (plain, template API) is under broken-frameworks/keyed/ \u2014 san-composition is the nearest live baseline for san-store.",
+  "The non-keyed division (67 implementations) is out of scope for this gauntlet (the reference control is vanillajs-keyed) and was not classified.",
+  "marko / marko-classes were considered for cohort B and not included: .marko is an HTML-template DSL over JS and the repo classifies both as JavaScript \u2014 borderline, recorded rather than forced.",
+  "magnet, alien-signals, vanillajs-signals, wcstack-signals(-tsx) use signal libraries as their internal reactivity engine, not as an app-level store over a separate renderer \u2014 considered for cohort A and not included.",
+  "Build time: no entry publishes one and the harness does not measure one (see the build-time section)."
+ ],
+ "benchmark_labels": {
+  "01_run1k": "create 1k",
+  "02_replace1k": "replace 1k",
+  "03_update10th1k_x16": "partial update",
+  "04_select1k": "select row",
+  "05_swap1k": "swap rows",
+  "06_remove-one-1k": "remove row",
+  "07_create10k": "create 10k",
+  "08_create1k-after1k_x2": "append 1k",
+  "09_clear1k_x8": "clear 1k",
+  "21_ready-memory": "ready memory",
+  "22_run-memory": "run memory",
+  "25_run-clear-memory": "run+clear memory",
+  "41_size-uncompressed": "uncompressed size",
+  "42_size-compressed": "compressed size (brotli)",
+  "43_first-paint": "first paint"
+ },
+ "cohort_a": {
+  "members": [
+   "react-redux",
+   "react-redux-hooks",
+   "react-redux-hooks-immutable",
+   "react-redux-rematch",
+   "react-zustand",
+   "valtio",
+   "react-mobX",
+   "react-tracked",
+   "react-tagged-state",
+   "react-kr-observable",
+   "react-mlyn",
+   "react-rxjs",
+   "react-supergrain",
+   "legend-state",
+   "preact-kr-observable",
+   "vue-pinia",
+   "san-store",
+   "mobx-jsx",
+   "reatom-jsx",
+   "re-frame"
+  ],
+  "borderline": [
+   "preact-signals",
+   "solid-store"
+  ],
+  "baselines": [
+   "react-hooks",
+   "preact-hooks",
+   "vue",
+   "solid",
+   "reagent",
+   "san-composition",
+   "vanillajs"
+  ]
+ },
+ "cohort_b": [
+  "re-frame",
+  "dioxus",
+  "dominator",
+  "leptos",
+  "mogwai",
+  "sauron",
+  "silkenweb",
+  "spair",
+  "spair-qr",
+  "stdweb",
+  "sycamore",
+  "wasm-bindgen",
+  "yew",
+  "yew-hooks",
+  "anansi",
+  "blazor-wasm",
+  "blazor-wasm-aot",
+  "elementaryui",
+  "elm",
+  "helix",
+  "reagent",
+  "laminar",
+  "imba"
+ ],
+ "cohort_c": [
+  "vanillajs",
+  "react-hooks",
+  "svelte",
+  "solid",
+  "lit",
+  "blockdom",
+  "mikado"
+ ],
+ "react_family": [
+  "react-hooks",
+  "react-classes",
+  "react-compiler-hooks",
+  "react-hooks-use-transition",
+  "astro-react",
+  "react-redux",
+  "react-redux-hooks",
+  "react-redux-hooks-immutable",
+  "react-redux-rematch",
+  "react-zustand",
+  "valtio",
+  "react-mobX",
+  "react-tracked",
+  "react-tagged-state",
+  "react-kr-observable",
+  "react-mlyn",
+  "react-rxjs",
+  "react-supergrain",
+  "legend-state"
+ ],
+ "entries": {
+  "react-redux": {
+   "dir": "frameworks/keyed/react-redux",
+   "result_name": "react-redux-v19.0.0 + 9.2.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-redux/package.json dependencies: redux@5.0.1, react-redux@9.2.0"
+   ],
+   "note": null,
+   "role": "React + Redux, connect() API",
+   "numbers": {
+    "01_run1k": 28.9,
+    "02_replace1k": 34.4,
+    "03_update10th1k_x16": 16.9,
+    "04_select1k": 9.1,
+    "05_swap1k": 87.7,
+    "06_remove-one-1k": 22.8,
+    "07_create10k": 416.6,
+    "08_create1k-after1k_x2": 33.7,
+    "09_clear1k_x8": 21,
+    "21_ready-memory": 1.29,
+    "22_run-memory": 8.61,
+    "25_run-clear-memory": 2.16,
+    "41_size-uncompressed": 193.9,
+    "42_size-compressed": 52.9,
+    "43_first-paint": 225.7
+   }
+  },
+  "react-redux-hooks": {
+   "dir": "frameworks/keyed/react-redux-hooks",
+   "result_name": "react-redux-hooks-v19.0.0 + 9.2.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-redux-hooks/package.json dependencies: redux@^5.0.1, react-redux@^9.2.0"
+   ],
+   "note": null,
+   "role": "React + Redux, hooks API",
+   "numbers": {
+    "01_run1k": 26.8,
+    "02_replace1k": 30.3,
+    "03_update10th1k_x16": 16.8,
+    "04_select1k": 6.2,
+    "05_swap1k": 86.8,
+    "06_remove-one-1k": 11.4,
+    "07_create10k": 436.6,
+    "08_create1k-after1k_x2": 31.4,
+    "09_clear1k_x8": 19.1,
+    "21_ready-memory": 1.19,
+    "22_run-memory": 5.92,
+    "25_run-clear-memory": 1.98,
+    "41_size-uncompressed": 185.9,
+    "42_size-compressed": 50.6,
+    "43_first-paint": 210.9
+   }
+  },
+  "react-redux-hooks-immutable": {
+   "dir": "frameworks/keyed/react-redux-hooks-immutable",
+   "result_name": "react-redux-hooks-immutable-v19.0.0 + 9.2.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-redux-hooks-immutable/package.json dependencies: redux@5.0.1, react-redux@9.2.0, immutable@5.0.3"
+   ],
+   "note": null,
+   "role": "React + Redux + Immutable.js state",
+   "numbers": {
+    "01_run1k": 26.9,
+    "02_replace1k": 31.7,
+    "03_update10th1k_x16": 20.8,
+    "04_select1k": 6.7,
+    "05_swap1k": 92.6,
+    "06_remove-one-1k": 13.2,
+    "07_create10k": 450.3,
+    "08_create1k-after1k_x2": 32.1,
+    "09_clear1k_x8": 18.1,
+    "21_ready-memory": 1.37,
+    "22_run-memory": 6.38,
+    "25_run-clear-memory": 2.44,
+    "41_size-uncompressed": 246.1,
+    "42_size-compressed": 64.7,
+    "43_first-paint": 290.4
+   }
+  },
+  "react-redux-rematch": {
+   "dir": "frameworks/keyed/react-redux-rematch",
+   "result_name": "react-redux-rematch-v19.0.0 + 9.2.0 + 2.2.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-redux-rematch/package.json dependencies: @rematch/core@2.2.0, redux@5.0.1, react-redux@9.2.0"
+   ],
+   "note": null,
+   "role": "React + Redux via the Rematch framework",
+   "numbers": {
+    "01_run1k": 28.7,
+    "02_replace1k": 34.8,
+    "03_update10th1k_x16": 17.6,
+    "04_select1k": 8.9,
+    "05_swap1k": 87.6,
+    "06_remove-one-1k": 22.9,
+    "07_create10k": 418.8,
+    "08_create1k-after1k_x2": 33.7,
+    "09_clear1k_x8": 20.8,
+    "21_ready-memory": 1.31,
+    "22_run-memory": 8.6,
+    "25_run-clear-memory": 2.15,
+    "41_size-uncompressed": 200.2,
+    "42_size-compressed": 54.7,
+    "43_first-paint": 233.4
+   }
+  },
+  "react-zustand": {
+   "dir": "frameworks/keyed/react-zustand",
+   "result_name": "react-zustand-v19.0.0 + 5.0.2-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-zustand/package.json dependencies: zustand@5.0.2"
+   ],
+   "note": null,
+   "role": "React + Zustand",
+   "numbers": {
+    "01_run1k": 24.8,
+    "02_replace1k": 30.5,
+    "03_update10th1k_x16": 14.6,
+    "04_select1k": 4.8,
+    "05_swap1k": 85,
+    "06_remove-one-1k": 11,
+    "07_create10k": 439.3,
+    "08_create1k-after1k_x2": 29.4,
+    "09_clear1k_x8": 19.7,
+    "21_ready-memory": 1.2,
+    "22_run-memory": 6.07,
+    "25_run-clear-memory": 1.99,
+    "41_size-uncompressed": 182.9,
+    "42_size-compressed": 49.8,
+    "43_first-paint": 212.6
+   }
+  },
+  "valtio": {
+   "dir": "frameworks/keyed/valtio",
+   "result_name": "valtio-v18.2.0 + 2.1.2-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/valtio/package.json dependencies: valtio@2.1.2, react@18.2.0"
+   ],
+   "note": null,
+   "role": "React + Valtio proxy store",
+   "numbers": {
+    "01_run1k": 28.8,
+    "02_replace1k": 32.7,
+    "03_update10th1k_x16": 22.6,
+    "04_select1k": 9,
+    "05_swap1k": 91.7,
+    "06_remove-one-1k": 15.6,
+    "07_create10k": 496.2,
+    "08_create1k-after1k_x2": 35.6,
+    "09_clear1k_x8": 14.2,
+    "21_ready-memory": 1.14,
+    "22_run-memory": 5.97,
+    "25_run-clear-memory": 2.83,
+    "41_size-uncompressed": 145.2,
+    "42_size-compressed": 41.3,
+    "43_first-paint": 168
+   }
+  },
+  "react-mobX": {
+   "dir": "frameworks/keyed/react-mobX",
+   "result_name": "react-mobX-v19.0.0 + 6.13.5-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-mobX/package.json dependencies: mobx@6.13.5, mobx-react-lite@4.1.0"
+   ],
+   "note": null,
+   "role": "React + MobX observables",
+   "numbers": {
+    "01_run1k": 26.8,
+    "02_replace1k": 32.9,
+    "03_update10th1k_x16": 14.8,
+    "04_select1k": 5.5,
+    "05_swap1k": 87.9,
+    "06_remove-one-1k": 10.9,
+    "07_create10k": 453.9,
+    "08_create1k-after1k_x2": 31.6,
+    "09_clear1k_x8": 17.1,
+    "21_ready-memory": 1.56,
+    "22_run-memory": 6.17,
+    "25_run-clear-memory": 2.37,
+    "41_size-uncompressed": 242.8,
+    "42_size-compressed": 64,
+    "43_first-paint": 273.6
+   }
+  },
+  "react-tracked": {
+   "dir": "frameworks/keyed/react-tracked",
+   "result_name": "react-tracked-v19.0.0 + 2.0.1-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-tracked/package.json dependencies: react-tracked@2.0.1"
+   ],
+   "note": null,
+   "role": "React + react-tracked proxy-based tracking",
+   "numbers": {
+    "01_run1k": 25,
+    "02_replace1k": 31.6,
+    "03_update10th1k_x16": 19.4,
+    "04_select1k": 9.5,
+    "05_swap1k": 88.4,
+    "06_remove-one-1k": 12.4,
+    "07_create10k": 444.1,
+    "08_create1k-after1k_x2": 31.5,
+    "09_clear1k_x8": 17.4,
+    "21_ready-memory": 1.25,
+    "22_run-memory": 4.86,
+    "25_run-clear-memory": 2.51,
+    "41_size-uncompressed": 185.7,
+    "42_size-compressed": 50.8,
+    "43_first-paint": 216.4
+   }
+  },
+  "react-tagged-state": {
+   "dir": "frameworks/keyed/react-tagged-state",
+   "result_name": "react-tagged-state-v19.0.0 + 2.1.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-tagged-state/package.json dependencies: react-tagged-state@2.1.0"
+   ],
+   "note": null,
+   "role": "React + react-tagged-state signals",
+   "numbers": {
+    "01_run1k": 23.9,
+    "02_replace1k": 29.4,
+    "03_update10th1k_x16": 13.8,
+    "04_select1k": 4.6,
+    "05_swap1k": 84.8,
+    "06_remove-one-1k": 10.4,
+    "07_create10k": 419.3,
+    "08_create1k-after1k_x2": 29.2,
+    "09_clear1k_x8": 16.5,
+    "21_ready-memory": 1.18,
+    "22_run-memory": 4.99,
+    "25_run-clear-memory": 1.92,
+    "41_size-uncompressed": 181.6,
+    "42_size-compressed": 49.5,
+    "43_first-paint": 210.6
+   }
+  },
+  "react-kr-observable": {
+   "dir": "frameworks/keyed/react-kr-observable",
+   "result_name": "react-kr-observable-v19.0.0 + 3.0.8-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-kr-observable/package.json dependencies: kr-observable@3.0.8"
+   ],
+   "note": null,
+   "role": "React + kr-observable observables",
+   "numbers": {
+    "01_run1k": 26,
+    "02_replace1k": 30.3,
+    "03_update10th1k_x16": 14.8,
+    "04_select1k": 4.7,
+    "05_swap1k": 85.2,
+    "06_remove-one-1k": 10.9,
+    "07_create10k": 469.4,
+    "08_create1k-after1k_x2": 30.6,
+    "09_clear1k_x8": 17,
+    "21_ready-memory": 1.2,
+    "22_run-memory": 5.6,
+    "25_run-clear-memory": 1.93,
+    "41_size-uncompressed": 190.1,
+    "42_size-compressed": 51.8,
+    "43_first-paint": 223.3
+   }
+  },
+  "react-mlyn": {
+   "dir": "frameworks/keyed/react-mlyn",
+   "result_name": "react-mlyn-v0.5.16-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-mlyn/package.json dependencies: mlyn@^0.5.16, react-mlyn@^0.5.16"
+   ],
+   "note": null,
+   "role": "React + mlyn subscribable state",
+   "numbers": {
+    "01_run1k": 26.4,
+    "02_replace1k": 30.6,
+    "03_update10th1k_x16": 13.4,
+    "04_select1k": 5.2,
+    "05_swap1k": 87,
+    "06_remove-one-1k": 10.8,
+    "07_create10k": 415.9,
+    "08_create1k-after1k_x2": 31.5,
+    "09_clear1k_x8": 10.7,
+    "21_ready-memory": 1.4,
+    "22_run-memory": 7.13,
+    "25_run-clear-memory": 2.83,
+    "41_size-uncompressed": 213.1,
+    "42_size-compressed": 49.2,
+    "43_first-paint": 222
+   }
+  },
+  "react-rxjs": {
+   "dir": "frameworks/keyed/react-rxjs",
+   "result_name": "react-rxjs-v19.0.0 + 0.10.7-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-rxjs/package.json dependencies: @react-rxjs/core@0.10.7, rxjs@7.8.1"
+   ],
+   "note": null,
+   "role": "React + RxJS streams as state",
+   "numbers": {
+    "01_run1k": 25.6,
+    "02_replace1k": 29.2,
+    "03_update10th1k_x16": 14.2,
+    "04_select1k": 5.1,
+    "05_swap1k": 84.8,
+    "06_remove-one-1k": 10.4,
+    "07_create10k": 361.4,
+    "08_create1k-after1k_x2": 29.6,
+    "09_clear1k_x8": 17.7,
+    "21_ready-memory": 1.25,
+    "22_run-memory": 4.3,
+    "25_run-clear-memory": 1.98,
+    "41_size-uncompressed": 196.8,
+    "42_size-compressed": 53.3,
+    "43_first-paint": 231.3
+   }
+  },
+  "react-supergrain": {
+   "dir": "frameworks/keyed/react-supergrain",
+   "result_name": "react-supergrain-v19.2.4 + 7.1.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-supergrain/package.json dependencies: @supergrain/kernel@7.1.0"
+   ],
+   "note": null,
+   "role": "React + Supergrain store",
+   "numbers": {
+    "01_run1k": 25.8,
+    "02_replace1k": 32,
+    "03_update10th1k_x16": 14.4,
+    "04_select1k": 5.8,
+    "05_swap1k": 12.6,
+    "06_remove-one-1k": 12.1,
+    "07_create10k": 422.2,
+    "08_create1k-after1k_x2": 31.4,
+    "09_clear1k_x8": 18,
+    "21_ready-memory": 1.23,
+    "22_run-memory": 5.84,
+    "25_run-clear-memory": 2.62,
+    "41_size-uncompressed": 202,
+    "42_size-compressed": 54.9,
+    "43_first-paint": 250.6
+   }
+  },
+  "legend-state": {
+   "dir": "frameworks/keyed/legend-state",
+   "result_name": "legend-state-v18.2.0 + 2.1.1-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/legend-state/package.json dependencies: @legendapp/state@^2.1.1, react@18.2.0"
+   ],
+   "note": null,
+   "role": "React + Legend-State observables",
+   "numbers": {
+    "01_run1k": 29.3,
+    "02_replace1k": 33.9,
+    "03_update10th1k_x16": 15.7,
+    "04_select1k": 4.9,
+    "05_swap1k": 87.7,
+    "06_remove-one-1k": 12,
+    "07_create10k": 447.3,
+    "08_create1k-after1k_x2": 32.2,
+    "09_clear1k_x8": 13.1,
+    "21_ready-memory": 1.14,
+    "22_run-memory": 5.66,
+    "25_run-clear-memory": 4.74,
+    "41_size-uncompressed": 157.1,
+    "42_size-compressed": 45.2,
+    "43_first-paint": 188.6
+   }
+  },
+  "preact-kr-observable": {
+   "dir": "frameworks/keyed/preact-kr-observable",
+   "result_name": "preact-kr-observable-v10.27.1 + 3.0.8-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/preact-kr-observable/package.json dependencies: kr-observable@3.0.8, preact@^10.27.1"
+   ],
+   "note": null,
+   "role": "kr-observable observables over Preact",
+   "numbers": {
+    "01_run1k": 31.6,
+    "02_replace1k": 34,
+    "03_update10th1k_x16": 14.2,
+    "04_select1k": 3.7,
+    "05_swap1k": 13.6,
+    "06_remove-one-1k": 10.4,
+    "07_create10k": 327.1,
+    "08_create1k-after1k_x2": 35.5,
+    "09_clear1k_x8": 14.4,
+    "21_ready-memory": 0.76,
+    "22_run-memory": 5.68,
+    "25_run-clear-memory": 1.05,
+    "41_size-uncompressed": 32,
+    "42_size-compressed": 10.8,
+    "43_first-paint": 54.6
+   }
+  },
+  "vue-pinia": {
+   "dir": "frameworks/keyed/vue-pinia",
+   "result_name": "vue-pinia-v3.5.39 + 3.0.4-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/vue-pinia/package.json dependencies: pinia@^3.0.4, vue@^3.5.39"
+   ],
+   "note": null,
+   "role": "Pinia over Vue",
+   "numbers": {
+    "01_run1k": 24.4,
+    "02_replace1k": 28.3,
+    "03_update10th1k_x16": 14.2,
+    "04_select1k": 5.3,
+    "05_swap1k": 14.1,
+    "06_remove-one-1k": 13.9,
+    "07_create10k": 269.7,
+    "08_create1k-after1k_x2": 28.8,
+    "09_clear1k_x8": 12.8,
+    "21_ready-memory": 0.85,
+    "22_run-memory": 4.26,
+    "25_run-clear-memory": 1.37,
+    "41_size-uncompressed": 69.6,
+    "42_size-compressed": 25.3,
+    "43_first-paint": 118.5
+   }
+  },
+  "san-store": {
+   "dir": "frameworks/keyed/san-store",
+   "result_name": "san-store-v3.15.1 + 2.2.7-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/san-store/package.json dependencies: san-store@2.2.7, san-update@2.1.0, san@^3.15.1"
+   ],
+   "note": null,
+   "role": "san-store flux store over San",
+   "numbers": {
+    "01_run1k": 32.4,
+    "02_replace1k": 30.7,
+    "03_update10th1k_x16": 24.9,
+    "04_select1k": 9.4,
+    "05_swap1k": 24.6,
+    "06_remove-one-1k": 12,
+    "07_create10k": 254.1,
+    "08_create1k-after1k_x2": 33.3,
+    "09_clear1k_x8": 15.2,
+    "21_ready-memory": 1.03,
+    "22_run-memory": 3.55,
+    "25_run-clear-memory": 1.25,
+    "41_size-uncompressed": 92.5,
+    "42_size-compressed": 23,
+    "43_first-paint": 102
+   }
+  },
+  "mobx-jsx": {
+   "dir": "frameworks/keyed/mobx-jsx",
+   "result_name": "mobx-jsx-v0.16.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/mobx-jsx/package.json dependencies: mobx@6.1.8, mobx-jsx@0.16.0"
+   ],
+   "note": null,
+   "role": "MobX driving a Solid-style fine-grained renderer",
+   "numbers": {
+    "01_run1k": 23.9,
+    "02_replace1k": 26.4,
+    "03_update10th1k_x16": 10.6,
+    "04_select1k": 3,
+    "05_swap1k": 12.7,
+    "06_remove-one-1k": 9.7,
+    "07_create10k": 248.8,
+    "08_create1k-after1k_x2": 26.6,
+    "09_clear1k_x8": 9.2,
+    "21_ready-memory": 0.91,
+    "22_run-memory": 3.89,
+    "25_run-clear-memory": 1.21,
+    "41_size-uncompressed": 56.4,
+    "42_size-compressed": 15.6,
+    "43_first-paint": 70.4
+   }
+  },
+  "reatom-jsx": {
+   "dir": "frameworks/keyed/reatom-jsx",
+   "result_name": "reatom-jsx-v1001.3.0 + 1001.3.0-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "A"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/reatom-jsx/package.json dependencies: @reatom/core@^1001.3.0, @reatom/jsx@^1001.3.0"
+   ],
+   "note": null,
+   "role": "Reatom atoms with Reatom's renderer",
+   "numbers": {
+    "01_run1k": 29.8,
+    "02_replace1k": 35.3,
+    "03_update10th1k_x16": 10.7,
+    "04_select1k": 2.8,
+    "05_swap1k": 12.1,
+    "06_remove-one-1k": 9.4,
+    "07_create10k": 311.3,
+    "08_create1k-after1k_x2": 33.4,
+    "09_clear1k_x8": 15.9,
+    "21_ready-memory": 0.72,
+    "22_run-memory": 5.94,
+    "25_run-clear-memory": 1.08,
+    "41_size-uncompressed": 29.6,
+    "42_size-compressed": 10.4,
+    "43_first-paint": 91.3
+   }
+  },
+  "re-frame": {
+   "dir": "frameworks/keyed/re-frame",
+   "result_name": "re-frame-v1.4.3-keyed",
+   "language": "ClojureScript",
+   "ships": "js",
+   "cohorts": [
+    "A",
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/re-frame/project.clj:8 [re-frame \"1.4.3\"]; src/demo/main.cljs:5,38 (rf/reg-event-db)"
+   ],
+   "note": null,
+   "role": "re-frame event/subscription store over Reagent (ClojureScript)",
+   "numbers": {
+    "01_run1k": 50.8,
+    "02_replace1k": 58.2,
+    "03_update10th1k_x16": 36.9,
+    "04_select1k": 17.2,
+    "05_swap1k": 105.6,
+    "06_remove-one-1k": 24.3,
+    "07_create10k": 490.3,
+    "08_create1k-after1k_x2": 55.9,
+    "09_clear1k_x8": 49.9,
+    "21_ready-memory": 1.92,
+    "22_run-memory": 7.61,
+    "25_run-clear-memory": 3.3,
+    "41_size-uncompressed": 351.1,
+    "42_size-compressed": 80.8,
+    "43_first-paint": 381.8
+   }
+  },
+  "preact-signals": {
+   "dir": "frameworks/keyed/preact-signals",
+   "result_name": "preact-signals-v10.27.1 + 2.3.1-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [],
+   "borderline_in": [
+    "A"
+   ],
+   "evidence": [
+    "frameworks/keyed/preact-signals/package.json dependencies: @preact/signals@^2.3.1, preact@^10.27.1"
+   ],
+   "note": "@preact/signals is a separate package layered on the Preact vdom, but it ships from the Preact team itself \u2014 external-package, same-vendor",
+   "role": "borderline store entry over Preact",
+   "numbers": {
+    "01_run1k": 30.4,
+    "02_replace1k": 32,
+    "03_update10th1k_x16": 10.3,
+    "04_select1k": 3.9,
+    "05_swap1k": 14.3,
+    "06_remove-one-1k": 10.9,
+    "07_create10k": 305.6,
+    "08_create1k-after1k_x2": 31.7,
+    "09_clear1k_x8": 13,
+    "21_ready-memory": 0.7,
+    "22_run-memory": 5.05,
+    "25_run-clear-memory": 2.0,
+    "41_size-uncompressed": 23.1,
+    "42_size-compressed": 8.2,
+    "43_first-paint": 58.5
+   }
+  },
+  "solid-store": {
+   "dir": "frameworks/keyed/solid-store",
+   "result_name": "solid-store-v1.9.3-keyed",
+   "language": "JavaScript/TypeScript",
+   "ships": "js",
+   "cohorts": [],
+   "borderline_in": [
+    "A"
+   ],
+   "evidence": [
+    "frameworks/keyed/solid-store/src/main.jsx:3 `import { createStore } from \"solid-js/store\"`"
+   ],
+   "note": "the store ships INSIDE the solid-js package \u2014 not an external layer; included because Solid-vs-solid-store is the same renderer/store split the React rows give us",
+   "role": "borderline store entry over Solid",
+   "numbers": {
+    "01_run1k": 21.9,
+    "02_replace1k": 25.2,
+    "03_update10th1k_x16": 10.2,
+    "04_select1k": 3.4,
+    "05_swap1k": 13.4,
+    "06_remove-one-1k": 10.6,
+    "07_create10k": 237.2,
+    "08_create1k-after1k_x2": 26,
+    "09_clear1k_x8": 10.2,
+    "21_ready-memory": 0.53,
+    "22_run-memory": 2.91,
+    "25_run-clear-memory": 0.86,
+    "41_size-uncompressed": 14.7,
+    "42_size-compressed": 5.5,
+    "43_first-paint": 38.6
+   }
+  },
+  "dioxus": {
+   "dir": "frameworks/keyed/dioxus",
+   "result_name": "dioxus-v0.7.2-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/dioxus/Cargo.toml; src/*.rs; shipped artifact bundled-dist/dioxus_benchmark_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Dioxus",
+   "numbers": {
+    "01_run1k": 23.8,
+    "02_replace1k": 27.1,
+    "03_update10th1k_x16": 11.6,
+    "04_select1k": 2.7,
+    "05_swap1k": 14.3,
+    "06_remove-one-1k": 10.4,
+    "07_create10k": 252,
+    "08_create1k-after1k_x2": 27.6,
+    "09_clear1k_x8": 15.7,
+    "21_ready-memory": 1.91,
+    "22_run-memory": 6.12,
+    "25_run-clear-memory": 6.74,
+    "41_size-uncompressed": 419.6,
+    "42_size-compressed": 114.9,
+    "43_first-paint": 528.7
+   }
+  },
+  "dominator": {
+   "dir": "frameworks/keyed/dominator",
+   "result_name": "dominator-v0.5.0-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/dominator/Cargo.toml; src/*.rs; shipped artifact bundled-dist/*.module.wasm"
+   ],
+   "note": null,
+   "role": "Rust, dominator (FRP signals)",
+   "numbers": {
+    "01_run1k": 25.5,
+    "02_replace1k": 28.9,
+    "03_update10th1k_x16": 11.2,
+    "04_select1k": 3,
+    "05_swap1k": 11.3,
+    "06_remove-one-1k": 9.4,
+    "07_create10k": 275.2,
+    "08_create1k-after1k_x2": 29.3,
+    "09_clear1k_x8": 12.1,
+    "21_ready-memory": 1.76,
+    "22_run-memory": 3.85,
+    "25_run-clear-memory": 2.66,
+    "41_size-uncompressed": 135.4,
+    "42_size-compressed": 40.1,
+    "43_first-paint": 171.5
+   }
+  },
+  "leptos": {
+   "dir": "frameworks/keyed/leptos",
+   "result_name": "leptos-v0.7.0-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/leptos/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-leptos_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Leptos (fine-grained signals)",
+   "numbers": {
+    "01_run1k": 24.2,
+    "02_replace1k": 28.3,
+    "03_update10th1k_x16": 10.7,
+    "04_select1k": 3.1,
+    "05_swap1k": 11.6,
+    "06_remove-one-1k": 9.7,
+    "07_create10k": 259.4,
+    "08_create1k-after1k_x2": 28.2,
+    "09_clear1k_x8": 14.3,
+    "21_ready-memory": 1.77,
+    "22_run-memory": 5.37,
+    "25_run-clear-memory": 4.51,
+    "41_size-uncompressed": 189.6,
+    "42_size-compressed": 48.8,
+    "43_first-paint": 230.4
+   }
+  },
+  "mogwai": {
+   "dir": "frameworks/keyed/mogwai",
+   "result_name": "mogwai-v0.6.5-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/mogwai/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-mogwai_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, mogwai",
+   "numbers": {
+    "01_run1k": 23.4,
+    "02_replace1k": 26.1,
+    "03_update10th1k_x16": 10.6,
+    "04_select1k": 3.1,
+    "05_swap1k": 12.3,
+    "06_remove-one-1k": 9.9,
+    "07_create10k": 346.6,
+    "08_create1k-after1k_x2": 36.8,
+    "09_clear1k_x8": 12.5,
+    "21_ready-memory": 2.86,
+    "22_run-memory": 9.62,
+    "25_run-clear-memory": 10.24,
+    "41_size-uncompressed": 232.2,
+    "42_size-compressed": 66.3,
+    "43_first-paint": 294.2
+   }
+  },
+  "sauron": {
+   "dir": "frameworks/keyed/sauron",
+   "result_name": "sauron-v0.61.4-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/sauron/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-sauron_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Sauron (vdom)",
+   "numbers": {
+    "01_run1k": 42.9,
+    "02_replace1k": 56.8,
+    "03_update10th1k_x16": 32.5,
+    "04_select1k": 23.5,
+    "05_swap1k": 58.9,
+    "06_remove-one-1k": 19.8,
+    "07_create10k": 458.5,
+    "08_create1k-after1k_x2": 54.8,
+    "09_clear1k_x8": 15.8,
+    "21_ready-memory": 1.8,
+    "22_run-memory": 8.42,
+    "25_run-clear-memory": 22.85,
+    "41_size-uncompressed": 277.6,
+    "42_size-compressed": 81,
+    "43_first-paint": 402.8
+   }
+  },
+  "silkenweb": {
+   "dir": "frameworks/keyed/silkenweb",
+   "result_name": "silkenweb-v0.9.0-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/silkenweb/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-silkenweb-*_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Silkenweb",
+   "numbers": {
+    "01_run1k": 22.5,
+    "02_replace1k": 24.9,
+    "03_update10th1k_x16": 10.3,
+    "04_select1k": 2.8,
+    "05_swap1k": 11.4,
+    "06_remove-one-1k": 9.4,
+    "07_create10k": 243.1,
+    "08_create1k-after1k_x2": 26.9,
+    "09_clear1k_x8": 9.8,
+    "21_ready-memory": 1.76,
+    "22_run-memory": 3.72,
+    "25_run-clear-memory": 2.63,
+    "41_size-uncompressed": 173.9,
+    "42_size-compressed": 44.3,
+    "43_first-paint": 212.7
+   }
+  },
+  "spair": {
+   "dir": "frameworks/keyed/spair",
+   "result_name": "spair-v0.0.8-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/spair/Cargo.toml; src/*.rs; shipped artifact bundled-dist/spair_benchmark-*_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Spair",
+   "numbers": {
+    "01_run1k": 24.4,
+    "02_replace1k": 27.9,
+    "03_update10th1k_x16": 11.3,
+    "04_select1k": 3.4,
+    "05_swap1k": 12,
+    "06_remove-one-1k": 9.8,
+    "07_create10k": 257.9,
+    "08_create1k-after1k_x2": 28.4,
+    "09_clear1k_x8": 9.2,
+    "21_ready-memory": 1.77,
+    "22_run-memory": 4.95,
+    "25_run-clear-memory": 3.61,
+    "41_size-uncompressed": 101.4,
+    "42_size-compressed": 31.8,
+    "43_first-paint": 137
+   }
+  },
+  "spair-qr": {
+   "dir": "frameworks/keyed/spair-qr",
+   "result_name": "spair-qr-v0.0.8-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/spair-qr/Cargo.toml; src/*.rs; shipped artifact bundled-dist/spair_qr_benchmark-*_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Spair (queue-render mode)",
+   "numbers": {
+    "01_run1k": 24.5,
+    "02_replace1k": 27,
+    "03_update10th1k_x16": 10.4,
+    "04_select1k": 2.4,
+    "05_swap1k": 11,
+    "06_remove-one-1k": 9.2,
+    "07_create10k": 257.6,
+    "08_create1k-after1k_x2": 27.6,
+    "09_clear1k_x8": 9.7,
+    "21_ready-memory": 1.76,
+    "22_run-memory": 4.47,
+    "25_run-clear-memory": 3.1,
+    "41_size-uncompressed": 90.7,
+    "42_size-compressed": 27.8,
+    "43_first-paint": 117.6
+   }
+  },
+  "stdweb": {
+   "dir": "frameworks/keyed/stdweb",
+   "result_name": "stdweb-v0.4.17-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/stdweb/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-stdweb.wasm"
+   ],
+   "note": null,
+   "role": "Rust, stdweb (direct DOM calls)",
+   "numbers": {
+    "01_run1k": 26.3,
+    "02_replace1k": 28.8,
+    "03_update10th1k_x16": 10.2,
+    "04_select1k": 2.7,
+    "05_swap1k": 11.3,
+    "06_remove-one-1k": 9.6,
+    "07_create10k": 256.2,
+    "08_create1k-after1k_x2": 27.3,
+    "09_clear1k_x8": 11.4,
+    "21_ready-memory": 1.75,
+    "22_run-memory": 3.17,
+    "25_run-clear-memory": 2.36,
+    "41_size-uncompressed": 130.8,
+    "42_size-compressed": 34.2,
+    "43_first-paint": 52.7
+   }
+  },
+  "sycamore": {
+   "dir": "frameworks/keyed/sycamore",
+   "result_name": "sycamore-v0.9.0-beta.2-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/sycamore/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-sycamore_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Sycamore (fine-grained signals)",
+   "numbers": {
+    "01_run1k": 24.3,
+    "02_replace1k": 28.9,
+    "03_update10th1k_x16": 11.6,
+    "04_select1k": 5.3,
+    "05_swap1k": 12,
+    "06_remove-one-1k": 9.7,
+    "07_create10k": 259.4,
+    "08_create1k-after1k_x2": 28.4,
+    "09_clear1k_x8": 10.7,
+    "21_ready-memory": 1.78,
+    "22_run-memory": 2.08,
+    "25_run-clear-memory": 3.56,
+    "41_size-uncompressed": 157.5,
+    "42_size-compressed": 47.2,
+    "43_first-paint": 208.5
+   }
+  },
+  "wasm-bindgen": {
+   "dir": "frameworks/keyed/wasm-bindgen",
+   "result_name": "wasm-bindgen-v0.2.84-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/wasm-bindgen/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-wasm-bindgen-*_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, raw wasm-bindgen, no framework",
+   "numbers": {
+    "01_run1k": 22,
+    "02_replace1k": 23.6,
+    "03_update10th1k_x16": 10.1,
+    "04_select1k": 2.5,
+    "05_swap1k": 10.9,
+    "06_remove-one-1k": 9.2,
+    "07_create10k": 230.7,
+    "08_create1k-after1k_x2": 24.7,
+    "09_clear1k_x8": 8.9,
+    "21_ready-memory": 1.73,
+    "22_run-memory": 2.87,
+    "25_run-clear-memory": 1.81,
+    "41_size-uncompressed": 47,
+    "42_size-compressed": 14.5,
+    "43_first-paint": 70.7
+   }
+  },
+  "yew": {
+   "dir": "frameworks/keyed/yew",
+   "result_name": "yew-v0.23.0-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/yew/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-yew_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Yew (vdom)",
+   "numbers": {
+    "01_run1k": 30.8,
+    "02_replace1k": 34.9,
+    "03_update10th1k_x16": 13.3,
+    "04_select1k": 4.3,
+    "05_swap1k": 13.5,
+    "06_remove-one-1k": 10.2,
+    "07_create10k": 314,
+    "08_create1k-after1k_x2": 35,
+    "09_clear1k_x8": 15.5,
+    "21_ready-memory": 1.83,
+    "22_run-memory": 5.83,
+    "25_run-clear-memory": 4.61,
+    "41_size-uncompressed": 202.3,
+    "42_size-compressed": 56.8,
+    "43_first-paint": 255.3
+   }
+  },
+  "yew-hooks": {
+   "dir": "frameworks/keyed/yew-hooks",
+   "result_name": "yew-hooks-v0.23.0-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/yew-hooks/Cargo.toml; src/*.rs; shipped artifact bundled-dist/js-framework-benchmark-yew-hooks_bg.wasm"
+   ],
+   "note": null,
+   "role": "Rust, Yew with function components",
+   "numbers": {
+    "01_run1k": 31.1,
+    "02_replace1k": 35.2,
+    "03_update10th1k_x16": 18.9,
+    "04_select1k": 11.9,
+    "05_swap1k": 20,
+    "06_remove-one-1k": 13,
+    "07_create10k": 319.4,
+    "08_create1k-after1k_x2": 36.3,
+    "09_clear1k_x8": 16.5,
+    "21_ready-memory": 1.77,
+    "22_run-memory": 2.18,
+    "25_run-clear-memory": 4.7,
+    "41_size-uncompressed": 206.4,
+    "42_size-compressed": 57.9,
+    "43_first-paint": 263
+   }
+  },
+  "anansi": {
+   "dir": "frameworks/keyed/anansi",
+   "result_name": "anansi-v0.14.0-keyed",
+   "language": "Rust",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/anansi/js-framework-comps/src/app.rs:1-30 (the app is Rust); shipped artifact js-framework-wasm/pkg/js_framework_wasm_bg.wasm"
+   ],
+   "note": "the repo's own metadata labels this entry language=JavaScript (package.json js-framework-benchmark block) \u2014 that label is wrong; the implementation source is Rust",
+   "role": "Rust, Anansi",
+   "numbers": {
+    "01_run1k": 29.8,
+    "02_replace1k": 35.3,
+    "03_update10th1k_x16": 16.9,
+    "04_select1k": 8.5,
+    "05_swap1k": 16.3,
+    "06_remove-one-1k": 59.2,
+    "07_create10k": 317.4,
+    "08_create1k-after1k_x2": 33.8,
+    "09_clear1k_x8": 11.2,
+    "21_ready-memory": 0.57,
+    "22_run-memory": 6.31,
+    "25_run-clear-memory": 4.8,
+    "41_size-uncompressed": 257.1,
+    "42_size-compressed": 73.5,
+    "43_first-paint": 36.4
+   }
+  },
+  "blazor-wasm": {
+   "dir": "frameworks/keyed/blazor-wasm",
+   "result_name": "blazor-wasm-v10.0.0-keyed",
+   "language": "C#",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/blazor-wasm/src/blazor-wasm.csproj; shipped artifacts bundeled-dist/wwwroot/_framework/*.wasm (61 wasm files incl. the .NET runtime)"
+   ],
+   "note": null,
+   "role": "C#, Blazor WebAssembly (IL interpreted on a wasm .NET runtime)",
+   "numbers": {
+    "01_run1k": 67.7,
+    "02_replace1k": 78.5,
+    "03_update10th1k_x16": 94.9,
+    "04_select1k": 83.3,
+    "05_swap1k": 90.6,
+    "06_remove-one-1k": 33,
+    "07_create10k": 679.2,
+    "08_create1k-after1k_x2": 104.8,
+    "09_clear1k_x8": 30.2,
+    "21_ready-memory": 41.14,
+    "22_run-memory": 52.65,
+    "25_run-clear-memory": 49.47,
+    "41_size-uncompressed": 4208.3,
+    "42_size-compressed": 1377,
+    "43_first-paint": 64.5
+   }
+  },
+  "blazor-wasm-aot": {
+   "dir": "frameworks/keyed/blazor-wasm-aot",
+   "result_name": "blazor-wasm-aot-v10.0.0-keyed",
+   "language": "C#",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/blazor-wasm-aot/src/blazor-wasm.csproj; shipped artifacts bundeled-dist/wwwroot/_framework/*.wasm"
+   ],
+   "note": null,
+   "role": "C#, Blazor WebAssembly AOT-compiled",
+   "numbers": {
+    "01_run1k": 58.5,
+    "02_replace1k": 64.2,
+    "03_update10th1k_x16": 95.1,
+    "04_select1k": 83.9,
+    "05_swap1k": 95,
+    "06_remove-one-1k": 91.7,
+    "07_create10k": 627.1,
+    "08_create1k-after1k_x2": 98.1,
+    "09_clear1k_x8": 19.5,
+    "21_ready-memory": 51.78,
+    "22_run-memory": 64.67,
+    "25_run-clear-memory": 61.43,
+    "41_size-uncompressed": 12639,
+    "42_size-compressed": 2951.8,
+    "43_first-paint": 71.5
+   }
+  },
+  "elementaryui": {
+   "dir": "frameworks/keyed/elementaryui",
+   "result_name": "elementaryui-v0.3.0-keyed",
+   "language": "Swift",
+   "ships": "wasm",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/elementaryui/Package.swift (ElementaryUI 0.3.0); Sources/App/*.swift; shipped artifact bundled-dist/assets/App-*.wasm"
+   ],
+   "note": null,
+   "role": "Swift, ElementaryUI",
+   "numbers": {
+    "01_run1k": 30.8,
+    "02_replace1k": 36.5,
+    "03_update10th1k_x16": 17.9,
+    "04_select1k": 8.7,
+    "05_swap1k": 17.7,
+    "06_remove-one-1k": 12.2,
+    "07_create10k": 334,
+    "08_create1k-after1k_x2": 35.7,
+    "09_clear1k_x8": 15.2,
+    "21_ready-memory": 1.04,
+    "22_run-memory": 4.93,
+    "25_run-clear-memory": 3.35,
+    "41_size-uncompressed": 610.7,
+    "42_size-compressed": 172.3,
+    "43_first-paint": 809.6
+   }
+  },
+  "elm": {
+   "dir": "frameworks/keyed/elm",
+   "result_name": "elm-v0.19.1-6-keyed",
+   "language": "Elm",
+   "ships": "js",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/elm/src/Main.elm:1; elm.json; no wasm artifact in dist \u2014 compiles to JavaScript"
+   ],
+   "note": null,
+   "role": "Elm, The Elm Architecture (vdom)",
+   "numbers": {
+    "01_run1k": 29,
+    "02_replace1k": 30.3,
+    "03_update10th1k_x16": 12.6,
+    "04_select1k": 4.7,
+    "05_swap1k": 13.8,
+    "06_remove-one-1k": 11.1,
+    "07_create10k": 264.2,
+    "08_create1k-after1k_x2": 30.9,
+    "09_clear1k_x8": 10.6,
+    "21_ready-memory": 0.69,
+    "22_run-memory": 3.63,
+    "25_run-clear-memory": 0.97,
+    "41_size-uncompressed": 31.7,
+    "42_size-compressed": 10.4,
+    "43_first-paint": 59.9
+   }
+  },
+  "helix": {
+   "dir": "frameworks/keyed/helix",
+   "result_name": "helix-v0.0.10-keyed",
+   "language": "ClojureScript",
+   "ships": "js",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/helix/shadow-cljs.edn:6 [lilactown/helix]; src/demo/main.cljs:2-4"
+   ],
+   "note": "the repo's own metadata labels this entry language=JavaScript \u2014 the source is ClojureScript (renders through React 16)",
+   "role": "ClojureScript, helix over React",
+   "numbers": {
+    "01_run1k": 26.5,
+    "02_replace1k": 29.3,
+    "03_update10th1k_x16": 16.7,
+    "04_select1k": 6.7,
+    "05_swap1k": 87.6,
+    "06_remove-one-1k": 11.2,
+    "07_create10k": 375.3,
+    "08_create1k-after1k_x2": 30.4,
+    "09_clear1k_x8": 11.3,
+    "21_ready-memory": 1.35,
+    "22_run-memory": 4.69,
+    "25_run-clear-memory": 2.19,
+    "41_size-uncompressed": 257.9,
+    "42_size-compressed": 58.9,
+    "43_first-paint": 269.4
+   }
+  },
+  "reagent": {
+   "dir": "frameworks/keyed/reagent",
+   "result_name": "reagent-v0.10-keyed",
+   "language": "ClojureScript",
+   "ships": "js",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/reagent/project.clj; src/demo/main.cljs:2-3 (reagent.core, reagent.dom)"
+   ],
+   "note": null,
+   "role": "ClojureScript, Reagent over React 18; also the plain-renderer baseline for re-frame",
+   "numbers": {
+    "01_run1k": 37.6,
+    "02_replace1k": 43.5,
+    "03_update10th1k_x16": 21.4,
+    "04_select1k": 8.1,
+    "05_swap1k": 100.2,
+    "06_remove-one-1k": 20.9,
+    "07_create10k": 497.8,
+    "08_create1k-after1k_x2": 39.2,
+    "09_clear1k_x8": 24.4,
+    "21_ready-memory": 1.51,
+    "22_run-memory": 6.24,
+    "25_run-clear-memory": 2.97,
+    "41_size-uncompressed": 274.8,
+    "42_size-compressed": 64.4,
+    "43_first-paint": 299.9
+   }
+  },
+  "laminar": {
+   "dir": "frameworks/keyed/laminar",
+   "result_name": "laminar-v16.0.0-keyed",
+   "language": "Scala",
+   "ships": "js",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/laminar/build.sbt:11 (laminar 16.0.0, ScalaJSPlugin); src/main/scala/app/JsApp.scala:3"
+   ],
+   "note": null,
+   "role": "Scala (Scala.js), Laminar (FRP signals)",
+   "numbers": {
+    "01_run1k": 51.9,
+    "02_replace1k": 63,
+    "03_update10th1k_x16": 14.8,
+    "04_select1k": 9.3,
+    "05_swap1k": 85.1,
+    "06_remove-one-1k": 11.6,
+    "07_create10k": 421.5,
+    "08_create1k-after1k_x2": 52.6,
+    "09_clear1k_x8": 33.4,
+    "21_ready-memory": 3.38,
+    "22_run-memory": 15.09,
+    "25_run-clear-memory": 4.12,
+    "41_size-uncompressed": 720.4,
+    "42_size-compressed": 80.1,
+    "43_first-paint": 665.8
+   }
+  },
+  "imba": {
+   "dir": "frameworks/keyed/imba",
+   "result_name": "imba-v1.5.2-keyed",
+   "language": "Imba",
+   "ships": "js",
+   "cohorts": [
+    "B"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/imba/src/main.imba; repo metadata language=imba"
+   ],
+   "note": "Imba is its own language compiling to JS, but it is JS-adjacent in syntax and ecosystem \u2014 nearer the border of this cohort than Elm or Rust",
+   "role": "Imba (memoized-DOM compiler)",
+   "numbers": {
+    "01_run1k": 27.5,
+    "02_replace1k": 32.1,
+    "03_update10th1k_x16": 10.4,
+    "04_select1k": 3.4,
+    "05_swap1k": 13,
+    "06_remove-one-1k": 9.8,
+    "07_create10k": 255.1,
+    "08_create1k-after1k_x2": 55.3,
+    "09_clear1k_x8": 10.3,
+    "21_ready-memory": 0.88,
+    "22_run-memory": 3.59,
+    "25_run-clear-memory": 1.1,
+    "41_size-uncompressed": 64.1,
+    "42_size-compressed": 15.1,
+    "43_first-paint": 79.4
+   }
+  },
+  "vanillajs": {
+   "dir": "frameworks/keyed/vanillajs",
+   "result_name": "vanillajs-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "C"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/vanillajs/src/Main.js:7-8 (a <tr> template built once via innerHTML), :349 (rowTemplate.cloneNode(true) per row) \u2014 hand-written DOM, no library dependency"
+   ],
+   "note": null,
+   "role": "THE FLOOR \u2014 hand-written keyed DOM manipulation; also this gauntlet's control",
+   "numbers": {
+    "01_run1k": 20.2,
+    "02_replace1k": 21.9,
+    "03_update10th1k_x16": 9.6,
+    "04_select1k": 2.5,
+    "05_swap1k": 11.3,
+    "06_remove-one-1k": 9.5,
+    "07_create10k": 212.1,
+    "08_create1k-after1k_x2": 22.9,
+    "09_clear1k_x8": 8.4,
+    "21_ready-memory": 0.56,
+    "22_run-memory": 1.86,
+    "25_run-clear-memory": 0.63,
+    "41_size-uncompressed": 11.3,
+    "42_size-compressed": 2.5,
+    "43_first-paint": 68.9
+   }
+  },
+  "react-hooks": {
+   "dir": "frameworks/keyed/react-hooks",
+   "result_name": "react-hooks-v19.2.0-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "C",
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-hooks/src/main.jsx:1-2 (memo, useReducer, createRoot from react/react-dom 19); package.json: react@^19.0.0"
+   ],
+   "note": null,
+   "role": "VIRTUAL-DOM DIFF exemplar \u2014 render-then-diff with memo bailouts; mandated React representative",
+   "numbers": {
+    "01_run1k": 23.6,
+    "02_replace1k": 29.1,
+    "03_update10th1k_x16": 13.6,
+    "04_select1k": 4.8,
+    "05_swap1k": 84.9,
+    "06_remove-one-1k": 10.9,
+    "07_create10k": 424.3,
+    "08_create1k-after1k_x2": 28.1,
+    "09_clear1k_x8": 16.3,
+    "21_ready-memory": 1.2,
+    "22_run-memory": 4.36,
+    "25_run-clear-memory": 1.91,
+    "41_size-uncompressed": 190.3,
+    "42_size-compressed": 51.4,
+    "43_first-paint": 222.6
+   }
+  },
+  "svelte": {
+   "dir": "frameworks/keyed/svelte",
+   "result_name": "svelte-v5.42.1-keyed",
+   "language": "JavaScript (Svelte components)",
+   "ships": "js",
+   "cohorts": [
+    "C"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/svelte/src/Main.svelte:3-4 ($state.raw runes), :163 ({#each data as row (row)}); package.json: svelte@^5.42.1"
+   ],
+   "note": null,
+   "role": "COMPILER-FIRST exemplar \u2014 the component format is compiled ahead of time; Svelte 5 runes emit fine-grained runtime updates from compiled output",
+   "numbers": {
+    "01_run1k": 21,
+    "02_replace1k": 24.1,
+    "03_update10th1k_x16": 10.3,
+    "04_select1k": 4.7,
+    "05_swap1k": 12.5,
+    "06_remove-one-1k": 9.8,
+    "07_create10k": 229.8,
+    "08_create1k-after1k_x2": 23.7,
+    "09_clear1k_x8": 9.8,
+    "21_ready-memory": 0.6,
+    "22_run-memory": 2.82,
+    "25_run-clear-memory": 0.94,
+    "41_size-uncompressed": 34.3,
+    "42_size-compressed": 12.2,
+    "43_first-paint": 60.3
+   }
+  },
+  "solid": {
+   "dir": "frameworks/keyed/solid",
+   "result_name": "solid-v1.9.3-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "C"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/solid/src/main.jsx:1 (createSignal, createSelector); package.json: solid-js@^1.9.3"
+   ],
+   "note": null,
+   "role": "FINE-GRAINED RUNTIME SIGNALS exemplar \u2014 no vdom, subscriptions update individual DOM nodes",
+   "numbers": {
+    "01_run1k": 20.8,
+    "02_replace1k": 23.2,
+    "03_update10th1k_x16": 10.2,
+    "04_select1k": 3.1,
+    "05_swap1k": 12.6,
+    "06_remove-one-1k": 9.7,
+    "07_create10k": 225.5,
+    "08_create1k-after1k_x2": 23.4,
+    "09_clear1k_x8": 10.7,
+    "21_ready-memory": 0.51,
+    "22_run-memory": 2.65,
+    "25_run-clear-memory": 0.75,
+    "41_size-uncompressed": 11.5,
+    "42_size-compressed": 4.5,
+    "43_first-paint": 38.4
+   }
+  },
+  "lit": {
+   "dir": "frameworks/keyed/lit",
+   "result_name": "lit-v3.2.0-keyed",
+   "language": "TypeScript",
+   "ships": "js",
+   "cohorts": [
+    "C"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/lit/src/main.ts:17,50 (html`` tagged templates + repeat() keyed directive); package.json: lit@^3.0.0"
+   ],
+   "note": null,
+   "role": "TAGGED-TEMPLATE CACHING exemplar \u2014 template literals parsed once, only dynamic holes re-evaluated",
+   "numbers": {
+    "01_run1k": 23.1,
+    "02_replace1k": 25.6,
+    "03_update10th1k_x16": 11.6,
+    "04_select1k": 5,
+    "05_swap1k": 16.3,
+    "06_remove-one-1k": 10.7,
+    "07_create10k": 244,
+    "08_create1k-after1k_x2": 27.3,
+    "09_clear1k_x8": 11.7,
+    "21_ready-memory": 0.69,
+    "22_run-memory": 2.73,
+    "25_run-clear-memory": 0.85,
+    "41_size-uncompressed": 22.1,
+    "42_size-compressed": 7.3,
+    "43_first-paint": 58.2
+   }
+  },
+  "blockdom": {
+   "dir": "frameworks/keyed/blockdom",
+   "result_name": "blockdom-v0.9.29-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "C"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/blockdom/app.js:1 (createBlock, list, patch), :77,91 (blocks compiled from HTML strings), :136,167 (patch of a block tree)"
+   ],
+   "note": null,
+   "role": "BLOCK-VDOM exemplar \u2014 diffs at the granularity of cloned template blocks, not individual vnodes; the base of Odoo's Owl",
+   "numbers": {
+    "01_run1k": 20.5,
+    "02_replace1k": 22.9,
+    "03_update10th1k_x16": 10.1,
+    "04_select1k": 3.1,
+    "05_swap1k": 11.6,
+    "06_remove-one-1k": 9.4,
+    "07_create10k": 227.8,
+    "08_create1k-after1k_x2": 23.1,
+    "09_clear1k_x8": 8.2,
+    "21_ready-memory": 0.66,
+    "22_run-memory": 2.41,
+    "25_run-clear-memory": 0.78,
+    "41_size-uncompressed": 17,
+    "42_size-compressed": 5.3,
+    "43_first-paint": 53.2
+   }
+  },
+  "mikado": {
+   "dir": "frameworks/keyed/mikado",
+   "result_name": "mikado-v0.8.400-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "C"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/mikado/src/main.js:1,9 (Mikado template instance mounted on tbody, templates precompiled under src/template/); package.json: mikado@^0.8.400"
+   ],
+   "note": null,
+   "role": "DOM NODE RECYCLING exemplar \u2014 precompiled templates plus aggressive node reuse/pooling",
+   "numbers": {
+    "01_run1k": 20.2,
+    "02_replace1k": 22.1,
+    "03_update10th1k_x16": 9.6,
+    "04_select1k": 2.4,
+    "05_swap1k": 11.9,
+    "06_remove-one-1k": 9.2,
+    "07_create10k": 218.6,
+    "08_create1k-after1k_x2": 22.8,
+    "09_clear1k_x8": 8.4,
+    "21_ready-memory": 0.61,
+    "22_run-memory": 1.94,
+    "25_run-clear-memory": 0.75,
+    "41_size-uncompressed": 12.3,
+    "42_size-compressed": 4.9,
+    "43_first-paint": 42.3
+   }
+  },
+  "react-classes": {
+   "dir": "frameworks/keyed/react-classes",
+   "result_name": "react-classes-v19.0.0-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-classes/package.json dependencies: react@19.0.0, react-dom@19.0.0"
+   ],
+   "note": null,
+   "role": "React, class components, no store",
+   "numbers": {
+    "01_run1k": 24.5,
+    "02_replace1k": 29.7,
+    "03_update10th1k_x16": 12.8,
+    "04_select1k": 5.8,
+    "05_swap1k": 84.5,
+    "06_remove-one-1k": 10.7,
+    "07_create10k": 427.5,
+    "08_create1k-after1k_x2": 29.3,
+    "09_clear1k_x8": 16.1,
+    "21_ready-memory": 1.19,
+    "22_run-memory": 4.54,
+    "25_run-clear-memory": 1.97,
+    "41_size-uncompressed": 184.6,
+    "42_size-compressed": 50.2,
+    "43_first-paint": 217.3
+   }
+  },
+  "react-compiler-hooks": {
+   "dir": "frameworks/keyed/react-compiler-hooks",
+   "result_name": "react-compiler-hooks-v19.0.0-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-compiler-hooks/package.json dependencies: react@19.0.0 + babel-plugin-react-compiler (build)"
+   ],
+   "note": null,
+   "role": "React with the React Compiler's automatic memoization",
+   "numbers": {
+    "01_run1k": 23.9,
+    "02_replace1k": 29.6,
+    "03_update10th1k_x16": 13.9,
+    "04_select1k": 7.2,
+    "05_swap1k": 85.7,
+    "06_remove-one-1k": 11.4,
+    "07_create10k": 432,
+    "08_create1k-after1k_x2": 28.4,
+    "09_clear1k_x8": 16.5,
+    "21_ready-memory": 1.18,
+    "22_run-memory": 4.56,
+    "25_run-clear-memory": 1.95,
+    "41_size-uncompressed": 183,
+    "42_size-compressed": 50,
+    "43_first-paint": 208.1
+   }
+  },
+  "react-hooks-use-transition": {
+   "dir": "frameworks/keyed/react-hooks-use-transition",
+   "result_name": "react-hooks-use-transition-v19.0.0-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/react-hooks-use-transition/package.json dependencies: react@^19.0.0"
+   ],
+   "note": null,
+   "role": "React hooks wrapping updates in useTransition",
+   "numbers": {
+    "01_run1k": 28.9,
+    "02_replace1k": 30.7,
+    "03_update10th1k_x16": 16.9,
+    "04_select1k": 9.1,
+    "05_swap1k": 87.1,
+    "06_remove-one-1k": 13.1,
+    "07_create10k": 439.2,
+    "08_create1k-after1k_x2": 32.8,
+    "09_clear1k_x8": 14.7,
+    "21_ready-memory": 1.18,
+    "22_run-memory": 4.45,
+    "25_run-clear-memory": 2.01,
+    "41_size-uncompressed": 182.4,
+    "42_size-compressed": 49.6,
+    "43_first-paint": 216.3
+   }
+  },
+  "astro-react": {
+   "dir": "frameworks/keyed/astro-react",
+   "result_name": "astro-react-v6.3.3 + 19.2.6-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "react-family"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/astro-react/package.json dependencies: astro@^6.3.3, @astrojs/react@^5.0.5, react@^19.2.6"
+   ],
+   "note": null,
+   "role": "React island inside Astro",
+   "numbers": {
+    "01_run1k": 23.9,
+    "02_replace1k": 29.7,
+    "03_update10th1k_x16": 13.8,
+    "04_select1k": 5.4,
+    "05_swap1k": 85.8,
+    "06_remove-one-1k": 11,
+    "07_create10k": 427.8,
+    "08_create1k-after1k_x2": 28.7,
+    "09_clear1k_x8": 17.1,
+    "21_ready-memory": 1.19,
+    "22_run-memory": 4.47,
+    "25_run-clear-memory": 2.01,
+    "41_size-uncompressed": 198.7,
+    "42_size-compressed": 55.1,
+    "43_first-paint": 37.8
+   }
+  },
+  "vue": {
+   "dir": "frameworks/keyed/vue",
+   "result_name": "vue-v3.5.39-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "baseline"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/vue/package.json: vue"
+   ],
+   "note": null,
+   "role": "plain-renderer baseline for vue-pinia",
+   "numbers": {
+    "01_run1k": 24.5,
+    "02_replace1k": 27,
+    "03_update10th1k_x16": 12.4,
+    "04_select1k": 3.5,
+    "05_swap1k": 13.2,
+    "06_remove-one-1k": 11.9,
+    "07_create10k": 264.5,
+    "08_create1k-after1k_x2": 26.6,
+    "09_clear1k_x8": 11.4,
+    "21_ready-memory": 0.82,
+    "22_run-memory": 3.87,
+    "25_run-clear-memory": 1.15,
+    "41_size-uncompressed": 64.4,
+    "42_size-compressed": 23.3,
+    "43_first-paint": 121.8
+   }
+  },
+  "preact-hooks": {
+   "dir": "frameworks/keyed/preact-hooks",
+   "result_name": "preact-hooks-v10.27.1-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "baseline"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/preact-hooks/package.json: preact"
+   ],
+   "note": null,
+   "role": "plain-renderer baseline for the preact-* store rows",
+   "numbers": {
+    "01_run1k": 25.9,
+    "02_replace1k": 29.8,
+    "03_update10th1k_x16": 20,
+    "04_select1k": 13.9,
+    "05_swap1k": 24,
+    "06_remove-one-1k": 15.5,
+    "07_create10k": 275.1,
+    "08_create1k-after1k_x2": 31,
+    "09_clear1k_x8": 12.5,
+    "21_ready-memory": 0.65,
+    "22_run-memory": 3.31,
+    "25_run-clear-memory": 0.8,
+    "41_size-uncompressed": 14.6,
+    "42_size-compressed": 5.7,
+    "43_first-paint": 44.3
+   }
+  },
+  "san-composition": {
+   "dir": "frameworks/keyed/san-composition",
+   "result_name": "san-composition-v3.15.1 + 1.3.0-keyed",
+   "language": "JavaScript",
+   "ships": "js",
+   "cohorts": [
+    "baseline"
+   ],
+   "borderline_in": [],
+   "evidence": [
+    "frameworks/keyed/san-composition/package.json: san"
+   ],
+   "note": null,
+   "role": "nearest plain-San baseline for san-store (composition API, not identical surface)",
+   "numbers": {
+    "01_run1k": 25.4,
+    "02_replace1k": 29.8,
+    "03_update10th1k_x16": 12.7,
+    "04_select1k": 3.8,
+    "05_swap1k": 13.2,
+    "06_remove-one-1k": 9.8,
+    "07_create10k": 296.4,
+    "08_create1k-after1k_x2": 30.4,
+    "09_clear1k_x8": 14.3,
+    "21_ready-memory": 1.0,
+    "22_run-memory": 4.87,
+    "25_run-clear-memory": 1.17,
+    "41_size-uncompressed": 81.4,
+    "42_size-compressed": 20,
+    "43_first-paint": 97.6
+   }
+  }
+ }
+}

@@ -1,14 +1,20 @@
-// Vehicle |js facet — the two host escapes the app carries, each here
-// because a named wall keeps it out of Koru:
+// Vehicle |js facet — the host escapes the app carries. Each proc is a leaf
+// DOM writer; WHICH rows it touches is decided on the Koru side (store
+// sweeps, interceptors, the sel watch). Escaped because of named walls:
 //
 // make-label — the reference's random three-word label (Main.js:18-73,
-//   _random at Main.js:3-5, mirrored exactly). Escaped because the pick is
-//   Math.random (host) and the assembled label cannot live in the store
-//   (char[N] columns have no JS lowering — see main.k header).
+//   _random at Main.js:3-5, mirrored exactly). The pick is Math.random
+//   (host) and the assembled label cannot live in the store (string columns
+//   refused, char[N] has no JS lowering — see main.k header).
 //
 // append-row — the krausest row markup (Main.js:7-9 rowTemplate, verbatim).
 //   Escaped because Koru has no markup surface on this target yet: the vaxis
-//   `component` transform is the porting candidate and is round-2 work.
+//   `component` transform is the porting candidate.
+//
+// remove-row / mark-row / swap-rows / select-row — the DOM write itself.
+//   The row-targeting logic lives in main.k; these bodies are the retained-
+//   mode write calls a DOM markup surface would synthesize, exactly where
+//   vaxis's generated flows call write-at.
 
 const rowTemplate = document.createElement("tr");
 rowTemplate.innerHTML =
@@ -20,6 +26,10 @@ const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie"
 
 function domRandom(max) {
     return Math.round(Math.random() * 1000) % max;
+}
+
+function domRow(id) {
+    return document.querySelector("tr[data-id='" + id + "']");
 }
 
 ~proc make-label|js {
@@ -38,4 +48,29 @@ function domRandom(max) {
     removeAnchor.setAttribute("data-action", "7");
     removeAnchor.setAttribute("data-id", String(id));
     document.getElementById("tbody").appendChild(tr);
+}
+
+~proc remove-row|js {
+    const tr = domRow(id);
+    tr.parentNode.removeChild(tr);
+}
+
+~proc mark-row|js {
+    const anchor = domRow(id).childNodes[1].firstChild;
+    anchor.textContent = anchor.textContent + " !!!";
+}
+
+~proc swap-rows|js {
+    const ta = domRow(a);
+    const tb = domRow(b);
+    const parent = ta.parentNode;
+    const afterB = tb.nextSibling;
+    parent.insertBefore(tb, ta);
+    parent.insertBefore(ta, afterB === ta ? tb : afterB);
+}
+
+~proc select-row|js {
+    const prev = document.querySelector("tr.danger");
+    if (prev !== null) prev.className = "";
+    domRow(id).className = "danger";
 }
