@@ -1,0 +1,47 @@
+// CONTROL, not a negative -- and the overclaim this lift caught in its own
+// writing, the same way `unikraft/mpi`'s README describes finding one. The
+// first draft of this file assumed a program that switches to a table and
+// then walks away without calling `run-forever` would be refused as a leak,
+// the same shape as `unikraft/blk/tests/negative_device_never_discharged.kz`.
+// It is not: `run-forever` is the UNIQUE single-parameter, void, `<!active>`-
+// accepting tor in this module, so Koru's auto-discharge pass silently splices
+// it in at scope exit under default settings -- exactly the mechanism
+// `unikraft/mpi`'s README names for its own `abandon`. This file compiles
+// clean under `koruc auto_discharge_applies_run_forever.kz` and is REFUSED
+// only with `koruc --auto-discharge=disable auto_discharge_applies_run_forever.kz`,
+// where it reproduces the originally-expected
+// `KORU030: Resource 'live' carries obligation <active!> was not discharged`.
+// Kept as a control/finding rather than deleted, because the corrected claim
+// is itself the useful fact: walking away from an activated table is NOT a
+// leak this lift's default settings will catch, and a reader should not
+// assume otherwise from the shape of `pt-free`'s union alone.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/paging
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_PAGING=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKPAGING: 'y'
+}
+
+~unikraft/paging:active
+| ready pt0 |> unikraft/paging:pt-clone(source: pt0)
+    | ok clone_a |> unikraft/paging:pt-set-active(pt: clone_a)
+        | ok live |> std/io:print.ln("switched, and never says run-forever -- this must never compile")
+        | refused e |> std/io:print.ln("switch refused: errno {{ e.errno:d }}")
+            |> unikraft/paging:pt-free(e.pt)
+                | ok |> _
+                | failed ef |> unikraft/paging:abandon(ef.pt)
+    | refused r |> std/io:print.ln("clone refused: {{ r.reason:s }}")
+| unavailable |> std/io:print.ln("no active page table")

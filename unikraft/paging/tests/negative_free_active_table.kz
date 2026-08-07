@@ -1,0 +1,42 @@
+// NEGATIVE, gate 3. `pt-free` accepts `<!init|!active-safe|!detached>` and
+// NEVER `<!active>`. `uk_paging_pt_free` never checks whether the table it is
+// about to unmap and free is `pg_active_pt` -- freeing the table this code is
+// currently running on would free the very page-table pages mapping the code
+// that called `pt-free`, and nothing in paging.c stops it. See index.kz's
+// header note, "a second fatal, unasserted rule."
+//
+// This program clones the active table, switches to the clone, and then
+// tries to free the very handle it just activated. The C would let it try;
+// this lift's types do not.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/paging
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_PAGING=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKPAGING: 'y'
+}
+
+~unikraft/paging:active
+| ready pt0 |> unikraft/paging:pt-clone(source: pt0)
+    | ok clone_a |> unikraft/paging:pt-set-active(pt: clone_a)
+        | ok live |> unikraft/paging:pt-free(pt: live)
+            | ok |> std/io:print.ln("this must never compile")
+            | failed ef |> unikraft/paging:abandon(ef.pt)
+        | refused e |> std/io:print.ln("switch refused: errno {{ e.errno:d }}")
+            |> unikraft/paging:pt-free(e.pt)
+                | ok |> _
+                | failed ef2 |> unikraft/paging:abandon(ef2.pt)
+    | refused r |> std/io:print.ln("clone refused: {{ r.reason:s }}")
+| unavailable |> std/io:print.ln("no active page table")

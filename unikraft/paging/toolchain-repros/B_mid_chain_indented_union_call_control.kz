@@ -1,0 +1,24 @@
+// FINDING A control — identical to A_mid_chain_indented_union_call.kz. The
+// ONLY change: `who`'s call and its two arms are at column 0 (matching the
+// `|>` that reaches it) instead of indented four spaces further each line.
+// Nothing about the TOR, its arms, or the surrounding chain's shape changed.
+//
+//   koruc B_mid_chain_indented_union_call_control.kz
+//   -> compiles clean through the full pipeline (host link fails only on
+//      `std/process.exit`, unrelated to this finding — same caveat every
+//      other repro/control pair in this tree notes).
+
+~import std/io
+
+~pub tor who { }
+| ready i32
+| unavailable
+
+~proc who|zig {
+    return .{ .ready = 1 };
+}
+
+~std/io:print.ln("before")
+|> who
+| ready v |> std/io:print.ln("got {{ v:d }}")
+| unavailable |> std/io:print.ln("none")

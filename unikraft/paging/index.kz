@@ -1,0 +1,610 @@
+// @korulang/unikraft-paging — Unikraft's page-table API (`ukpaging`), lifted.
+//
+//   import unikraft/paging
+//
+// WHAT THIS IS. `lib/ukpaging` is the layer BELOW `unikraft/vmem`: raw page
+// tables, not address-space areas. `uk_vma_map` (ukvmem) calls down into
+// `uk_paging_page_mapx` (this library) to actually write page-table entries.
+// 15 exported functions, 140 `UK_ASSERT`s — the second-highest count of any
+// library on the shelf — and eleven public-header `static inline`s: eight are
+// pure arithmetic (FREE, case 3), three are inline assembly reading or writing
+// a control register (case 3 NO — nothing to call, only something to re-emit).
+//
+// THE HEADLINE FINDING, AND WHY THIS SLOT WAS STILL OPEN. `uk_paging_pt_set_active`
+// switches the CPU's live address space — the machinery the program is running
+// on. Its own doc comment states the rule in English: "The code of the function
+// must be mapped into the new address space at the same virtual address." NO
+// `UK_ASSERT` anywhere in paging.c checks this. Nothing checks it at all. Get it
+// wrong and the very next instruction fetch after the `mov %cr3` is unmapped —
+// not a wrong answer, not an errno, an immediate triple fault, in debug and
+// release builds alike. This is the SAME SHAPE as `unikraft/vmem`'s two headline
+// rules (a fatal mistake the C cannot detect because it isn't a function call,
+// it's a hardware state change) and it is worse, because the "access" that
+// triggers it is unavoidable: it is the next instruction, whichever one that is.
+//
+// PROOF THE RULE IS REAL, FROM THE C'S OWN BOOTSTRAP. `uk_paging_init()`
+// (paging.c:1478-1545) — the ONLY caller of `uk_paging_pt_init` anywhere in the
+// tree (grepped; zero others) — does NOT call `pt_set_active` right after
+// `pt_init`. It calls `uk_paging_page_map` once per boot memory region FIRST
+// (mapping the kernel's own code, data, and boot structures into the fresh
+// table) and activates the table LAST. A `pt_init`'d table is allocated via a
+// brand-new, zeroed top-level page (`pg_pt_alloc`, paging.c:255-259) and maps
+// nothing but the directmap window (if configured) until something explicitly
+// maps into it — so activating it right after `pt_init`, skipping that mapping
+// step, is exactly the fatal, unasserted program this header comment warns
+// about, demonstrated by the one caller in the tree carefully avoiding it.
+//
+// THE CONSEQUENCE FOR THIS LIFT'S TYPES. A `pt_init`'d table therefore mints
+// `<init!>`, and NO tor in this module accepts `<!init>` as input to
+// `pt_set_active`. The only way to reach a state `pt_set_active` accepts is
+// `pt_clone` of the table THIS PROGRAM IS ALREADY RUNNING ON
+// (`uk_paging_pt_clone`, not called anywhere else in the tree either — this
+// lift's boot demo is the first exercise of it outside its own module). A clone
+// (without `UK_PAGING_PAGE_FLAG_CLONE_NEW`) deep-copies every present PTE from
+// the source, so it maps everything the currently-running code needs by
+// construction, and switching to it is survivable. `pt_clone` mints
+// `<active-safe!>`; only `<!active-safe>` satisfies `pt_set_active`.
+//
+// A SECOND FATAL, UNASSERTED RULE THIS LIFT FOUND BY READING, NOT BY GREPPING
+// `UK_ASSERT`. `uk_paging_pt_free` (paging.c:321-341) never checks whether the
+// table it is about to unmap and free is `pg_active_pt` — the table the CPU is
+// currently running on. Freeing the live table would free the very page-table
+// pages mapping the code that called `pt_free`. Nothing in the C stops this;
+// there is no `UK_ASSERT(pt != pg_active_pt)` anywhere in the function. So
+// `pt_free` here accepts `<!init|!active-safe|!detached>` and NEVER `<!active>`
+// — the state `pt_set_active` mints is not one this module's `pt_free` will
+// ever take back. See `tests/negative_free_active_table.kz`.
+//
+// A THIRD FINDING, A MISMATCH RATHER THAN A MISSING CHECK. "The active page
+// table" is a machine-wide SINGLETON — one CR3 register — but this lift's
+// obligations are per-HANDLE, the same shape `unikraft/store` found for
+// refcounts: a COUNT (or here, a single hardware register) is not the same
+// shape as a claim about ONE binding. Calling `pt_set_active` on a second,
+// independent `<active-safe!>` handle mints `<active!>` on IT without doing
+// anything to the FIRST handle's type, which stays `<active!>` even though at
+// most one table is truly live at a time. This lift resolves it the same
+// direction `store` did: never smoothed over, and conservative rather than
+// wrong. A handle that WAS activated and has since been superseded by a later
+// `pt_set_active` on a different handle can never be freed again through THIS
+// lift — its type still claims `<active!>`, and `pt_free` still refuses it.
+// That is a real cost (a safe program this lift will not compile) paid for a
+// real guarantee (this lift will never let you free the table you are
+// currently running on). See "Claims this lift does not make" in README.md.
+//
+// WHAT THIS LIFT DOES NOT ATTEMPT, STATED HERE RATHER THAN DISCOVERED LATE.
+// `pt_init` IS lifted — it is phantom-typed, has a real Zig implementation that
+// calls the real C function, and its fatal-if-activated-directly state is what
+// `tests/negative_activate_bare_init.kz` proves refused. It is NOT exercised in
+// the live boot demo. The reason: `pt_init(pt, start, len)` needs a physical
+// address range that is GENUINELY FREE — not backing this program's own code,
+// stack, heap, or any other live mapping. Discovering that honestly needs
+// `ukplat_memregion_foreach` or the frame allocator `uk_paging_init` already
+// owns, and NEITHER is on ukpaging's own 15-symbol surface. Handing `pt_init` a
+// physical range this lift merely guesses is free — e.g. the backing of one of
+// its own static buffers — would violate the exact contract the doc states
+// ("the range must not be assigned to other page tables") in a way nothing
+// would catch until the two allocators handed out the same physical frame
+// twice. Reaching into `uk_falloc` or `ukplat_memregion` to solve it would also
+// cross the brief's "bind at the native altitude" rule. So this lift ships
+// `pt_init` honestly typed and honestly unexercised, rather than faking a boot
+// with a physical range that was never provably free. `uk_paging_pt_add_mem`,
+// `uk_paging_page_mapx`'s custom `mapx` callback, `uk_paging_page_set_attr`,
+// and `uk_paging_init` itself are likewise not bound; see README.md.
+//
+// THE STRUCT MIRROR THIS LIFT DOES NOT NEED. `struct uk_pagetable` is a real,
+// public, non-`#ifdef`-guarded-in-the-default-config struct (paging.h:316-327)
+// — but unlike `unikraft/blk`, `unikraft/vmem`, `unikraft/lock`, this module
+// never reads or writes one of its fields. Every accessor is a real exported C
+// call (`pt_get_active`, `pt_walk`, ...). So no offset claim is needed, only an
+// upper bound on the struct's SIZE, to allocate storage for a caller-owned
+// instance the way `uk_paging_pt_init`/`_clone` require. `PT_STORAGE_BYTES`
+// below is one page — three orders of magnitude more than the struct needs
+// even with `CONFIG_LIBUKPAGING_STATS` on (3 scalars + 3 `unsigned long[5]`
+// arrays, at most ~144 bytes) — so this lift makes NO precise-sizeof claim the
+// way `unikraft/lock` had to correct one, because it does not need one.
+//
+// PAGE ATTRIBUTES AND THE PTE FORMAT ARE HARDCODED, NOT DERIVED — the same
+// judgement call `unikraft/vmem` made for `PROT_READ`/`PROT_WRITE`, cited here
+// rather than re-argued: x86_64 `plat/native/arch/x86_64/.../page.h:57-59` and
+// `arch/x86_64.h:186` are ISA facts (the PTE present bit, the base page size),
+// not Kconfig-chosen values, so there is nothing to probe for. A platform that
+// renumbered them would be caught by a page fault, not a refusal.
+
+const PageTable = opaque {};
+
+// exportsyms.uk. Every symbol below is on it (case 1 — the allowlist is the
+// full surface; 0 phantom, 0 inert, measured against
+// `nm -g liblibukpaging.o` on a built image).
+extern fn uk_paging_pt_get_active() ?*PageTable;
+extern fn uk_paging_pt_set_active(pt: *PageTable) c_int;
+extern fn uk_paging_pt_init(pt: *PageTable, start: usize, len: usize) c_int;
+extern fn uk_paging_pt_clone(pt: *PageTable, pt_src: *PageTable, flags: c_ulong) c_int;
+extern fn uk_paging_pt_free(pt: *PageTable, flags: c_ulong) c_int;
+extern fn uk_paging_pt_walk(
+    pt: *PageTable,
+    vaddr: usize,
+    level: *c_uint,
+    pt_vaddr: ?*usize,
+    pte: ?*u64,
+) c_int;
+extern fn uk_paging_page_mapx(
+    pt: *PageTable,
+    vaddr: usize,
+    paddr: usize,
+    pages: c_ulong,
+    attr: c_ulong,
+    flags: c_ulong,
+    mapx: ?*anyopaque,
+) c_int;
+extern fn uk_paging_page_unmap(pt: *PageTable, vaddr: usize, pages: c_ulong, flags: c_ulong) c_int;
+extern fn uk_paging_virt_to_phys(address: usize) usize;
+extern fn uk_paging_page_kmap(pt: *PageTable, paddr: usize, pages: c_ulong, flags: c_ulong) usize;
+extern fn uk_paging_page_kunmap(pt: *PageTable, vaddr: usize, pages: c_ulong, flags: c_ulong) void;
+
+// nolibc, backed by ukalloc's default allocator. Same seam `unikraft/blk` and
+// `unikraft/vmem` use for their own caller-owned handles.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+
+// --- Constants. All named-and-cited, none derived by probe; see the header
+// note on why this module has no Kconfig-integer or VADDR_ANY problem to
+// solve the way `unikraft/vmem` did.
+
+// x86_64 `plat/native/arch/x86_64/include/uk/plat/native/arch/page.h:25-26`.
+// The base page-table level's page size. An ISA fact on x86_64: level 0 is
+// always 4 KiB. (Larger levels are Kconfig/CPU-feature-conditional; this lift
+// only ever maps at level 0, so it never needs those.)
+const PAGE_SIZE: usize = 0x1000;
+
+// Same file, :57-58. Page protection bits — identical numbering to
+// `unikraft/vmem`'s (page.h:56-59 there is the SAME file), cited rather than
+// re-derived.
+const PROT_READ: c_ulong = 0x01;
+const PROT_WRITE: c_ulong = 0x02;
+const PROT_RW: c_ulong = PROT_READ | PROT_WRITE;
+
+// `arch/x86_64/include/uk/arch/x86_64.h:186`. The PTE "present" bit — again an
+// ISA fact (the x86-64 page-table entry format), not a Kconfig value.
+const PTE_PRESENT: u64 = 0x001;
+
+// `UK_PAL_PADDR_INV` / `UK_PAGING_PADDR_ANY`: the sentinel `uk_paging_page_mapx`
+// checks `paddr` against to decide "allocate a fresh frame for me" versus "map
+// exactly this physical address" (paging.c:540-547). It is
+// `UK_PLAT_NATIVE_PAGE_HUGE_ALIGN_DOWN(0xBAADBAADBAADBAAD)` — the IDENTICAL
+// formula `unikraft/vmem` used for `UK_PAGING_VADDR_ANY`
+// (`unikraft/vmem/index.kz:236-241`), because `addr.h` defines
+// `UK_PLAT_NATIVE_VADDR_INV` and `UK_PLAT_NATIVE_PADDR_INV` with the SAME macro
+// over the SAME seed. Reused by citation, not re-derived: `vmem`'s probe
+// already proved the value is `0xbaadbaad80000000` on this platform, and nothing
+// here has a second, independent way to ask. **A wrong guess here is not a
+// theoretical risk — an earlier draft of this lift used `~0` (all-ones)
+// instead of this constant.** `uk_paging_page_mapx` treated that as "map
+// SCRATCH to the literal physical address 0xFFFFFFFFFFFFFFFF" rather than
+// "allocate a frame for me" — `uk_pal_paddr_range_isvalid` would have refused
+// it, but that check is a `UK_ASSERT` (paging.c:543) and compiles out. The
+// program built and booted; `pt-walk`'s own PTE read reported the mapping
+// PRESENT at an absurd physical address, and the very next real access
+// crashed the machine. Found on the first live QEMU run, not by inspection —
+// see README.md's toolchain-defects section for the literal console output
+// and the fix.
+const PADDR_INV: usize = 0xbaadbaad80000000;
+
+// `arch/x86_64/include/uk/plat/native/arch/addr.h:44-45` /
+// `plat/native/arch/x86_64/include/uk/plat/native/arch/pt.h:39-40`, combined:
+// `UK_PLAT_NATIVE_PT_Lx_PTE_PADDR(pte, lvl)` is
+// `((pte) & __X86_64_PTE_PADDR_MASK) & UK_PLAT_NATIVE_PAGE_MASK`, i.e. bits
+// 12..51. CASE 3 FREE: pure arithmetic over a value this lift already has (a
+// PTE `pt_walk` handed back), no symbol needed.
+const PTE_PADDR_MASK: u64 = ((@as(u64, 1) << 52) - 1) & ~@as(u64, PAGE_SIZE - 1);
+
+// `arch/x86_64/include/uk/plat/native/arch/addr.h`: `__X86_64_VADDR_BITS` is 48
+// for the default (non-5-level) page table depth this lift assumes throughout
+// (`UK_PAL_PT_LEVELS` defaults to 4). CASE 3 FREE reconstruction of
+// `uk_pal_vaddr_isvalid`/`_range_isvalid` (addr.h's own body is pure sign-
+// extension arithmetic, no symbol) — genuinely retires paging.c:390,538,972,
+// 1256's `UK_ASSERT(uk_pal_vaddr_isvalid(...))` family: an address this check
+// refuses is never handed to the C at all.
+fn vaddrCanonical(addr: usize) bool {
+    const shift: u6 = 64 - 48;
+    const signed: i64 = @bitCast(addr);
+    const rt = (signed << shift) >> shift;
+    return @as(u64, @bitCast(rt)) == addr;
+}
+
+// UK_PAGING_PAGE_FLAG_CLONE_NEW (paging.h:349).
+const CLONE_NEW: c_ulong = 0x01;
+
+const EINVAL: i32 = -22;
+
+// One page. Three orders of magnitude more than `struct uk_pagetable` needs
+// even with `CONFIG_LIBUKPAGING_STATS` on; see the header note "the struct
+// mirror this lift does not need."
+const PT_STORAGE_BYTES: usize = 4096;
+
+fn allocPt() ?*PageTable {
+    const mem = malloc(PT_STORAGE_BYTES) orelse return null;
+    return @ptrCast(mem);
+}
+
+// ============================================================================
+// ACTIVE — the table this program is already running on
+// ============================================================================
+//
+// `uk_paging_pt_get_active`, no phantom state at all. Deliberately BARE, like
+// `unikraft/vmem`'s `*Space`: this handle is read-only for every operation
+// this lift offers on it (`pt_clone`/`pt_clone.empty` never write through it),
+// so there is nothing to ratchet and it can be cloned from any number of
+// times. It is NOT assignable where `*PageTable<!active-safe>` or
+// `*PageTable<!init|!active-safe|!detached>` is required — those need a real
+// phantom state and a bare pointer does not have one, so misuse is a type
+// error, not an obligation one.
+~pub tor active { }
+| ready *PageTable
+| unavailable
+
+~proc active|zig {
+    const pt = uk_paging_pt_get_active() orelse {
+        return .{ .unavailable = .{} };
+    };
+    return .{ .ready = pt };
+}
+
+// ============================================================================
+// PT_CLONE — the only way this lift reaches a table `pt_set_active` accepts
+// ============================================================================
+//
+// `uk_paging_pt_clone(new, source, 0)` — deep-copies every present PTE from
+// `source` (paging.c:84-217), sharing `source`'s frame allocator
+// (`pt_dst->fa = pt_src->fa`, paging.c:104), so it needs no physical-memory
+// range of its own. Because it copies the WHOLE hierarchy, the result maps
+// everything `source` maps — including, when `source` came from `active`, the
+// code and data this program is running on right now. Mints <active-safe!>,
+// the ONLY state `pt_set_active` accepts.
+~pub tor pt-clone { source: *PageTable }
+| ok *PageTable<active-safe!>
+| refused { errno: i32, reason: string }
+
+~proc pt-clone|zig {
+    const dst = allocPt() orelse {
+        return .{ .refused = .{ .errno = -12, .reason = "out of memory allocating the destination page table" } };
+    };
+    const rc = uk_paging_pt_clone(dst, source, 0);
+    if (rc != 0) {
+        free(@ptrCast(dst));
+        return .{ .refused = .{ .errno = @intCast(rc), .reason = "uk_paging_pt_clone could not copy the source hierarchy" } };
+    }
+    return .{ .ok = dst };
+}
+
+// The other value of the ONE flag `uk_paging_pt_clone` takes.
+// UK_PAGING_PAGE_FLAG_CLONE_NEW skips the deep copy entirely and hands back a
+// table with a fresh, EMPTY top-level page (paging.c:120-121,195-206) — it
+// maps NOTHING, not even the directmap. Same C function, one bit different,
+// and the two results are not interchangeable: this one mints <detached!>, a
+// state `pt_set_active` does not accept and never will, because nothing here
+// proves it maps the code that would need to keep running after the switch.
+// Named as a SEPARATE tor rather than a `new: bool` parameter on `pt_clone`
+// itself so the two are a name choice, not a bit a caller can flip by mistake
+// — the same DX move `unikraft/vmem` made for `UK_VMA_MAP_REPLACE`.
+~pub tor pt-clone.empty { source: *PageTable }
+| ok *PageTable<detached!>
+| refused { errno: i32, reason: string }
+
+~proc pt-clone.empty|zig {
+    const dst = allocPt() orelse {
+        return .{ .refused = .{ .errno = -12, .reason = "out of memory allocating the destination page table" } };
+    };
+    const rc = uk_paging_pt_clone(dst, source, CLONE_NEW);
+    if (rc != 0) {
+        free(@ptrCast(dst));
+        return .{ .refused = .{ .errno = @intCast(rc), .reason = "uk_paging_pt_clone could not allocate an empty top-level table" } };
+    }
+    return .{ .ok = dst };
+}
+
+// ============================================================================
+// PT_INIT — lifted and typed; deliberately not exercised in the boot demo
+// ============================================================================
+//
+// See the header note "what this lift does not attempt." `<init!>` is NOT
+// accepted by `pt_set_active` anywhere in this module — the fatal,
+// unasserted rule this whole lift exists to name. It IS accepted by
+// `pt_free`, because freeing a table that was never activated is safe on the
+// C's own terms (`uk_paging_pt_free` just unmaps and frees; nothing about
+// that requires the table to have ever been live).
+~pub tor pt-init { start: u64, len: u64 }
+| ok *PageTable<init!>
+| refused { start: u64, len: u64, errno: i32, reason: string }
+
+~proc pt-init|zig {
+    if (len == 0) {
+        return .{ .refused = .{ .start = start, .len = len, .errno = EINVAL, .reason = "zero-length physical range" } };
+    }
+    const pt = allocPt() orelse {
+        return .{ .refused = .{ .start = start, .len = len, .errno = -12, .reason = "out of memory allocating the page table" } };
+    };
+    const rc = uk_paging_pt_init(pt, @intCast(start), @intCast(len));
+    if (rc != 0) {
+        free(@ptrCast(pt));
+        return .{ .refused = .{ .start = start, .len = len, .errno = @intCast(rc), .reason = "uk_paging_pt_init could not set up the frame allocator or the top-level table over this range" } };
+    }
+    return .{ .ok = pt };
+}
+
+// ============================================================================
+// PT_WALK — read a page-table entry, through the directmap, no activation
+// needed
+// ============================================================================
+//
+// `uk_paging_pt_walk`, stopping at level 0 (the smallest page size this lift
+// ever requests). Reachable and safe on ANY table this lift can name,
+// regardless of whether it is the CPU's active one — page tables are read
+// through the kernel's directmap window, which every table this lift produces
+// carries a copy of (it is part of what `pt_clone` copies). This is how
+// `uk_paging_init` itself populates `kernel_pt` before ever activating it
+// (paging.c:1478-1545), and this lift's boot demo uses the same property to
+// prove a mapping exists in a NOT-YET-ACTIVE clone before switching to it,
+// without ever dereferencing the target address early.
+~pub tor pt-walk { pt: *PageTable<!active-safe>, at: u64 }
+| present { pt: *PageTable<active-safe!>, paddr: u64 }
+| absent *PageTable<active-safe!>
+
+~proc pt-walk|zig {
+    if (!vaddrCanonical(@intCast(at))) {
+        return .{ .absent = pt };
+    }
+    var level: c_uint = 0;
+    var pte: u64 = 0;
+    const rc = uk_paging_pt_walk(pt, @intCast(at), &level, null, &pte);
+    if (rc != 0 or (pte & PTE_PRESENT) == 0) {
+        return .{ .absent = pt };
+    }
+    const paddr = pte & PTE_PADDR_MASK;
+    return .{ .present = .{ .pt = pt, .paddr = @intCast(paddr) } };
+}
+
+// ============================================================================
+// PAGE_MAP / PAGE_UNMAP — one page at level 0, fixed read+write
+// ============================================================================
+//
+// `uk_paging_page_mapx(pt, vaddr, UK_PAL_PADDR_INV, pages, PROT_RW, 0, NULL)`
+// — physical memory allocated from `pt`'s own frame allocator (shared with
+// whichever table `pt` was cloned from). Fixed to read+write and to level 0,
+// the same simplification `unikraft/vmem`'s `commit` makes for its attribute
+// word: the caller-mistake surface a free attribute parameter would add is
+// not this lift's contribution.
+//
+// Takes and returns `<!active-safe>`, unchanged: mapping into a table does
+// not change whether it is the table `pt_set_active` will accept — the same
+// non-consuming shape `unikraft/vmem`'s `read.frozen` uses (`<!frozen>` in,
+// `<frozen!>` out, identical name). This is deliberate and it is what makes
+// the boot demo's ordering possible at all: map, kmap/kunmap, and pt_walk
+// ALL happen while the clone is still `<active-safe!>`, i.e. still safe to
+// hand to `pt_set_active` afterward. See README.md for why `page_map` is not
+// offered on `<!active>` — this lift's boot demo never needs it, and adding
+// it would reopen the union-collapsing question this design avoided.
+~pub tor page-map { pt: *PageTable<!active-safe>, at: u64, pages: u64 }
+| ok *PageTable<active-safe!>
+| refused { pt: *PageTable<active-safe!>, errno: i32, reason: string }
+
+~proc page-map|zig {
+    if (pages == 0) {
+        return .{ .refused = .{ .pt = pt, .errno = EINVAL, .reason = "zero pages" } };
+    }
+    if (!vaddrCanonical(@intCast(at))) {
+        return .{ .refused = .{ .pt = pt, .errno = EINVAL, .reason = "virtual address is not in canonical form" } };
+    }
+    const rc = uk_paging_page_mapx(pt, @intCast(at), PADDR_INV, @intCast(pages), PROT_RW, 0, null);
+    if (rc != 0) {
+        return .{ .refused = .{ .pt = pt, .errno = @intCast(rc), .reason = "uk_paging_page_mapx could not create the mapping" } };
+    }
+    return .{ .ok = pt };
+}
+
+~pub tor page-unmap { pt: *PageTable<!active-safe>, at: u64, pages: u64 }
+| ok *PageTable<active-safe!>
+| refused { pt: *PageTable<active-safe!>, errno: i32, reason: string }
+
+~proc page-unmap|zig {
+    if (pages == 0) {
+        return .{ .refused = .{ .pt = pt, .errno = EINVAL, .reason = "zero pages" } };
+    }
+    const rc = uk_paging_page_unmap(pt, @intCast(at), @intCast(pages), 0);
+    if (rc != 0) {
+        return .{ .refused = .{ .pt = pt, .errno = @intCast(rc), .reason = "uk_paging_page_unmap refused the range" } };
+    }
+    return .{ .ok = pt };
+}
+
+// ============================================================================
+// PAGE_KMAP / PAGE_KUNMAP — the clean symmetric pair the brief points at
+// ============================================================================
+//
+// `uk_paging_page_kmap`/`_kunmap`. On x86_64 native these compile down to
+// `pgarch_directmap_paddr_to_vaddr(paddr)` (arithmetic, `arch/x86_64/include/
+// uk/paging/arch.h:71-77`) and a no-op respectively — the temporary mapping is
+// "free" on THIS platform because the whole of physical memory is already
+// directmapped. Stated honestly rather than left implied: this lift does not
+// claim the pair is expensive to earn, only that the CONTRACT is real and
+// general (the doc says explicitly "the number of concurrently k'mapped pages
+// may be limited," which is a real constraint on platforms whose kmap is a
+// small fixed window, not native's). No ordering constraint beyond pairing —
+// `unikraft/vmem`'s "not everything deserves a ratchet" note about `ukalloc`
+// applies here too: this is a plain acquire/release, not a multi-state
+// machine, exactly the shape the brief calls out this pair for.
+~pub tor page-kmap { pt: *PageTable<!active-safe>, paddr: u64, pages: u64 }
+| ok { pt: *PageTable<active-safe!>, vaddr: u64 }
+| refused { pt: *PageTable<active-safe!>, reason: string }
+
+~proc page-kmap|zig {
+    if (pages == 0) {
+        return .{ .refused = .{ .pt = pt, .reason = "zero pages" } };
+    }
+    const vaddr = uk_paging_page_kmap(pt, @intCast(paddr), @intCast(pages), 0);
+    // UK_PAGING_VADDR_INV: the platform's invalid-address sentinel, aligned to
+    // the largest page size — the SAME value `unikraft/vmem` derived by
+    // behavioural probe and printed as 0xbaadbaad80000000
+    // (unikraft/vmem/index.kz:236-241,304-312). Reused here by citation rather
+    // than re-derived: it is a platform constant, not a per-library one, and
+    // this lift has no behaviour to probe it with — `page_kmap` never fails on
+    // this platform (see the header note), so there is no observable failure
+    // to compare a guess against.
+    if (vaddr == 0xbaadbaad80000000) {
+        return .{ .refused = .{ .pt = pt, .reason = "uk_paging_page_kmap returned the invalid-address sentinel" } };
+    }
+    return .{ .ok = .{ .pt = pt, .vaddr = @intCast(vaddr) } };
+}
+
+~pub tor page-kunmap { pt: *PageTable<!active-safe>, vaddr: u64, pages: u64 } -> *PageTable<active-safe!>
+
+~proc page-kunmap|zig {
+    if (pages > 0) {
+        uk_paging_page_kunmap(pt, @intCast(vaddr), @intCast(pages), 0);
+    }
+    return pt;
+}
+
+// ============================================================================
+// POKE / PEEK — NOT part of `ukpaging`'s surface
+// ============================================================================
+//
+// A raw store/load through a virtual address, with no C call at all — the
+// same shape as `unikraft/vmem`'s `write`/`read`, which do "no C call: this is
+// a store through the mapping" for the identical reason. Unlike `vmem`'s pair,
+// these are NOT gated by a phantom state tied to the address, because this
+// module has no resource that represents "this one virtual address is
+// currently mapped" — that fact lives in whichever page table is presently in
+// CR3, a machine-wide, mutable fact this lift's obligations do not track (see
+// the header note on the active-table singleton mismatch). `pt-walk` is how a
+// caller proves an address is mapped before calling either of these; nothing
+// in the TYPE SYSTEM enforces that a caller did so. Named and kept separate
+// from `ukpaging`'s own tors so a reader can `grep -r "paging:poke\|paging:peek"`
+// and see exactly where this lift leaves the type wall and trusts the caller.
+~pub tor poke { at: u64, bytes: string }
+
+~proc poke|zig {
+    if (bytes.len == 0) return;
+    const p: [*]u8 = @ptrFromInt(@as(usize, @intCast(at)));
+    for (0..bytes.len) |i| p[i] = bytes[i];
+}
+
+~pub tor peek { at: u64, len: u64 } -> string
+
+~proc peek|zig {
+    const want: usize = @intCast(len);
+    const p: [*]const u8 = @ptrFromInt(@as(usize, @intCast(at)));
+    return p[0..want];
+}
+
+// ============================================================================
+// PT_SET_ACTIVE — the switch
+// ============================================================================
+//
+// `uk_paging_pt_set_active`: one `mov %cr3` (`arch/x86_64/.../pt.h`'s
+// `uk_plat_native_pt_write_base`, an unconditional two-instruction asm block
+// that always returns 0 on this platform — the `refused` arm below is real
+// API surface, honestly modelled, and dead code here; see "claims this lift
+// does not make"). Consumes `<!active-safe>` — reachable ONLY through
+// `pt_clone` — and mints `<active!>`. This is the one call in the whole
+// module that this lift cannot prove is safe by inspection; it is proven by
+// the boot console reaching the print statement immediately after it. If it
+// is not survivable, the console output stops here and says so.
+~pub tor pt-set-active { pt: *PageTable<!active-safe> }
+| ok *PageTable<active!>
+| refused { pt: *PageTable<active-safe!>, errno: i32 }
+
+~proc pt-set-active|zig {
+    const rc = uk_paging_pt_set_active(pt);
+    if (rc != 0) {
+        return .{ .refused = .{ .pt = pt, .errno = @intCast(rc) } };
+    }
+    return .{ .ok = pt };
+}
+
+// THE DISPOSER `<active!>` FORCES A PROGRAM TO NAME. `pt-free` never accepts
+// `<!active>` (see its own header note — freeing the live table is the second
+// fatal, unasserted rule this lift found). That means a program which
+// activates a table and means to go on running on it forever has NO path back
+// to a terminal, freed state through this lift, by design: there genuinely
+// is none, on the C's own terms, short of activating a DIFFERENT table first.
+// Rather than let that surface as an unexplained "obligation not discharged"
+// diagnostic, this lift names the acknowledgement: a program that intends to
+// keep running on the table it just activated says so here, in one grep-able
+// word, the same convention as `unikraft/vmem:abandon` and
+// `unikraft/blk:io.skipped`. It runs no C call — there is nothing to call;
+// the table's fate is exactly what it already is; this tor only discharges
+// the type-level obligation to match the runtime reality that the table
+// keeps existing for as long as the kernel does.
+~pub tor run-forever { pt: *PageTable<!active> }
+
+~proc run-forever|zig {
+    _ = pt;
+}
+
+// ============================================================================
+// VIRT_TO_PHYS — always the ACTIVE table, by the C's own signature
+// ============================================================================
+//
+// `uk_paging_virt_to_phys(address)` takes NO page-table parameter — it calls
+// `uk_paging_pt_get_active()` internally (paging.c:1411-1430) and translates
+// against whatever that returns RIGHT NOW. This lift does not fabricate a
+// `pt` parameter the C does not have; the absence is the honest reflection of
+// "this always queries the live table, not the one you happen to be holding."
+//
+// THE ASSERT THIS LIFT CANNOT RETIRE, NAMED RATHER THAN HIDDEN. The C asserts
+// `rc == 0`, `PTE_PRESENT`, and `PAGE_Lx_IS` (paging.c:1422,1424,1425) and, if
+// all three are compiled out, RETURNS GARBAGE on an unmapped address — there
+// is no error return path in the signature (`__paddr_t`, no sentinel). A
+// caller supplying an address this lift never mapped can trip this, and this
+// lift has no way to statically know every address ever mapped on the live
+// table (some of it predates this program). So this tor is honestly modelled
+// as always succeeding at the TYPE level — it takes a bare `u64`, not a
+// phantom-typed area — and the boot demo only ever calls it with an address
+// this SAME lift's own `page_map` mapped and `pt_walk` already confirmed
+// present. See "claims this lift does not make."
+~pub tor virt-to-phys { at: u64 } -> u64
+
+~proc virt-to-phys|zig {
+    return @intCast(uk_paging_virt_to_phys(@intCast(at)));
+}
+
+// ============================================================================
+// PT_FREE — never on the table you are running on
+// ============================================================================
+//
+// `uk_paging_pt_free`. Accepts `<!init|!active-safe|!detached>` — every state
+// this module can mint EXCEPT `<active!>`. See the header note: nothing in
+// `uk_paging_pt_free` checks `pt != pg_active_pt`, so freeing the live table
+// is a call the C will happily start and a call this lift will never make.
+// `tests/negative_free_active_table.kz` is the proof.
+//
+// FAILURE HANDS BACK `<stuck!>`, never freed. `uk_paging_pt_free` can fail
+// partway (`pg_page_unmap` returns non-zero on e.g. `-ENOMEM` during a
+// required split) and, on that path, returns BEFORE reaching `pg_pt_free`
+// (paging.c:328-333) — the struct is still allocated, partially unmapped, and
+// this lift's storage for it must not be `free()`d underneath that state. The
+// same shape as `unikraft/vmem`'s `<stuck!>`/`abandon` pair, for the same
+// reason: an address range (there) or a page table (here) nobody could fully
+// tear down costs the machine one leaked handle, and that is the honest price.
+~pub tor pt-free { pt: *PageTable<!init|!active-safe|!detached> }
+| ok
+| failed { pt: *PageTable<stuck!>, errno: i32 }
+
+~proc pt-free|zig {
+    const rc = uk_paging_pt_free(pt, 0);
+    if (rc != 0) {
+        return .{ .failed = .{ .pt = pt, .errno = @intCast(rc) } };
+    }
+    free(@ptrCast(pt));
+    return .{ .ok = .{} };
+}
+
+// The one way out of <stuck!>. Deliberately leaks: freeing the storage here
+// would risk a double-free or a free of memory the C's own partial teardown
+// left in an unknown state. Named so "we gave up on a page table" is a grep,
+// not an inference — same convention as `unikraft/vmem:abandon`.
+~pub tor abandon { pt: *PageTable<!stuck> }
+
+~proc abandon|zig {
+    _ = pt;
+}

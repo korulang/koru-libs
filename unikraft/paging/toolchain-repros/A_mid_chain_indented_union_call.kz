@@ -1,0 +1,49 @@
+// FINDING A — a tor call with NAMED UNION ARMS, placed mid-chain (i.e. NOT
+// the first `~`-headed statement of the flow) and INDENTED relative to the
+// line that calls it, is misparsed: its own arm lines are reported as
+// "stray continuation" rather than recognized as belonging to it. The SAME
+// tor called at column 0 (either as the flow's own head, or mid-chain but
+// left un-indented) parses correctly. No `unikraft/*` import or Unikraft
+// dependency is needed to reproduce this — it is a general parser defect,
+// found while writing `unikraft/paging`'s boot test, where every mid-chain
+// call to `unikraft/paging:active` (also a zero-arg, two-named-arm tor) hit
+// it as soon as the surrounding chain was indented to match the rest of the
+// program's nesting.
+//
+//   koruc --check A_mid_chain_indented_union_call.kz
+//   -> error[KORU010]: stray continuation line without Koru construct
+//        --> A_mid_chain_indented_union_call.kz:48:9
+//            | ready v |> std/io:print.ln("got {{ v:d }}")
+//      (and the same for the `unavailable` arm on the next line, :49)
+//
+// Isolated by bisection: removing the tor's PARAMETER LIST (`{ }` vs one
+// scalar param), reordering its arms, giving its EMPTY arm a payload,
+// renaming the tor, and swapping which arm carries data all failed to change
+// the outcome — the only thing that flips it is the INDENTATION of the call
+// and its arms relative to the surrounding chain. See
+// `B_mid_chain_indented_union_call_control.kz`: identical program, only the
+// indentation of `who`'s call and its two arms is removed (matching the
+// column of the `|>` that reaches it), and it compiles clean.
+//
+// Practical consequence for a Koru author: a mid-chain call to a tor with
+// its own named arms must be written at the SAME indentation as the
+// enclosing flow's other top-level arms, not nested deeper to visually
+// track the chain — `unikraft/paging/tests/boot_paging.kz` works around this
+// by never calling `unikraft/paging:active` mid-chain at all, always as a
+// fresh top-level flow statement (matching `unikraft/vmem`'s own two-flow
+// convention, which happens to never have exercised this shape).
+
+~import std/io
+
+~pub tor who { }
+| ready i32
+| unavailable
+
+~proc who|zig {
+    return .{ .ready = 1 };
+}
+
+~std/io:print.ln("before")
+    |> who
+        | ready v |> std/io:print.ln("got {{ v:d }}")
+        | unavailable |> std/io:print.ln("none")
