@@ -730,6 +730,19 @@ reading.
 
 Gates 1–5 you self-check. Gate 6 is not yours.
 
+**Gate 3 has a form requirement, and it is not optional.** Every negative test
+must declare the diagnostic it expects, using this repo's `//~` directives:
+
+    //~ compile_fail(backend)
+    //~ error[KORU030]: Phantom state mismatch
+
+Without it, "the build failed" is the only thing anyone can check later — and
+a test that fails because of a typo, a renamed module or a missing tilde reads
+exactly like a wall doing its job. `scripts/check-lifts.sh` re-runs every
+negative test on every invocation and reports an undeclared one as `????`
+rather than counting it as a pass, because it genuinely cannot tell. Ten
+shipped tests are in that state today; do not add an eleventh.
+
 **Gate 6 changed hands 2026-08-07.** It used to be Lars personally, and it
 became the bottleneck: five finished lifts sat unread because the only
 approver was the one person who also had everything else to do. His ruling:
