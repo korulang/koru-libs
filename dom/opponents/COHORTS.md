@@ -212,22 +212,26 @@ with one caveat: Blazor reports an early first paint at
 measures when something first renders, not when the payload has arrived or the
 app is usable).
 
-**Where Koru sits in that shape — stated honestly.** The gauntlet's app as of
-round 1 compresses to **2.9 KB gzip / 2.5 KB brotli** of emitted JS (measured
-2026-08-07 on `dom/app/output_emitted.js`; the reference's own control,
-`vanillajs`, publishes 2.5 KB brotli for the
-complete app). Koru ships **no framework runtime at all** — the JS backend emits
-the program and nothing else — so its natural neighborhood is the hand-written
-floor, not the 40–80 KB wasm band. **But this is not yet a fair comparison and
-must not be quoted as one: the app implements 3 of the 11 benchmark operations**
-(`dom/board/latest.md`, round 1), and missing operations are missing code — the
-number can only grow. What a fair version requires: 11/11 conformance, and the
-size measured under the reference's own rule (brotli over all implementation
-files excluding css, `benchmarksSize.ts:20-24`). What the comparison *shape*
-already says is real, though: `vanillajs` proves a complete 11/11 app fits in
-2.5 KB, so "runtime-free Koru stays within a
-few KB of the floor" is an *achievable* claim — one this gauntlet has not yet
-earned.
+**Where Koru sits in that shape — stated honestly.** As of round 2 the
+gauntlet's app passes **11 of 11 operations under our closer** (a structural
+DOM-assertion harness calibrated against `vanillajs-keyed` at 0% cant-tell —
+`dom/board/latest.md`), and the emitted JS compresses to **4.8 KB gzip /
+4.1 KB brotli** (measured locally 2026-08-07 on `dom/app/output_emitted.js`,
+25.4 KB uncompressed). Koru ships **no framework runtime** — the JS backend
+emits the program and nothing else. That puts it in the hand-written
+neighborhood: above the `vanillajs` floor (2.5
+KB brotli published), at `solid`'s size (4.5 KB),
+under `mikado` (4.9 KB), a third of `svelte`
+(12.2 KB) — and **2.5x smaller than Elm**
+(10.4 KB), this cohort's previous small-end anchor.
+Three caveats keep this honest: our conformance is certified by our own closer,
+not the reference's webdriver harness; our size is a local brotli of the
+emitted files, not the reference's size benchmark run over its own server
+(`benchmarksSize.ts:20-24`); and koru has **no published operation timings** —
+Phase 2 has not opened, so koru takes no row in any timing table on this page.
+The second headline number rides along: **46.2% of the app's lines are host-JS
+escapes** (60/130) — the gauntlet's real deliverable is driving that down, not
+the size.
 
 ### Cohort B operation timings
 

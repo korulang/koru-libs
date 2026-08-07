@@ -18,16 +18,16 @@
  },
  "koru_context": {
   "app": "dom/app (koru JS backend output: output_emitted.js + index.html)",
-  "measured": "2026-08-07 by this pull (gzip -9 / brotli -q 11 on the emitted files)",
-  "js_bytes_uncompressed": 9693,
-  "js_bytes_gzip": 2900,
-  "js_bytes_brotli": 2453,
+  "measured": "2026-08-07, round 2 (gzip -9 / brotli -q 11 run locally on the emitted files)",
+  "js_bytes_uncompressed": 25423,
+  "js_bytes_gzip": 4844,
+  "js_bytes_brotli": 4130,
   "html_bytes_uncompressed": 2441,
   "html_bytes_gzip": 690,
   "html_bytes_brotli": 473,
-  "conformance": "3 of 11 operations (dom/board/latest.md, round 1: 01_run1k, 08_create1k_after1k, 10_html_structure pass)",
-  "js_escape": "66.7% of app lines are host-JS escapes (dom/board/latest.md)",
-  "comparability": "NOT comparable to the table yet: 8 of 11 operations are unimplemented, and missing operations mean missing code, so the size number can only grow. A fair comparison requires 11/11 conformance and measurement under the reference's own size rules (brotli of all implementation files excluding css, benchmarksSize.ts:20-24)."
+  "conformance": "11 of 11 operations per OUR closer (dom/board/latest.md, round 2; closer calibrated on vanillajs-keyed at 0% cant-tell)",
+  "js_escape": "46.2% of app lines are host-JS escapes (60/130, dom/board/latest.md round 2)",
+  "comparability": "Structural conformance is certified by our own closer, not by the reference's webdriver harness; the size was measured locally (brotli -q 11 on the emitted JS), not by the reference's size benchmark over its server (all implementation files excluding css, benchmarksSize.ts:20-24). Close, but not their measurement \u2014 and koru has NO published operation timings yet (Phase 2 unopened), so koru takes no row in the timing tables."
  },
  "build_time_finding": {
   "finding": "The reference does not measure build time anywhere, and no entry reports one.",
