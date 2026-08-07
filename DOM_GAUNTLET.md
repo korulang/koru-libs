@@ -120,6 +120,43 @@ chain was **77% of node runtime** and eliding it was 4.3×. That path is cold an
 near-untested — exactly **one** watch test is js-ok (`690_005`) out of 101 in
 `690_STORE`.
 
+## RULED 2026-08-07 — how Koru writes HTML
+
+Lars's ruling, and it is the spelling the markup surface is built on.
+
+**Components are capitalized. Everywhere** — declaration, call site, and markup
+tag, one spelling throughout. Not capitalized-in-markup-only; there is no second
+spelling to reconcile.
+
+So the markup rule is the smallest it can be:
+
+- **Starts with a capital → ours.** Compile it to a call to that component's
+  synthesized event.
+- **Anything else → passed through untouched.** Not "looked up in a table of
+  HTML elements" — genuinely not inspected.
+
+**That second half is the whole reason this rule is better than the alternative,
+and it is Lars's observation:** lowercase does not mean "an HTML element", it
+means "the rest — not ours". So the compiler never needs to know what HTML *is*.
+No element table, no vocabulary to maintain, and SVG, elements added to HTML
+later, and third-party custom elements all work without anyone doing anything.
+
+The rejected alternative was a hyphen rule (`<div>` element, `<todo-row>`
+component), which required an embedded list of every HTML element name
+specifically so the compiler could know that `table` was one — and still
+collided on `table`, `progress`, `label`, `select`, `output` and `main`.
+Capitalization collides with nothing, because HTML's element names are lowercase
+by specification and always will be.
+
+**Verified before building on it (2026-08-07):** a capitalized event name
+compiles today with no compiler change. A program that compiles was taken, one
+event name and its call sites capitalized, and recompiled clean — the emitted
+JavaScript differs on exactly three lines, all of them the identifier. The
+capitalization is transparent to the compiler.
+
+The terminal library keeps its own convention for now. The two do not have to
+agree; build both, see which reads better, converge later or don't.
+
 ## The budget — declared before the first spawn
 
 - **Tonight:** the brief, the ledger, the board, and **one calibration pull**.
