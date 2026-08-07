@@ -204,6 +204,24 @@ have missed why it did what it did.
   `__spinlock` is size ZERO without `CONFIG_HAVE_SMP` — which is why the size is
   now derived by canary probe. Retires the runlock/wunlock assertion pair, and
   forgetting to unlock is a compile ERROR rather than an insertion.
+- **[store](unikraft/store/README.md)** — `ukstore`'s refcounted object/entry
+  registry behind two states, no struct mirror (zero inlines — the whole
+  surface links). The contribution the shelf predicted: THE MISMATCH between a
+  refcount (a COUNT) and a phantom obligation (a claim about ONE binding) —
+  resolved, not smoothed over, because Koru's wall is per-BINDING: every
+  `acquire` mints an independent `<held!>`, matching the C's own "every call
+  paired with a release" contract, while structurally unable to know the
+  count or that two handles alias one address. The 10-type getter/setter
+  matrix is HAND-WRITTEN, not generated — grounded in the ruled doctrine that
+  Koru generics are a comptime-codegen library keyed to a per-call-site type,
+  which does not fit a closed, already-C-named set of ten symbols. TWO real
+  `ukstore` library defects found by booting (`_uk_store_get_charp`'s
+  unconditional OOB read on a static entry; `uk_store_obj_entry_get`
+  returning a wild pointer on any zero-entry object, via `container_of` on an
+  empty list's own sentinel) and ONE Koru compiler defect pinned (a tor whose
+  failure arm re-mints its own single non-union input state breaks discharge
+  tracking for the WHOLE tor, even down arms that never take it). 25 of 28
+  asserts retired, per site.
 
 #### The rule that keeps the catalog from turning into an argument
 

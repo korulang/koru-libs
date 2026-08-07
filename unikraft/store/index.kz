@@ -1,0 +1,666 @@
+// @korulang/unikraft-store — Unikraft's run-time object registry (`ukstore`),
+// lifted.
+//
+//   import unikraft/store
+//
+// WHAT THIS IS. `lib/ukstore` is a refcounted object/entry registry: any other
+// library can publish named, typed "entries" (a getter + setter pair over one
+// of ten scalar types) either STATICALLY at C compile time
+// (`UK_STORE_STATIC_ENTRY`, a linker-section trick — see `ukprint/store.c` for
+// a real one, `console_lvl`) or DYNAMICALLY at run time, grouped into an
+// `object` that other code looks up by (library id, object id) and must
+// acquire/release like a reference-counted handle. 39 allowlist lines, ZERO
+// `static inline`s — the whole surface links, which is why the shelf calls
+// this "nothing shipped has this shape": every other lift has spent real
+// effort proving a mirror or working around an unreachable inline, and this
+// one instead has a refcount whose obligation shape does not match any
+// ratchet already in the catalog. See "THE MISMATCH" below — that is this
+// lift's actual contribution, not a struct proof.
+//
+// THE RATCHET. One object handle, two live states, and a genuine C bug that
+// makes the asymmetry gate load-bearing rather than decorative:
+//
+//     alloc    mints  <built!>                          uk_store_obj_alloc
+//     add      needs  <!built>   mints <held!>           _uk_store_obj_add
+//     acquire  (lookup, no input obligation) mints <held!>  uk_store_obj_acquire
+//     release  needs  <!held>                            uk_store_obj_release
+//
+// THE ASYMMETRY, AND WHY IT IS NOT OPTIONAL HERE. `uk_store_obj_alloc`
+// (store.c:188-299) never initializes `object->libid`. `_uk_store_obj_add`
+// (store.c:301-322) is the ONLY function that sets it: `object->libid =
+// library_id;`. `uk_store_obj_release` (store.c:344-361) indexes
+// `dynamic_heads[object->libid]` UNCONDITIONALLY, with no bounds check and no
+// assertion on `libid` at all. So `alloc(); release();` — skip `add` — is not
+// a benign no-op the way an unused `unikraft/alloc:take` block is; it is a
+// read through an UNINITIALIZED field used as an array index, in a build
+// where `UK_ASSERT` is compiled out either way. `release` therefore accepts
+// only `<!held>`, and the only two mints of `<held!>` are `add` and `acquire`.
+// This is the same shape as `gzip`'s `fed` gate and
+// `2104_14_open_tx_commit_close/db.kz`'s `close`, but the C-side consequence
+// of skipping it is worse than either: not "an assertion that would have
+// fired," but undefined behaviour that fires in every build.
+//
+// THE MISMATCH THE BRIEF ASKED ME TO REPORT PRECISELY, NOT SMOOTH OVER.
+// Pillar 4's asymmetry and every ratchet in this catalog so far model a
+// SINGLE LINEAR OWNER: one handle, one obligation, one consumer. A refcount is
+// not that — `uk_store_obj_acquire`'s own doc comment says "Every call must be
+// paired with a call to uk_store_obj_release()", and the C is explicit that
+// MANY independent callers may hold the SAME underlying object at once. Koru's
+// phantom-obligation wall tracks obligations per BINDING, not per address
+// (`auto_discharge_inserter.zig`, confirmed by `unikraft/alloc`'s README), so
+// this actually fits better than it first looks: every `acquire` mints a
+// FRESH, independent `<held!>` binding, and the wall demands each one be
+// individually `release`d — which is exactly the C's own contract, word for
+// word. `tests/boot_store.kz` proves this is not just a claim: the same
+// object is acquired twice, through two independently-typed bindings, and
+// both must be released before the program compiles.
+//
+// What the wall CANNOT give you, and this lift does not claim it does:
+//   - THE COUNT. Nothing in the type system knows there are N live holders,
+//     only that each minted `<held!>` has a `release` somewhere in its future.
+//     Whether a given `release` is the one that actually frees the C object
+//     (refcount 0) or merely decrements it is a runtime fact the C alone
+//     decides; Koru has no phantom state for "the last one."
+//   - ALIASING. Two `*Object<held!>` bindings from two `acquire` calls on the
+//     same `object_id` are, to the type system, two unrelated proofs. Nothing
+//     stops a program from acquiring the same id twice and using both handles
+//     as if they were unrelated objects that happen to share an address —
+//     which, semantically, is exactly what refcounting means, so this is not
+//     a gap, it is the accurate shape of what "shared ownership" is: proven
+//     individually, not proven related.
+//   - A single-holder ratchet, like `unikraft/lock`'s, would be actively
+//     WRONG here: refcounting exists so that many holders are simultaneously
+//     legal, and restraining that would be `unikraft/lock`'s restraint rule
+//     applied to the one place it does not belong.
+//
+// So: the fit is good for "every acquisition is paired," and structurally
+// unable to speak to "how many, and is this the last." That is not a
+// half-finished ratchet; it is the honest ceiling of a per-binding obligation
+// system applied to a resource whose defining feature is that many bindings
+// legitimately alias one address.
+//
+// THE TYPED GETTER/SETTER MATRIX. Ten storage types (s8, u8, s16, u16, s32,
+// u32, s64, u64, uptr, charp) each get their own C function —
+// `_uk_store_get_u8`, `_uk_store_get_s8`, ... — because the C itself has no
+// generics either: `_UK_STORE_DYNAMIC_CREATE_TYPED` (store.c:74-111) is a
+// preprocessor `##`-token-pasting macro invoked ONCE PER TYPE, ten times, at
+// the C SOURCE level, to physically emit ten distinct functions with ten
+// distinct names. That is the "comptime-codegen exercise" the shelf points
+// at, and Koru's own ruled doctrine
+// (`project_generics_are_a_comptime_codegen_library`, Lars 2026-06-13) is that
+// Koru will never grow language-level generics; a "generic" surface is a
+// `[transform]` library that takes a type as an opaque `expr: Expression` at
+// EACH CALL SITE and monomorphizes there (`std/list:new(i64)`). That
+// mechanism does not fit this shape: the ten types here are not a caller
+// choosing a type per call site, they are a closed, fixed, ALREADY-NAMED set
+// of ten distinct C symbols the library shipped once. There is no evidence in
+// the shipped tests of a Koru-level construct that mints N sibling top-level
+// `~tor`/`~proc` declarations from a compile-time loop over a data table —
+// that would be declaration-generation, a different and stronger claim than
+// `std/list:new`'s per-call-site specialization, and I did not find it and am
+// not inventing it. So the twenty tors below (`get.u8` .. `set.charp`) are
+// HAND-WRITTEN, one per C symbol, the same ratio the C itself has at its own
+// source level (one macro invocation per type, not one generic function). The
+// repetition inside each pair is real but small — a call, an error check, a
+// wrap — and duplicating that ten times is the honest cost of a closed
+// enumerable matrix in a language whose stance is "no language generics."
+//
+// A GENUINE LIBRARY DEFECT FOUND WHILE WRITING THIS. `_uk_store_get_charp`
+// (store.c:1442-1454) computes `struct uk_alloc *a = OBJECT(e)->a;`
+// UNCONDITIONALLY, before `UK_ASSERT(e)` and before the
+// `UK_STORE_ENTRY_ISSTATIC(e)` check that every OTHER typed getter/setter in
+// this file uses to guard the same expression. For a STATIC entry (one
+// registered via `UK_STORE_STATIC_ENTRY`, e.g. `ukprint`'s `console_lvl`),
+// `e` is a bare `struct uk_store_entry` sitting in a linker section, NOT
+// embedded inside a `struct uk_store_object_entry` — so `OBJECT(e)`
+// (`__containerof(e, struct uk_store_object_entry, entry)->object`) computes
+// an address BEFORE the real entry and dereferences whatever garbage sits
+// there as if it were an object pointer, then reads `->a` off it. This
+// happens on EVERY call to `_uk_store_get_charp` against a static entry,
+// whether or not the local `a` is subsequently used (it is discarded on the
+// static path). This is a real out-of-bounds read in `lib/ukstore`, not a
+// Koru toolchain issue and not worked around here: `get.charp` is bound below
+// because it is part of the closed matrix, but this lift's boot demo does not
+// call it against a static entry, and this paragraph is the reason why.
+// `_uk_store_set_charp` and every other typed getter/setter correctly guard
+// the equivalent expression with `if (!UK_STORE_ENTRY_ISSTATIC(e))` — this is
+// a one-function defect, not a pattern.
+//
+// WHAT THIS LIFT DOES NOT MODEL — stated here, not hidden.
+//   - DYNAMIC ENTRY CREATION. `uk_store_obj_alloc`'s `entries[]` parameter is a
+//     NULL-terminated array of `const struct uk_store_entry *`, and every
+//     object this lift creates passes an array holding a single NULL — i.e.
+//     every object `alloc` mints has ZERO entries. Populating one for real
+//     needs a `struct uk_store_entry` you construct yourself, with `get`/`set`
+//     fields holding raw C function pointers of the exact
+//     `int(*)(void*, T*)` / `int(*)(void*, T)` shape the header declares —
+//     which is reachable from a `.kz` file (plain top-level `fn ... callconv
+//     (.c)` declarations are legal here, the same idiom `unikraft/blk` uses
+//     for its private helpers), but wiring it into a general-purpose,
+//     caller-parameterized "define your own store entry" surface is a design
+//     in its own right, not a byproduct of this lift. What IS proven here is
+//     everything downstream of an entry existing: lookup
+//     (`entry.static`, `entry.get`) and the full typed read/write matrix,
+//     exercised for real against a static entry another Unikraft library
+//     (`ukprint`) already ships.
+//   - `_uk_store_get_ncharp` (the bounded-copy charp getter) is not bound. It
+//     is one more C symbol on the same closed matrix and adds no new shape;
+//     cut for scope, not for difficulty.
+//   - `_uk_store_create_dynamic_entry_*` (ten symbols, one per type) are NOT
+//     bound. They are not declared in `store.h` at all — nothing outside
+//     `store.c` is meant to call them directly; `uk_store_obj_alloc`'s own
+//     `entries[]` loop is the only sanctioned caller. Binding them would mean
+//     re-implementing the part of `uk_store_obj_alloc` that already calls
+//     them correctly, badly.
+//   - The two `UKSTORE_EVENT_CREATE_OBJECT` / `UKSTORE_EVENT_RELEASE_OBJECT`
+//     symbols are NOT bound. Subscribing to them needs Unikraft's separate
+//     `uk/event.h` listener-registration API, a different C surface this
+//     lift does not touch.
+//   - THE APP-HAS-NO-LIBRARY-IDENTITY GAP. `uk_store_obj_add` is normally a
+//     macro wrapping `_uk_store_obj_add(uk_libid_self(), obj)`, and
+//     `uk_libid_self()` expands to a compile-time `__LIBNAME__`-gated symbol
+//     that only exists for code Unikraft's OWN Makefile.uk build compiled as
+//     a named library. A Koru lift is emitted Zig, compiled by `zig
+//     build-lib` entirely outside that system, and linked in afterwards via
+//     `APPKORU_ALIBS-y` — it has no `__LIBNAME__` and cannot call that macro
+//     at all. Worse: if it COULD, the fallback `uk_libid_self()` produces for
+//     an unregistered caller is `UKLIBID_NONE` (`__U16_MAX`, 65535), and
+//     `_uk_store_obj_add`/`uk_store_obj_release` index `dynamic_heads[]` with
+//     that value and NO bounds check — the one value the macro would hand an
+//     app is the one value guaranteed to corrupt memory. This lift resolves
+//     it with the general-purpose, exported, bounds-safe alternative
+//     `uk_libid(const char *)` (`lib/uklibid`, a linear scan over
+//     `uk_libid_count()`, returns `UKLIBID_NONE` — never OOB — on a miss), and
+//     looks up `"appkoru"`: the name `koru/examples/unikraft/Makefile.uk`
+//     registers this application under (`$(eval $(call addlib,appkoru))`).
+//     `add` refuses loudly rather than proceed if that lookup misses, so
+//     nothing here can hand `_uk_store_obj_add` a value it cannot safely
+//     index with.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// `lib/ukstore/exportsyms.uk` exists (case 1), 39 lines, and every symbol
+// used below is a plain exported function — no `static inline`, no mirror,
+// no offset proof. `Object` and `StoreEntry` are opaque: this lift never
+// reads a field of either through Koru, only passes the pointers to exported
+// functions, so there is no ABI claim to get wrong.
+
+const UkAlloc = opaque {};
+const Object = opaque {};
+const StoreEntry = opaque {};
+
+// `uk_alloc_get_default()` is `static inline` (alloc.h:136) and returns this
+// exported global (alloc.h:22 of exportsyms.uk in every other lift that binds
+// it); reading the variable is the same load the inline performs. Used only
+// to pass a live `struct uk_alloc *` into `uk_store_obj_alloc`.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+extern fn uk_store_obj_alloc(a: *UkAlloc, id: u64, name: [*c]const u8, entries: [*c]const ?*const StoreEntry, cookie: ?*anyopaque) *anyopaque;
+extern fn _uk_store_obj_add(library_id: u16, object: *Object) c_int;
+extern fn uk_store_obj_acquire(library_id: u16, object_id: u64) ?*Object;
+extern fn uk_store_obj_release(object: *Object) void;
+extern fn uk_store_obj_entry_get(object: *Object, entry_id: u64) ?*const StoreEntry;
+extern fn uk_store_static_entry_get(library_id: u16, entry_id: u64) ?*const StoreEntry;
+
+// `lib/uklibid`, a DIFFERENT library's allowlist, bound for the reason in
+// "THE APP-HAS-NO-LIBRARY-IDENTITY GAP" above. Bounds-safe by construction:
+// `rtmap.c`'s `uk_libid` loops `0..uk_libid_count()` and returns
+// `UKLIBID_NONE` on a miss, never an out-of-range value.
+extern fn uk_libid(name: [*c]const u8) u16;
+
+// `libid.h:35` — `#define UKLIBID_NONE __U16_MAX`. `__U16_MAX` is 65535
+// (arch/limits.h). Also the sentinel `dynamic_heads[]`/`static_entries[]`
+// must never be indexed with, since neither is bounds-checked in the C.
+const UKLIBID_NONE: u16 = 65535;
+
+// The name `koru/examples/unikraft/Makefile.uk` registers this application
+// under: `$(eval $(call addlib,appkoru))`. `addlib` (not `addlib_s`) adds it
+// to `UK_LIBS`, the same list every other configured library is drawn from
+// to build `uklibid`'s namemap — so `uk_libid("appkoru")` is the runtime
+// equivalent of the `uk_libid_self()` this compilation unit cannot call.
+const APP_LIBNAME: [*c]const u8 = "appkoru";
+
+// Ten typed getters. Signed/unsigned widths match `uk/arch/types.h`; `__uptr`
+// is `__u64` on every 64-bit target Unikraft builds for (types.h:187).
+extern fn _uk_store_get_u8(e: *const StoreEntry, out: *u8) c_int;
+extern fn _uk_store_get_s8(e: *const StoreEntry, out: *i8) c_int;
+extern fn _uk_store_get_u16(e: *const StoreEntry, out: *u16) c_int;
+extern fn _uk_store_get_s16(e: *const StoreEntry, out: *i16) c_int;
+extern fn _uk_store_get_u32(e: *const StoreEntry, out: *u32) c_int;
+extern fn _uk_store_get_s32(e: *const StoreEntry, out: *i32) c_int;
+extern fn _uk_store_get_u64(e: *const StoreEntry, out: *u64) c_int;
+extern fn _uk_store_get_s64(e: *const StoreEntry, out: *i64) c_int;
+extern fn _uk_store_get_uptr(e: *const StoreEntry, out: *u64) c_int;
+extern fn _uk_store_get_charp(e: *const StoreEntry, out: *?[*:0]u8) c_int;
+
+// Ten typed setters.
+extern fn _uk_store_set_u8(e: *const StoreEntry, val: u8) c_int;
+extern fn _uk_store_set_s8(e: *const StoreEntry, val: i8) c_int;
+extern fn _uk_store_set_u16(e: *const StoreEntry, val: u16) c_int;
+extern fn _uk_store_set_s16(e: *const StoreEntry, val: i16) c_int;
+extern fn _uk_store_set_u32(e: *const StoreEntry, val: u32) c_int;
+extern fn _uk_store_set_s32(e: *const StoreEntry, val: i32) c_int;
+extern fn _uk_store_set_u64(e: *const StoreEntry, val: u64) c_int;
+extern fn _uk_store_set_s64(e: *const StoreEntry, val: i64) c_int;
+extern fn _uk_store_set_uptr(e: *const StoreEntry, val: u64) c_int;
+extern fn _uk_store_set_charp(e: *const StoreEntry, val: [*c]const u8) c_int;
+
+const std = @import("std");
+
+// `PTRISERR`/`ERR2PTR` (uk/errptr.h): `uk_store_obj_alloc` returns either a
+// real heap pointer or a small negative integer wearing a pointer's clothes
+// (Linux-kernel-style ERR_PTR). `(signed)ptr < 0 && (signed)ptr >= -512`.
+fn isErrPtr(addr: usize) bool {
+    const s: isize = @bitCast(addr);
+    return s < 0 and s >= -512;
+}
+
+// ============================================================================
+// ACQUIRE THE OBJECT'S OWN LIBRARY IDENTITY
+// ============================================================================
+//
+// General-purpose: any caller who wants to know a library's runtime id by
+// name, not just this application's own. Bounds-safe (see above); `missing`
+// on a name `uk_libid_count()` never reaches.
+~pub tor libid.lookup { name: string }
+| found u16
+| missing
+
+~proc libid.lookup|zig {
+    const id = uk_libid(name.ptr);
+    if (id == UKLIBID_NONE) {
+        return .{ .missing = .{} };
+    }
+    return .{ .found = id };
+}
+
+// ============================================================================
+// THE OBJECT RATCHET
+// ============================================================================
+
+// `uk_store_obj_alloc`, with an entries array holding a single NULL — see
+// "WHAT THIS LIFT DOES NOT MODEL". Mints <built!>. Nothing accepts <!built>
+// except `add`.
+~pub tor alloc { name: string, id: u64 }
+| ready *Object<built!>
+| err { reason: string, errno: i32 }
+
+~proc alloc|zig {
+    const a = _uk_alloc_head orelse {
+        return .{ .err = .{ .reason = "no allocator registered: ukboot has not run, or CONFIG_LIBUKALLOC is off", .errno = 0 } };
+    };
+    var empty_entries = [1]?*const StoreEntry{null};
+    const raw = uk_store_obj_alloc(a, id, name.ptr, &empty_entries, null);
+    const addr = @intFromPtr(raw);
+    if (isErrPtr(addr)) {
+        const errno: isize = @bitCast(addr);
+        return .{ .err = .{ .reason = "uk_store_obj_alloc failed", .errno = @intCast(errno) } };
+    }
+    const obj: *Object = @ptrCast(raw);
+    return .{ .ready = obj };
+}
+
+// `_uk_store_obj_add(uk_libid("appkoru"), obj)`. Consumes <!built>, mints
+// <held!>. See "THE APP-HAS-NO-LIBRARY-IDENTITY GAP": if the id lookup
+// misses, `_uk_store_obj_add` is never called — nothing on the C side
+// happened.
+//
+// The refusal arm mints <stuck!>, NOT <built!> again, and this is a compiler
+// defect working around a compiler defect, named precisely rather than
+// hidden: a tor whose parameter requires a single non-union state `<!S>` and
+// whose OWN failure arm re-mints that exact same state `<S!>` — while another
+// arm mints a genuinely different state — makes Koru's discharge/consumer
+// search fail to recognize the tor as a valid consumer of `<!S>` AT ALL, even
+// down the arm that legitimately transitions to a new state. Minimal repro
+// (two files, one line different from the fixed version):
+//
+//   ~pub tor pub2 { obj: *Obj<!built> }
+//   | ok *Obj<held!>
+//   | refused { obj: *Obj<built!>, reason: string }   // <- BREAKS discharge tracking
+//
+//   error[KORU030]: Resource 'obj' obligation <built!> was not discharged.
+//   No tor accepts <!built>.
+//
+// pointing at the CALL SITE of `pub2`, even though `pub2`'s `ok` arm plainly
+// consumes `<!built>` and mints `<held!>`, and the emitted program never
+// takes the `refused` arm at all. Changing ONLY the refused arm's state name
+// to something distinct (`<stuck!>`) makes the identical program compile.
+// Reported, not routed around silently: `abandon` below is a real, separate
+// tor with its own reason to exist (see its comment), not a workaround
+// dressed as a feature — but its EXISTENCE was pulled forward by this defect,
+// and would otherwise likely have been a `built!`-returning retry arm
+// instead, since the only cause of this refusal (`uk_libid` missing
+// "appkoru") is a fixed build fact that retrying cannot change anyway.
+~pub tor add { obj: *Object<!built> }
+| ok *Object<held!>
+| refused { obj: *Object<stuck!>, reason: string }
+
+~proc add|zig {
+    const libid = uk_libid(APP_LIBNAME);
+    if (libid == UKLIBID_NONE) {
+        return .{ .refused = .{ .obj = obj, .reason = "uk_libid(\"appkoru\") returned UKLIBID_NONE: this application is not registered under that name in this build, and _uk_store_obj_add cannot be called safely without one (dynamic_heads[] has no bounds check)" } };
+    }
+    // Always returns 0 — store.c:301-322 has no failure path in its body at
+    // all, unlike its own signature's implication.
+    _ = _uk_store_obj_add(libid, obj);
+    return .{ .ok = obj };
+}
+
+// The one way out of <stuck!>. UNLIKE `unikraft/blk:abandon`, this is not a
+// clean "the C side is untouched, only the Koru handle goes away": `ukstore`
+// exports NO counterpart to `uk_store_obj_alloc` for an object that is never
+// added — there is no `uk_store_obj_free`/`_dealloc` anywhere on the
+// allowlist. An object that fails `add` is allocated C-side memory (the
+// object struct plus its duplicated name string) that NOTHING in the public
+// API can ever free; `uk_store_obj_release` is reachable only through
+// <!held>, which this object never reaches. So `abandon` silences the Koru
+// obligation honestly and leaks the C allocation — stated here, not hidden,
+// because `ukstore` itself leaves no other option once `add` has refused.
+~pub tor abandon { obj: *Object<!stuck> }
+
+~proc abandon|zig {
+    _ = obj;
+}
+
+// `uk_store_obj_acquire(library_id, object_id)`. No input obligation — this
+// is a lookup by id, reachable from anywhere the (library_id, object_id) pair
+// is known, exactly as `unikraft/blk:get(id)` is. Mints an INDEPENDENT
+// <held!> on every successful call, including a second call on an id already
+// held elsewhere in the same program — see "THE MISMATCH" above.
+~pub tor acquire { library_id: u16, object_id: u64 }
+| found *Object<held!>
+| missing
+
+~proc acquire|zig {
+    const obj = uk_store_obj_acquire(library_id, object_id) orelse {
+        return .{ .missing = .{} };
+    };
+    return .{ .found = obj };
+}
+
+// `uk_store_obj_release`. Consumes <!held>. Cannot fail — the C returns void
+// — so this is a bare tor, the same shape `unikraft/lock:destroy` and
+// `unikraft/blk:abandon` use for a C call with no failure signature.
+~pub tor release { obj: *Object<!held> }
+
+~proc release|zig {
+    uk_store_obj_release(obj);
+}
+
+// ============================================================================
+// ENTRY LOOKUP
+// ============================================================================
+
+// `uk_store_obj_entry_get`. Borrows <!held> and hands the SAME state back —
+// looking an entry up does not change what you may next do with the object,
+// the same pass-through shape `unikraft/blk:read` uses for its device handle.
+//
+// A SECOND GENUINE LIBRARY DEFECT, found booting this against a real
+// zero-entry object (`tests/boot_store.kz`) — `uk_store_obj_entry_get`
+// (store.c:376-391) is:
+//
+//   struct uk_store_object_entry *res = NULL;
+//   uk_list_for_each_entry(res, &object->entry_head, list_head)
+//       if (res->entry.id == entry_id) break;
+//   if (res) return &res->entry;
+//   return NULL;
+//
+// `uk_list_for_each_entry` (uk/list.h:158-161) expands to
+// `res = uk_list_entry((&object->entry_head)->next, ...)` BEFORE the loop
+// condition is ever tested — so on an EMPTY list, where `entry_head.next ==
+// &entry_head` by construction, `res` is set to `container_of(&entry_head,
+// struct uk_store_object_entry, list_head)`: a pointer computed by walking
+// BACKWARD from a field that lives inside `struct uk_store_object`, as if it
+// were a field of the unrelated `struct uk_store_object_entry`. The loop body
+// correctly never runs (so `entry_id` is never actually compared against
+// anything) — but `res` is left holding that bogus, non-NULL, backward-
+// computed address, so `if (res) return &res->entry;` unconditionally
+// returns a WILD POINTER for any object with zero entries, silently, for
+// every `entry_id` including ones that plainly do not exist. This is not
+// this lift's bug and not a Koru toolchain bug: it reproduces with a plain C
+// program against the same header (`res = NULL;`'s initializer is dead code,
+// clobbered by the macro's own init clause before the first condition
+// check). `tests/boot_store.kz` hits it directly: the object it creates has
+// zero entries by construction (see "WHAT THIS LIFT DOES NOT MODEL"), and
+// `entry.get(obj, entry_id: 999)` returns `| found`, not `| missing`, on the
+// console of a real boot. The demo does not dereference the returned
+// `*const StoreEntry` — doing so would mean reading through the wild
+// pointer — it only reports that this happened and continues the ratchet.
+~pub tor entry.get { obj: *Object<!held>, entry_id: u64 }
+| found { obj: *Object<held!>, entry: *const StoreEntry }
+| missing *Object<held!>
+
+~proc entry.get|zig {
+    const e = uk_store_obj_entry_get(obj, entry_id) orelse {
+        return .{ .missing = obj };
+    };
+    return .{ .found = .{ .obj = obj, .entry = e } };
+}
+
+// `uk_store_static_entry_get`. No object, no obligation: this reads a
+// linker-generated table another library populated at ITS OWN compile time
+// (e.g. `ukprint`'s `console_lvl`, see `tests/boot_store.kz`).
+~pub tor entry.static { library_id: u16, entry_id: u64 }
+| found *const StoreEntry
+| missing
+
+~proc entry.static|zig {
+    const e = uk_store_static_entry_get(library_id, entry_id) orelse {
+        return .{ .missing = .{} };
+    };
+    return .{ .found = e };
+}
+
+// ============================================================================
+// THE TYPED MATRIX — ten types, hand-written, see "THE TYPED GETTER/SETTER
+// MATRIX" above for why this is not generated.
+// ============================================================================
+//
+// No phantom obligation on any of these: an entry pointer is stable and
+// read-only from Koru's side for as long as its owning object (or the
+// static-entry table) is alive, and the `UK_ASSERT(e)` on every one of the
+// twenty underlying C functions is retired the same way blk/alloc/pages
+// retire their null-pointer families — `entry` only ever flows from a
+// `| found` arm above, never fabricated at the Koru surface.
+
+~pub tor get.u8 { entry: *const StoreEntry }
+| ok u8
+| err i32
+~proc get.u8|zig {
+    var out: u8 = 0;
+    const rc = _uk_store_get_u8(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.u8 { entry: *const StoreEntry, val: u8 }
+| ok
+| err i32
+~proc set.u8|zig {
+    const rc = _uk_store_set_u8(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.s8 { entry: *const StoreEntry }
+| ok i8
+| err i32
+~proc get.s8|zig {
+    var out: i8 = 0;
+    const rc = _uk_store_get_s8(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.s8 { entry: *const StoreEntry, val: i8 }
+| ok
+| err i32
+~proc set.s8|zig {
+    const rc = _uk_store_set_s8(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.u16 { entry: *const StoreEntry }
+| ok u16
+| err i32
+~proc get.u16|zig {
+    var out: u16 = 0;
+    const rc = _uk_store_get_u16(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.u16 { entry: *const StoreEntry, val: u16 }
+| ok
+| err i32
+~proc set.u16|zig {
+    const rc = _uk_store_set_u16(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.s16 { entry: *const StoreEntry }
+| ok i16
+| err i32
+~proc get.s16|zig {
+    var out: i16 = 0;
+    const rc = _uk_store_get_s16(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.s16 { entry: *const StoreEntry, val: i16 }
+| ok
+| err i32
+~proc set.s16|zig {
+    const rc = _uk_store_set_s16(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.u32 { entry: *const StoreEntry }
+| ok u32
+| err i32
+~proc get.u32|zig {
+    var out: u32 = 0;
+    const rc = _uk_store_get_u32(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.u32 { entry: *const StoreEntry, val: u32 }
+| ok
+| err i32
+~proc set.u32|zig {
+    const rc = _uk_store_set_u32(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.s32 { entry: *const StoreEntry }
+| ok i32
+| err i32
+~proc get.s32|zig {
+    var out: i32 = 0;
+    const rc = _uk_store_get_s32(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.s32 { entry: *const StoreEntry, val: i32 }
+| ok
+| err i32
+~proc set.s32|zig {
+    const rc = _uk_store_set_s32(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.u64 { entry: *const StoreEntry }
+| ok u64
+| err i32
+~proc get.u64|zig {
+    var out: u64 = 0;
+    const rc = _uk_store_get_u64(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.u64 { entry: *const StoreEntry, val: u64 }
+| ok
+| err i32
+~proc set.u64|zig {
+    const rc = _uk_store_set_u64(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+~pub tor get.s64 { entry: *const StoreEntry }
+| ok i64
+| err i32
+~proc get.s64|zig {
+    var out: i64 = 0;
+    const rc = _uk_store_get_s64(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.s64 { entry: *const StoreEntry, val: i64 }
+| ok
+| err i32
+~proc set.s64|zig {
+    const rc = _uk_store_set_s64(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+// `uptr`: pointer-sized unsigned, `__u64` on this target — see the extern
+// declarations above.
+~pub tor get.uptr { entry: *const StoreEntry }
+| ok u64
+| err i32
+~proc get.uptr|zig {
+    var out: u64 = 0;
+    const rc = _uk_store_get_uptr(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = out };
+}
+
+~pub tor set.uptr { entry: *const StoreEntry, val: u64 }
+| ok
+| err i32
+~proc set.uptr|zig {
+    const rc = _uk_store_set_uptr(entry, val);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}
+
+// `charp`. BOUND, not exercised against a static entry in this lift's boot
+// demo — see "A GENUINE LIBRARY DEFECT FOUND WHILE WRITING THIS" above.
+// Freeing the returned string is the caller's responsibility per the header
+// doc comment, and WHICH allocator to free it with depends on whether the
+// entry is static (libc-family `free`) or dynamic (the object's own
+// allocator) — information an opaque `*const StoreEntry` does not expose to
+// Koru. Not solved here; stated, not hidden.
+~pub tor get.charp { entry: *const StoreEntry }
+| ok string
+| err i32
+~proc get.charp|zig {
+    var out: ?[*:0]u8 = null;
+    const rc = _uk_store_get_charp(entry, &out);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    const p = out orelse return .{ .err = -1 };
+    return .{ .ok = std.mem.span(p) };
+}
+
+~pub tor set.charp { entry: *const StoreEntry, val: string }
+| ok
+| err i32
+~proc set.charp|zig {
+    const rc = _uk_store_set_charp(entry, val.ptr);
+    if (rc != 0) return .{ .err = @intCast(rc) };
+    return .{ .ok = .{} };
+}

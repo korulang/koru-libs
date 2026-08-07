@@ -1,0 +1,17 @@
+// NEGATIVE — the asymmetry gate. `alloc` mints <built!>; `release` accepts
+// only <!held>, never <!built>. Skipping `add` and releasing straight away
+// is not a benign no-op the way an unused `unikraft/alloc:take` is: it would
+// be a read through `object->libid`, a field `uk_store_obj_alloc` never
+// initializes (only `_uk_store_obj_add` sets it), used as an UNCHECKED array
+// index into `dynamic_heads[]` inside `uk_store_obj_release`. This program
+// must not compile.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/store
+
+~unikraft/store:alloc(name: "leak", id: 1)
+| ready obj |> unikraft/store:release(obj)
+| err _ |> _

@@ -1,0 +1,18 @@
+// NEGATIVE — double release. `release` consumes <!held>; a second call on
+// the SAME binding has nothing to consume. This is the refcount ratchet's
+// version of a double-free: the C's own doc comment says "every call must
+// be paired with a call to uk_store_obj_release()" — ONE release per
+// acquisition, not more.
+
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/store
+
+~unikraft/store:alloc(name: "double", id: 2)
+| ready obj |> unikraft/store:add(obj)
+    | ok held |> unikraft/store:release(obj: held)
+        |> unikraft/store:release(obj: held)
+    | refused e |> unikraft/store:abandon(e.obj)
+| err _ |> _

@@ -1,0 +1,80 @@
+// POSITIVE, and the gate-2 artifact: `ukstore` driven from Koru inside a
+// unikernel, against the REAL `console_lvl` static entry `ukprint` ships
+// (`ukprint/store.c`), and a dynamic object taken through the full
+// alloc -> add -> acquire (x2) -> release (x2) ratchet.
+//
+//   libid.lookup("appkoru") -> libid.lookup("ukprint")
+//   entry.static(ukprint, console_lvl) -> get.u8 -> set.u8 -> get.u8
+//       <- proves the typed matrix against a REAL C-owned value, round-tripped
+//   alloc -> add -> acquire -> entry.get (missing, zero entries) -> release x2
+//       <- proves the refcount ratchet: TWO independent <held!> obligations
+//          on the SAME object id, each individually discharged
+//
+// Build and boot: see ../README.md.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/store
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_STORE=1
+}
+
+// `LIBUKSTORE` selects `LIBUKDEBUG`, `LIBUKLIBID`, `LIBUKLOCK` on its own
+// (lib/ukstore/Config.uk); named explicitly anyway so this image does not
+// depend on an upstream default staying where it is. `LIBUKPRINT_PRINTK_UKSTORE`
+// is what makes `ukprint` register its `console_lvl` static entry at all
+// (ukprint/Config.uk:65-70) — without it `entry.static` below finds nothing.
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKSTORE: 'y'
+    CONFIG_LIBUKLIBID: 'y'
+    CONFIG_LIBUKPRINT_PRINTK_UKSTORE: 'y'
+}
+
+~unikraft/store:libid.lookup(name: "appkoru")
+| found app_id |> std/io:print.ln("libid appkoru = {{ app_id:d }}")
+    |> unikraft/store:libid.lookup(name: "libukprint")
+        | found print_id |> std/io:print.ln("libid ukprint = {{ print_id:d }}")
+            |> unikraft/store:entry.static(library_id: print_id, entry_id: 1)
+                | found lvl |> unikraft/store:get.u8(entry: lvl)
+                    | ok before |> std/io:print.ln("console_lvl before = {{ before:d }}")
+                        |> unikraft/store:set.u8(entry: lvl, val: before)
+                            | ok |> unikraft/store:get.u8(entry: lvl)
+                                | ok after |> std/io:print.ln("console_lvl after roundtrip = {{ after:d }} (matrix proven against a real ukprint value, not a fixture)")
+                                    |> unikraft/store:alloc(name: "koru-store-demo", id: 1)
+                                        | ready obj |> unikraft/store:add(obj)
+                                            | ok held |> std/io:print.ln("alloc -> add: object published, first <held!> obligation live")
+                                                |> unikraft/store:acquire(library_id: app_id, object_id: 1)
+                                                    | found held2 |> std/io:print.ln("acquire: SECOND independent <held!> obligation on the SAME object id")
+                                                        |> unikraft/store:entry.get(obj: held2, entry_id: 999)
+                                                            | missing held3 |> std/io:print.ln("entry.get on a zero-entry object: missing, as expected")
+                                                                |> unikraft/store:release(obj: held3)
+                                                                |> std/io:print.ln("released the acquired handle")
+                                                                |> unikraft/store:release(obj: held)
+                                                                |> std/io:print.ln("released the published handle: object ratchet complete")
+                                                            | found f |> std/io:print.ln("entry.get returned FOUND on a zero-entry object: real ukstore defect (uk_list_for_each_entry container_of on an empty sentinel, see index.kz) -- not dereferencing it further")
+                                                                |> unikraft/store:release(f.obj)
+                                                                |> std/io:print.ln("released the acquired handle")
+                                                                |> unikraft/store:release(obj: held)
+                                                                |> std/io:print.ln("released the published handle: object ratchet complete")
+                                                    | missing |> std/io:print.ln("BUG: acquire missed the object add just published")
+                                            | refused e |> std/io:print.ln("add refused: {{ e.reason:s }}") |> unikraft/store:abandon(e.obj)
+                                    | err e |> std/io:print.ln("alloc err: {{ e.reason:s }} ({{ e.errno:d }})")
+                                | err ec |> std/io:print.ln("get.u8 roundtrip failed, errno {{ ec:d }}")
+                            | err ec |> std/io:print.ln("set.u8 failed, errno {{ ec:d }}")
+                    | err ec |> std/io:print.ln("get.u8 failed, errno {{ ec:d }}")
+                | missing |> std/io:print.ln("console_lvl static entry not found: CONFIG_LIBUKPRINT_PRINTK_UKSTORE missing?")
+        | missing |> std/io:print.ln("libid(\"libukprint\") missing")
+| missing |> std/io:print.ln("libid(\"appkoru\") missing: this application is not registered as a Unikraft library under that name in this build")
