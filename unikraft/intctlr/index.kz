@@ -1,0 +1,529 @@
+// @korulang/unikraft-intctlr — Unikraft's interrupt controller (`ukintctlr`,
+// `lib/ukintctlr/ukintctlr.c`), lifted.
+//
+//   import unikraft/intctlr
+//
+// WHAT THIS IS. `lib/ukintctlr` sits between a real interrupt controller
+// driver (`xpic` on x86_64, `gic` on arm) and everything else in Unikraft
+// that wants an interrupt line. It owns two things that have never been
+// touched by any shipped lift on this shelf:
+//
+//   1. A BITMAP of dynamically allocable IRQ numbers (`irq_alloc`/`irq_free`,
+//      `irqs_allocated`, `UK_INTCTLR_FIRST_ALLOCABLE_IRQ..LAST_ALLOCABLE_IRQ`).
+//      A line handed out by `irq_alloc` and never given back to `irq_free` is
+//      not a memory leak — it is a device that can never be served an
+//      interrupt again for the life of the boot. That is the shelf's own
+//      framing for this slot, and it is exactly right.
+//   2. A table of HANDLER SLOTS per IRQ (`irq_register`/`irq_unregister`,
+//      `irq_handlers[MAX_IRQ][MAX_HANDLERS_PER_IRQ]`), independent of the
+//      bitmap above — nothing in the C requires a line to be "allocated"
+//      before a handler can be registered on it (the boot-time timer
+//      handler registers on IRQ 0, which is never allocated; see below).
+//
+// NOTHING IN THIS FORK CALLS EITHER HALF. `grep -rn "uk_intctlr_irq_alloc\|
+// uk_intctlr_irq_free" .` outside `lib/ukintctlr` itself returns nothing —
+// the bitmap has no caller anywhere in this tree. This lift is the first
+// real caller, in any language.
+//
+// THE RATCHET is two INDEPENDENT small resources, not one nested resource —
+// see "TWO RESOURCES, NOT ONE" below for why forcing them together would be
+// inventing a rule the C does not have.
+//
+//     alloc         mints  <allocated!>                    uk_intctlr_irq_alloc
+//     free           needs <!allocated>                    uk_intctlr_irq_free
+//     abandon        needs <!allocated|!stuck>              NO C CALL — leak the line on purpose
+//
+//     register       mints  <registered!>                  uk_intctlr_irq_register
+//     unregister     needs <!registered>                   uk_intctlr_irq_unregister
+//     handler.abandon needs <!stuck>                        NO C CALL — give up on a handler the C already dropped
+//
+//     configure, init, status — no obligation; see their own headers below.
+//
+// TWO RESOURCES, NOT ONE. It would be tempting to make `register` require an
+// `<!allocated>` line, nesting Handler inside Irq the way `uk9p` nests three
+// resources. The C refuses that reading: `plat/kvm/x86/time.c:74` registers
+// the boot timer's handler on IRQ 0 with `uk_intctlr_irq_register(0,
+// timer_handler, NULL)` — and IRQ 0 is never allocated (it is below
+// `UK_INTCTLR_FIRST_ALLOCABLE_IRQ = 16`, drivers/ukintctlr/xpic/include/uk/
+// intctlr/limits.h). Fixed, well-known IRQ lines (legacy PIC lines 0-15) are
+// registered directly, by number, with no bitmap involved at all. Forcing
+// every `register` through an `alloc` first would make the timer's own real
+// program — the one this platform boots with on every run — unspellable.
+// So `Irq` and `Handler` are separate handle types with separate ratchets,
+// composable but not nested. The boot demo below exercises both the
+// composed shape (allocate a line, then register on it — the realistic
+// dynamic-driver path) and the direct shape (register on a fixed, unallocated
+// line — the realistic legacy-line path).
+//
+// WHY `uk_intctlr_irq_handle` IS NOT EXPOSED. It is on `exportsyms.uk`
+// (case 1, links) and takes one argument: `struct uk_lcpu_except_irq_ctx *`,
+// an opaque platform trap frame. Koru code has no legitimate way to
+// construct one, and calling it with a fabricated pointer would read
+// arbitrary memory as a CPU exception context. Nothing needs to: the xpic
+// driver already wires it into the real interrupt path automatically
+// (`UK_EVENT_HANDLER(UK_LCPU_EXCEPT_EVENT_IRQ, uk_intctlr_xpic_handle_irq)`,
+// drivers/ukintctlr/xpic/ukintctlr.c:102), so a handler this lift registers
+// via `register` genuinely runs on a real hardware interrupt without this
+// lift ever calling `irq_handle` itself — see README.md, "What I left out",
+// for why the boot demo does not (and, on this platform, safely cannot)
+// prove that delivery live.
+//
+// WHY `uk_intctlr_irq_mask`/`unmask` ARE NOT EXPOSED: THEY DO NOT LINK. Both
+// are ordinary (non-`static`) C functions defined in `ukintctlr.c` — but
+// `lib/ukintctlr/exportsyms.uk` (case 1, the allowlist) lists 11 names and
+// neither of these two is one of them. `objcopy --keep-global-symbols`
+// localizes every global not on that list, so a separately linked Koru
+// archive cannot call them at all: verified with `nm -g` on the built
+// `.ko.o` (see README.md's linkability section, which also lists the exact
+// command). This is a hazard the brief's own six cases already name — an
+// allowlist that is simply SILENT about a real, linkable-looking function —
+// and it has a real consequence here: `register` unmasks the line it
+// installs a handler on (`ukintctlr.c:103`, `uk_intctlr->ops->
+// unmask_irq(irq)`), but `unregister` does NOT call `mask_irq` anywhere in
+// its body — the C leaves the line unmasked after the last handler is
+// removed. Even if this lift wanted to close that gap by having `unregister`
+// re-mask on its way out, it structurally CANNOT: the only function that
+// could do it is not linkable from here. Named as a real ceiling, not
+// smoothed over — see the assert census.
+//
+// A GENUINE CRASH HAZARD FOUND BY READING, NOT ASSUMING:
+// `uk_intctlr_irq_fdt_xlat` is on the allowlist, has a real definition, and
+// its guarding `UK_ASSERT(uk_intctlr->ops->fdt_xlat)` (ukintctlr.c:222)
+// compiles to nothing in every shipped image. On the x86_64/xpic platform
+// this lift targets, `drivers/ukintctlr/xpic/pic.c:34` sets
+// `pic_ops.fdt_xlat = __NULL` UNCONDITIONALLY — there is no code path on
+// this platform that ever populates it. So calling `uk_intctlr_irq_fdt_xlat`
+// here is a guaranteed NULL indirect call, in debug and release alike, on
+// every invocation, exactly the `allocpool`/`UK_CRASH` shape the brief warns
+// about: "an assertion guarding a call nobody can complete is not an
+// assertion you can retire." This lift does not expose `fdt_xlat` at all.
+//
+// AN OFF-BY-ONE THIS LIFT CORRECTS RATHER THAN REPRODUCES. `ukintctlr.c`
+// declares `static struct irq_handler irq_handlers[MAX_IRQ][MAX_HANDLERS_PER_IRQ]`
+// (valid row indices `0 .. MAX_IRQ-1`) and then guards every access with
+// `UK_ASSERT(irq <= MAX_IRQ)` — four call sites (`allocate_handler`,
+// `uk_intctlr_irq_register`, `uk_intctlr_irq_unregister`,
+// `uk_intctlr_irq_handle`), all admitting `irq == MAX_IRQ`, which is one row
+// past the end of the array. `register`/`unregister` below refuse
+// `irq >= MAX_IRQ`, strictly, closing the gap the C's own `<=` leaves open.
+// (`uk_intctlr_irq_alloc` can never itself produce `MAX_IRQ`, or even
+// `LAST_ALLOCABLE_IRQ` — see "THE OTHER RANGE MISMATCH" below — so this
+// value check exists for `register`'s free-standing, caller-supplied `irq`,
+// which `alloc` does not gate.)
+//
+// THE OTHER RANGE MISMATCH, found the same way, and structurally
+// unreachable through this lift's own surface. `uk_intctlr_irq_free`'s bound
+// check is `irqs[i] >= FIRST_ALLOCABLE_IRQ(16) && irqs[i] <= LAST_ALLOCABLE_IRQ(224)`
+// — but `uk_intctlr_irq_alloc` can never produce `224`: it finds a zero run
+// of length `count` starting at bit index `< ALLOCABLE_IRQ_COUNT` (208), so
+// the highest real IRQ number it can ever hand out is `207 + FIRST(16) =
+// 223`, one less than what `free`'s own assert admits. A caller who
+// constructed `irq = 224` by hand and passed it to `uk_intctlr_irq_free`
+// would clear a bitmap bit outside the range any `alloc` call ever sets —
+// not a memory-safety bug (`UK_BITS_TO_LONGS(208)` rounds the backing array
+// up to 256 bits, so bit 208 is still in the array), but a logic bug the
+// C's own `UK_ASSERT(rc)` two lines later is written to catch, and which
+// evaporates the moment `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` is off. This
+// lift's `free` tor does not take a bare `irq: u32` at all — it takes
+// `*Irq<!allocated>`, and the only tor that mints `<allocated!>` is `alloc`,
+// which can never produce `224`. So the mismatch is real in the C and
+// UNREACHABLE through this lift's typed surface, by construction, with no
+// extra bound check needed on `free`'s side at all.
+//
+// THE ALIASING HAZARD, the deepest finding here and the direct analogue of
+// `unikraft/store`'s refcount-vs-per-binding mismatch (see that module's
+// README) applied to a different C shape. `allocate_handler` finds any free
+// slot with no de-duplication: calling `register(irq, sameFunc, arg)` TWICE
+// installs the SAME function pointer in two different slots for the same
+// IRQ, and this lift mints two INDEPENDENT `Handler<registered!>` obligations
+// — one per Koru-level call, matching the C's one-call-one-slot contract.
+// But `uk_intctlr_irq_unregister`'s removal loop (ukintctlr.c:122-133) does
+// not stop at the first match — it `goto recheck`s and keeps clearing until
+// no slot in that IRQ's row still holds `func`, then compacts the rest left
+// with `memmove`. So ONE `unregister` call on ONE of the two Handler objects
+// silently discharges BOTH slots at the C level, while only one Koru
+// obligation was consumed. The second Handler's `unregister` then finds
+// nothing left to remove: `uk_intctlr_irq_unregister` returns `-ENOENT`
+// (ukintctlr.c:140, "Invalid irq handler ... for irq"), a REAL error this
+// lift surfaces rather than swallows, landing the second handle in
+// `<stuck!>` — the only safe move once the C's own state has diverged from
+// what this lift's per-binding obligation assumed. `unikraft/store` names
+// the same shape from the other direction (a refcount is a COUNT, an
+// obligation is a claim about ONE binding); here the C's dedup-by-value
+// unregister is the thing collapsing two claims into one C-side fact.
+// Reproduced live in the boot demo, flow E.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Every symbol below except `IntctlrDesc`/`IrqDesc` (both PUBLICLY, fully
+// defined structs in include/uk/intctlr.h — a plain field-for-field
+// transcription, no offset probing needed, the simplest possible mirror case
+// on this whole shelf) is on `lib/ukintctlr/exportsyms.uk` (11 lines, 11
+// links, 0 phantom, 0 inert — the shelf's own measurement, reconfirmed here).
+
+const UkAlloc = opaque {};
+
+// `uk_alloc_get_default()` is `static inline` and returns this exported
+// global (lib/ukalloc/include/uk/alloc.h:136, lib/ukalloc/exportsyms.uk:22).
+// Reading the variable is the same load the inline function performs. Same
+// technique `blk`, `alloc`, `pages`, `sched` and `mpi` already use.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+// struct uk_intctlr_desc — intctlr.h:46. Public, two pointer fields, no
+// padding. `ops` is read only for a non-null check (see `status` below); its
+// pointee is never dereferenced by this lift.
+const IntctlrDesc = extern struct {
+    name: ?[*:0]const u8,
+    ops: ?*anyopaque,
+};
+
+// The global the driver sets exactly once, during platform boot, before any
+// Koru code runs — see the header comment for the exact boot-ordering proof.
+extern var uk_intctlr: ?*IntctlrDesc;
+
+// struct uk_intctlr_irq — intctlr.h:27. Public, two `unsigned int` fields.
+const IrqDesc = extern struct {
+    id: c_uint,
+    trigger: c_uint,
+};
+
+// enum uk_intctlr_irq_trigger — intctlr.h:20-24. Documentation only: no
+// shipped lift demonstrates a caller referencing an exported module-level
+// const by name from its own flow file, so this lift does not depend on
+// that working and callers pass the literal (0 = "do not change", 1 = EDGE,
+// 2 = LEVEL) directly, as the boot demo does.
+const TRIGGER_NONE: u32 = 0;
+const TRIGGER_EDGE: u32 = 1;
+const TRIGGER_LEVEL: u32 = 2;
+
+const HandlerFn = ?*const fn (?*anyopaque) callconv(.c) c_int;
+
+extern fn uk_intctlr_init(a: ?*UkAlloc) c_int;
+extern fn uk_intctlr_irq_configure(irq: *IrqDesc) c_int;
+extern fn uk_intctlr_irq_alloc(irqs: [*]c_uint, count: usize) c_int;
+extern fn uk_intctlr_irq_free(irqs: [*]c_uint, count: usize) c_int;
+extern fn uk_intctlr_irq_register(irq: c_uint, handler: HandlerFn, arg: ?*anyopaque) c_int;
+extern fn uk_intctlr_irq_unregister(irq: c_uint, handler: HandlerFn) c_int;
+
+// nolibc, backed by ukalloc's default allocator. Same pattern as `mpi`/`blk`.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+
+// drivers/ukintctlr/xpic/include/uk/intctlr/limits.h:
+//   UK_INTCTLR_MAX_IRQ = (256 - 32) = 224
+// Not exported by any symbol — compiled into ukintctlr.c's own translation
+// unit — so this is a hardcoded, cited constant, x86_64/xpic-specific,
+// exactly as this lift's target is (BUILD.md builds x86_64 only). See the
+// header comment, "AN OFF-BY-ONE THIS LIFT CORRECTS", for what it guards.
+const MAX_IRQ: u32 = 224;
+
+fn handlerFromToken(token: usize) HandlerFn {
+    if (token == 0) return null;
+    return @ptrFromInt(token);
+}
+
+fn ptrFromToken(token: usize) ?*anyopaque {
+    if (token == 0) return null;
+    return @ptrFromInt(token);
+}
+
+// ============================================================================
+// THE HANDLES
+// ============================================================================
+//
+// Both Koru-owned, not `extern`: they never cross into C except through the
+// bare irq number and the function pointer the C already understands.
+
+const Irq = struct {
+    irq: u32,
+};
+
+const Handler = struct {
+    irq: u32,
+    func: HandlerFn,
+};
+
+fn destroyIrq(x: *Irq) void {
+    free(@ptrCast(x));
+}
+
+fn destroyHandler(h: *Handler) void {
+    free(@ptrCast(h));
+}
+
+// ============================================================================
+// STATUS — introspection, no obligation
+// ============================================================================
+//
+// Reads the global the platform driver already set before any Koru code got
+// control. No C call for `active`/`name` — matches `blk:count`'s and
+// `mpi:pending`'s rule: knowing this constrains nothing about what a caller
+// may do next. Doubles as the live, printed proof behind the header's
+// boot-ordering claim: see boot_intctlr.kz, flow A.
+~pub tor status { } -> { active: bool, name: string }
+
+~proc status|zig {
+    const d = uk_intctlr orelse {
+        return .{ .active = false, .name = "" };
+    };
+    const n = d.name orelse {
+        return .{ .active = true, .name = "" };
+    };
+    return .{ .active = true, .name = std.mem.span(n) };
+}
+
+// ============================================================================
+// INIT — exported, callable, and a documented no-op from here
+// ============================================================================
+//
+// `uk_intctlr_init` is already called once, automatically, inside
+// `lib/ukboot/boot.c:348`, strictly before interrupts are enabled
+// (`uk_lcpu_enable_irq()` at boot.c:378) and strictly before the
+// application's main thread — the thread that eventually calls this
+// program's own flows — is even scheduled. So by the time any Koru code can
+// call this tor, `uk_intctlr_init`'s own body has already run once for real.
+//
+// Exposed anyway, for API completeness (it is real, linkable, and on
+// `exportsyms.uk`) — but see the assert census: `UK_ASSERT(uk_lcpu_irqs_disabled())`
+// inside it (ukintctlr.c:269) is UNSATISFIABLE from any Koru caller, because
+// IRQs are unconditionally enabled by the time Koru code runs at all. This
+// is not lifted and cannot be: this lift has no way to control when a
+// caller invokes this relative to the platform's own IRQ-enable point. It
+// is harmless only because the function body is `/* Nothing for now */
+// return 0;` regardless of that assert's truth, and only in a release
+// build. Call it and the console prints `ok` — see boot_intctlr.kz, flow F.
+~pub tor init { }
+| ok
+| failed { errno: i32, reason: string }
+
+~proc init|zig {
+    const rc = uk_intctlr_init(_uk_alloc_head);
+    if (rc != 0) {
+        return .{ .failed = .{ .errno = @intCast(rc), .reason = "uk_intctlr_init failed" } };
+    }
+    return .{ .ok = .{} };
+}
+
+// ============================================================================
+// LINE — the leakable bitmap resource
+// ============================================================================
+
+// uk_intctlr_irq_alloc, one line at a time. The C supports a contiguous
+// batch (`count > 1`); nothing in this fork ever calls it with `count > 1`
+// — nothing calls it at all, see the header note — so this lift models the
+// single-line unit, the shape every real caller anywhere in Unikraft's own
+// tree uses for its OTHER dynamic-resource APIs (one device, one queue, one
+// mailbox at a time). A batch variant is a straightforward later extension,
+// not a different design.
+//
+// Mints <allocated!>. `free` is the only tor that discharges it with a real
+// C call; `abandon` is the only other way out, and it is the leak this
+// module exists to make a deliberate, greppable choice instead of an
+// accident.
+~pub tor alloc { }
+| ok *Irq<allocated!>
+| exhausted { errno: i32, reason: string }
+
+~proc alloc|zig {
+    var raw: c_uint = 0;
+    const rc = uk_intctlr_irq_alloc(@ptrCast(&raw), 1);
+    if (rc != 0) {
+        return .{ .exhausted = .{ .errno = @intCast(rc), .reason = "uk_intctlr_irq_alloc found no free line in the allocable pool" } };
+    }
+    const mem = malloc(@sizeOf(Irq)) orelse {
+        // Hand the bit back before failing. Without this, an OOM on the
+        // Koru-side handle wrapper would leak a bitmap slot the caller never
+        // gets a handle to free -- exactly the class of leak this whole
+        // module exists to prevent. `count = 1`, so the array is precisely
+        // the one line just allocated above.
+        var back: c_uint = raw;
+        _ = uk_intctlr_irq_free(@ptrCast(&back), 1);
+        return .{ .exhausted = .{ .errno = -12, .reason = "out of memory allocating the handle wrapper (the line was freed back before returning)" } };
+    };
+    const x: *Irq = @ptrCast(@alignCast(mem));
+    x.* = Irq{ .irq = @intCast(raw) };
+    return .{ .ok = x };
+}
+
+// uk_intctlr_irq_free. Lifts nothing new by phantom typing alone here that
+// `free`'s own C-level bound check does not already enforce for a bare
+// caller-supplied irq -- what this DOES retire is the C's own
+// `UK_ASSERT(irqs[i] <= LAST_ALLOCABLE_IRQ)` / `UK_ASSERT(rc)` pair, because
+// `line: *Irq<!allocated>` can only ever have been minted by `alloc`, which
+// can never produce a value outside the range those asserts guard -- see
+// "THE OTHER RANGE MISMATCH" above.
+~pub tor free { line: *Irq<!allocated> }
+| ok
+| failed { line: *Irq<stuck!>, errno: i32, reason: string }
+
+~proc free|zig {
+    var raw: c_uint = @intCast(line.irq);
+    const rc = uk_intctlr_irq_free(@ptrCast(&raw), 1);
+    if (rc != 0) {
+        return .{ .failed = .{ .line = line, .errno = @intCast(rc), .reason = "uk_intctlr_irq_free reported the line was not marked allocated" } };
+    }
+    destroyIrq(line);
+    return .{ .ok = .{} };
+}
+
+// The named escape from the bitmap: give up on a line forever rather than
+// pretend it can still be freed. Frees only this lift's own handle wrapper
+// -- the C-side bitmap bit stays set, permanently, on purpose.
+// `grep -r "unikraft/intctlr:abandon"` answers "which programs walked away
+// from an interrupt line and never gave it back."
+~pub tor abandon { line: *Irq<!allocated|!stuck> }
+
+~proc abandon|zig {
+    destroyIrq(line);
+}
+
+// ============================================================================
+// HANDLER — the registration resource
+// ============================================================================
+//
+// `handler` and `arg` are opaque `usize` tokens, the same treatment `mpi`
+// gives `void *msg` (index.kz's header note there explains why: Koru has no
+// generics, and a `void *` bit pattern already IS a `usize`). Unlike `msg`,
+// here the value MUST be a real, C-ABI-callable function address
+// (`int (*)(void *)`) for the platform's real interrupt dispatch to call it
+// safely later. No attested Koru surface for authoring a `callconv(.c)`
+// function pointer LITERAL from inside the flow DSL was found (see
+// README.md), so this lift does not invent one. Two real ways to get a
+// valid token exist instead: `nop.handler` below, built from an ordinary
+// Zig helper this module already owns; or a caller's own compiled function,
+// taken the same way `nop.handler` takes its own (`@intFromPtr(&fn)`, inside
+// that caller's own `~proc ...|zig` body or `wrapper.zig`) — this module
+// does not need to provide every possible handler body, only a safe way to
+// obtain the token for one that is already real and linkable.
+
+// A genuine, always-safe handler this module owns: acknowledges the
+// interrupt and does nothing else. Not test scaffolding — `blk:io.skipped`
+// is the precedent for a small, real, always-available operation that
+// exists because a legitimate caller wants exactly this (reserve a handler
+// slot now with a working no-op, upgrade to a real handler later via
+// `unregister` + `register`). Returns 0 ("not exclusively handled"), so it
+// never breaks a shared IRQ's handler chain for whoever else is on the line.
+fn nopHandler(arg: ?*anyopaque) callconv(.c) c_int {
+    _ = arg;
+    return 0;
+}
+
+// The token for `nopHandler`, ready to pass as `register`'s `handler_fn` arg.
+// No obligation: a function address is not a resource.
+~pub tor nop.handler { } -> usize
+
+~proc nop.handler|zig {
+    return @intFromPtr(&nopHandler);
+}
+
+// uk_intctlr_irq_register. Lifts the two `UK_ASSERT`s that guard it
+// (non-null func, `irq <= MAX_IRQ`) by refusing the same conditions BEFORE
+// any C call, with the off-by-one corrected (`>= MAX_IRQ`, not `> MAX_IRQ`)
+// -- see the header note. `irq` here is a bare, caller-supplied value: this
+// tor does NOT require a `*Irq<!allocated>`, matching the C's own
+// independence between the bitmap and the handler table (the boot timer
+// registers on IRQ 0, never allocated -- see "TWO RESOURCES, NOT ONE").
+//
+// Mints <registered!>. See "THE ALIASING HAZARD" above for what happens
+// when the same (irq, func) pair is registered twice.
+//
+// PARAMETER NAMED `handler_fn`, NOT `handler` — a toolchain finding, not a
+// style choice. A tor parameter literally named `handler` collides with
+// the compiler's own auto-generated Zig implementation function, which is
+// named `handler` for every tor uniformly (`pub inline fn handler(__koru_event_input:
+// Input) Output` in the emitted output). The clash is silent until Zig
+// itself refuses it: `error: local constant shadows declaration of
+// 'handler'`. Worked around by renaming the parameter; not filed as a
+// separate toolchain-repros pair under this lift's time budget, named here
+// so it is not rediscovered as folklore either.
+~pub tor register { irq: u32, handler_fn: usize, arg: usize }
+| ok *Handler<registered!>
+| refused { errno: i32, reason: string }
+
+~proc register|zig {
+    if (handler_fn == 0) {
+        return .{ .refused = .{ .errno = -22, .reason = "register needs a non-null handler function pointer" } };
+    }
+    if (irq >= MAX_IRQ) {
+        return .{ .refused = .{ .errno = -22, .reason = "irq is at or past MAX_IRQ -- refused before any C call" } };
+    }
+    const func = handlerFromToken(handler_fn);
+    const argp = ptrFromToken(arg);
+    const rc = uk_intctlr_irq_register(@intCast(irq), func, argp);
+    if (rc != 0) {
+        return .{ .refused = .{ .errno = @intCast(rc), .reason = "uk_intctlr_irq_register returned an error (no free handler slot on this irq)" } };
+    }
+    const mem = malloc(@sizeOf(Handler)) orelse {
+        _ = uk_intctlr_irq_unregister(@intCast(irq), func);
+        return .{ .refused = .{ .errno = -12, .reason = "out of memory allocating the handle wrapper (the registration was undone before returning)" } };
+    };
+    const h: *Handler = @ptrCast(@alignCast(mem));
+    h.* = Handler{ .irq = irq, .func = func };
+    return .{ .ok = h };
+}
+
+// uk_intctlr_irq_unregister. `irq` and `func` are read from the handle, not
+// re-supplied by the caller -- so the two null/bound asserts the C guards it
+// with are structurally satisfied here: both values were already validated
+// the moment `<registered!>` was minted, and nothing on this module's
+// surface can construct a `Handler` any other way.
+//
+// A failure here is real and reachable -- see "THE ALIASING HAZARD" -- and
+// lands in <stuck!>, the only state `handler.abandon` accepts: the C's own
+// bookkeeping has already diverged from what this obligation assumed, and
+// pretending a retry would help would be exactly the kind of silent
+// corruption this project refuses to ship.
+~pub tor unregister { h: *Handler<!registered> }
+| ok
+| failed { h: *Handler<stuck!>, errno: i32, reason: string }
+
+~proc unregister|zig {
+    const rc = uk_intctlr_irq_unregister(@intCast(h.irq), h.func);
+    if (rc != 0) {
+        return .{ .failed = .{ .h = h, .errno = @intCast(rc), .reason = "uk_intctlr_irq_unregister found no matching handler slot left -- see the aliasing hazard" } };
+    }
+    destroyHandler(h);
+    return .{ .ok = .{} };
+}
+
+// The one way out of <stuck!>: only this lift's own handle wrapper is
+// freed. There is no C call that could still be correct here -- the C's own
+// handler table has already moved on without this obligation.
+~pub tor handler.abandon { h: *Handler<!stuck> }
+
+~proc handler.abandon|zig {
+    destroyHandler(h);
+}
+
+// ============================================================================
+// CONFIGURE — no obligation, a real call with a real (if today inert) result
+// ============================================================================
+//
+// uk_intctlr_irq_configure. Lifts the pointer-non-null half of its guard
+// (this tor always passes the address of a struct it built itself; a null
+// `struct uk_intctlr_irq *` is not a value this surface can produce) and the
+// `uk_intctlr && uk_intctlr->ops` half by the same boot-ordering argument as
+// `status`. On the x86_64/xpic platform this lift targets,
+// `drivers/ukintctlr/xpic/ukintctlr.c:121` sets `configure_irq` to a stub
+// that unconditionally `return 0`s (`pic.h`'s `configure_irq`) -- so this
+// call is real (it is the actual exported symbol, no C call skipped) but
+// its result is, honestly, always success on this platform today. Stated
+// plainly rather than left implicit: a future controller driver (`gic`) may
+// give this a real effect, and this tor does not assume the C's answer.
+~pub tor configure { irq: u32, trigger: u32 }
+| ok
+| refused { errno: i32, reason: string }
+
+~proc configure|zig {
+    if (irq >= MAX_IRQ) {
+        return .{ .refused = .{ .errno = -22, .reason = "irq is at or past MAX_IRQ -- refused before any C call" } };
+    }
+    var desc = IrqDesc{ .id = @intCast(irq), .trigger = @intCast(trigger) };
+    const rc = uk_intctlr_irq_configure(&desc);
+    if (rc != 0) {
+        return .{ .refused = .{ .errno = @intCast(rc), .reason = "uk_intctlr_irq_configure rejected the descriptor" } };
+    }
+    return .{ .ok = .{} };
+}

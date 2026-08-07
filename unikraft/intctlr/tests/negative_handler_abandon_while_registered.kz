@@ -1,0 +1,30 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): register a handler, then call
+// `handler.abandon` directly instead of `unregister`.
+//
+// `handler.abandon` accepts only `<!stuck>` — the state ONLY `unregister`'s
+// failure arm mints (see "THE ALIASING HAZARD" in ../index.kz). A caller
+// cannot skip past a real `uk_intctlr_irq_unregister` call just because
+// both tors take a bare `*Handler` and one of them returns nothing: a
+// still-registered handler must go through `unregister` and only lands in
+// `handler.abandon`'s reach if that call itself fails. The Koru twin of
+// `unikraft/mpi`'s `negative_abandon_after_drain.kz` — the same "you cannot
+// launder a live obligation through the leak escape hatch" shape, applied
+// to this lift's own resource.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/intctlr
+~import std/io
+
+~unikraft/intctlr:nop.handler(): tok
+    |> unikraft/intctlr:register(irq: 70, handler_fn: tok, arg: 0)
+    | ok h |> unikraft/intctlr:handler.abandon(h)
+    | refused r |> std/io:print.ln("register failed: {{ r.reason:s }}")

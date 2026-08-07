@@ -1,0 +1,17 @@
+// Support file for D_unikraft_submodule_std_ambiguous.kz / D_control.kz.
+//
+// Stands in for the REAL `koru-libs/unikraft/index.kz`, which every shipped
+// `unikraft/<name>` lift is auto-pulled alongside the moment a program
+// imports that lift (see any shipped lift's test file comment: "Importing
+// unikraft/blk already pulls unikraft/index.kz into scope on its own").
+// The real file also declares `const std = @import("std");` at its own top
+// level (koru-libs/unikraft/index.kz:208) — reproduced here so this repro
+// does not depend on that file's contents staying put, and does not need
+// any of that file's actual tors (`image`/`kconfig`/`gen`) to trigger the
+// finding — only the `const std` declaration matters.
+const std = @import("std");
+
+~pub tor marker { } -> u32
+~proc marker|zig {
+    return 0;
+}

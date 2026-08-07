@@ -1,0 +1,15 @@
+// Support file for D_unikraft_submodule_std_ambiguous.kz. Stands in for any
+// real `unikraft/<name>` lift that needs `std.*` in its own Zig body — the
+// same need `unikraft/store:get.charp` has for `std.mem.span` (see
+// `koru-libs/unikraft/store/index.kz:250,656`).
+const std = @import("std");
+
+const Thing = struct { n: u32 };
+
+~pub tor make { n: u32 } -> *Thing
+
+~proc make|zig {
+    const mem = std.heap.page_allocator.create(Thing) catch unreachable;
+    mem.* = Thing{ .n = n };
+    return mem;
+}
