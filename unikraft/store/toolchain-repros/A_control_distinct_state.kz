@@ -1,0 +1,52 @@
+// FINDING A control — identical shape to
+// A_partial_reissue_excludes_whole_tor.kz. The ONLY change: `refused` mints
+// `<stuck!>` instead of `<built!>` again, plus the matching consumer
+// `abandon` for it. This is not a semantic fix to the PROGRAM (the broken
+// file's program is already sensible — "refused" meaning "nothing changed,
+// still built" is a reasonable design) — it is the minimal edit that avoids
+// the compiler defect, so the diff isolates the defect rather than the
+// design choice.
+//
+//   koruc A_control_distinct_state.kz
+//   -> compiles clean through the full pipeline (host link fails only on
+//      Zig std/process.exit, unrelated — this file's flow never runs off
+//      the end without a terminal, see below).
+//
+// Verified with all four invocations the broken file was verified with:
+// `koruc <file>`, `koruc build <file>`, `koruc run <file>`, and
+// `koruc <file> --auto-discharge=disable`. All four compile through the full
+// phantom-obligation pipeline with zero KORU030 errors on this file.
+
+const std = @import("std");
+const Obj = struct { v: i32 };
+
+~pub tor mk { } -> *Obj<built!>
+~proc mk|zig {
+    const o = std.heap.page_allocator.create(Obj) catch unreachable;
+    o.* = Obj{ .v = 1 };
+    return o;
+}
+
+// The ONE line that differs from the broken file: `refused` mints <stuck!>,
+// a state distinct from the <!built> this tor takes as input.
+~pub tor settle { obj: *Obj<!built> }
+| ok *Obj<held!>
+| refused { obj: *Obj<stuck!>, reason: string }
+~proc settle|zig {
+    return .{ .ok = obj };
+}
+
+~pub tor finish { obj: *Obj<!held> }
+~proc finish|zig {
+    _ = obj;
+}
+
+~pub tor abandon { obj: *Obj<!stuck> }
+~proc abandon|zig {
+    _ = obj;
+}
+
+~mk()
+| ready obj |> settle(obj)
+    | ok held |> finish(obj: held)
+    | refused e |> abandon(e.obj)

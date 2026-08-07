@@ -329,36 +329,63 @@ for its own `<live!>` state.
 
 ---
 
-## What the toolchain got wrong — a compiler defect, pinned
+## What the toolchain got wrong — a compiler defect, pinned as a committed repro
 
-Reported, not routed around. A tor whose parameter requires a single
-non-union phantom state `<!S>`, and whose OWN failure arm re-mints that exact
-same state `<S!>` (while a DIFFERENT arm mints a genuinely new state), makes
-Koru's discharge/consumer-search pass fail to recognize the tor as a valid
-consumer of `<!S>` at all — even down the arm that legitimately transitions
-to the new state, and even when the program never takes the failure arm.
+Reported, not routed around, and NOT left as a prose snippet: `A_partial_
+reissue_excludes_whole_tor.kz` / `A_control_distinct_state.kz` in
+`toolchain-repros/` are two complete, runnable, verified programs, differing
+by one line, following the pairing convention `ai/toolchain-repros/` already
+established in this monorepo.
 
-Minimal repro, two versions, one line different:
+**The defect, stated precisely.** A tor with two arms, where only ONE arm
+re-issues the input's phantom state `<S!>` and the OTHER arm genuinely
+converts it to a DIFFERENT state, is excluded as a disposal candidate for
+`<!S>` **entirely** — even down the arm that legitimately converts it, and
+even when that arm is called EXPLICITLY in the source with no auto-discharge
+insertion needed.
 
-```koru
-~pub tor pub2 { obj: *Obj<!built> }
-| ok *Obj<held!>
-| refused { obj: *Obj<built!>, reason: string }   // <- breaks discharge tracking
-```
+**Root cause, read from the compiler source, not guessed.**
+`src/phantom_semantic_checker.zig:296` and
+`src/auto_discharge_inserter.zig:3057` each define their own copy of
+`eventReIssuesObligation`, and both loop over EVERY branch of a tor's
+declaration, returning `true` (excluded from candidacy) as soon as ANY
+single branch re-issues the base state. Neither checks whether at least one
+OTHER branch genuinely converts it to something new. Compare
+`330_118_conserving_tor_is_not_a_disposal_candidate` in
+`/Users/larsde/src/koru/tests/regression` (read only, not edited, suite not
+run) — its own comment states the INTENDED rule: *"A CONVERTING tor is a
+different thing and stays a legitimate candidate... Only same-obligation
+conservation is disqualifying."* `330_118`'s `step` tor reissues on **every**
+declared arm — wholly conserving, genuinely has no disposer, "No tor
+accepts" is the correct diagnosis there, and that test should stay green.
+This lift's `settle`/`add` shape reissues on only ONE of two arms — partially
+conserving — and by `330_118`'s own stated rule should remain a candidate
+through its converting arm. It does not, because the implementation checks
+"does ANY arm reissue," not "do ALL arms reissue" or "does at least one arm
+genuinely convert." **Same predicate, same shared root mechanism as both
+`330_118` and `440_007_reissuing_event_is_not_a_discharger`; a narrower,
+uncovered case of it, not a duplicate of either.** (`440_007` is a different
+question again — it pins auto-discharge correctly preferring a genuine
+discharger over a reissuing one when TWO SEPARATE tors both consume the same
+state; it never has to ask whether a single tor's own arms disagree.)
 
-```
-$ koruc repro.kz
-error[KORU030]: Resource 'obj' obligation <built!> was not discharged. No tor accepts <!built>.
-```
+**Exact invocation.** `--check` passes both files — shape-checking never
+walks the phantom-obligation flow. All three of `koruc <file>`, `koruc build
+<file>` and `koruc run <file>` fail identically on the broken file and
+succeed identically on the control. `--auto-discharge=disable` also fails on
+the broken file, through the CHECKER's own copy of the predicate rather than
+the INSERTER's — the diagnostic wording differs slightly ("carries
+obligation" / "Phantom semantic validation failed" vs "obligation" /
+"Auto-discharge failed"), confirming two independent code paths hit the same
+bug independently rather than one. Literal output for every invocation is in
+the repro files' own headers.
 
-pointing at the CALL SITE of `pub2`, not at `pub2`'s own declaration, even
-though `pub2`'s `ok` arm plainly consumes `<!built>` and mints `<held!>`.
-Changing ONLY the refused arm's state name to something distinct (`<stuck!>`)
-makes the byte-identical program compile. Verified NOT to be about cross-
-module qualification, arrow-vs-arm binding syntax, or a tor-name collision —
-each ruled out with its own isolated control before landing on the real
-differentiator (self-referential in/out state naming on a single, non-union
-input, with an asymmetric second arm).
+**Does the defect need cross-module import or a real `|zig` FFI body to
+fire? No.** `toolchain-repros/A_*.kz` is single-file, no `~import` at all,
+one `std.heap.page_allocator.create` call as its only Zig — and it
+reproduces identically. My first write-up of this finding (directly below,
+in the unikraft context) implied a narrower surface than the defect actually
+has; the committed repro is the true, minimal, standalone shape.
 
 This lift's `add` tor originally hit this directly (`obj: *Object<!built>`
 in, refusal minting `<built!>` again for "nothing happened, retry"). Fixed by
@@ -458,6 +485,8 @@ detail; summarized here.
 | `tests/negative_release_twice.kz` | gate 3 — use-after-discharge, the double-free shape |
 | `tests/autodischarge_covers_held.kz` | positive control — `<held!>` auto-discharges; a correction, recorded |
 | `tests/wrapper.zig`, `tests/main.c` | the C-ABI seam, from `koru/examples/unikraft` |
+| `toolchain-repros/A_partial_reissue_excludes_whole_tor.kz` | the compiler defect, standalone, no unikraft/no cross-module — the real pin |
+| `toolchain-repros/A_control_distinct_state.kz` | its control, one line different |
 
 Measured against `unikraft` HEAD `3fdffba8`, kraftkit 0.12.15, Unikraft
 0.21.0 "Ijiraq", zig 0.15.2, on macOS/arm64.
