@@ -1,0 +1,11 @@
+name: js_escape
+kind: measured
+shape: fraction
+face: in
+membrane: false
+note: The DOM gauntlet's second headline metric — the fraction of the vehicle
+  that fell out to host JavaScript rather than being expressible in Koru.
+  Computed only by dom/closer/board.mjs computeJsEscape (host lines classified
+  by host language; Stage-C |zig transform bodies count on neither side).
+  Series: r1 66.7% (36/54), r2 46.2% (60/130), r3 34.1% (44/129). Emit on
+  every board round, with the escaped/total line counts in the payload.
