@@ -247,7 +247,13 @@ extern fn _uk_store_set_s64(e: *const StoreEntry, val: i64) c_int;
 extern fn _uk_store_set_uptr(e: *const StoreEntry, val: u64) c_int;
 extern fn _uk_store_set_charp(e: *const StoreEntry, val: [*c]const u8) c_int;
 
-const std = @import("std");
+// No `const std` here on purpose. `unikraft/index.kz` (line 208) already
+// declares one, and it is auto-pulled into scope alongside this submodule —
+// so a second declaration here is an `ambiguous reference` in the emitted Zig
+// the moment any tor referencing `std.*` is actually compiled. Zig lexical
+// scoping already makes the enclosing declaration visible; this one buys
+// nothing and detonates on first use. Repro: ai/toolchain-repros/
+// D_unikraft_submodule_std_ambiguous.kz plus its control.
 
 // `PTRISERR`/`ERR2PTR` (uk/errptr.h): `uk_store_obj_alloc` returns either a
 // real heap pointer or a small negative integer wearing a pointer's clothes
