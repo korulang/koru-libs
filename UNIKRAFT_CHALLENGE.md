@@ -250,6 +250,23 @@ have missed why it did what it did.
   **a virtqueue smaller than the device maximum silently loses every frame**
   (legacy virtio-pci never writes a queue size), so `queues.open` has no
   descriptor parameter.
+- **[mpi](unikraft/mpi/README.md)** — `ukmpi`'s mailbox behind two states, 6
+  tors, no struct mirror (`struct uk_mbox` is never defined in any public
+  header). Retires `mbox.c:38`'s drain-before-free assert via a `drain` tor
+  that mints `<drained!>` ON EVIDENCE — this lift's own atomically-tracked
+  `pending` counter reaching zero, since `uk_mbox_free` exposes no accessor to
+  ask the C. Found and corrected its own overclaim in the writing: Koru's
+  auto-discharge pass (`src/auto_discharge_inserter.zig`) silently splices in
+  the named escape `abandon` — void, single-param, the unique such acceptor —
+  at scope exit under default settings, so "walk away from an open mailbox"
+  compiles clean rather than leak-detecting; verified with
+  `--auto-discharge=warn`/`disable` before rewriting the claim to what is
+  actually true (`uk_mbox_free` never runs on an undrained ring, attended or
+  not — a strictly weaker and correct claim). Deliberately does NOT force a
+  post/recv before release the way `blk` forces a transfer before `stop`: an
+  untouched mailbox satisfies `readpos == writepos` trivially, so pillar 4's
+  asymmetry does not apply here the way it does in `unikraft/alloc`, argued in
+  the README against that entry by name.
 
 #### The rule that keeps the catalog from turning into an argument
 

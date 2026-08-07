@@ -1,0 +1,38 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): `drain` a mailbox that really is empty —
+// which mints `<drained!>` — and then call `abandon` instead of `release`.
+//
+// `abandon` accepts only `<!open>`; `drained` is a different state. This
+// pins the other half of the ratchet from `negative_release_without_drain`:
+// there it was "you may not skip the check", here it is "once you HAVE
+// checked and it succeeded, the only next move is `release`" — a caller
+// cannot launder a legitimately drained mailbox through the leak-a-ring
+// escape hatch just because both tors happen to take a `*Mailbox` and
+// return nothing.
+//
+// The C has no opinion here either: `uk_mbox_free` would run exactly the
+// same free either way once the ring is actually empty, so nothing is lost
+// by calling it through `release`. This is the compiler refusing a
+// meaningless detour, not a safety hole in the C.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.mpi:open' but got 'unikraft.mpi:drained!' for
+//           argument 'mbox'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/mpi
+~import std/io
+
+~unikraft/mpi:create(capacity: 4)
+| ok m0 |> unikraft/mpi:drain(mbox: m0)
+    | ok drained |> unikraft/mpi:abandon(mbox: drained)
+    | pending stuck |> std/io:print.ln("should never get here: {{ stuck.count:d }} pending on a fresh mailbox")
+| failed why |> std/io:print.ln("create failed: {{ why:s }}")

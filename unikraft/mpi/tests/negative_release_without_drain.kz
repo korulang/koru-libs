@@ -1,0 +1,40 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): post a message, then call `release`
+// directly, skipping `drain`. This is the exact program `mbox.c:38`
+// (`UK_ASSERT(m->readpos == m->writepos)`) exists to catch — a mailbox freed
+// while it still holds a message a caller was supposed to receive.
+//
+// `release` accepts only `<!drained>`, and the ONLY tor that mints
+// `<drained!>` is `drain`, which itself only succeeds once this lift's own
+// `pending` counter reads zero. Here `pending` is 1 (one post, zero receives),
+// so even inserting `drain` would not save this program — but this test pins
+// the more direct mistake: calling `release` without going through `drain`
+// at all is not a program the type system accepts, independent of whether
+// the ring happens to be empty.
+//
+// WHAT THE C DOES INSTEAD. With `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` off — every
+// image anyone ships — `uk_mbox_free` runs unconditionally: the backing
+// allocation is freed while `msgs[0]` still holds a live message. Anything
+// still blocked in a `uk_mbox_recv` on this mailbox is now waiting on freed
+// memory, and the message itself is gone with no diagnostic.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.mpi:drained' but got 'unikraft.mpi:open!' for
+//           argument 'mbox'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/mpi
+~import std/io
+
+~unikraft/mpi:create(capacity: 4)
+| ok m0 |> unikraft/mpi:post(mbox: m0, token: 1): m1
+    |> unikraft/mpi:release(mbox: m1)
+| failed why |> std/io:print.ln("create failed: {{ why:s }}")
