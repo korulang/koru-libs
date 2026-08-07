@@ -1,0 +1,70 @@
+// FINDING D — a `unikraft/<name>` submodule that declares its own top-level
+// `const std = @import("std");` collides with the SAME declaration in the
+// auto-pulled `unikraft/index.kz` (koru-libs/unikraft/index.kz:208), the
+// moment any code path that actually calls a tor referencing `std.*` gets
+// compiled. `support/unikraft_ns/index.kz` here stands in for the real
+// `unikraft/index.kz` (same shape, same `const std`); every real lift's
+// test file already notes the auto-pull: "Importing unikraft/blk already
+// pulls unikraft/index.kz into scope on its own." Independent of whether
+// `~unikraft:image`/`~unikraft:kconfig` are used — verified by removing
+// them and re-running; the error is unchanged.
+//
+// THIS BUG IS ALREADY LIVE, LATENT, IN A SHIPPED LIFT: `unikraft/store`'s
+// `index.kz` declares `const std` at its own top level (line 250) and its
+// `get.charp` tor calls `std.mem.span` (line 656) — but `store`'s own boot
+// test (`unikraft/store/tests/boot_store.kz`) never calls `get.charp`
+// (`grep -n "get\.charp" boot_store.kz` returns nothing), so the collision
+// has never fired for that shipped module. It would fire the instant
+// anyone calls `unikraft/store:get.charp` from a real program. Not fixed
+// here — out of this lift's slot — named so it is not rediscovered as
+// folklore.
+//
+// THE FIX, verified: do not declare `const std` inside a `unikraft/<name>`
+// submodule at all. `unikraft/index.kz`'s own top-level `const std` is
+// already visible to a nested submodule's Zig body via ordinary Zig lexical
+// scoping (a nested container can reference its enclosing file's decls) —
+// removing the submodule's own redundant declaration compiles clean.
+// `unikraft/intctlr` (this challenge's `ukintctlr` lift) needed
+// `std.mem.span` for the same reason `store` does and hit this exact error
+// first, before working around it this way.
+//
+//   koruc build ai/toolchain-repros/D_unikraft_submodule_std_ambiguous.kz
+//
+// Literal output (paths relative to this file's own directory when run
+// from there — see the reproduction steps below for the exact commands):
+//
+//   Error: output_emitted.zig:139:33: error: ambiguous reference
+//                       const mem = std.heap.page_allocator.create(Thing) catch unreachable;
+//                                   ^~~
+//   output_emitted.zig:122:9: note: declared here
+//           const std = @import("std");
+//           ^~~~~~~~~~~~~~~~~~~~~~~~~~
+//   output_emitted.zig:116:5: note: also declared here
+//       const std = @import("std");
+//       ^~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+// (Line numbers shift by a line or two depending on which files are present
+// in the working directory when `output_emitted.zig` is generated — the
+// error itself, "ambiguous reference" between two `const std` declarations
+// with one nested inside the other, is exact and stable.)
+//
+// Flip to D_control.kz (the submodule uses `malloc` instead of declaring
+// its own `const std`, one file different: `support/unikraft_ns/
+// stdrepro_control/index.kz` instead of `.../stdrepro/index.kz`) and it
+// compiles AND links clean — `malloc`/`free` are real host libc symbols,
+// unlike the Unikraft-only symbols a real lift's own `koruc build` fails
+// on outside a unikernel link (see any shipped lift's README, gate 2:
+// "host link then fails on the Unikraft symbols; expected"). Running
+// D_control's `a.out` prints `made a thing, n=5`.
+//
+// REPRODUCTION STEPS, exact, from a clean koru-libs checkout:
+//   cd ai/toolchain-repros
+//   koruc build D_unikraft_submodule_std_ambiguous.kz
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/support/unikraft_ns
+}
+~import unikraft/stdrepro
+~import std/io
+
+~unikraft/stdrepro:make(n: 5): t
+    |> std/io:print.ln("made a thing, n={{ t.n:d }}")

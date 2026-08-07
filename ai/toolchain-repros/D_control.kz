@@ -1,0 +1,17 @@
+// CONTROL for D_unikraft_submodule_std_ambiguous.kz — one file different:
+// imports `unikraft/stdrepro_control` (support/unikraft_ns/
+// stdrepro_control/index.kz), which uses `malloc` instead of declaring its
+// own `const std`. Compiles AND links clean (`malloc`/`free` are real host
+// libc symbols, unlike the Unikraft-only symbols a real lift's own `koruc
+// build` fails on outside a unikernel link — see any shipped lift's
+// README, gate 2), and running it prints `made a thing, n=5`.
+//
+//   koruc build ai/toolchain-repros/D_control.kz && ./a.out
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/support/unikraft_ns
+}
+~import unikraft/stdrepro_control
+~import std/io
+
+~unikraft/stdrepro_control:make(n: 5): t
+    |> std/io:print.ln("made a thing, n={{ t.n:d }}")

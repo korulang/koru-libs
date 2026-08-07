@@ -1,0 +1,28 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: was not discharged
+
+// NEGATIVE (must FAIL to compile): register a handler and walk away.
+//
+// `register` mints <registered!>, an obligation. Unlike `unikraft/intctlr:Irq`'s
+// `abandon` (void, no branches — the exact shape Koru's auto-discharge pass
+// splices in unattended, matching `unikraft/mpi`'s own finding), the only
+// tor accepting <!registered> is `unregister`, which BRANCHES (ok/failed).
+// Auto-discharge only elects a void, branch-free acceptor
+// (`src/auto_discharge_inserter.zig`'s `isUnattendedDischarge`), so
+// `unregister` does not qualify and this program is refused under default
+// settings, not merely under `--auto-discharge=disable`.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/intctlr
+~import std/io
+
+~unikraft/intctlr:nop.handler(): tok
+    |> unikraft/intctlr:register(irq: 60, handler_fn: tok, arg: 0)
+    | ok h |> std/io:print.ln("registered on irq 60, then never unregistered")
+    | refused r |> std/io:print.ln("register failed: {{ r.reason:s }}")

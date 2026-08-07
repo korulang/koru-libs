@@ -1,0 +1,152 @@
+// POSITIVE, and the gate-2 artifact: `ukintctlr`'s two independent
+// resources — the allocable-line bitmap and the handler-slot table — driven
+// from Koru, inside a unikernel, against the real `lib/ukintctlr.c` the
+// kernel linked. Six short flows, each isolating one part of the surface:
+//
+//   A  status — the subsystem is already active before this program runs
+//   B  alloc, alloc, free the first, alloc again — the freed slot is reused
+//   C  alloc, configure, free
+//   D  alloc, nop.handler, register, unregister, free — the composed path
+//   E  register the SAME handler on a FIXED (never-allocated) irq TWICE,
+//      unregister once, unregister again — the aliasing hazard, live
+//   F  init — the documented no-op
+//
+// Build and boot: see ../README.md.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/intctlr
+~import unikraft/alloc
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_INTCTLR=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKINTCTLR: 'y'
+}
+
+// The bracket uses `unikraft/alloc`, a shipped sibling — composition, not
+// duplication, matching `mpi`'s own boot test. `alloc`/`free`/`register`/
+// `unregister` all go through `_uk_alloc_head`, the same default heap
+// `unikraft/alloc:available` already measures.
+~unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start:  {{ at_start:d }} bytes free")
+
+~std/io:print.ln("== flow A: status — the subsystem is already active before this program runs ==")
+
+~unikraft/intctlr:status(): st
+    |> std/io:print.ln("status:         uk_intctlr already registered, name={{ st.name:s }} (set by plat/kvm/x86/setup.c before koru_main ever ran)")
+
+~std/io:print.ln("== flow B: the bitmap — allocate two lines, free the first, allocate again, see it reused ==")
+
+~unikraft/intctlr:alloc()
+| ok b0 |> std/io:print.ln("alloc:          line {{ b0.irq:d }} allocated (a)")
+    |> unikraft/intctlr:alloc()
+    | ok b1 |> std/io:print.ln("alloc:          line {{ b1.irq:d }} allocated (b), expect b == a + 1")
+        |> unikraft/intctlr:free(line: b0)
+        | ok |> std/io:print.ln("free:           line a freed, its bitmap bit is open again")
+            |> unikraft/intctlr:alloc()
+            | ok b2 |> std/io:print.ln("alloc:          line {{ b2.irq:d }} allocated (c), expect c == a, the reused low bit")
+                |> unikraft/intctlr:free(line: b1)
+                | ok |> std/io:print.ln("free:           line b freed")
+                    |> unikraft/intctlr:free(line: b2)
+                    | ok |> std/io:print.ln("free:           line c freed — the bitmap is back where it started")
+                    | failed x |> std/io:print.ln("free:           UNEXPECTED failed") |> unikraft/intctlr:abandon(x.line)
+                | failed x |> std/io:print.ln("free:           UNEXPECTED failed on b") |> unikraft/intctlr:abandon(x.line)
+                    |> unikraft/intctlr:free(line: b2)
+                    | ok |> _
+                    | failed x2 |> unikraft/intctlr:abandon(x2.line)
+            | exhausted e |> std/io:print.ln("alloc:          UNEXPECTED exhausted — {{ e.reason:s }}")
+                |> unikraft/intctlr:free(line: b1)
+                | ok |> _
+                | failed x |> unikraft/intctlr:abandon(x.line)
+        | failed x |> std/io:print.ln("free:           UNEXPECTED failed on a") |> unikraft/intctlr:abandon(x.line)
+            |> unikraft/intctlr:free(line: b1)
+            | ok |> _
+            | failed x2 |> unikraft/intctlr:abandon(x2.line)
+    | exhausted e |> std/io:print.ln("alloc:          UNEXPECTED exhausted — {{ e.reason:s }}")
+        |> unikraft/intctlr:free(line: b0)
+        | ok |> _
+        | failed x |> unikraft/intctlr:abandon(x.line)
+| exhausted e |> std/io:print.ln("alloc:          UNEXPECTED exhausted — {{ e.reason:s }}")
+
+~std/io:print.ln("== flow C: configure — a real call, inert on this platform's stub, freed after ==")
+
+~unikraft/intctlr:alloc()
+| ok c0 |> std/io:print.ln("alloc:          line {{ c0.irq:d }} allocated for the configure demo")
+    |> unikraft/intctlr:configure(c0.irq, trigger: 1)
+    | ok |> std/io:print.ln("configure:      ok — uk_intctlr_irq_configure ran (xpic's configure_irq stub always returns 0)")
+        |> unikraft/intctlr:free(line: c0)
+        | ok |> std/io:print.ln("free:           configure demo's line freed")
+        | failed x |> std/io:print.ln("free:           UNEXPECTED failed") |> unikraft/intctlr:abandon(x.line)
+    | refused r |> std/io:print.ln("configure:      UNEXPECTED refused — {{ r.reason:s }} ({{ r.errno:d }})")
+        |> unikraft/intctlr:free(line: c0)
+        | ok |> _
+        | failed x |> unikraft/intctlr:abandon(x.line)
+| exhausted e |> std/io:print.ln("alloc:          UNEXPECTED exhausted — {{ e.reason:s }}")
+
+~std/io:print.ln("== flow D: the composed path — allocate a line, register a real handler on it, unregister, free ==")
+
+~unikraft/intctlr:alloc()
+| ok d0 |> std/io:print.ln("alloc:          line {{ d0.irq:d }} allocated for the register demo")
+    |> unikraft/intctlr:nop.handler(): tok
+        |> std/io:print.ln("nop.handler:    token obtained — a real, C-ABI-callable, always-safe handler this module owns")
+        |> unikraft/intctlr:register(d0.irq, handler_fn: tok, arg: 0)
+        | ok h0 |> std/io:print.ln("register:       ok — uk_intctlr_irq_register installed nopHandler on line {{ d0.irq:d }} and unmasked it")
+            |> unikraft/intctlr:unregister(h: h0)
+            | ok |> std/io:print.ln("unregister:     ok — uk_intctlr_irq_unregister removed it (the line stays unmasked — see the header note)")
+                |> unikraft/intctlr:free(line: d0)
+                | ok |> std/io:print.ln("free:           the register demo's line was freed")
+                | failed x |> std/io:print.ln("free:           UNEXPECTED failed") |> unikraft/intctlr:abandon(x.line)
+            | failed x |> std/io:print.ln("unregister:     UNEXPECTED failed") |> unikraft/intctlr:handler.abandon(x.h)
+                |> unikraft/intctlr:free(line: d0)
+                | ok |> _
+                | failed x2 |> unikraft/intctlr:abandon(x2.line)
+        | refused r |> std/io:print.ln("register:       UNEXPECTED refused — {{ r.reason:s }} ({{ r.errno:d }})")
+            |> unikraft/intctlr:free(line: d0)
+            | ok |> _
+            | failed x |> unikraft/intctlr:abandon(x.line)
+| exhausted e |> std/io:print.ln("alloc:          UNEXPECTED exhausted — {{ e.reason:s }}")
+
+~std/io:print.ln("== flow E: the aliasing hazard — the same handler registered twice on a FIXED, never-allocated line ==")
+
+~unikraft/intctlr:nop.handler(): tok
+    |> std/io:print.ln("nop.handler:    token obtained")
+    |> unikraft/intctlr:register(irq: 50, handler_fn: tok, arg: 0)
+    | ok e0 |> std/io:print.ln("register:       ok — first registration of nopHandler on irq 50 (never allocated — see \"TWO RESOURCES, NOT ONE\")")
+        |> unikraft/intctlr:register(irq: 50, handler_fn: tok, arg: 0)
+        | ok e1 |> std/io:print.ln("register:       ok — SECOND registration of the SAME handler on the SAME irq, a distinct C-side slot")
+            |> unikraft/intctlr:unregister(h: e0)
+            | ok |> std/io:print.ln("unregister:     ok — uk_intctlr_irq_unregister's removal loop cleared BOTH slots matching this func (ukintctlr.c:122-133), not just this one")
+                |> unikraft/intctlr:unregister(h: e1)
+                | ok |> std/io:print.ln("unregister:     UNEXPECTED ok — the second slot should already be gone")
+                | failed x |> std/io:print.ln("unregister:     failed, as predicted — uk_intctlr_irq_unregister found no matching slot left (-ENOENT): the aliasing hazard, live") |> unikraft/intctlr:handler.abandon(x.h)
+            | failed x |> std/io:print.ln("unregister:     UNEXPECTED failed on the first handle") |> unikraft/intctlr:handler.abandon(x.h)
+                |> unikraft/intctlr:unregister(h: e1)
+                | ok |> _
+                | failed x2 |> unikraft/intctlr:handler.abandon(x2.h)
+        | refused r |> std/io:print.ln("register:       UNEXPECTED refused on second registration — {{ r.reason:s }}")
+            |> unikraft/intctlr:unregister(h: e0)
+            | ok |> _
+            | failed x |> unikraft/intctlr:handler.abandon(x.h)
+    | refused r |> std/io:print.ln("register:       UNEXPECTED refused — {{ r.reason:s }}")
+
+~std/io:print.ln("== flow F: init — the documented no-op ==")
+
+~unikraft/intctlr:init()
+| ok |> std/io:print.ln("init:           ok — uk_intctlr_init's body genuinely is \"nothing for now; return 0\" — see the header note on why its own UK_ASSERT(irqs disabled) is unsatisfiable from here")
+| failed x |> std/io:print.ln("init:           UNEXPECTED failed — {{ x.reason:s }} ({{ x.errno:d }})")
+
+~unikraft/alloc:available(): at_end |> std/io:print.ln("heap at end:    {{ at_end:d }} bytes free")

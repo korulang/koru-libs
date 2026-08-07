@@ -1,0 +1,36 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge
+
+// NEGATIVE (must FAIL to compile): free a line, then use the same handle
+// again — the Koru twin of a double-`uk_intctlr_irq_free`.
+//
+// `free` takes `*Irq<!allocated>` and returns nothing carrying the handle
+// forward: the obligation is consumed. A second reference to `line` after
+// that point is a use of a fully DISCHARGED binding, not merely a wrong
+// phantom state — this is the same class the compiler caught by accident
+// while writing `boot_intctlr.kz`, flow D (`d0.irq` printed after
+// `free(line: d0)` had already consumed it), corrected there and pinned
+// here on purpose.
+//
+// Note this is a DIFFERENT refusal class from `unikraft/mpi`'s
+// `negative_release_without_drain.kz` (a phantom STATE mismatch — the
+// right binding, wrong state) — here the binding itself no longer carries
+// any obligation at all.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file
+// would otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/intctlr
+~import std/io
+
+~unikraft/intctlr:alloc()
+| ok line |> unikraft/intctlr:free(line)
+    | ok |> unikraft/intctlr:free(line)
+        | ok |> std/io:print.ln("freed line twice")
+        | failed x |> unikraft/intctlr:abandon(x.line)
+    | failed x |> unikraft/intctlr:abandon(x.line)
+| exhausted e |> std/io:print.ln("alloc failed: {{ e.reason:s }}")

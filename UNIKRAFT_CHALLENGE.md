@@ -285,6 +285,34 @@ have missed why it did what it did.
   failure arm re-mints its own single non-union input state breaks discharge
   tracking for the WHOLE tor, even down arms that never take it). 25 of 28
   asserts retired, per site.
+- **[intctlr](unikraft/intctlr/README.md)** — `ukintctlr`'s interrupt
+  controller behind TWO INDEPENDENT ratchets, not one nested resource: the
+  allocable-IRQ bitmap (`alloc`/`free`, 2 states) and the handler-slot table
+  (`register`/`unregister`, 2 states) — the boot timer registers directly on
+  a fixed, never-allocated line (IRQ 0), so nesting `Handler` inside `Irq`
+  would make that real program unspellable. Not a naive wrap: nothing in
+  this Unikraft fork calls `irq_alloc`/`irq_free` at all before this lift —
+  the first real caller of either half, in any language. **Corrects the
+  shelf's own row**: `register` unmasks a line but `unregister` never
+  re-masks in the C, and this lift cannot close that gap even if it wanted
+  to — `mask_irq`/`unmask_irq` are ordinary functions absent from
+  `exportsyms.uk`, so they do not link. `uk_intctlr_irq_fdt_xlat` is a
+  guaranteed NULL indirect call on x86_64/xpic (`pic_ops.fdt_xlat = __NULL`
+  unconditionally) — the `allocpool`/`UK_CRASH` shape, not exposed. Corrects
+  an off-by-one in the C's own `irq <= MAX_IRQ` array guard (should be `<`)
+  with a stricter bound. THE ALIASING HAZARD is the deepest finding: the C's
+  `unregister` de-duplicates by function-pointer VALUE and can silently
+  discharge TWO independent Koru obligations with one call when the same
+  handler is registered twice on one line — the `unikraft/store` refcount
+  finding, applied to a different C shape, reproduced live on the booted
+  console (the real `uk_pr_crit` line the C itself prints). One Koru
+  compiler defect pinned with a runnable repro
+  (`ai/toolchain-repros/D_unikraft_submodule_std_ambiguous.kz`): a
+  `unikraft/<name>` submodule's own `const std` import collides with
+  `unikraft/index.kz`'s identical one — already live and latent, unfired,
+  in the shipped `unikraft/store`. Census 10 retired (2 corrected
+  off-by-ones) / 2 structurally satisfied by boot ordering / 7 not
+  applicable / 2 not lifted (genuine ceilings), per site.
 
 #### The rule that keeps the catalog from turning into an argument
 
@@ -451,7 +479,7 @@ was an unfiltered line count. Both are replaced.
 | `uklcpu` | allowlist | 29 | 0 | 16 | **13** | 20F/12M/3N | 25 | yes | SMP + interrupt-flag primitives. The `save_irqf`/`restore_irqf` pair is a real nesting discipline, but it is one of the 16 **inert** lines, and most of the rest is `cli`/`sti`. Poor target despite the headline 29. |
 | `ukallocpool` | allowlist | 12 | 0 | 0 | **12** | — | 23 | yes | **TAKEN** (`unikraft/allocpool`) — Two asserts in `uk_allocpool_free` (`pool.c:383,386`) are the whole challenge in miniature: a pool built by `uk_allocpool_init` may *never* be freed by `uk_allocpool_free` (only one built by `uk_allocpool_alloc` may), and every object `take`n must be `return`ed first. Two constructors, one destructor, and picking the wrong pair vanishes at `-DNDEBUG`. Zero inlines. **Corrected by the lift:** the second assert is unreachable and so is the first — `uk_allocpool_free` hits an ungated `UK_CRASH` (pool.c:390) before `uk_free`, in every build, measured on a booted image. |
 | `ukmpi` | allowlist | 10 | 0 | 0 | **10** | — | 15 | yes | **TAKEN** (`unikraft/mpi`) — the mailbox, and the first lift needing ZERO ABI transcription: `struct uk_mbox` is only ever forward-declared, so there is no struct to mirror. `drain` gates on the lift's own atomic pending counter because the C exposes no accessor; the `mbox.c:38` drain-before-free assert is retired through it. Named escape `abandon` leaks the ring deliberately and never calls `uk_mbox_free`. Mailbox. `uk_mbox_free` asserts `m->readpos == m->writepos` (`mbox.c:38`) — **drain before free** — and takes the allocator again, so the create/free allocator pairing is an unwritten rule too. `post`/`recv` × blocking/`_try`/`_to` is a clean exercise in branch payload vs. state. Zero inlines. |
-| `ukintctlr` | allowlist | 11 | 0 | 0 | **11** | — | 21 | yes | Interrupts — an organ nothing shipped touches. `irq_alloc`/`irq_free` over a bitmap (leakable), `irq_register`/`irq_unregister` over handler slots, and `register` *unmasks* the line so `unregister` must re-mask. `uk_intctlr_init` before any of it, enforced by nothing: the read path is `uk_intctlr->ops->…` and a null there is a dead machine, which is the `ukvmem` shape. Zero inlines. |
+| `ukintctlr` | allowlist | 11 | 0 | 0 | **11** | — | 21 | yes | **TAKEN** (`unikraft/intctlr`) — Interrupts, two independent resources: `irq_alloc`/`irq_free` over a bitmap (leakable) and `irq_register`/`irq_unregister` over handler slots, NOT nested — the boot timer registers directly on IRQ 0, never allocated. **Corrected:** `register` *unmasks* the line, but `unregister` never calls `mask_irq` anywhere in its body — the shelf's "unregister must re-mask" was aspirational, not a fact about the C, and this lift cannot close the gap even if it wanted to: `mask_irq`/`unmask_irq` are ordinary C functions but ABSENT from `exportsyms.uk`, so they do not link at all. `uk_intctlr_irq_fdt_xlat` is a guaranteed NULL indirect call on x86_64/xpic (`pic_ops.fdt_xlat = __NULL` unconditionally, `pic.c:34`) — the `allocpool`/`UK_CRASH` shape, not exposed. Also found: an off-by-one in the C's own `irq <= MAX_IRQ` guard (should be `<`), corrected by this lift's stricter bound; and an aliasing hazard where the C's dedup-by-value `unregister` can silently discharge two independent Koru obligations at once (the `unikraft/store` refcount finding, in a different shape). Zero inlines. Census 10 retired / 2 structurally satisfied by boot ordering / 7 not applicable / 2 not lifted, per site. |
 | `uksglist` | allowlist | 11 | 0 | 0 | **11** | 2M | 8 | yes | `alloc → append… → free` with `split`/`join`/`clone`/`slice`. A build-then-use ordering over a segment array; the two inlines are `init`/`reset`. |
 | `ukfs` | allowlist | 7 | 0 | 0 | **7** | 7F/21M | 35 | yes | Mount/unmount plus node refcounting. Only 7 symbols link; the real API is 28 inlines, 21 of which are MIRROR — so this is reachable but it is a **transcription job**, and the mirror is `struct uk_file` + `uk_fs_node`. |
 | `ukfile` | **open** | — | 0 | 0 | **10** | 51M/3N | 9 | yes | **Correction to the old shelf, which called it "thin".** It is not thin — it is 54 inlines of which **51 are MIRROR**, i.e. reachable, and only 3 are NO. But every one of them is `struct uk_file`/`uk_pollq`/`uk_swrefcount` offsets, so a lift is almost entirely mirror and almost not at all calls. Reachable; expensive; honest to say so. |

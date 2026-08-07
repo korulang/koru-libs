@@ -1,0 +1,18 @@
+// Support file for D_control.kz — one line different from
+// support/unikraft_ns/stdrepro/index.kz: no `const std` declaration here,
+// so there is nothing to collide with `unikraft_ns/index.kz`'s own
+// `const std`. Uses `malloc`, the same allocation primitive every shipped
+// unikraft lift (`blk`, `mpi`, `intctlr`, ...) already uses instead of
+// `std.heap`.
+
+const Thing = struct { n: u32 };
+
+extern fn malloc(size: usize) ?*anyopaque;
+
+~pub tor make { n: u32 } -> *Thing
+
+~proc make|zig {
+    const mem: *Thing = @ptrCast(@alignCast(malloc(@sizeOf(Thing)).?));
+    mem.* = Thing{ .n = n };
+    return mem;
+}
