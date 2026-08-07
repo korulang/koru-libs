@@ -665,9 +665,26 @@ reading.
    you cannot demonstrate is a claim, not a lift.
 4. No silent fallbacks. Failures fail loudly with the real error.
 5. The writeup is filed, including which `UK_ASSERT`s your lift makes unnecessary.
-6. Lars reads it and the verdict is "yes — that's the definitive edition."
+6. The arbiter reads it and the verdict is "yes — that's the definitive
+   edition."
 
 Gates 1–5 you self-check. Gate 6 is not yours.
+
+**Gate 6 changed hands 2026-08-07.** It used to be Lars personally, and it
+became the bottleneck: five finished lifts sat unread because the only
+approver was the one person who also had everything else to do. His ruling:
+*"I am not going to read and decide if it's good, we should just push it if
+you think it's good and commission the next batch."*
+
+So the arbiter merges. **What did NOT change is that gate 6 is a real gate,
+and it is still not the contestant's.** A lift does not approve itself, and
+"all my own gates passed" has never been the same claim as "this is the
+definitive edition" — that judgement is about taste, scope and whether the
+lift is the *right* reading of the library, none of which a self-check
+reaches. What the arbiter owes in exchange for holding it: say plainly which
+gates were re-verified and which were taken on the contestant's word. An
+approval that does not distinguish those two is a rubber stamp with better
+paperwork.
 
 ### Four traps that will each cost you an hour
 
