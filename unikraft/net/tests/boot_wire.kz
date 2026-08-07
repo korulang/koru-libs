@@ -1,0 +1,113 @@
+// POSITIVE, and the gate-2 artifact: the whole uknetdev state machine, driven
+// from Koru, twice, inside a unikernel — and a real Ethernet frame that leaves
+// one virtio-net device and arrives on another.
+//
+//   get -> probe -> configure -> queues.open -> start      (nic0)
+//   get -> probe -> configure -> queues.open -> start      (nic1)
+//        -> tx on nic0 -> rx on nic1 -> packet.drop
+//        -> park nic0 -> park nic1
+//
+// Every arrow is a phantom transition the compiler checked before this program
+// existed. `tx` and `rx` go through `dev->tx_one` / `dev->rx_one` — the mirror —
+// and the four witnesses in ../index.kz ran before either was called.
+//
+// WHY TWO INTERFACES ON A QEMU HUB. The frame that comes back is the frame this
+// program sent, byte for byte, with no protocol and no assumption about what a
+// host-side network stack does with it. `-netdev hubport,hubid=0` on both NICs
+// makes QEMU forward anything nic0 transmits to nic1's receive queue. It is the
+// network twin of `unikraft/blk`'s write-then-read-back.
+//
+// Build and boot: see ../README.md.
+
+// `~import unikraft` is DELIBERATELY ABSENT: importing `unikraft/net` already
+// pulls `unikraft/index.kz` into scope, and naming the parent as well registers
+// it twice (`duplicate struct member name 'image_event'`). Both halves are
+// toolchain defects, pinned in unikraft/blk/README.md.
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_NET=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKNETDEV: 'y'
+    CONFIG_LIBVIRTIO_NET: 'y'
+    CONFIG_LIBVIRTIO_PCI: 'y'
+    CONFIG_LIBVIRTIO_BUS: 'y'
+}
+
+// ONE top-level flow, not two. `tests/wrapper.zig` — the shared C-ABI seam every
+// shipped lift uses — calls `flow0` and nothing else, so a second top-level flow
+// is emitted, linked and never run: the archive dead-strips to 3,560 bytes and
+// the unikernel boots printing only the device count. Measured here, 2026-08-07.
+~unikraft/net:count(): n |> std/io:print.ln("netdevs: {{ n:d }}")
+|> unikraft/net:get(id: 0)
+| link a |> std/io:print.ln("nic0: {{ a.driver:s }} index {{ a.index:d }}")
+    |> unikraft/net:probe(a.dev)
+        | ok p0 |> unikraft/net:configure(dev: p0)
+            | ok c0 |> std/io:print.ln("nic0: mtu {{ c0.mtu:d }} hwaddr {{ c0.hwaddr:s }} max payload {{ c0.max_payload:d }}")
+                |> unikraft/net:queues.open(c0.dev)
+                    | ok q0 |> unikraft/net:start(dev: q0)
+                        | ok r0 |> std/io:print.ln("nic0: running")
+                            |> unikraft/net:get(id: 1)
+                                | link b |> std/io:print.ln("nic1: {{ b.driver:s }} index {{ b.index:d }}")
+                                    |> unikraft/net:probe(b.dev)
+                                        | ok p1 |> unikraft/net:configure(dev: p1)
+                                            | ok c1 |> std/io:print.ln("nic1: mtu {{ c1.mtu:d }} hwaddr {{ c1.hwaddr:s }}")
+                                                |> unikraft/net:queues.open(c1.dev)
+                                                    | ok q1 |> unikraft/net:start(dev: q1)
+                                                        | ok r1 |> std/io:print.ln("nic1: running")
+                                                            |> unikraft/net:tx(dev: r0, to: "ff:ff:ff:ff:ff:ff", ethertype: 34997, payload: "KORU SENT THIS FRAME THROUGH unikraft/net -- dev->tx_one, mirror proven by four witnesses, no shim")
+                                                                | sent s |> std/io:print.ln("nic0: tx {{ s.frame:d }} bytes")
+                                                                    |> unikraft/net:rx(dev: r1, spins: 2000000)
+                                                                        | frame f |> std/io:print.ln("nic1: rx from {{ f.from:s }} to {{ f.to:s }} type {{ f.ethertype:d }}")
+                                                                            |> std/io:print.ln("nic1: payload {{ f.payload:s }}")
+                                                                            |> unikraft/net:packet.drop(f.pkt)
+                                                                            |> unikraft/net:park(f.dev)
+                                                                            |> unikraft/net:park(s.dev)
+                                                                            |> std/io:print.ln("wire complete")
+                                                                        | empty e1 |> std/io:print.ln("nic1: no frame arrived")
+                                                                            |> unikraft/net:park(dev: e1)
+                                                                            |> unikraft/net:park(s.dev)
+                                                                        | failed e |> std/io:print.ln("nic1: rx {{ e.reason:s }} ({{ e.errno:d }})")
+                                                                            |> unikraft/net:park(e.dev)
+                                                                            |> unikraft/net:park(s.dev)
+                                                                | dropped e |> std/io:print.ln("nic0: tx {{ e.reason:s }} ({{ e.errno:d }})")
+                                                                    |> unikraft/net:park(e.dev)
+                                                                    |> unikraft/net:traffic.skipped(dev: r1): hold1 |> unikraft/net:park(dev: hold1)
+                                                                | rejected j |> std/io:print.ln("nic0: tx rejected: {{ j.reason:s }}")
+                                                                    |> unikraft/net:traffic.skipped(j.dev): hold0 |> unikraft/net:park(dev: hold0)
+                                                                    |> unikraft/net:traffic.skipped(dev: r1): hold1 |> unikraft/net:park(dev: hold1)
+                                                        | refused e |> std/io:print.ln("nic1: start {{ e.reason:s }} ({{ e.errno:d }})")
+                                                            |> unikraft/net:abandon(e.dev)
+                                                            |> unikraft/net:traffic.skipped(dev: r0): hold0 |> unikraft/net:park(dev: hold0)
+                                                    | refused e |> std/io:print.ln("nic1: queues.open {{ e.reason:s }} ({{ e.errno:d }})")
+                                                        |> unikraft/net:abandon(e.dev)
+                                                        |> unikraft/net:traffic.skipped(dev: r0): hold0 |> unikraft/net:park(dev: hold0)
+                                            | refused e |> std/io:print.ln("nic1: configure {{ e.reason:s }} ({{ e.errno:d }})")
+                                                |> unikraft/net:abandon(e.dev)
+                                                |> unikraft/net:traffic.skipped(dev: r0): hold0 |> unikraft/net:park(dev: hold0)
+                                        | refused e |> std/io:print.ln("nic1: probe {{ e.reason:s }} ({{ e.errno:d }})")
+                                            |> unikraft/net:abandon(e.dev)
+                                            |> unikraft/net:traffic.skipped(dev: r0): hold0 |> unikraft/net:park(dev: hold0)
+                                | missing why |> std/io:print.ln("nic1 unavailable: {{ why:s }}")
+                                    |> unikraft/net:traffic.skipped(dev: r0): hold0 |> unikraft/net:park(dev: hold0)
+                        | refused e |> std/io:print.ln("nic0: start {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+                    | refused e |> std/io:print.ln("nic0: queues.open {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+            | refused e |> std/io:print.ln("nic0: configure {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+        | refused e |> std/io:print.ln("nic0: probe {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")

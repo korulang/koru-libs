@@ -1,0 +1,1075 @@
+// @korulang/unikraft-net — Unikraft's network device layer (`uknetdev`), lifted.
+//
+//   import unikraft/net
+//
+// WHAT THIS IS. `lib/uknetdev` is Unikraft's network API: 31 linkable functions
+// around a five-state device machine (INVALID -> UNPROBED -> UNCONFIGURED ->
+// CONFIGURED -> RUNNING) with an rx queue and a tx queue hanging off it, plus a
+// packet buffer (`struct uk_netbuf`) whose ownership moves between the caller
+// and the driver on every transfer. It carries 170 `UK_ASSERT`s — the most of
+// any library in the Unikraft tree — and `UK_ASSERT` expands to `do {} while(0)`
+// whenever `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` is off, which is every image anyone
+// ships. This module transcribes that ordering into phantom states.
+//
+// THE RATCHET. One device handle, seven states, one direction:
+//
+//     get           mints <found!>                        uk_netdev_get
+//     probe         needs <!found>      mints <probed!>   uk_netdev_probe
+//     configure     needs <!probed>     mints <configured!> uk_netdev_configure
+//     queues.open   needs <!configured> mints <armed!>    uk_netdev_rxq_configure
+//                                                       + uk_netdev_txq_configure
+//     start         needs <!armed>      mints <running!>  uk_netdev_start
+//     tx / rx       needs <!running|!carried> mints <carried!>
+//                                                         dev->tx_one / dev->rx_one
+//     park          needs <!carried>                      (no C call — see below)
+//
+// UKNETDEV HAS NO TEARDOWN, AND THAT IS THE SHAPE OF THIS LIFT. There is no
+// `uk_netdev_stop`, no `unconfigure`, no `unregister` outside the driver API:
+// `exportsyms.uk` has 33 lines and not one of them undoes anything. A netdev is
+// acquired once and runs until the machine stops. So the terminal tor `park`
+// makes NO C call — it releases the Koru-side handle and says out loud that the
+// interface stays up. Emitting a call there would be an invented teardown.
+//
+// THE ASYMMETRY (pillar 4) IS ON `park`, AND IT IS SHARPER HERE THAN ON A DISK.
+// `park` accepts ONLY <!carried>, and <carried!> is minted only by a transfer.
+// So
+//
+//     start(d) | ok r |> park(dev: r)
+//
+// does not compile: you cannot bring an interface up, arm two virtqueues,
+// allocate a ring of receive buffers, and walk away without ever moving a frame.
+// This is the network twin of gzip's `fed` gate (koru-libs/gzip/index.kz:258 —
+// `finish` accepts only <!fed>, minted only by `push`) and of the transaction
+// showcase's rule (koru tests/.../2104_14_open_tx_commit_close/db.kz, where
+// `close` takes <!active> and not <!connected>). The escape is named and
+// greppable — `net:traffic.skipped` — so "did we bring up NICs we never used"
+// is a search, not an audit.
+//
+// WHERE THE OBLIGATION LINE IS DRAWN, PACKET VERSUS DEVICE. The brief warns that
+// obligation-on-failure scales inversely with resource frequency. `uknetdev` has
+// both a rare resource and a hot one, so here is the line and the reason, which
+// comes from the C and not from taste:
+//
+//   * THE DEVICE IS RARE. Every failure arm hands the handle back in a state
+//     that names what is legal next. There is exactly one such state — <stuck!>
+//     — because uknetdev has no teardown, so every device failure has the same
+//     recovery: let go. `net:abandon` is it.
+//
+//   * A TRANSMITTED PACKET IS NOT AN OBLIGATION AT ALL. `uk_netdev_tx_one`'s
+//     contract (netdev.h:531) is that the DRIVER frees the netbuf once the
+//     device is done with it. Ownership transfers inside one call. So `tx` takes
+//     bytes, allocates the netbuf, fills it, submits it, and on the one path
+//     where the driver hands it back — no descriptor space, virtio_net.c:503-506
+//     un-prepends its own header and leaves the frame intact — this lift FREES
+//     it and reports `| dropped` with a reason. That is the brief's "a failure
+//     on a hot resource should consume", and it costs the per-packet path zero
+//     states and zero extra calls.
+//
+//   * A RECEIVED PACKET IS AN OBLIGATION, because nothing else can be true.
+//     `rx_one` hands out a netbuf that the caller must give back with
+//     `uk_netbuf_free`, and the caller holds it for as long as it is reading the
+//     payload — there is no single call that can contain that. <received!> is
+//     the only leakable thing in this module and `packet.drop` is its only
+//     discharge.
+//
+//   * THE ASYMMETRY GATE IS **NOT** APPLIED TO THE RECEIVED PACKET, on purpose.
+//     `rx` hands back the handle and the decoded frame in the SAME arm, so
+//     "acquired but never looked at" is not a state a program can reach. A
+//     <read!> state between <received!> and `drop` would guard nothing and would
+//     add a call to the hottest path in the library. The brief's own rule —
+//     "not everything deserves a ratchet" — applies to the packet, and the
+//     ratchet belongs to the device.
+//
+// THE MIRROR, AND HOW IT IS PROVED BEFORE IT IS USED. `uk_netdev_rx_one` and
+// `uk_netdev_tx_one` are `static inline` (netdev.h:476, :546) and emit no
+// symbol, so a separately-linked Koru archive reaches the transfers through
+// `struct uk_netdev`'s fields, not through a symbol. With `UK_ASSERT` compiled
+// out and `CONFIG_LIBUKNETDEV_STATS` off — the config this lift builds — the
+// whole body of `uk_netdev_rx_one` is
+//
+//     ret = dev->rx_one(dev, dev->_rx_queue[queue_id], pkt);
+//
+// which is offsets, not symbols: the MIRROR case of the brief's linkability
+// rule, the same instrument `pages`, `sched` and `lock` already paid for. This
+// module proves its mirror with FOUR independent witnesses before it makes an
+// indirect call, and refuses loudly if any one of them disagrees:
+//
+//   W1  VALUE WITNESS, three times, at three DIFFERENT values. `uk_netdev_state_get` is
+//       exported and returns `dev->_data->state`. `get` reads the state through
+//       the mirror and requires it to equal the accessor AND to be UNPROBED;
+//       `probe` requires the same agreement at UNCONFIGURED, and `start` at
+//       RUNNING. Agreement at three distinct values is not a coincidence a wrong
+//       offset can produce. This pins `_data` at 16 and `state` at 0 — and
+//       `state` is the FIRST member of `struct uk_netdev_data`, ahead of the
+//       Kconfig-sized `rxq_handler[]` array, so the witness needs no Kconfig
+//       knowledge.
+//   W2  CALL-THROUGH WITNESS. `configure` reads `ops->mtu_get` through the
+//       mirror, CALLS it, and requires the answer to equal the exported
+//       `uk_netdev_mtu_get`. That pins `ops` at 24 and `mtu_get` at 32 within
+//       `struct uk_netdev_ops`.
+//   W3  DERIVATION, NOT ASSUMPTION, OF THE ONE KCONFIG OFFSET. `_tx_queue` sits
+//       at `32 + 8 * CONFIG_LIBUKNETDEV_MAXNBQUEUES`, and that integer has no
+//       symbol — it is exactly the brief's case-3 NO hazard. `queues.open` does
+//       not assume it. It configures the rx queue, confirms the word at offset
+//       32 turned non-null, configures the tx queue, then scans forward for the
+//       first word that is now non-null: `_rx_queue[1..]` are all still null
+//       because only queue 0 was configured, so the first hit IS `_tx_queue[0]`,
+//       and its distance from `_rx_queue[0]` IS MAXNBQUEUES. The scan stops at
+//       the first hit and never reads past it. If the answer is not in 1..16 the
+//       tor refuses.
+//   W4  DECLARATION ORDER FROM A PROVEN ANCHOR. `tx_one` and `rx_one` are the
+//       two pointers declared before `_data` (netdev_core.h:509-520) and nothing
+//       Kconfig-conditional precedes them. With `_data` pinned at 16 by W1 and
+//       `ops` pinned at 24 by W2, offsets 0 and 8 are the only places two
+//       pointers can be. This is the one witness that is a derivation rather
+//       than an observation, and it is stated as such in README.md.
+//
+// Every field this lift touches sits at offset <= 40, AHEAD of every
+// Kconfig-conditional member of `struct uk_netdev` (`_einfo`, `scratch_pad`,
+// `_stats`, `_stats_lock` are all at the tail, netdev_core.h:528-541), so the
+// mirror does not move when those flip.
+//
+// ONE QUEUE PAIR. `CONFIG_LIBUKNETDEV_MAXNBQUEUES` defaults to 1 and virtio-net
+// reports one pair, so this lift configures queue 0 for rx and queue 0 for tx
+// and never asks the caller for a queue id. `queues.open` opens BOTH in one tor
+// because uknetdev states no ordering between them — inventing rx-before-tx
+// would be a rule the C does not have — and because a device with only one of
+// them can neither send nor receive.
+//
+// ETHERNET IS AT THIS ALTITUDE, NOT ABOVE IT. `tx` writes the 14-byte Ethernet
+// header and `rx` decodes it. That is not a layer this lift invented: uknetdev's
+// own public headers ship `UK_ETH_ADDR_LEN`, `UK_ETH_HDR_UNTAGGED_LEN`,
+// `UK_ETH_FRAME_MAXLEN` (netdev_core.h:81-119), `struct uk_hwaddr`, and a whole
+// `netstructs.h` of Ethernet and IP declarations. Doing it here is what lets a
+// caller send a frame without ever asking what its own MAC address is, which is
+// pillar 1.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// `lib/uknetdev/exportsyms.uk` exists (case 1 of the brief's linkability rule),
+// 33 lines. Every `extern fn` below is on it. Two of the 33 —
+// `uk_netdev_rxq_intr_enable` and `uk_netdev_rxq_intr_disable` — are INERT
+// (case 5): they are `static inline` at netdev.h:395 and :424, so the
+// compilation unit emits no global and objcopy has nothing to keep. They are
+// not bound here and README.md says what that costs.
+
+const UkNetdev = opaque {};
+const UkAlloc = opaque {};
+const UkRxQueue = opaque {};
+const UkTxQueue = opaque {};
+
+// `uk_alloc_get_default()` is `static inline` and returns this exported global
+// (lib/ukalloc/include/uk/alloc.h:136, lib/ukalloc/exportsyms.uk:22). Reading
+// the variable is the same load the inline performs.
+extern var _uk_alloc_head: ?*UkAlloc;
+
+extern fn uk_netdev_count() c_uint;
+extern fn uk_netdev_get(slot: c_uint) ?*UkNetdev;
+extern fn uk_netdev_id_get(nd: *UkNetdev) u16;
+extern fn uk_netdev_drv_name_get(nd: *UkNetdev) ?[*:0]const u8;
+extern fn uk_netdev_state_get(nd: *UkNetdev) c_int;
+extern fn uk_netdev_probe(nd: *UkNetdev) c_int;
+extern fn uk_netdev_info_get(nd: *UkNetdev, out: *NetInfo) void;
+extern fn uk_netdev_configure(nd: *UkNetdev, conf: *const NetConf) c_int;
+extern fn uk_netdev_rxq_info_get(nd: *UkNetdev, qid: u16, out: *QueueInfo) c_int;
+extern fn uk_netdev_txq_info_get(nd: *UkNetdev, qid: u16, out: *QueueInfo) c_int;
+extern fn uk_netdev_rxq_configure(nd: *UkNetdev, qid: u16, nb_desc: u16, conf: *RxQueueConf) c_int;
+extern fn uk_netdev_txq_configure(nd: *UkNetdev, qid: u16, nb_desc: u16, conf: *TxQueueConf) c_int;
+extern fn uk_netdev_start(nd: *UkNetdev) c_int;
+extern fn uk_netdev_hwaddr_get(nd: *UkNetdev) ?*const HwAddr;
+extern fn uk_netdev_mtu_get(nd: *UkNetdev) u16;
+extern fn uk_netdev_promiscuous_set(nd: *UkNetdev, mode: c_uint) c_int;
+
+extern fn uk_netbuf_alloc_buf(
+    a: *UkAlloc,
+    buflen: usize,
+    bufalign: usize,
+    headroom: u16,
+    privlen: usize,
+    dtor: ?*const fn (*Packet) callconv(.c) void,
+) ?*Packet;
+extern fn uk_netbuf_free(m: *Packet) void;
+
+// nolibc, backed by ukalloc's default allocator. Used only for the device
+// handle, which is one allocation per NIC for the life of the machine.
+extern fn malloc(n: usize) ?*anyopaque;
+extern fn free(p: ?*anyopaque) void;
+
+// enum uk_netdev_state — netdev_core.h:206
+const ST_INVALID: c_int = 0;
+const ST_UNPROBED: c_int = 1;
+const ST_UNCONFIGURED: c_int = 2;
+const ST_CONFIGURED: c_int = 3;
+const ST_RUNNING: c_int = 4;
+
+// Status flags returned by rx_one / tx_one — netdev_core.h:378-385
+const STATUS_SUCCESS: c_int = 0x1;
+const STATUS_MORE: c_int = 0x2;
+const STATUS_UNDERRUN: c_int = 0x4;
+
+// The only queue pair this lift configures. See the header note on MAXNBQUEUES.
+const QUEUE: u16 = 0;
+
+// Ethernet, from uknetdev's own headers.
+const ETH_ADDR_LEN: usize = 6; // netdev_core.h:81
+const ETH_HDR_LEN: usize = 14; // netdev_core.h:87, (2 * addr) + type
+const ETH_MIN_FRAME: usize = 60; // netstructs.h:49, UK_ETHER_MIN_LEN minus CRC
+const ETH_MAX_FRAME: usize = 1522; // netdev_core.h:110, 8021AD-tagged maximum
+
+// The ceiling this lift is willing to derive MAXNBQUEUES up to. The Kconfig help
+// text names 16 as the API's own upper example (lib/uknetdev/Config.uk:12).
+const MAXNBQUEUES_CEILING: usize = 16;
+
+// --- POD parameter structs, mirrored from lib/uknetdev/include/uk/netdev_core.h
+//
+// These are caller-owned structs passed BY POINTER into exported functions.
+// They are not part of the device layout question: the C fills them or reads
+// them and never stores them. Sizes checked against a booted probe (README.md).
+
+const HwAddr = extern struct { addr: [ETH_ADDR_LEN]u8 }; // :126, __packed
+
+const NetInfo = extern struct { // :165
+    max_rx_queues: u16,
+    max_tx_queues: u16,
+    in_queue_pairs: c_int,
+    max_mtu: u16,
+    nb_encap_tx: u16,
+    nb_encap_rx: u16,
+    ioalign: u16,
+    features: u32,
+};
+
+const QueueInfo = extern struct { // :179
+    nb_max: u16,
+    nb_min: u16,
+    nb_align: u16,
+    nb_is_power_of_two: c_int,
+};
+
+const NetConf = extern struct { // :189
+    nb_rx_queues: u16,
+    nb_tx_queues: u16,
+    lro: u8,
+};
+
+const AllocRxPktsFn = *const fn (?*anyopaque, [*]?*Packet, u16) callconv(.c) u16;
+const QueueEventFn = *const fn (*UkNetdev, u16, ?*anyopaque) callconv(.c) void;
+
+const RxQueueConf = extern struct { // :282 (no DISPATCHERTHREADS: `s` absent)
+    callback: ?QueueEventFn,
+    callback_cookie: ?*anyopaque,
+    a: ?*UkAlloc,
+    alloc_rxpkts: ?AllocRxPktsFn,
+    alloc_rxpkts_argp: ?*anyopaque,
+};
+
+const TxQueueConf = extern struct { a: ?*UkAlloc }; // :298
+
+comptime {
+    if (@sizeOf(NetInfo) != 20) @compileError("uk_netdev_info changed size");
+    if (@sizeOf(QueueInfo) != 12) @compileError("uk_netdev_queue_info changed size");
+    if (@sizeOf(NetConf) != 6) @compileError("uk_netdev_conf changed size");
+    if (@sizeOf(RxQueueConf) != 40) @compileError("uk_netdev_rxqueue_conf changed size");
+    if (@sizeOf(TxQueueConf) != 8) @compileError("uk_netdev_txqueue_conf changed size");
+    if (@offsetOf(RxQueueConf, "alloc_rxpkts") != 24) @compileError("rxqueue_conf.alloc_rxpkts moved");
+}
+
+// --- THE PACKET. `struct uk_netbuf`, netbuf.h:135.
+//
+// This is a full mirror, not a prefix: this lift allocates netbufs (for tx and
+// for the receive ring), reads `data`/`len`/`buflen` on both paths, and hands
+// them to the driver, which reads and writes the rest. Every offset below was
+// measured on a booted probe with the real headers (README.md, "The probe").
+//
+// `refcount` is `__atomic { int counter; }` — mirrored as a plain i32 because
+// this lift never touches it. `uk_netbuf_free` owns it.
+
+const Packet = extern struct {
+    next: ?*Packet, // 0
+    prev: ?*Packet, // 8
+    flags: u8, // 16
+    data: ?[*]u8, // 24
+    len: u16, // 32
+    refcount: i32, // 36
+    priv: ?*anyopaque, // 40
+    buf: ?[*]u8, // 48
+    buflen: usize, // 56
+    csum_start: u16, // 64
+    csum_offset: u16, // 66
+    header_len: u16, // 68
+    gso_size: u16, // 70
+    dtor: ?*const fn (*Packet) callconv(.c) void, // 72
+    _a: ?*UkAlloc, // 80
+    _b: ?*anyopaque, // 88
+};
+
+comptime {
+    if (@offsetOf(Packet, "flags") != 16) @compileError("uk_netbuf.flags moved");
+    if (@offsetOf(Packet, "data") != 24) @compileError("uk_netbuf.data moved");
+    if (@offsetOf(Packet, "len") != 32) @compileError("uk_netbuf.len moved");
+    if (@offsetOf(Packet, "refcount") != 36) @compileError("uk_netbuf.refcount moved");
+    if (@offsetOf(Packet, "priv") != 40) @compileError("uk_netbuf.priv moved");
+    if (@offsetOf(Packet, "buf") != 48) @compileError("uk_netbuf.buf moved");
+    if (@offsetOf(Packet, "buflen") != 56) @compileError("uk_netbuf.buflen moved");
+    if (@offsetOf(Packet, "dtor") != 72) @compileError("uk_netbuf.dtor moved");
+    if (@sizeOf(Packet) != 96) @compileError("uk_netbuf changed size");
+}
+
+// The two MAC-address strings `rx` hands back ride in the netbuf's own private
+// area, requested with `privlen` at allocation. No per-packet allocation is
+// added by this lift.
+const Meta = extern struct {
+    from: [17]u8,
+    to: [17]u8,
+};
+
+// --- THE DEVICE MIRROR. `struct uk_netdev`, netdev_core.h:509.
+//
+// Only the four members ahead of the Kconfig-sized queue arrays are declared.
+// The queue arrays themselves are NOT declared, because `_tx_queue`'s offset
+// depends on `CONFIG_LIBUKNETDEV_MAXNBQUEUES` and that integer has no symbol.
+// `queues.open` derives it. See W3 in the header note.
+
+const RxOneFn = *const fn (*UkNetdev, *UkRxQueue, *?*Packet) callconv(.c) c_int;
+const TxOneFn = *const fn (*UkNetdev, *UkTxQueue, *Packet) callconv(.c) c_int;
+
+const NetdevOps = extern struct { // :400, five members deep — mtu_get is the last
+    rxq_intr_enable: ?*anyopaque, // 0
+    rxq_intr_disable: ?*anyopaque, // 8
+    hwaddr_get: ?*anyopaque, // 16
+    hwaddr_set: ?*anyopaque, // 24
+    mtu_get: ?*const fn (*UkNetdev) callconv(.c) u16, // 32
+};
+
+const NetdevData = extern struct { // :453 — `state` is the first member
+    state: c_int, // 0
+};
+
+const NetdevPub = extern struct { // the public prefix of struct uk_netdev
+    tx_one: ?TxOneFn, // 0
+    rx_one: ?RxOneFn, // 8
+    _data: ?*NetdevData, // 16
+    ops: ?*const NetdevOps, // 24
+};
+
+comptime {
+    if (@offsetOf(NetdevPub, "rx_one") != 8) @compileError("uk_netdev.rx_one moved");
+    if (@offsetOf(NetdevPub, "_data") != 16) @compileError("uk_netdev._data moved");
+    if (@offsetOf(NetdevPub, "ops") != 24) @compileError("uk_netdev.ops moved");
+    if (@offsetOf(NetdevOps, "mtu_get") != 32) @compileError("uk_netdev_ops.mtu_get moved");
+    if (@offsetOf(NetdevData, "state") != 0) @compileError("uk_netdev_data.state moved");
+}
+
+// `_rx_queue[0]` is declared immediately after `ops` and nothing conditional
+// sits between them, so its word index follows from `ops` being proved at 24.
+const RX_SLOT_WORD: usize = 4;
+
+// ============================================================================
+// THE HANDLE
+// ============================================================================
+//
+// A caller never sees `struct uk_netdev *`. This handle carries the device
+// pointer, the two transfer function pointers and the two queue pointers read
+// once out of the mirror, and the geometry read once at `configure`. Caching the
+// queue pointers is sound ONLY because uknetdev has no queue teardown: a
+// `_rx_queue[qid]` slot is written once, by `rxq_configure`, and there is no
+// exported call that clears it. The C re-reads the slot on every packet because
+// its API takes a queue id; this lift does not have to.
+
+const Device = struct {
+    raw: *UkNetdev,
+    rx_one: RxOneFn,
+    tx_one: TxOneFn,
+    rxq: ?*UkRxQueue,
+    txq: ?*UkTxQueue,
+    a: *UkAlloc,
+    mtu: u16,
+    encap_tx: u16,
+    encap_rx: u16,
+    ioalign: u16,
+    rx_buflen: usize,
+    rx_headroom: u16,
+    maxnbqueues: usize,
+    hw_text: [17]u8,
+};
+
+fn mirrorOf(nd: *UkNetdev) *const NetdevPub {
+    return @ptrCast(@alignCast(nd));
+}
+
+fn wordsOf(nd: *UkNetdev) [*]const ?*anyopaque {
+    return @ptrCast(@alignCast(nd));
+}
+
+// The one place the mirror is read for a value the C also publishes. Returns
+// true when the mirrored state agrees with `uk_netdev_state_get` AND equals
+// `want`. Called at three different values of `want`; see W1.
+fn stateAgrees(nd: *UkNetdev, want: c_int) bool {
+    const m = mirrorOf(nd);
+    const data = m._data orelse return false;
+    return data.state == want and uk_netdev_state_get(nd) == want;
+}
+
+const HEX: [16]u8 = .{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+
+fn writeMac(out: *[17]u8, src: [*]const u8) void {
+    for (0..ETH_ADDR_LEN) |i| {
+        out[i * 3] = HEX[(src[i] >> 4) & 0xf];
+        out[i * 3 + 1] = HEX[src[i] & 0xf];
+        if (i < ETH_ADDR_LEN - 1) out[i * 3 + 2] = ':';
+    }
+}
+
+// "aa:bb:cc:dd:ee:ff" -> six bytes. Refuses anything else; there is no lenient
+// path and no default address.
+fn parseMac(text: []const u8, out: *[ETH_ADDR_LEN]u8) bool {
+    if (text.len != 17) return false;
+    for (0..ETH_ADDR_LEN) |i| {
+        if (i < ETH_ADDR_LEN - 1 and text[i * 3 + 2] != ':') return false;
+        const hi = hexDigit(text[i * 3]) orelse return false;
+        const lo = hexDigit(text[i * 3 + 1]) orelse return false;
+        out[i] = (hi << 4) | lo;
+    }
+    return true;
+}
+
+fn hexDigit(ch: u8) ?u8 {
+    if (ch >= '0' and ch <= '9') return ch - '0';
+    if (ch >= 'a' and ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' and ch <= 'F') return ch - 'A' + 10;
+    return null;
+}
+
+// The receive-buffer allocator the driver calls to (re)fill the rx ring.
+// `uk_netdev_rxq_configure` asserts this is non-null (netdev.c:526) and
+// virtio-net calls it from `virtio_netdev_rx_fillup` (virtio_net.c:335) both at
+// queue setup and after every receive.
+//
+// `uk_netbuf_alloc_buf` leaves `len` at 0; the driver reads `netbuf->len` as the
+// usable receive size (virtio_net.c:555), so it is set here from the netbuf's
+// own `buflen` rather than from the length that was requested — `buflen` is what
+// survived the metadata carve-out in `uk_netbuf_prepare_buf`.
+fn allocRxPkts(argp: ?*anyopaque, slots: [*]?*Packet, count: u16) callconv(.c) u16 {
+    const d: *Device = @ptrCast(@alignCast(argp orelse return 0));
+    var filled: u16 = 0;
+    for (0..count) |i| {
+        const nb = uk_netbuf_alloc_buf(
+            d.a,
+            d.rx_buflen,
+            d.ioalign,
+            d.rx_headroom,
+            @sizeOf(Meta),
+            null,
+        ) orelse break;
+        nb.len = @intCast(nb.buflen - @as(usize, d.rx_headroom));
+        slots[i] = nb;
+        filled += 1;
+    }
+    return filled;
+}
+
+fn destroy(d: *Device) void {
+    free(@ptrCast(d));
+}
+
+// ============================================================================
+// ACQUIRE
+// ============================================================================
+
+// How many network devices the platform registered. No obligation: knowing the
+// count constrains nothing about what you may do next.
+~pub tor count { } -> u32
+
+~proc count|zig {
+    return @intCast(uk_netdev_count());
+}
+
+// Take network device `id`. Mints <found!>; the ONLY tor that accepts <!found>
+// is `probe`, so there is no `net:drop` and `get(); park();` is not a program
+// that exists.
+//
+// THE FIRST MIRROR WITNESS RUNS HERE (W1, first of three values). A device
+// straight out of `uk_netdev_drv_register` is UNPROBED, and `uk_netdev_state_get`
+// is exported, so the mirrored read of `_data->state` is checked against the C's
+// own accessor before this module has made a single indirect call.
+~pub tor get { id: u32 }
+| link {
+    dev: *Device<found!>,
+    driver: string,
+    index: u32
+}
+| missing string
+
+~proc get|zig {
+    const raw = uk_netdev_get(@intCast(id)) orelse {
+        return .{ .missing = "no network device registered under that id" };
+    };
+
+    if (!stateAgrees(raw, ST_UNPROBED)) {
+        return .{ .missing = "mirror witness W1 failed at get: the state read through struct uk_netdev._data disagrees with uk_netdev_state_get, or the device is not UNPROBED" };
+    }
+
+    const heap = _uk_alloc_head orelse {
+        return .{ .missing = "no default ukalloc allocator is registered" };
+    };
+
+    const m = mirrorOf(raw);
+    const rxf = m.rx_one orelse {
+        return .{ .missing = "struct uk_netdev.rx_one is null: the driver registered no receive path" };
+    };
+    const txf = m.tx_one orelse {
+        return .{ .missing = "struct uk_netdev.tx_one is null: the driver registered no transmit path" };
+    };
+
+    const mem = malloc(@sizeOf(Device)) orelse {
+        return .{ .missing = "out of memory allocating the device handle" };
+    };
+    const d: *Device = @ptrCast(@alignCast(mem));
+    d.* = Device{
+        .raw = raw,
+        .rx_one = rxf,
+        .tx_one = txf,
+        .rxq = null,
+        .txq = null,
+        .a = heap,
+        .mtu = 0,
+        .encap_tx = 0,
+        .encap_rx = 0,
+        .ioalign = 0,
+        .rx_buflen = 0,
+        .rx_headroom = 0,
+        .maxnbqueues = 0,
+        .hw_text = .{'?'} ** 17,
+    };
+
+    const name = uk_netdev_drv_name_get(raw);
+    var label: []const u8 = "unnamed";
+    if (name) |p| label = spanZ(p);
+
+    return .{ .link = .{
+        .dev = d,
+        .driver = label,
+        .index = @intCast(uk_netdev_id_get(raw)),
+    } };
+}
+
+fn spanZ(p: [*:0]const u8) []const u8 {
+    var n: usize = 0;
+    while (p[n] != 0) n += 1;
+    return p[0..n];
+}
+
+// ============================================================================
+// BRING UP
+// ============================================================================
+
+// uk_netdev_probe. Lifts netdev.c:253 (`probe` asserts UNPROBED) outright:
+// <!found> is minted only by `get` and consumed here, so probing twice and
+// probing something that was never fetched are both unspellable.
+//
+// W1, second value. After a successful probe the device is UNCONFIGURED, and the
+// mirror is required to agree with the exported accessor at that value too.
+~pub tor probe { dev: *Device<!found> }
+| ok *Device<probed!>
+| refused { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc probe|zig {
+    const rc = uk_netdev_probe(dev.raw);
+    if (rc < 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_netdev_probe failed" } };
+    }
+    if (!stateAgrees(dev.raw, ST_UNCONFIGURED)) {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W1 failed at probe: the mirrored state did not follow uk_netdev_state_get to UNCONFIGURED" } };
+    }
+    return .{ .ok = dev };
+}
+
+// uk_netdev_configure with one rx queue and one tx queue, and the geometry the
+// rest of the module needs. Lifts netdev.c:396 (`configure` returns -EINVAL
+// unless UNCONFIGURED) and netdev.c:271 / :291 (`info_get` and `einfo_get`
+// assert state >= UNCONFIGURED): the geometry is read here and nowhere earlier
+// because <!probed> is the first state in which the C permits it.
+//
+// The MTU, the hardware address and the largest payload the caller may hand to
+// `tx` ride in the branch payload. None of them takes or mints an obligation —
+// reading them constrains nothing about what may happen next — and handing them
+// out here is what lets `tx` take bytes rather than a sized buffer.
+//
+// W2 RUNS HERE. `ops->mtu_get` is read through the mirror, CALLED, and its
+// answer compared with the exported `uk_netdev_mtu_get`. That is the call-through
+// witness for `ops` at offset 24.
+~pub tor configure { dev: *Device<!probed> }
+| ok {
+    dev: *Device<configured!>,
+    mtu: u32,
+    hwaddr: string,
+    max_payload: u32
+}
+| refused { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc configure|zig {
+    var info = NetInfo{
+        .max_rx_queues = 0,
+        .max_tx_queues = 0,
+        .in_queue_pairs = 0,
+        .max_mtu = 0,
+        .nb_encap_tx = 0,
+        .nb_encap_rx = 0,
+        .ioalign = 0,
+        .features = 0,
+    };
+    uk_netdev_info_get(dev.raw, &info);
+    if (info.max_rx_queues == 0 or info.max_tx_queues == 0) {
+        return .{ .refused = .{ .dev = dev, .errno = -22, .reason = "the driver reports no usable receive or transmit queue" } };
+    }
+
+    const conf = NetConf{ .nb_rx_queues = 1, .nb_tx_queues = 1, .lro = 0 };
+    const rc = uk_netdev_configure(dev.raw, &conf);
+    if (rc < 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_netdev_configure rejected the device" } };
+    }
+    if (!stateAgrees(dev.raw, ST_CONFIGURED)) {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W1 failed at configure: the mirrored state did not follow uk_netdev_state_get to CONFIGURED" } };
+    }
+
+    // W2 — the call-through witness for `ops`.
+    const m = mirrorOf(dev.raw);
+    const ops = m.ops orelse {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W2 failed: struct uk_netdev.ops read as null" } };
+    };
+    const getter = ops.mtu_get orelse {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W2 failed: ops->mtu_get read as null, which uk_netdev_drv_register asserts cannot happen" } };
+    };
+    const exported = uk_netdev_mtu_get(dev.raw);
+    if (getter(dev.raw) != exported) {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W2 failed: calling ops->mtu_get through the mirror disagreed with the exported uk_netdev_mtu_get" } };
+    }
+
+    dev.mtu = exported;
+    dev.encap_tx = info.nb_encap_tx;
+    dev.encap_rx = info.nb_encap_rx;
+    dev.ioalign = if (info.ioalign < 8) 8 else info.ioalign;
+
+    const hw = uk_netdev_hwaddr_get(dev.raw) orelse {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "the driver reports no hardware address" } };
+    };
+    writeMac(&dev.hw_text, @ptrCast(&hw.addr));
+
+    const frame: usize = @as(usize, dev.mtu) + ETH_HDR_LEN;
+    const cap: usize = if (frame > ETH_MAX_FRAME) ETH_MAX_FRAME else frame;
+
+    return .{ .ok = .{
+        .dev = dev,
+        .mtu = @intCast(dev.mtu),
+        .hwaddr = dev.hw_text[0..17],
+        .max_payload = @intCast(cap - ETH_HDR_LEN),
+    } };
+}
+
+// uk_netdev_rxq_configure and uk_netdev_txq_configure, plus the receive ring.
+//
+// THERE IS NO DESCRIPTOR-COUNT PARAMETER, AND THAT IS THE POINT. The ring size
+// is read from the device itself (`rxq_info_get`/`txq_info_get` → `nb_max`) and
+// nothing smaller is offered, because a smaller ring is a size at least one
+// in-tree transport cannot honour AND reports success for.
+//
+// MEASURED 2026-08-07, not inferred. The same booted image, the same program,
+// only the requested count changed:
+//
+//     64 descriptors    -> `tx` returns UK_NETDEV_STATUS_SUCCESS, and NOTHING
+//                          leaves the guest. A host-side `-object filter-dump`
+//                          pcap holds zero packets and the peer interface
+//                          receives nothing.
+//     device maximum    -> the frame arrives on the peer, byte for byte.
+//
+// The mechanism, read rather than guessed: this tree's only virtio-pci transport
+// is `drivers/virtio/pci/virtio_pci.c`, whose `vpci_legacy_vq_setup` (:152)
+// writes `VIRTIO_PCI_QUEUE_SEL` and `VIRTIO_PCI_QUEUE_PFN` and NO queue size,
+// because in legacy virtio that register is read-only. So the guest lays out a
+// 64-entry vring where the host is reading a 256-entry one. `virtio_net.c:832`
+// has a guard for exactly this — it forces `nr_desc = max_desc` — but only when
+// `VIRTIO_F_VERSION_1` is UNSET, and `:1049` sets that bit whenever the host
+// offers it, over a transport that is legacy anyway. The guard never fires.
+//
+// So the honest surface is a parameter that does not exist, the same move
+// `unikraft/pages` makes with `num_pages`. A knob whose wrong setting is
+// undetectable is worse than no knob. README.md says what it costs in RAM.
+//
+// Lifts netdev.c:532 and :575 (`rxq_configure` / `txq_configure` return -EINVAL
+// unless CONFIGURED) and netdev.c:537 / :580 (the -EBUSY second-configure
+// branches): <!configured> is minted only by `configure` and consumed here, so
+// neither queue can be configured twice on one handle and neither can be
+// configured before the device is.
+//
+// W3 RUNS HERE — the derivation of `_tx_queue`'s offset, and with it
+// CONFIG_LIBUKNETDEV_MAXNBQUEUES, which no symbol exports.
+~pub tor queues.open { dev: *Device<!configured> }
+| ok *Device<armed!>
+| refused { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc queues.open|zig {
+    var rxi = QueueInfo{ .nb_max = 0, .nb_min = 0, .nb_align = 0, .nb_is_power_of_two = 0 };
+    const rxrc = uk_netdev_rxq_info_get(dev.raw, QUEUE, &rxi);
+    if (rxrc != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rxrc), .reason = "uk_netdev_rxq_info_get failed" } };
+    }
+    var txi = QueueInfo{ .nb_max = 0, .nb_min = 0, .nb_align = 0, .nb_is_power_of_two = 0 };
+    const txrc = uk_netdev_txq_info_get(dev.raw, QUEUE, &txi);
+    if (txrc != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(txrc), .reason = "uk_netdev_txq_info_get failed" } };
+    }
+
+    const nrx = rxi.nb_max;
+    const ntx = txi.nb_max;
+    if (nrx == 0 or ntx == 0) {
+        return .{ .refused = .{ .dev = dev, .errno = -22, .reason = "the device reports a maximum descriptor count of zero for one of its queues" } };
+    }
+    if (nrx < rxi.nb_min or ntx < txi.nb_min) {
+        return .{ .refused = .{ .dev = dev, .errno = -22, .reason = "the device reports a maximum descriptor count below its own minimum" } };
+    }
+
+    // The receive ring's buffers. `nb_encap_rx` is headroom the driver needs in
+    // front of the payload; it is aligned up so that `data` stays aligned.
+    dev.rx_headroom = alignUp16(dev.encap_rx, 8);
+    dev.rx_buflen = @as(usize, dev.rx_headroom) + ETH_MAX_FRAME;
+
+    // `uk_netdev_rxq_configure` takes a non-const pointer (netdev.h:240): the
+    // API reserves the right to write back into the caller's configuration.
+    var rxconf = RxQueueConf{
+        .callback = null,
+        .callback_cookie = null,
+        .a = dev.a,
+        .alloc_rxpkts = allocRxPkts,
+        .alloc_rxpkts_argp = @ptrCast(dev),
+    };
+    const rc1 = uk_netdev_rxq_configure(dev.raw, QUEUE, nrx, &rxconf);
+    if (rc1 != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc1), .reason = "uk_netdev_rxq_configure rejected the receive queue" } };
+    }
+
+    // W3, first half: `_rx_queue[0]` is the word right after `ops`, and it must
+    // have turned non-null.
+    const words = wordsOf(dev.raw);
+    const rxslot = words[RX_SLOT_WORD] orelse {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W3 failed: struct uk_netdev._rx_queue[0] is still null after a successful uk_netdev_rxq_configure" } };
+    };
+
+    var txconf = TxQueueConf{ .a = dev.a };
+    const rc2 = uk_netdev_txq_configure(dev.raw, QUEUE, ntx, &txconf);
+    if (rc2 != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc2), .reason = "uk_netdev_txq_configure rejected the transmit queue" } };
+    }
+
+    // W3, second half: the first word after `_rx_queue[0]` that is now non-null
+    // is `_tx_queue[0]`, because only queue 0 was configured and every other rx
+    // slot is still null. The scan stops at the first hit, so nothing past the
+    // transmit slot is ever read.
+    var txword: usize = 0;
+    for (1..MAXNBQUEUES_CEILING + 1) |step| {
+        if (words[RX_SLOT_WORD + step] != null) {
+            txword = RX_SLOT_WORD + step;
+            break;
+        }
+    }
+    if (txword == 0) {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W3 failed: no transmit-queue slot turned non-null within 16 words of the receive slot, so CONFIG_LIBUKNETDEV_MAXNBQUEUES could not be derived and this lift refuses to assume it" } };
+    }
+    dev.maxnbqueues = txword - RX_SLOT_WORD;
+
+    const txslot = words[txword] orelse {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W3 failed: the derived transmit slot read back as null" } };
+    };
+
+    dev.rxq = @ptrCast(@constCast(rxslot));
+    dev.txq = @ptrCast(@constCast(txslot));
+    return .{ .ok = dev };
+}
+
+fn alignUp16(v: u16, to: u16) u16 {
+    return ((v + to - 1) / to) * to;
+}
+
+// uk_netdev_promiscuous_set. Lifts netdev.c:676 and :661 (both assert the device
+// is CONFIGURED or RUNNING): <!armed> is reachable only through `queues.open`,
+// which is reachable only through `configure`.
+//
+// The `unsupported` arm hands the handle back in <armed!> — the state it came in
+// with — and not in <stuck!>, because -ENOTSUP means the driver has no
+// `promiscuous_set` callback and NOTHING happened to the device. virtio-net is
+// in exactly that position (its ops table at virtio_net.c:1411 has
+// `promiscuous_get` and no setter), so this is the common case, not the
+// exception.
+~pub tor promiscuous.set { dev: *Device<!armed>, enabled: bool }
+| ok *Device<armed!>
+| unsupported *Device<armed!>
+| refused { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc promiscuous.set|zig {
+    const mode: c_uint = if (enabled) 1 else 0;
+    const rc = uk_netdev_promiscuous_set(dev.raw, mode);
+    if (rc == -95) {
+        return .{ .unsupported = dev };
+    }
+    if (rc < 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_netdev_promiscuous_set failed" } };
+    }
+    return .{ .ok = dev };
+}
+
+// uk_netdev_start. Lifts netdev.c:601 (`start` returns -EINVAL unless
+// CONFIGURED) outright: <!armed> is minted only by `queues.open`, and `start`
+// consumes it, so starting an unconfigured device and starting a running one are
+// both unspellable.
+//
+// W1, third value: RUNNING. This is the last check before any indirect call
+// through the mirror happens.
+~pub tor start { dev: *Device<!armed> }
+| ok *Device<running!>
+| refused { dev: *Device<stuck!>, errno: i32, reason: string }
+
+~proc start|zig {
+    const rc = uk_netdev_start(dev.raw);
+    if (rc < 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(rc), .reason = "uk_netdev_start failed" } };
+    }
+    if (!stateAgrees(dev.raw, ST_RUNNING)) {
+        return .{ .refused = .{ .dev = dev, .errno = 0, .reason = "mirror witness W1 failed at start: the mirrored state did not follow uk_netdev_state_get to RUNNING" } };
+    }
+    return .{ .ok = dev };
+}
+
+// ============================================================================
+// TRANSFER
+// ============================================================================
+
+// Send one Ethernet frame. `to` is a MAC address written the way a human writes
+// one — "ff:ff:ff:ff:ff:ff" — and the source address is the device's own, which
+// the caller never has to know or pass. `ethertype` is the 16-bit type field.
+//
+// Lifts netdev.h:553 (`tx_one` asserts RUNNING) and :554 (asserts the transmit
+// queue is live): <!running|!carried> is unreachable before `start`, and
+// <armed!> is unreachable without both queues configured, so a transmit outside
+// the running window does not compile.
+//
+// THE PACKET IS NOT AN OBLIGATION HERE — see the header note. `tx` allocates the
+// netbuf, fills it, submits it, and the driver frees it (netdev.h:531). On the
+// one path where the driver hands it back — no descriptor space; virtio_net.c
+// :503-506 removes its own header and leaves the frame valid — this lift frees
+// it and reports `| dropped`. Nothing is retried behind the caller's back and
+// nothing is swallowed.
+//
+// SHORT FRAMES ARE PADDED. Ethernet's minimum frame is 60 bytes before the FCS
+// (netstructs.h:49), so a payload under 46 bytes is zero-filled up to it. That
+// is the medium's rule, not a convenience, and it means a receiver may observe a
+// longer payload than was sent.
+//
+// `rejected` hands back <running!> and NOT <carried!>: a frame this lift refused
+// before submitting never reached the device, so it must not satisfy the
+// asymmetry gate on `park`.
+~pub tor tx { dev: *Device<!running|!carried>, to: string, ethertype: u32, payload: string }
+| sent { dev: *Device<carried!>, frame: u32, more: bool }
+| dropped { dev: *Device<carried!>, errno: i32, reason: string }
+| rejected { dev: *Device<running!>, reason: string }
+
+~proc tx|zig {
+    const txq = dev.txq orelse {
+        return .{ .rejected = .{ .dev = dev, .reason = "no transmit queue: queues.open did not run" } };
+    };
+    var dst: [ETH_ADDR_LEN]u8 = undefined;
+    if (!parseMac(to, &dst)) {
+        return .{ .rejected = .{ .dev = dev, .reason = "the destination address is not 17 characters of colon-separated hex" } };
+    }
+    if (ethertype > 0xffff) {
+        return .{ .rejected = .{ .dev = dev, .reason = "ethertype does not fit in 16 bits" } };
+    }
+    const room: usize = @as(usize, dev.mtu);
+    if (payload.len > room) {
+        return .{ .rejected = .{ .dev = dev, .reason = "payload is larger than the interface MTU" } };
+    }
+
+    var span: usize = ETH_HDR_LEN + payload.len;
+    if (span < ETH_MIN_FRAME) span = ETH_MIN_FRAME;
+
+    const headroom = alignUp16(dev.encap_tx, 8);
+    const nb = uk_netbuf_alloc_buf(
+        dev.a,
+        @as(usize, headroom) + span,
+        dev.ioalign,
+        headroom,
+        0,
+        null,
+    ) orelse {
+        return .{ .rejected = .{ .dev = dev, .reason = "out of memory allocating a transmit buffer" } };
+    };
+
+    const start_ptr = nb.data orelse {
+        uk_netbuf_free(nb);
+        return .{ .rejected = .{ .dev = dev, .reason = "the allocated netbuf has no data area" } };
+    };
+    const hw = uk_netdev_hwaddr_get(dev.raw) orelse {
+        uk_netbuf_free(nb);
+        return .{ .rejected = .{ .dev = dev, .reason = "the driver reports no hardware address" } };
+    };
+
+    for (0..ETH_ADDR_LEN) |i| start_ptr[i] = dst[i];
+    for (0..ETH_ADDR_LEN) |i| start_ptr[ETH_ADDR_LEN + i] = hw.addr[i];
+    start_ptr[12] = @intCast((ethertype >> 8) & 0xff);
+    start_ptr[13] = @intCast(ethertype & 0xff);
+    for (0..payload.len) |i| start_ptr[ETH_HDR_LEN + i] = payload[i];
+    for (ETH_HDR_LEN + payload.len..span) |i| start_ptr[i] = 0;
+    nb.len = @intCast(span);
+
+    const status = dev.tx_one(dev.raw, txq, nb);
+    if (status < 0) {
+        uk_netbuf_free(nb);
+        return .{ .dropped = .{ .dev = dev, .errno = @intCast(status), .reason = "the driver refused the frame" } };
+    }
+    if ((status & STATUS_SUCCESS) == 0) {
+        uk_netbuf_free(nb);
+        return .{ .dropped = .{ .dev = dev, .errno = -105, .reason = "no descriptor space on the transmit queue; the frame was not sent" } };
+    }
+    return .{ .sent = .{
+        .dev = dev,
+        .frame = @intCast(span),
+        .more = (status & STATUS_MORE) != 0,
+    } };
+}
+
+// Receive one Ethernet frame, polling the receive queue up to `spins` times.
+//
+// Lifts netdev.h:483 (`rx_one` asserts RUNNING), :484 (asserts the receive queue
+// is live) and :485 (asserts `pkt` is non-null — this lift owns that pointer and
+// a caller cannot supply one).
+//
+// THE PACKET IS AN OBLIGATION. `<received!>` is minted only here and discharged
+// only by `packet.drop`, which is `uk_netbuf_free`. `from`, `to` and `payload`
+// are BORROWS: `payload` points into the netbuf itself and the two address
+// strings into its private area, all valid until `packet.drop` and never freed
+// by the caller.
+//
+// POLLING, NOT INTERRUPTS. `uk_netdev_rxq_intr_enable` is INERT — listed in
+// `exportsyms.uk` and `static inline` at netdev.h:395, so no global is emitted
+// for objcopy to keep and a separately-linked archive cannot call it. The queue
+// is therefore configured with no event callback and `rx` polls, which is the
+// mode `virtio_netdev_recv` is written for (it asserts interrupts are OFF,
+// virtio_net.c:683). `spins` is the caller's poll budget: there is no hidden
+// wait and no timeout policy invented here.
+~pub tor rx { dev: *Device<!running|!carried>, spins: u32 }
+| frame {
+    dev: *Device<carried!>,
+    pkt: *Packet<received!>,
+    from: string,
+    to: string,
+    ethertype: u32,
+    payload: string,
+    more: bool
+}
+| empty *Device<carried!>
+| failed { dev: *Device<carried!>, errno: i32, reason: string }
+
+~proc rx|zig {
+    const rxq = dev.rxq orelse {
+        return .{ .failed = .{ .dev = dev, .errno = -22, .reason = "no receive queue: queues.open did not run" } };
+    };
+    if (spins == 0) {
+        return .{ .failed = .{ .dev = dev, .errno = -22, .reason = "rx needs a poll budget of at least one spin" } };
+    }
+
+    var slot: ?*Packet = null;
+    var status: c_int = 0;
+    for (0..spins) |_| {
+        slot = null;
+        status = dev.rx_one(dev.raw, rxq, &slot);
+        if (status < 0) break;
+        if ((status & STATUS_SUCCESS) != 0) break;
+    }
+
+    if (status < 0) {
+        return .{ .failed = .{ .dev = dev, .errno = @intCast(status), .reason = "the driver failed to dequeue a frame" } };
+    }
+    const nb = slot orelse {
+        return .{ .empty = dev };
+    };
+
+    const base = nb.data orelse {
+        uk_netbuf_free(nb);
+        return .{ .failed = .{ .dev = dev, .errno = -22, .reason = "the received netbuf has no data area" } };
+    };
+    const total: usize = nb.len;
+    if (total < ETH_HDR_LEN) {
+        uk_netbuf_free(nb);
+        return .{ .failed = .{ .dev = dev, .errno = -22, .reason = "the received frame is shorter than an Ethernet header" } };
+    }
+    const meta: *Meta = @ptrCast(@alignCast(nb.priv orelse {
+        uk_netbuf_free(nb);
+        return .{ .failed = .{ .dev = dev, .errno = -22, .reason = "the received netbuf carries no private area: it was not allocated by this lift's receive-buffer allocator" } };
+    }));
+
+    writeMac(&meta.to, base);
+    writeMac(&meta.from, base + ETH_ADDR_LEN);
+    const kind: u32 = (@as(u32, base[12]) << 8) | @as(u32, base[13]);
+
+    return .{ .frame = .{
+        .dev = dev,
+        .pkt = nb,
+        .from = meta.from[0..17],
+        .to = meta.to[0..17],
+        .ethertype = kind,
+        .payload = base[ETH_HDR_LEN..total],
+        .more = (status & STATUS_MORE) != 0,
+    } };
+}
+
+// uk_netbuf_free — the only discharge for <received!>, and the only way this
+// module can leak if it is forgotten. `uk_netbuf_free` walks the chain, which is
+// what a merged-buffer receive produces.
+~pub tor packet.drop { pkt: *Packet<!received> }
+
+~proc packet.drop|zig {
+    uk_netbuf_free(pkt);
+}
+
+// THE NAMED ESCAPE from the asymmetry gate. `park` accepts only <!carried>, and
+// only a transfer mints it, so an interface brought up and never used cannot be
+// let go of. That is the point — but a link check that only wants to know the
+// NIC comes up is legitimate, and this is how it says so out loud.
+//
+// Deliberately greppable: `grep -r "net:traffic.skipped"` answers "which
+// programs bring up an interface and move nothing". It runs no C call, which is
+// the honest emission — nothing happened.
+~pub tor traffic.skipped { dev: *Device<!running> } -> *Device<carried!>
+
+~proc traffic.skipped|zig {
+    return dev;
+}
+
+// ============================================================================
+// LET GO
+// ============================================================================
+
+// The terminus, and it makes NO C CALL. `uknetdev` exports nothing that stops,
+// unconfigures or unregisters a device: all 33 lines of `exportsyms.uk` are
+// acquire, configure, query or transfer. So the interface stays up, its queues
+// stay armed and its receive ring stays allocated for the life of the machine,
+// and the only thing there is to release is this lift's own handle.
+//
+// Emitting a call here would be inventing a teardown Unikraft does not have.
+// Naming the tor `park` rather than `release` is the same honesty in the surface
+// the caller reads.
+~pub tor park { dev: *Device<!carried> }
+
+~proc park|zig {
+    destroy(dev);
+}
+
+// The one way out of <stuck!>. Every failure on the bring-up path lands here,
+// because with no teardown there is exactly one recovery: let go of the handle
+// and leave the C device wherever the driver left it. Named rather than implicit
+// so that "we gave up on a NIC" is a grep, not an inference.
+~pub tor abandon { dev: *Device<!stuck> }
+
+~proc abandon|zig {
+    destroy(dev);
+}

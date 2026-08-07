@@ -1,0 +1,29 @@
+//~ compile_fail(backend)
+//~ error[KORU030]
+
+// NEGATIVE (must FAIL to compile): take a network device and walk away.
+//
+// `get` mints <found!>, and the only tor that accepts <!found> is `probe`. There
+// is deliberately no `net:drop`: `get(); park();` is not a program that exists,
+// and neither is `get()` on its own. The obligation has no disposal from
+// <found!>, so it cannot be auto-discharged and cannot be dropped.
+//
+// What the C does instead: nothing. `uk_netdev_get` is a lookup in a list the
+// platform owns — netdev.c's `uk_netdev_list` — and calling it commits the
+// caller to nothing at all. That is exactly the problem this states: on a
+// machine whose only NIC was fetched and never brought up, there is no C
+// artifact of the mistake to find.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft/net:get(id: 0)
+| link a |> std/io:print.ln("nic0: {{ a.driver:s }}")
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")

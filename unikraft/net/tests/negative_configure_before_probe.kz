@@ -1,0 +1,40 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): configure a device that was never probed.
+//
+// `configure` accepts ONLY <!probed>, and <probed!> is minted ONLY by `probe`.
+// `get` mints <found!>, so this chain hands `configure` the wrong state.
+//
+// What the C does instead: it returns -EINVAL, at netdev.c:396, because a device
+// straight out of `uk_netdev_drv_register` is UK_NETDEV_UNPROBED and not
+// UK_NETDEV_UNCONFIGURED. That branch is real and survives -DNDEBUG, so this
+// particular misuse is one C DOES catch — at run time, as an errno the caller
+// has to remember to look at, on the cold path where a wrong answer costs a
+// silently networkless machine.
+//
+// It is here because the interesting half is the OTHER direction: `probe`
+// consumes <!found> and mints <probed!>, so probing TWICE is also unspellable,
+// and that one C guards only with `UK_ASSERT(dev->_data->state ==
+// UK_NETDEV_UNPROBED)` (netdev.c:253) — an assertion, compiled out, over a
+// driver callback that virtio-net implements as feature negotiation.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft/net:get(id: 0)
+| link a |> unikraft/net:configure(a.dev)
+    | ok c |> unikraft/net:queues.open(c.dev)
+        | ok q |> unikraft/net:start(dev: q)
+            | ok r |> unikraft/net:traffic.skipped(dev: r): held |> unikraft/net:park(dev: held)
+            | refused e |> unikraft/net:abandon(e.dev)
+        | refused e |> unikraft/net:abandon(e.dev)
+    | refused e |> unikraft/net:abandon(e.dev)
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")

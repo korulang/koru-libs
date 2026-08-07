@@ -1,0 +1,46 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Use-after-discharge
+
+// NEGATIVE (must FAIL to compile): transmit through a handle that was already
+// let go of.
+//
+// `park` CONSUMES <!carried> and mints nothing, so the handle it took is spent.
+// The second `tx` below asks for <!running|!carried> and has nothing to give it.
+// This is the use-after-free shape, caught before the program exists.
+//
+// What the C does instead: it transmits, into a `struct uk_netdev` that is still
+// perfectly alive — because `park` makes no C call and there is no C call it
+// could make. uknetdev exports nothing that stops or releases a device. So the
+// thing this refuses is not a dangling kernel pointer; it is a program with two
+// owners of one interface, which is how a real driver bug starts. The Koru-side
+// handle really is freed by `park`, so the emitted C would read a freed
+// allocation to find `tx_one` and the transmit queue.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft/net:get(id: 0)
+| link a |> unikraft/net:probe(a.dev)
+    | ok p |> unikraft/net:configure(dev: p)
+        | ok c |> unikraft/net:queues.open(c.dev)
+            | ok q |> unikraft/net:start(dev: q)
+                | ok r |> unikraft/net:tx(dev: r, to: "ff:ff:ff:ff:ff:ff", ethertype: 34997, payload: "first frame")
+                    | sent s |> unikraft/net:park(s.dev)
+                        |> unikraft/net:tx(s.dev, to: "ff:ff:ff:ff:ff:ff", ethertype: 34997, payload: "second frame, through a handle that is gone")
+                            | sent t |> unikraft/net:park(t.dev)
+                            | dropped e |> unikraft/net:park(e.dev)
+                            | rejected j |> unikraft/net:traffic.skipped(j.dev): held |> unikraft/net:park(dev: held)
+                    | dropped e |> unikraft/net:park(e.dev)
+                    | rejected j |> unikraft/net:traffic.skipped(j.dev): held |> unikraft/net:park(dev: held)
+                | refused e |> unikraft/net:abandon(e.dev)
+            | refused e |> unikraft/net:abandon(e.dev)
+        | refused e |> unikraft/net:abandon(e.dev)
+    | refused e |> unikraft/net:abandon(e.dev)
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")

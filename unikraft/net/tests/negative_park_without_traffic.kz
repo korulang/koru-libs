@@ -1,0 +1,46 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): bring an interface up and walk away without
+// moving a single frame.
+//
+// This is pillar 4's asymmetry, and it is the whole reason `carried` is a state.
+// `park` accepts ONLY <!carried>, and <carried!> is minted ONLY by `tx`, `rx` or
+// the explicit `traffic.skipped`. `start` mints <running!>. So the chain below
+// asks `park` to accept a <running!> handle and the compiler refuses.
+//
+// What the C does instead: nothing at all, and it could not do otherwise.
+// `uknetdev` has no teardown call to put a guard on — `exportsyms.uk` is 33
+// lines of acquire, configure, query and transfer. A program that probes a NIC,
+// negotiates features, allocates a receive ring of `nb_max` buffers, arms two
+// virtqueues and then never sends or receives is not a program C has anywhere to
+// object to. It is also a real waste: the ring stays allocated for the life of
+// the machine, because nothing frees it either.
+//
+// The legitimate case is still expressible, and loudly: `net:traffic.skipped`
+// mints <carried!> without running a C call, so a link check that only wants to
+// know the interface comes up says so in a word you can grep for. What this
+// rejects is the SILENT no-op. See traffic_skipped_link_check.kz for the same
+// chain with the escape in it, compiling clean.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft/net:get(id: 0)
+| link a |> unikraft/net:probe(a.dev)
+    | ok p |> unikraft/net:configure(dev: p)
+        | ok c |> unikraft/net:queues.open(c.dev)
+            | ok q |> unikraft/net:start(dev: q)
+                | ok r |> unikraft/net:park(dev: r)
+                | refused e |> unikraft/net:abandon(e.dev)
+            | refused e |> unikraft/net:abandon(e.dev)
+        | refused e |> unikraft/net:abandon(e.dev)
+    | refused e |> unikraft/net:abandon(e.dev)
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")

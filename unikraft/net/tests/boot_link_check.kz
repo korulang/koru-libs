@@ -1,0 +1,73 @@
+// CONTROL for negative_park_without_traffic.kz, and the second gate-2 artifact.
+//
+// The same chain the negative refuses, with `net:traffic.skipped` in it. It
+// compiles clean through the emit pass — which is what proves the asymmetry gate
+// costs the honest program nothing — and it BOOTS, which is what proves the two
+// tors the wire demo does not reach are real:
+//
+//   * `net:promiscuous.set`, whose `| unsupported` arm is the one this hardware
+//     can produce: virtio-net's ops table (virtio_net.c:1411) has
+//     `promiscuous_get` and no setter, so `uk_netdev_promiscuous_set` returns
+//     -ENOTSUP. The arm hands the handle back in <armed!> — the state it came in
+//     with — because nothing happened to the device.
+//   * `net:traffic.skipped`, the named escape. It runs no C call, which is the
+//     honest emission for "nothing happened".
+//
+//     grep -r "net:traffic.skipped"
+//
+// answers "which programs bring up a NIC and move no traffic".
+//
+// Build and boot: see ../README.md.
+
+// `~import unikraft` is DELIBERATELY ABSENT — see boot_wire.kz.
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/net
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_NET=1
+}
+
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKNETDEV: 'y'
+    CONFIG_LIBVIRTIO_NET: 'y'
+    CONFIG_LIBVIRTIO_PCI: 'y'
+    CONFIG_LIBVIRTIO_BUS: 'y'
+}
+
+~unikraft/net:get(id: 0)
+| link a |> std/io:print.ln("nic0: {{ a.driver:s }} index {{ a.index:d }}")
+    |> unikraft/net:probe(a.dev)
+        | ok p |> unikraft/net:configure(dev: p)
+            | ok c |> std/io:print.ln("nic0: mtu {{ c.mtu:d }} hwaddr {{ c.hwaddr:s }}")
+                |> unikraft/net:queues.open(c.dev)
+                    | ok q |> unikraft/net:promiscuous.set(dev: q, enabled: true)
+                        | ok on |> std/io:print.ln("nic0: promiscuous on")
+                            |> unikraft/net:start(dev: on)
+                                | ok r |> std/io:print.ln("link check passed, no traffic sent")
+                                    |> unikraft/net:traffic.skipped(dev: r): held
+                                    |> unikraft/net:park(dev: held)
+                                | refused e |> std/io:print.ln("nic0: start {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+                        | unsupported off |> std/io:print.ln("nic0: promiscuous not supported by this driver")
+                            |> unikraft/net:start(dev: off)
+                                | ok r |> std/io:print.ln("link check passed, no traffic sent")
+                                    |> unikraft/net:traffic.skipped(dev: r): held
+                                    |> unikraft/net:park(dev: held)
+                                | refused e |> std/io:print.ln("nic0: start {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+                        | refused e |> std/io:print.ln("nic0: promiscuous {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+                    | refused e |> std/io:print.ln("nic0: queues.open {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+            | refused e |> std/io:print.ln("nic0: configure {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+        | refused e |> std/io:print.ln("nic0: probe {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/net:abandon(e.dev)
+| missing why |> std/io:print.ln("nic0 unavailable: {{ why:s }}")
