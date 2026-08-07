@@ -1,0 +1,48 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): open a 9P connection and close it without
+// ever speaking on it. This is pillar 4's asymmetry for `uk9p`, at the outer
+// level of the nesting.
+//
+// `disconnect` accepts only <!drained>, and <drained!> is minted only by
+// `session.end` — reachable only through `attach`, which is reachable only
+// through `version` — or by the named escape `session.skipped`. So a device
+// that was connected and then immediately thrown away has no way out.
+//
+// WHAT THE C DOES INSTEAD: nothing, correctly and silently. `uk_9pdev_connect`
+// followed by `uk_9pdev_disconnect` is a well-formed pair — the assertion at
+// 9pdev.c:265 is satisfied, `_fid_mgmt_cleanup` finds an empty active list, and
+// the transport's disconnect runs. It is not a memory error. It is a DESIGN
+// error, and an expensive one on this particular resource: a 9P connect is a
+// virtqueue setup and a device negotiation against a host daemon, so a mount
+// nobody uses is a host-side file descriptor, a QEMU thread and a virtqueue
+// held for the life of the unikernel.
+//
+// The legitimate case stays expressible and stays loud: `boot_session.kz`'s
+// second flow says `unikraft/ninep:session.skipped` and boots. What this
+// rejects is the SILENT version, where "we changed our mind about this mount"
+// and "somebody forgot to attach" are spelled identically.
+//
+//     grep -r "ninep:session.skipped"   ->   "which mounts do we open and
+//                                             never attach to"
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.ninep:drained' but got 'unikraft.ninep:linked!'
+//           for argument 'dev'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/ninep
+~import std/io
+
+~unikraft/ninep:connect(tag: "korufs")
+| ok mount |> unikraft/ninep:disconnect(dev: mount): rc
+    |> std/io:print.ln("should never get here: {{ rc:d }}")
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }} ({{ e.errno:d }})")

@@ -1,0 +1,984 @@
+// @korulang/unikraft-ninep — Unikraft's `uk9p`, the 9P client, lifted as THREE
+// NESTED RESOURCES whose containment is structural.
+//
+//   import unikraft/ninep
+//
+// This is a full lift, not a naive wrap. What it contributes that no shipped
+// entry does is the COMPOSITION RULE for nested lifetimes, applied three levels
+// deep and stated once:
+//
+//     THE PARENT HANDLE IS CONSUMED BY THE CHILD'S CONSTRUCTOR AND RE-MINTED BY
+//     THE CHILD'S DESTRUCTOR.
+//
+// So while a child is live the parent has no name, and every operation that
+// would outlive its children is not a program that can be written. The rule is
+// not invented here — it is exactly what koru's own transaction exemplar does
+// (`tests/regression/.../2104_14_open_tx_commit_close/db.kz`: `tx.begin` takes
+// `*Connection<!connected|!active>` and returns a `*Transaction`, and only
+// `tx.commit` gives a `*Connection` back). What this module adds is that the
+// same rule STACKS, and that stacking it is what lifts uk9p's one cross-resource
+// assertion.
+//
+// THE NESTING, and it is a real containment in the C, not a modelling choice:
+//
+//     Dev   ⊃  Reply     a request holds a tag out of the device's 65,536-entry
+//                        bitmap and sits on `dev->_req_mgmt.req_list`
+//     Dev   ⊃  Root      a fid sits on `dev->_fid_mgmt.fid_active_list`
+//     Root  ⊃  File      a walked fid is derived from a live parent fid
+//
+// and the assertion that says so, in the C's own words:
+//
+//     9pdev.c:115   /* Every fid should have been clunked *before* destroying
+//                      the connection. */
+//     9pdev.c:118   UK_ASSERT(uk_list_empty(&fid_mgmt->fid_active_list));
+//
+// `_fid_mgmt_cleanup` runs from `uk_9pdev_disconnect`. With
+// `CONFIG_LIBUKDEBUG_ENABLE_ASSERT` off — every image anyone ships — that line
+// is `do {} while(0)`, and the loop below it frees only the FREE list. A fid
+// still on the active list is therefore not freed, not clunked, and its
+// `fid->_dev` now points at storage `uk_9pdev_disconnect` released four lines
+// later. The server keeps the fid open for the lifetime of the mount. Nothing
+// warns.
+//
+// In this module `disconnect` accepts only `<!drained>`, `<drained!>` is minted
+// only by `session.end`, `session.end` accepts only `<!rooted>`, and `<rooted!>`
+// is minted only by `file.close` or the named escape. The active list cannot be
+// non-empty at disconnect because the `*Dev` handle does not exist until the
+// last fid has gone back.
+//
+// ============================================================================
+// THE STATE MACHINE, AND WHERE EACH STATE CAME FROM
+// ============================================================================
+//
+// The brief asks which phantom states came from an enum the C DECLARES and
+// which from an assertion or an inference. uk9p declares two enums:
+//
+//   * `enum uk_9pdev_trans_state { UK_9PDEV_CONNECTED, UK_9PDEV_DISCONNECTING }`
+//     — 9pdev_core.h:152. DECLARED. Asserted at 9pdev.c:265 and branched on for
+//     real at 9pdev.c:295 (`if (dev->state != UK_9PDEV_CONNECTED) return -EIO`).
+//     `<linked>`, `<negotiated>` and `<drained>` are the lift of it: three
+//     phantom states over the C's one, because the C's CONNECTED covers the
+//     whole window and the 9P protocol does not.
+//
+//   * `enum uk_9preq_state { INITIALIZED, READY, SENT, RECEIVED }` — 9preq.h:121.
+//     DECLARED, and NOT LIFTED. See "What does not link", below: the transition
+//     INITIALIZED -> READY is `uk_9preq_ready`, which is a real function in
+//     `9preq.c` and is ABSENT from `exportsyms.uk`, so objcopy localizes it and
+//     no separately-linked archive can call it. The request state machine is
+//     driven entirely inside `9p.c`'s `static inline send_and_wait_zc`. What a
+//     Koru caller can hold is the FINISHED request — `<received>` — and its one
+//     obligation, which is to give the tag back.
+//
+// Everything on the fid side (`<attached>`, `<rooted>`, `<walked>`, `<opened>`,
+// `<io>`) is INFERRED, not declared: `struct uk_9pfid` has a refcount and a
+// `was_removed` flag and no state field. Those five are the weakest-evidenced
+// states in this module and they are named as such in README.md.
+//
+//     probe                                                  uk_9pdev_trans_get_default
+//     connect          mints <linked!>                       uk_9pdev_connect
+//     version          needs <!linked>     mints <received!> uk_9p_version        [Dev -> Reply]
+//     reply.release    needs <!received>   mints <negotiated!> uk_9pdev_req_remove  [Reply -> Dev]
+//     attach           needs <!negotiated> mints <attached!>  uk_9p_attach        [Dev -> Root]
+//     walk             needs <!attached|!rooted> mints <walked!> uk_9p_walk       [Root -> File]
+//     file.open        needs <!walked>     mints <opened!>    uk_9p_lopen
+//     file.read        needs <!opened|!io> mints <io!>        uk_9p_read
+//     file.write       needs <!opened|!io> mints <io!>        uk_9p_write
+//     file.close       needs <!walked|!opened|!io> mints <rooted!> uk_9pfid_put   [File -> Root]
+//     walk.skipped     needs <!attached>   mints <rooted!>    NO C CALL — the escape
+//     session.end      needs <!rooted>     mints <drained!>   uk_9pfid_put        [Root -> Dev]
+//     session.skipped  needs <!linked|!negotiated> mints <drained!> NO C CALL — the escape
+//     disconnect       needs <!drained>                       uk_9pdev_disconnect
+//
+// ============================================================================
+// THE ASYMMETRY (pillar 4), TWICE
+// ============================================================================
+//
+// `disconnect` accepts only `<!drained>`, and the only tors that mint it are
+// `session.end` — reachable only through `attach` — and the named escape
+// `session.skipped`. So
+//
+//     connect(tag) | ok d |> disconnect(dev: d)
+//
+// does not compile: `expected 'drained' but got 'linked!'`. A 9P connection you
+// open and never speak on is not a program you can write silently. It IS a
+// program you can write LOUDLY:
+//
+//     grep -r "ninep:session.skipped"   ->   "which mounts do we open and never use"
+//
+// The second gate is one level down and is the same shape: `session.end`
+// accepts only `<!rooted>`, minted by `file.close` or `walk.skipped`, so
+// attaching to a tree and clunking the root without ever walking into it is
+// spellable only through the named word.
+//
+// This is `gzip/index.kz:258`'s `fed` gate and `2104_14`'s `close` taking
+// `<!active>` rather than `<!connected>`, applied at two depths of one nesting.
+//
+// ============================================================================
+// WHAT DOES NOT LINK, MEASURED THE WAY THE LINKER READS IT
+// ============================================================================
+//
+// `lib/uk9p/exportsyms.uk` exists, so the brief's case 1 applies. It has 52
+// lines, 46 of them non-blank. The shelf records that as "46 allowlist, 0
+// phantom, 0 inert, 46 links". Two of those three numbers are right and the
+// headline is not:
+//
+//   * CASE 4 (a listed symbol that does not exist): NONE. All 44 distinct names
+//     have a real, non-static definition in `9p.c`, `9pdev.c`, `9pdev_trans.c`,
+//     `9preq.c` or `9pfid.c`. Checked one by one.
+//   * CASE 5 (a listed symbol that is only a `static inline`): NONE.
+//   * A SIXTH HAZARD THE BRIEF DOES NOT NAME: an allowlist can list the SAME
+//     SYMBOL TWICE. `uk_9pdev_set_msize` and `uk_9pdev_get_msize` each appear
+//     at two separate lines of `exportsyms.uk`. objcopy does not care, and
+//     neither does anything else — but a line count is not a symbol count. The
+//     honest number is **44 distinct symbols, all of which link**, not 46.
+//
+// And the finding that decided this module's altitude, which no column on the
+// shelf can express: **THE ALLOWLIST IS NOT CLOSED UNDER THE STATE MACHINE IT
+// EXPOSES.** Four real, non-static, externally-visible functions in `uk9p`'s own
+// `.c` files are absent from `exportsyms.uk` and therefore localized:
+//
+//     uk_9preq_init            9preq.c:47    the request constructor
+//     uk_9preq_ready           9preq.c:87    INITIALIZED -> READY
+//     uk_9pdev_req_to_freelist 9pdev.c:416   the freelist return
+//     uk_9pdev_fid_release     9pdev.c:448   the fid destructor
+//
+// `uk_9preq_ready` is the one that matters. It is the ONLY transition out of
+// `UK_9PREQ_INITIALIZED`, and `uk_9pdev_req_create` — which IS exported — is the
+// only thing that produces that state. So the exported surface hands you a
+// request in a state you have no exported way to leave. The low-level path a
+// header reader would design first,
+//
+//     req_create -> write32/writestr… -> ready -> uk_9pdev_request -> waitreply
+//
+// is unbuildable from a separately-linked archive, and it is unbuildable at the
+// `ready` step, not at the serializer step. (The serializers are the `##`
+// token-pasted `uk_9preq_write32`/`read32` family at 9preq.h:310 and :379 — the
+// brief's own caveat. They are MIRROR: buffer-cursor arithmetic over
+// `struct uk_9preq`, reachable at the price of a transcription. Reachable and
+// useless, because the step after them is not.)
+//
+// So this lift binds the `uk_9p_*` layer, where `9p.c`'s `static inline
+// send_and_wait_zc` (9p.c:62) does `ready -> request -> waitreply` internally
+// out of a compilation unit that CAN see the localized symbol. That is not a
+// compromise on altitude — `uk_9p_attach`/`walk`/`lopen`/`read`/`write` ARE the
+// native 9P client API, and `9pfs` (the in-tree consumer) calls exactly these.
+//
+// ============================================================================
+// WHERE I REFUSED TO RATCHET
+// ============================================================================
+//
+// Stated as loudly as the ratchets, because the brief asks for the refusals.
+//
+//   1. **`uk_9pfid_get` is not lifted at all.** It is exported, it is half of
+//      the "refcounted fid" the shelf row advertises, and taking a second
+//      reference is a legitimate thing to do. It is refused because a phantom
+//      state CANNOT COUNT — `unikraft/lock` made the same call about `nactive`
+//      and N concurrent readers. Minting `<held2!>` would be a lie about what
+//      is proven. What this module models is the reference `uk_9pdev_fid_create`
+//      opens, and `uk_9pfid_put` closes it. One handle here means one reference.
+//   2. **No ratchet between `walk` and `file.close`.** Walking to a fid and
+//      clunking it without opening it is how 9P asks "does this path exist",
+//      and `uk_9p_walk` sends a real Twalk over the wire, so the fid WAS used.
+//      `file.close` therefore accepts `<!walked>` directly. The asymmetry gate
+//      on this level sits between `attach` and `session.end`, where the C's own
+//      cleanup assertion is, not on every fid.
+//   3. **`uk_9pdev_set_msize` / `_get_msize` are not lifted.** `uk_9p_version`
+//      already calls `set_msize` with the server's answer (9p.c:134 in our fork,
+//      9p.c:120 in 0.21.0) and this
+//      module returns the result as payload. A second, caller-driven setter over
+//      the same field is a way to make `uk_9p_read`'s `dev->msize - 11` underflow
+//      (fixed in our fork at 9p.c:458, NOT fixed in the 0.21.0 stable tree this
+//      image builds against, where it is the bare `dev->msize - 11` at 9p.c:446). Unspellable rather than checked.
+//   4. **Sixteen other `uk_9p_*` verbs are not lifted** — `flush`, `create`,
+//      `lcreate`, `remove`, `open` (the 9P2000 one, as opposed to `lopen`),
+//      `stat`, `wstat`, `fsync`, `readdir`, `getattr`, `setattr`, `renameat`,
+//      `rename`, `link`, `readlink`, `symlink`. Every one links. They are
+//      ordinary verbs on a `<!opened|!io>` file and they add no state. Three of
+//      them (`stat`, `getattr`, `readlink`) hand back a live `struct uk_9preq *`
+//      and would each need the `Reply` obligation — the shape is already proven
+//      once by `version`; repeating it three more times is transcription, not
+//      contribution. Adding them is a REVISION to this module, per the
+//      one-module-per-sublibrary rule, not a second one.
+//   5. **`uk_9p_clunk` is exported and is NOT exposed**, because it is not a
+//      close: it sends Tclunk and leaves the fid on
+//      `dev->_fid_mgmt.fid_active_list`, still counted by 9pdev.c:118 and now
+//      naming a fid the SERVER has forgotten. `uk_9pfid_put` is the disposal.
+//      See the note on `file.close`.
+
+// ============================================================================
+// UNIKRAFT C ABI
+// ============================================================================
+//
+// Every symbol below is on `lib/uk9p/exportsyms.uk`. Nothing in this module
+// reaches a `static inline`, and nothing in it mirrors a `uk9p` struct: the
+// device, the request and the fid are all opaque here, because every field this
+// lift needs is behind an exported accessor or rides in a call's return value.
+// That is the reason there is no layout probe in this file and no `@offsetOf`
+// block — `unikraft/pages`, `sched` and `lock` each had to prove a mirror, and
+// the strongest form of that proof is not needing one.
+
+const Uk9pDev = opaque {};
+const Uk9pReq = opaque {};
+const Uk9pFid = opaque {};
+const Uk9pTrans = opaque {};
+
+extern fn uk_9pdev_trans_get_default() ?*Uk9pTrans;
+extern fn uk_9pdev_connect(
+    trans: *const Uk9pTrans,
+    device_identifier: [*:0]const u8,
+    mount_args: ?[*:0]const u8,
+    a: ?*anyopaque,
+) ?*Uk9pDev;
+extern fn uk_9pdev_disconnect(dev: *Uk9pDev) c_int;
+extern fn uk_9pdev_req_remove(dev: *Uk9pDev, req: *Uk9pReq) c_int;
+extern fn uk_9pdev_get_msize(dev: *Uk9pDev) u32;
+
+extern fn uk_9p_version(dev: *Uk9pDev, requested: [*:0]const u8, received: *NineStr) ?*Uk9pReq;
+extern fn uk_9p_attach(
+    dev: *Uk9pDev,
+    afid: u32,
+    uname: [*:0]const u8,
+    aname: [*:0]const u8,
+    n_uname: u32,
+) ?*Uk9pFid;
+extern fn uk_9p_walk(dev: *Uk9pDev, fid: *Uk9pFid, name: ?[*:0]const u8) ?*Uk9pFid;
+extern fn uk_9p_lopen(dev: *Uk9pDev, fid: *Uk9pFid, flags: u32) c_int;
+extern fn uk_9p_read(dev: *Uk9pDev, fid: *Uk9pFid, offset: u64, count: u32, buf: [*]u8) i64;
+extern fn uk_9p_write(dev: *Uk9pDev, fid: *Uk9pFid, offset: u64, count: u32, buf: [*]const u8) i64;
+extern fn uk_9pfid_put(fid: *Uk9pFid) c_int;
+
+// nolibc, backed by ukalloc's default allocator.
+extern fn malloc(size: usize) ?*anyopaque;
+extern fn free(ptr: ?*anyopaque) void;
+
+// ============================================================================
+// THE ONE MIRROR, AND WHY IT IS SAFE WHERE A `struct uk_9pdev` MIRROR WOULD NOT BE
+// ============================================================================
+//
+// `struct uk_9p_str` (9p_core.h:248) is `{ uint16_t size; char *data; }`. It is
+// an out-parameter of `uk_9p_version` and this module has to spell it, because
+// there is no accessor.
+//
+// It is the one struct in `uk9p` whose layout carries no Kconfig risk. It has
+// two members, neither is conditional, neither is another struct, and nothing
+// in `Config.uk` or `uk/config.h` can move either — unlike `struct uk_9pdev`,
+// whose `xmit_wq` member exists only `#if CONFIG_LIBUKSCHED` (9pdev_core.h:184)
+// and whose two management sub-structs each embed a `__spinlock` that is SIZE
+// ZERO without `CONFIG_HAVE_SMP`. That is the trap `unikraft/lock` measured the
+// expensive way, and it is exactly why this module mirrors nothing else.
+//
+// And the mirror does not have to be believed: `version` PROVES it at run time
+// by comparing what came back through it against the protocol string it asked
+// for. A 9P server echoes the version it accepts, so a wrong `size` or a wrong
+// `data` offset produces a mismatch and `version` refuses instead of handing
+// out a device. That check is in `~proc version` and it is not optional.
+const NineStr = extern struct {
+    size: u16,
+    data: ?[*]const u8,
+};
+
+comptime {
+    if (@offsetOf(NineStr, "size") != 0) @compileError("uk_9p_str.size moved");
+    if (@offsetOf(NineStr, "data") != 8) @compileError("uk_9p_str.data moved");
+}
+
+// PTRISERR — include/uk/errptr.h:49. NOTE that it does NOT cover NULL:
+// `(__sptr)ptr < 0 && >= -512`. uk9p returns `ERR2PTR(rc)` with rc negative on
+// every failure path, so NULL is not a value any of these functions produce —
+// but `?*T` is still how Zig types the return, and treating a NULL as success
+// would be a fallback. Both are refused, separately, at every call site.
+const MAXERRNO: isize = 512;
+
+fn errOf(p: ?*anyopaque) c_int {
+    const v: isize = @intCast(@intFromPtr(p));
+    if (v < 0 and v >= -MAXERRNO) return @intCast(v);
+    return 0;
+}
+
+// 9P2000.L. `uk_9p_lopen` takes Linux open flags straight through
+// (9p.c:322-344 in our fork), so these are the libc values, not a uk9p invention.
+const O_RDONLY: u32 = 0;
+const O_WRONLY: u32 = 1;
+const O_RDWR: u32 = 2;
+
+// The mount tag, the attach names and the protocol string all cross into C as
+// NUL-terminated buffers. A Koru `string` is a slice, so the terminator is this
+// module's to add — and the buffer is owned by the handle, never by the caller,
+// so nothing here can outlive its storage.
+//
+// 9P has no limit on a mount tag; QEMU's is 31 bytes plus NUL
+// (`hw/9pfs/virtio-9p-device.c`). 64 is over that and under the point where it
+// would be worth allocating separately.
+const TAGMAX: usize = 64;
+const VERMAX: usize = 32;
+
+fn cstr(dst: []u8, src: []const u8) bool {
+    if (src.len + 1 > dst.len) return false;
+    for (0..src.len) |i| dst[i] = src[i];
+    dst[src.len] = 0;
+    return true;
+}
+
+// ============================================================================
+// THE HANDLES
+// ============================================================================
+//
+// Four Koru-owned structs. A caller never sees a `struct uk_9pdev *`, a
+// `struct uk_9preq *` or a `struct uk_9pfid *`, which is what retires all five
+// of uk9p's `UK_ASSERT(<pointer>)` sites on the application surface: those
+// pointers are minted inside this module from checked returns, and the only way
+// to name one is to hold the handle a success arm produced.
+//
+// The PARENT POINTER in each is what makes the composition rule work. `Reply`
+// holds its `Dev`, `Root` holds its `Dev`, `File` holds its `Root`. That is why
+// `reply.release`, `session.end` and `file.close` can hand a parent back without
+// the caller ever having to keep one — and why a caller CANNOT keep one: the
+// binding was consumed.
+
+const Dev = struct {
+    dev: *Uk9pDev,
+    msize: u32,
+    tag: [TAGMAX]u8,
+    ver: [VERMAX]u8,
+    ver_len: usize,
+};
+
+const Reply = struct {
+    dev: *Dev,
+    req: *Uk9pReq,
+};
+
+const Root = struct {
+    dev: *Dev,
+    fid: *Uk9pFid,
+};
+
+const File = struct {
+    root: *Root,
+    fid: *Uk9pFid,
+    // `uk_9p_read`/`_write` stage through this. Sized at `file.open` from the
+    // negotiated msize, so a transfer can never be larger than the device's own
+    // ceiling and the C's `MIN(count, dev->msize - 11)` clamp never has to
+    // silently shorten anything this module asked for.
+    buf: [*]u8,
+    cap: usize,
+};
+
+// ============================================================================
+// THE TRANSPORT
+// ============================================================================
+
+// Is there a 9P transport at all? `uk_9pdev_trans_get_default` returns the first
+// transport that registered (9pdev_trans.c:57), and both in-tree drivers
+// register from a `uk_bus_register` constructor — `drivers/virtio/9p:471` and
+// `drivers/xen/9pfront:487`. In an image built without one, or on a machine
+// where QEMU was started without `-device virtio-9p-pci`, that is NULL, every
+// `uk_9pdev_connect` is a null dereference through `trans->ops`, and the C has
+// only `UK_ASSERT(trans)` (9pdev.c:215) to say so — compiled out.
+//
+// No obligation: knowing a transport exists constrains nothing about what may
+// happen next. This is `unikraft/blk:count`'s shape.
+//
+// There is deliberately no `by_name` and no `set_default`. `uk_9pdev_trans_
+// set_default` asserts its argument is non-null (9pdev_trans.c:83) and exists so
+// a mount can pick between virtio and xen; a unikernel image has one of them.
+~pub tor probe { } -> bool
+
+~proc probe|zig {
+    return uk_9pdev_trans_get_default() != null;
+}
+
+// ============================================================================
+// THE DEVICE
+// ============================================================================
+
+// `uk_9pdev_connect` over the default transport. Mints <linked!>.
+//
+// `device_identifier` is the mount tag — for virtio, the `mount_tag=` given to
+// `-device virtio-9p-pci`. `mount_args` is NULL and the allocator is NULL, which
+// `uk_9pdev_connect` reads as "use the transport's own allocator"
+// (9pdev.c:213). Neither is a caller's decision in a unikernel with one heap.
+//
+// RETIRES 9pdev.c:215 `UK_ASSERT(trans)` — the transport comes from
+// `uk_9pdev_trans_get_default()` and a NULL is a named refusal arm here, not an
+// assertion. RETIRES 9pdev.c:216 `UK_ASSERT(device_identifier)` — the tag is a
+// Koru `string` copied into the handle's own buffer; there is no spelling for a
+// null one.
+//
+// Both failure modes are separate arms with reasons, and neither hands back an
+// obligation: `uk_9pdev_connect` frees the device on every failing path
+// (9pdev.c:251-254), so there is nothing left to give.
+~pub tor connect { tag: string }
+| ok *Dev<linked!>
+| absent string
+| refused { errno: i32, reason: string }
+
+~proc connect|zig {
+    const trans = uk_9pdev_trans_get_default() orelse {
+        return .{ .absent = "no 9P transport registered: build with CONFIG_LIBVIRTIO_9P and start the machine with -device virtio-9p-pci" };
+    };
+
+    const mem = malloc(@sizeOf(Dev)) orelse {
+        return .{ .refused = .{ .errno = -12, .reason = "out of memory allocating the 9P device handle" } };
+    };
+    const d: *Dev = @ptrCast(@alignCast(mem));
+    d.msize = 0;
+    d.ver_len = 0;
+
+    if (!cstr(&d.tag, tag)) {
+        free(mem);
+        return .{ .refused = .{ .errno = -36, .reason = "9P mount tag is longer than this lift's tag buffer" } };
+    }
+
+    const raw = uk_9pdev_connect(trans, @ptrCast(&d.tag), null, null);
+    const e = errOf(raw);
+    if (e != 0) {
+        free(mem);
+        return .{ .refused = .{ .errno = @intCast(e), .reason = "uk_9pdev_connect failed: no device with that mount tag, or it is already in use" } };
+    }
+    const dev = raw orelse {
+        free(mem);
+        return .{ .refused = .{ .errno = -5, .reason = "uk_9pdev_connect returned NULL, which is not a value uk9p produces" } };
+    };
+
+    d.dev = dev;
+    return .{ .ok = d };
+}
+
+// `uk_9p_version` — the Tversion/Rversion exchange. CONSUMES the `*Dev` and
+// mints a `*Reply<received!>`.
+//
+// THIS IS THE FIRST OF THE THREE NESTINGS and the one that is easiest to
+// mistake for ceremony, so: `uk_9p_version` is the only exported `uk_9p_*`
+// verb that does not remove its own request (compare `uk_9p_attach` at
+// 9p.c:179 and `uk_9p_walk` at 9p.c:272, both of which call
+// `uk_9pdev_req_remove` before returning). It hands the caller a live request,
+// and the caller owes `uk_9pdev_req_remove`. Forget it and:
+//
+//   * the tag stays set in `dev->_req_mgmt.tag_bm`, a bitmap of UK_9P_NUMTAGS entries — 65,536 of
+//     them (9p_core.h:373) — a leak of a genuinely finite resource;
+//   * the request stays on `req_list`, so at disconnect `_req_mgmt_cleanup`
+//     walks it, finds a live reference and prints
+//     `uk_pr_err("Tag %d still has references on cleanup.")` (9pdev.c:195).
+//
+// There is NO assertion on this. The C's only response is a log line at
+// teardown, in a build with logging on, long after the mistake.
+//
+// WHY THE PROTOCOL STRING IS COPIED RATHER THAN BORROWED. `uk_9preq_readstr`
+// (9preq.h:411) sets `val->data = (char *)req->recv.buf + req->recv.offset` —
+// the returned `uk_9p_str` POINTS INTO the request's receive buffer, which
+// `reply.release` returns to the freelist. Handing that pointer out as a Koru
+// `string` would create a use-after-free that this module cannot make a compile
+// error, because Koru tracks obligations on handles and not provenance on
+// strings. So the bytes are copied into the `Dev`'s own storage, which outlives
+// every fid and every request on the connection, and the borrow does not escape.
+// Stated as a claim not made in README.md.
+//
+// AND THE MIRROR IS PROVED HERE. A 9P server echoes the version it accepts, so
+// the string that came back through `NineStr` must equal the one that went in
+// (or be the "unknown" downgrade). A wrong `size` offset or a wrong `data`
+// offset cannot produce a match. If it does not match, `version` refuses and
+// hands the `*Dev` back rather than handing out a device whose ABI assumption
+// is unverified.
+~pub tor version { dev: *Dev<!linked>, requested: string }
+| negotiated { reply: *Reply<received!>, protocol: string, msize: u32 }
+| refused { dev: *Dev<linked!>, errno: i32, reason: string }
+
+~proc version|zig {
+    var want: [VERMAX]u8 = undefined;
+    if (!cstr(&want, requested)) {
+        return .{ .refused = .{ .dev = dev, .errno = -36, .reason = "requested 9P version string is longer than this lift's version buffer" } };
+    }
+
+    var got = NineStr{ .size = 0, .data = null };
+    const raw = uk_9p_version(dev.dev, @ptrCast(&want), &got);
+    const e = errOf(raw);
+    if (e != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(e), .reason = "uk_9p_version failed: the server rejected the Tversion exchange" } };
+    }
+    const req = raw orelse {
+        return .{ .refused = .{ .dev = dev, .errno = -5, .reason = "uk_9p_version returned NULL, which is not a value uk9p produces" } };
+    };
+
+    const data = got.data orelse {
+        _ = uk_9pdev_req_remove(dev.dev, req);
+        return .{ .refused = .{ .dev = dev, .errno = -5, .reason = "Rversion carried no version string: struct uk_9p_str.data came back null" } };
+    };
+    if (got.size == 0 or got.size >= VERMAX) {
+        _ = uk_9pdev_req_remove(dev.dev, req);
+        return .{ .refused = .{ .dev = dev, .errno = -5, .reason = "Rversion version string is empty or longer than this lift's version buffer, so the struct uk_9p_str mirror is not confirmed" } };
+    }
+
+    // The mirror proof. The server echoes the accepted version verbatim; a
+    // server that does not support what was asked for answers the literal
+    // string "unknown" (9P2000 spec, and QEMU's hw/9pfs/9p.c does exactly that).
+    // Either of those is a value only a correct mirror can produce.
+    const n: usize = @intCast(got.size);
+    for (0..n) |i| dev.ver[i] = data[i];
+    dev.ver_len = n;
+
+    var echoed = (n == requested.len);
+    if (echoed) {
+        for (0..n) |i| {
+            if (dev.ver[i] != requested[i]) {
+                echoed = false;
+                break;
+            }
+        }
+    }
+    var unknown = (n == 7);
+    if (unknown) {
+        const u = "unknown";
+        for (0..7) |i| {
+            if (dev.ver[i] != u[i]) {
+                unknown = false;
+                break;
+            }
+        }
+    }
+    if (!echoed and !unknown) {
+        _ = uk_9pdev_req_remove(dev.dev, req);
+        return .{ .refused = .{ .dev = dev, .errno = -5, .reason = "Rversion is neither the requested version nor \"unknown\": struct uk_9p_str does not read back the way 9p_core.h:248 says, so this lift's one mirror is refused" } };
+    }
+    if (unknown) {
+        _ = uk_9pdev_req_remove(dev.dev, req);
+        return .{ .refused = .{ .dev = dev, .errno = -95, .reason = "the 9P server does not speak the requested protocol version and answered \"unknown\"" } };
+    }
+
+    // `uk_9p_version` has already pushed the server's answer into the device
+    // (9p.c:130, `uk_9pdev_set_msize`) and then dropped the number on the floor
+    // — its `new_msize` is a local and no out-parameter carries it. So the
+    // negotiated size comes back through the exported getter, which is the only
+    // road there is. `uk_9pdev_get_msize` is on the allowlist (twice, see the
+    // header note on duplicate lines) and reads `dev->msize` (9pdev.c:482).
+    dev.msize = uk_9pdev_get_msize(dev.dev);
+    if (dev.msize == 0) {
+        _ = uk_9pdev_req_remove(dev.dev, req);
+        return .{ .refused = .{ .dev = dev, .errno = -5, .reason = "the device reports a negotiated message size of zero after Rversion" } };
+    }
+
+    const mem = malloc(@sizeOf(Reply)) orelse {
+        _ = uk_9pdev_req_remove(dev.dev, req);
+        return .{ .refused = .{ .dev = dev, .errno = -12, .reason = "out of memory allocating the 9P reply handle" } };
+    };
+    const r: *Reply = @ptrCast(@alignCast(mem));
+    r.dev = dev;
+    r.req = req;
+
+    return .{ .negotiated = .{
+        .reply = r,
+        .protocol = dev.ver[0..n],
+        .msize = dev.msize,
+    } };
+}
+
+// `uk_9pdev_req_remove` — the tag goes back and the request goes on the
+// freelist. CONSUMES the `*Reply` and RE-MINTS the `*Dev` in <negotiated!>.
+//
+// This is the composition rule at its smallest: the device was consumed by
+// `version` and there is no other tor that produces a `*Dev`, so a program that
+// leaks the reply has no `*Dev` left to attach with, to skip with, or to
+// disconnect. The leak is not diagnosed after the fact — it is a program that
+// runs out of moves.
+//
+// `uk_9pdev_req_remove` returns 1 if that was the last reference and 0 if the
+// transport still holds one. Neither is a failure and neither changes what may
+// happen next, so it rides as payload and not as a state. It CANNOT be 0 here:
+// `uk_9preq_waitreply` has already returned, which means `uk_9preq_receive_cb`
+// ran, and the virtio driver drops its reference in `virtio_9p_recv` before the
+// wake. The value is reported rather than asserted because this lift does not
+// own the transport.
+~pub tor reply.release { reply: *Reply<!received> } -> { dev: *Dev<negotiated!>, was_last: bool }
+
+~proc reply.release|zig {
+    const d = reply.dev;
+    const last = uk_9pdev_req_remove(d.dev, reply.req);
+    free(@ptrCast(reply));
+    return .{ .dev = d, .was_last = last == 1 };
+}
+
+// ============================================================================
+// THE SESSION
+// ============================================================================
+
+// `uk_9p_attach` — Tattach, the root fid of the tree. CONSUMES the `*Dev` and
+// mints a `*Root<attached!>`.
+//
+// THE ORDERING RULE THIS LIFTS HAS NO ASSERTION AND NO BRANCH ANYWHERE IN
+// `uk9p`. `attach` accepts only `<!negotiated>`, and the only thing that mints
+// it is `reply.release` — reachable only through `version`. So Tattach before
+// Tversion does not compile.
+//
+// That rule is the 9P protocol's, not Unikraft's: "the first message on a
+// connection must be Tversion" (the 9P2000 specification, `version(5)`), and it
+// exists because Tversion resets the connection and invalidates every fid. The
+// C never checks it. `uk_9pdev_connect` leaves `dev->msize = dev->max_msize`
+// (9pdev.c:247) so an un-versioned device even looks usable, and the failure
+// arrives from the server as an Rerror on the attach — or, against a lenient
+// server, does not arrive at all and the connection is quietly running an
+// unnegotiated msize. This is the `unikraft/vmem` shape: a real rule whose
+// penalty is not a check.
+//
+// `afid` is `UK_9P_NOFID` and `n_uname` is 0 — no authentication. uk9p exports
+// no auth verb at all (there is no `uk_9p_auth` in the tree), so an
+// authenticated mount is not something this API can express with or without
+// this lift.
+//
+// A failure hands the `*Dev` back in <negotiated!>: `uk_9p_attach` releases the
+// fid it created on every failing path (9p.c:162, :187) and the device is
+// untouched, so retrying or disconnecting are both legitimate continuations.
+~pub tor attach { dev: *Dev<!negotiated>, uname: string, aname: string }
+| ok *Root<attached!>
+| refused { dev: *Dev<negotiated!>, errno: i32, reason: string }
+
+~proc attach|zig {
+    var u: [TAGMAX]u8 = undefined;
+    var a: [TAGMAX]u8 = undefined;
+    if (!cstr(&u, uname) or !cstr(&a, aname)) {
+        return .{ .refused = .{ .dev = dev, .errno = -36, .reason = "uname or aname is longer than this lift's name buffer" } };
+    }
+
+    const raw = uk_9p_attach(dev.dev, NOFID, @ptrCast(&u), @ptrCast(&a), 0);
+    const e = errOf(raw);
+    if (e != 0) {
+        return .{ .refused = .{ .dev = dev, .errno = @intCast(e), .reason = "uk_9p_attach failed: the server refused Tattach for that uname/aname" } };
+    }
+    const fid = raw orelse {
+        return .{ .refused = .{ .dev = dev, .errno = -5, .reason = "uk_9p_attach returned NULL, which is not a value uk9p produces" } };
+    };
+
+    const mem = malloc(@sizeOf(Root)) orelse {
+        _ = uk_9pfid_put(fid);
+        return .{ .refused = .{ .dev = dev, .errno = -12, .reason = "out of memory allocating the 9P root handle" } };
+    };
+    const r: *Root = @ptrCast(@alignCast(mem));
+    r.dev = dev;
+    r.fid = fid;
+    return .{ .ok = r };
+}
+
+// UK_9P_NOFID — 9p_core.h. The "no fid" sentinel, used as `afid` when the mount
+// is unauthenticated.
+const NOFID: u32 = 0xffffffff;
+
+// `uk_9p_walk` — Twalk from the root to a one-element path. CONSUMES the
+// `*Root` and mints a `*File<walked!>`.
+//
+// THIS IS THE NESTING'S SECOND LEVEL and the place where the design cost is
+// real, so it is stated here rather than buried: while a `*File` is live the
+// `*Root` HAS NO NAME. Two files cannot be open on one tree at the same time.
+// 9P allows it; this lift does not.
+//
+// That is a deliberate trade and the alternative was considered and rejected.
+// The alternative is to make the root AMBIENT — every file tor takes both a
+// `*Root` and a `*File`, the root is never consumed, and N files can be live.
+// It buys concurrency and it costs the entire contribution: with the root
+// nameable throughout, `session.end` and `disconnect` become callable while
+// files are open, and 9pdev.c:118's assertion — the one cross-resource rule
+// uk9p actually writes down — goes back to being uncheckable. A phantom state
+// cannot count live children, so an ambient parent cannot know it has none.
+// STRICT LIFO CONTAINMENT IS WHAT MAKES THE ASSERTION STRUCTURAL, and this
+// module chose the assertion.
+//
+// What it costs in practice: a program reads one file at a time. `walk` accepts
+// `<!attached|!rooted>`, so walking again after a `file.close` is fine, and the
+// pattern `walk -> read -> close -> walk -> read -> close` covers what a
+// unikernel does with a 9P mount.
+//
+// A single path element, not a slash-separated path. `uk_9p_walk` writes
+// `nwname = name ? 1 : 0` (9p.c:228) and one string; it has no multi-element
+// form, so a deeper path is a chain of walks — which under LIFO containment is
+// a chain that has to unwind, and is why this lift does not offer one.
+//
+// A failure hands the `*Root` back in <rooted!> rather than <attached!>: the
+// Twalk went out on the wire and the tree WAS used, so the asymmetry gate has
+// been satisfied and `session.end` is a legitimate continuation. `uk_9p_walk`
+// releases the fid it created on every failing path (9p.c:274).
+~pub tor walk { root: *Root<!attached|!rooted>, name: string }
+| ok *File<walked!>
+| refused { root: *Root<rooted!>, errno: i32, reason: string }
+
+~proc walk|zig {
+    var n: [TAGMAX]u8 = undefined;
+    if (!cstr(&n, name)) {
+        return .{ .refused = .{ .root = root, .errno = -36, .reason = "path element is longer than this lift's name buffer" } };
+    }
+    if (name.len == 0) {
+        return .{ .refused = .{ .root = root, .errno = -22, .reason = "empty path element: uk_9p_walk with a null name clones the fid, which this lift does not expose" } };
+    }
+
+    const raw = uk_9p_walk(root.dev.dev, root.fid, @ptrCast(&n));
+    const e = errOf(raw);
+    if (e != 0) {
+        return .{ .refused = .{ .root = root, .errno = @intCast(e), .reason = "uk_9p_walk failed: no such entry in the attached tree" } };
+    }
+    const fid = raw orelse {
+        return .{ .refused = .{ .root = root, .errno = -5, .reason = "uk_9p_walk returned NULL, which is not a value uk9p produces" } };
+    };
+
+    const mem = malloc(@sizeOf(File)) orelse {
+        _ = uk_9pfid_put(fid);
+        return .{ .refused = .{ .root = root, .errno = -12, .reason = "out of memory allocating the 9P file handle" } };
+    };
+    const f: *File = @ptrCast(@alignCast(mem));
+    f.root = root;
+    f.fid = fid;
+    f.cap = 0;
+    f.buf = undefined;
+    return .{ .ok = f };
+}
+
+// ============================================================================
+// THE FILE
+// ============================================================================
+
+// `uk_9p_lopen` — Tlopen, the 9P2000.L open. Mints <opened!>, and allocates the
+// transfer buffer this file will use for its whole life.
+//
+// THE SIZE OF THAT BUFFER IS NOT A NUMBER THIS LIFT PICKS. It is
+// `msize - UK_9P_RREAD_OVERHEAD`, i.e. the largest payload the negotiated
+// message size can carry, which is the same clamp `uk_9p_read` applies
+// internally at 9p.c:462 (fork) / 9p.c:446 (0.21.0). Allocating anything larger would be memory a transfer
+// can never fill; asking for anything larger at `read` would be silently
+// shortened by the C. The caller does not pass a size and cannot get it wrong.
+//
+// THE UNDERFLOW THIS AVOIDS IS LIVE IN THE TREE THE IMAGE BUILDS AGAINST.
+// `uk_9p_read` in Unikraft 0.21.0 "Ijiraq" is `count = MIN(count, dev->msize -
+// 11)` with no guard; `dev->msize <= 11` makes that subtraction wrap to a
+// gigantic unsigned count and the request is built past the end of the buffer.
+// Our fork added `if (dev->msize <= UK_9P_RREAD_OVERHEAD) return -EINVAL;`
+// (9p.c:458) — a fix that is NOT in stable. This lift refuses the same condition
+// here, at open, once per file, rather than per read, and it therefore holds on
+// both trees.
+//
+// `flags` is not exposed as a bit set. Three named modes — 0, 1, 2 — are what a
+// 9P2000.L client uses, and a lift that took a `u32` would hand a caller the
+// ability to pass `O_CREAT` to a verb that cannot create.
+~pub tor file.open { file: *File<!walked>, mode: u32 }
+| ok *File<opened!>
+| refused { file: *File<walked!>, errno: i32, reason: string }
+
+~proc file.open|zig {
+    if (mode != O_RDONLY and mode != O_WRONLY and mode != O_RDWR) {
+        return .{ .refused = .{ .file = file, .errno = -22, .reason = "mode is not one of 0 (read), 1 (write) or 2 (read-write)" } };
+    }
+
+    const msize = file.root.dev.msize;
+    if (msize <= RREAD_OVERHEAD or msize <= TWRITE_OVERHEAD) {
+        return .{ .refused = .{ .file = file, .errno = -22, .reason = "the negotiated msize is smaller than a 9P read or write header, so no transfer can be built" } };
+    }
+    const cap: usize = @intCast(msize - TWRITE_OVERHEAD);
+
+    const rc = uk_9p_lopen(file.root.dev.dev, file.fid, mode);
+    if (rc != 0) {
+        return .{ .refused = .{ .file = file, .errno = @intCast(rc), .reason = "uk_9p_lopen failed: the server refused Tlopen, or the mount does not speak 9P2000.L" } };
+    }
+
+    const mem = malloc(cap) orelse {
+        return .{ .refused = .{ .file = file, .errno = -12, .reason = "out of memory allocating the file's transfer buffer" } };
+    };
+    file.buf = @ptrCast(mem);
+    file.cap = cap;
+    return .{ .ok = file };
+}
+
+// Protocol overheads — 9p.c:47 and :53 in our fork, the bare literals 11 and 23
+// in 0.21.0. size[4] + type[1] + tag[2] + count[4] for Rread; the same plus
+// fid[4] + offset[8] for Twrite.
+const RREAD_OVERHEAD: u32 = 11;
+const TWRITE_OVERHEAD: u32 = 23;
+
+// `uk_9p_read` — Tread at `offset`. Mints <io!>.
+//
+// Accepts `<!opened|!io>`, so reads chain and a read cannot precede the open.
+// There is no assertion in uk9p for reading an unopened fid — the server answers
+// Rerror "file not open" and `uk_9preq_error` turns it into a negative errno,
+// which is a round trip to find out something the type system already knew.
+//
+// The count is clamped to the transfer buffer `file.open` sized, which is itself
+// the msize clamp. A read larger than that is REFUSED with a reason rather than
+// silently shortened: `uk_9p_read`'s own `MIN` would shorten it, and a short
+// read that the caller did not ask for is exactly the shape the no-fallbacks
+// rule bans.
+//
+// A short read is NOT a failure and is not an arm: 9P's Rread returns however
+// many bytes it has, and zero at end of file. The count rides in the payload.
+~pub tor file.read { file: *File<!opened|!io>, offset: u64, count: u32 }
+| data { file: *File<io!>, bytes: string }
+| failed { file: *File<io!>, errno: i32, reason: string }
+| rejected { file: *File<opened!>, reason: string }
+
+~proc file.read|zig {
+    if (file.cap == 0) {
+        return .{ .rejected = .{ .file = file, .reason = "no transfer buffer: file.open did not run" } };
+    }
+    if (count == 0) {
+        return .{ .rejected = .{ .file = file, .reason = "read of zero bytes" } };
+    }
+    if (@as(usize, count) > file.cap) {
+        return .{ .rejected = .{ .file = file, .reason = "read is larger than the negotiated message size allows in one Tread" } };
+    }
+
+    const rc = uk_9p_read(file.root.dev.dev, file.fid, offset, count, file.buf);
+    if (rc < 0) {
+        return .{ .failed = .{ .file = file, .errno = @intCast(rc), .reason = "uk_9p_read failed" } };
+    }
+    return .{ .data = .{ .file = file, .bytes = file.buf[0..@intCast(rc)] } };
+}
+
+// `uk_9p_write` — Twrite at `offset`. Mints <io!>.
+//
+// Same clamp, same refusal. `uk_9p_write` returns the number of bytes the server
+// accepted, which for 9P may legitimately be fewer than were offered, so it
+// rides in the payload and the caller decides whether to continue — this lift
+// does not loop on the caller's behalf, because a partial write that silently
+// became a whole one is the same lie as a short read that did.
+~pub tor file.write { file: *File<!opened|!io>, offset: u64, bytes: string }
+| ok { file: *File<io!>, wrote: u32 }
+| failed { file: *File<io!>, errno: i32, reason: string }
+| rejected { file: *File<opened!>, reason: string }
+
+~proc file.write|zig {
+    if (file.cap == 0) {
+        return .{ .rejected = .{ .file = file, .reason = "no transfer buffer: file.open did not run" } };
+    }
+    if (bytes.len == 0) {
+        return .{ .rejected = .{ .file = file, .reason = "write of zero bytes" } };
+    }
+    if (bytes.len > file.cap) {
+        return .{ .rejected = .{ .file = file, .reason = "write is larger than the negotiated message size allows in one Twrite" } };
+    }
+
+    for (0..bytes.len) |i| file.buf[i] = bytes[i];
+
+    const rc = uk_9p_write(file.root.dev.dev, file.fid, offset, @intCast(bytes.len), file.buf);
+    if (rc < 0) {
+        return .{ .failed = .{ .file = file, .errno = @intCast(rc), .reason = "uk_9p_write failed" } };
+    }
+    return .{ .ok = .{ .file = file, .wrote = @intCast(rc) } };
+}
+
+// `uk_9pfid_put` on the file's fid. CONSUMES the `*File` and RE-MINTS the
+// `*Root` in <rooted!>.
+//
+// WHY `uk_9pfid_put` AND NOT `uk_9p_clunk`. Both are exported and both look like
+// "close the fid". They are not the same operation:
+//
+//   * `uk_9p_clunk(dev, fid)` sends Tclunk and returns. The fid stays on
+//     `dev->_fid_mgmt.fid_active_list`, still allocated, still counted by
+//     9pdev.c:118's assertion, and now naming a fid the SERVER has forgotten.
+//     Walk again and the reused fid number collides.
+//   * `uk_9pfid_put(fid)` drops the reference and, on the last one, calls
+//     `uk_9pdev_fid_release` (9pfid.c:64) which clunks AND takes the fid off the
+//     active list (9pdev.c:468). That is the disposal.
+//
+// So `uk_9p_clunk` is on the allowlist and is not a close, and this lift does
+// not expose it. This is a linkability finding that no column can carry: a
+// symbol can link, be public, be named after the thing you want, and still be
+// the wrong half of it.
+//
+// `uk_9pdev_fid_release` swallows a failed clunk with `uk_pr_warn` (9pdev.c:458)
+// and `uk_9pfid_put` returns only "was that the last reference". There is
+// therefore no errno to report here and no failure arm to write; inventing one
+// would be a fallback. The reference count rides as payload.
+~pub tor file.close { file: *File<!walked|!opened|!io> } -> { root: *Root<rooted!>, was_last: bool }
+
+~proc file.close|zig {
+    const r = file.root;
+    if (file.cap != 0) free(@ptrCast(file.buf));
+    const last = uk_9pfid_put(file.fid);
+    free(@ptrCast(file));
+    return .{ .root = r, .was_last = last == 1 };
+}
+
+// THE NAMED ESCAPE from the session-level asymmetry gate. `session.end` accepts
+// only <!rooted>, and only `file.close` mints it, so a tree that was attached
+// and never walked into cannot be ended. That is the point — but attaching to a
+// tree on a path that turns out not to need it is legitimate, and this is how a
+// program says so out loud.
+//
+//     grep -r "ninep:walk.skipped"   ->   "which mounts do we attach to and
+//                                          never read"
+//
+// It runs no C call, which is the honest emission — nothing happened. Note that
+// the Tattach itself HAS already gone over the wire, so this is not the same
+// shape as `unikraft/lock:hold.skipped` (where nothing at all had happened): it
+// is the narrower statement that the tree was opened and no path in it was
+// walked.
+~pub tor walk.skipped { root: *Root<!attached> } -> *Root<rooted!>
+
+~proc walk.skipped|zig {
+    return root;
+}
+
+// `uk_9pfid_put` on the ROOT fid. CONSUMES the `*Root` and RE-MINTS the `*Dev`
+// in <drained!>.
+//
+// THE TOP OF THE NESTING, and the tor that retires 9pdev.c:118. After this, and
+// only after this, `dev->_fid_mgmt.fid_active_list` is empty — the root was the
+// last fid, because every `*File` had to be closed to get a `*Root` back at all.
+// `disconnect` is reachable from nowhere else.
+~pub tor session.end { root: *Root<!rooted> } -> { dev: *Dev<drained!>, was_last: bool }
+
+~proc session.end|zig {
+    const d = root.dev;
+    const last = uk_9pfid_put(root.fid);
+    free(@ptrCast(root));
+    return .{ .dev = d, .was_last = last == 1 };
+}
+
+// THE NAMED ESCAPE from the connection-level asymmetry gate. `disconnect`
+// accepts only <!drained>, and the ordinary way to mint it is `session.end` —
+// so a connection that was opened and never attached to has no way out.
+//
+// It accepts <!linked> as well as <!negotiated> because BOTH are dead ends
+// otherwise: a `version` that the server refused leaves a live device with
+// nothing to do but close, and a device that was connected and never versioned
+// is the "we changed our mind" case. Neither is a failure, and neither should
+// have to be spelled as one.
+//
+//     grep -r "ninep:session.skipped"   ->   "which 9P mounts do we open and
+//                                             never attach to"
+//
+// It runs no C call.
+~pub tor session.skipped { dev: *Dev<!linked|!negotiated> } -> *Dev<drained!>
+
+~proc session.skipped|zig {
+    return dev;
+}
+
+// `uk_9pdev_disconnect`. Accepts ONLY <!drained> and consumes it.
+//
+// RETIRES 9pdev.c:264 `UK_ASSERT(dev)` — the pointer was minted by `connect`'s
+// success arm and there is no other spelling for one.
+//
+// RETIRES 9pdev.c:265 `UK_ASSERT(dev->state == UK_9PDEV_CONNECTED)`, which is
+// the DECLARED-ENUM assertion this whole module is built around, and it is worth
+// being exact about what it catches. `uk_9pdev_disconnect` ends with
+// `uk_free(dev->a, dev)` (9pdev.c:279): the second call reads `dev->state` out
+// of freed storage. With asserts on, that read is the assertion and it usually
+// trips. With asserts off — every shipped image — it is a plain use-after-free
+// on the allocator's freelist, followed by `_fid_mgmt_cleanup` walking two list
+// heads that are now whatever the allocator wrote there. Here the handle is
+// consumed, so a second `disconnect` is `KORU030: Use-after-discharge` and the
+// C never runs.
+//
+// RETIRES 9pdev.c:295's real `if` branch too — `if (dev->state !=
+// UK_9PDEV_CONNECTED) return -EIO` inside `uk_9pdev_request`. That is not an
+// assertion, it is a live check in every build, and it is the C paying a
+// compare and a branch on EVERY 9P message to catch a mistake that cannot be
+// made here: after `disconnect` there is no handle, and before `connect` there
+// is none either.
+//
+// The return code is reported and not branched on, because it changes nothing
+// about what may happen next: `uk_9pdev_disconnect` frees the device whether or
+// not the transport's disconnect succeeded, and says so in its own header
+// comment (9pdev.h:68 — "Even in case of failure, the device is closed and
+// should not be used"). An arm handing a handle back would be a fiction.
+~pub tor disconnect { dev: *Dev<!drained> } -> i32
+
+~proc disconnect|zig {
+    const rc = uk_9pdev_disconnect(dev.dev);
+    free(@ptrCast(dev));
+    return @intCast(rc);
+}

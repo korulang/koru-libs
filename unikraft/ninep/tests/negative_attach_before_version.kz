@@ -1,0 +1,53 @@
+//~ compile_fail(backend)
+//~ error[KORU030]: Phantom state mismatch
+
+// NEGATIVE (must FAIL to compile): send Tattach before Tversion.
+//
+// `attach` accepts only <!negotiated>, and the only tor that mints it is
+// `reply.release`, reachable only through `version`. So the first message on a
+// 9P connection is Tversion or the program does not compile.
+//
+// THIS RULE HAS NO ASSERTION AND NO BRANCH ANYWHERE IN `uk9p`. It is the 9P2000
+// protocol's rule, not Unikraft's — "the first message on a connection must be
+// Tversion", because Tversion both settles the message size and RESETS the
+// connection, invalidating every outstanding fid and tag. `lib/uk9p` has no
+// opinion about it: `uk_9p_attach` (9p.c:144) builds a Tattach out of whatever
+// state the device is in and sends it.
+//
+// And the device LOOKS ready, which is what makes this worth a compile error
+// rather than a comment. `uk_9pdev_connect` sets `dev->msize = dev->max_msize`
+// (9pdev.c:247) precisely so that an un-versioned device has a usable message
+// size, so nothing downstream reads as uninitialized. Against QEMU the Tattach
+// is answered with an Rerror and the program gets an errno from a round trip.
+// Against a lenient server it is answered normally, and the connection runs at
+// a message size the two ends never agreed on — the failure is then a truncated
+// read, later, on a large file.
+//
+// This is the `unikraft/vmem` shape: a real ordering rule whose penalty is not
+// a check. Lifting it costs one phantom state.
+//
+// EXPECTED: error[KORU030]: Phantom state mismatch: expected
+//           'unikraft.ninep:negotiated' but got 'unikraft.ninep:linked!'
+//           for argument 'dev'
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/ninep
+~import std/io
+
+~unikraft/ninep:connect(tag: "korufs")
+| ok mount |> unikraft/ninep:attach(dev: mount, uname: "korunaut", aname: "")
+    | ok tree |> std/io:print.ln("should never get here")
+        |> unikraft/ninep:walk.skipped(root: tree): spent
+            |> unikraft/ninep:session.end(root: spent)
+                | ok ended |> unikraft/ninep:disconnect(ended.dev)
+    | refused e |> std/io:print.ln("attach: {{ e.reason:s }}")
+        |> unikraft/ninep:session.skipped(e.dev): unused
+            |> unikraft/ninep:disconnect(dev: unused)
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }}")

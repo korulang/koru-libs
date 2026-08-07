@@ -1,0 +1,168 @@
+// POSITIVE, and the gate-2 artifact for this module: a real 9P session, driven
+// from Koru inside a unikernel, against QEMU's virtio-9p server over a host
+// directory.
+//
+//   probe                                        <- is there a transport at all
+//   connect  -> version -> reply.release         <- Dev  ⊃ Reply
+//     -> attach                                  <- Dev  ⊃ Root
+//       -> walk -> file.open -> file.read        <- Root ⊃ File
+//         -> file.write -> file.read             <- read back what we wrote
+//       -> file.close                            <- File -> Root
+//     -> session.end                             <- Root -> Dev
+//   -> disconnect
+//   connect -> version -> reply.release -> session.skipped -> disconnect
+//   connect -> version -> reply.release -> attach -> walk.skipped -> session.end
+//                                                <- both named escapes
+//
+// WHAT THE CONSOLE PROVES, none of which `--check` can:
+//
+//   1. THE THREE NESTINGS UNWIND IN ORDER, ON A REAL SERVER. Every arrow above
+//      is a phantom transition the compiler checked before this program
+//      existed, and every step is one exported `uk9p` call with nothing around
+//      it. The `was_last` values printed by `reply.release`, `file.close` and
+//      `session.end` are the C's own refcount answers — `uk_9pdev_req_remove`
+//      and `uk_9pfid_put` each return 1 only when that was the final reference,
+//      so three 1s is the statement that nothing is still holding a request or
+//      a fid when `disconnect` runs. That is 9pdev.c:118's assertion, evaluated
+//      by the C itself, in an image where the assertion is compiled out.
+//   2. `struct uk_9p_str` READS BACK. The protocol line is the string that came
+//      out of the mirror at `9p_core.h:248`, and `version` refuses unless it
+//      matches what went in. `9P2000.L` on the console is the mirror proof.
+//   3. THE MSIZE IS THE SERVER'S, NOT A CONSTANT. QEMU answers Tversion with
+//      its own maximum; the number printed is `uk_9pdev_get_msize` after the
+//      exchange, and it is what sizes the file's transfer buffer.
+//   4. THE FILE ROUND-TRIPS. `koru.txt` is planted on the host before boot,
+//      read back inside the unikernel, overwritten from the unikernel, and read
+//      again — and it is on the host filesystem afterwards.
+//   5. `session.skipped` COSTS THE HONEST PROGRAM NOTHING. The second
+//      connection is versioned and never attached to; it says so in one
+//      greppable word and compiles. Without that word the same program is
+//      refused — `negative_disconnect_without_session.kz`.
+//
+// Build and boot: see ../README.md.
+
+// The `unikraft` namespace is declared here, not inherited: koruc's built-in
+// alias probes the sibling koru-libs CHECKOUT, so in a worktree this file would
+// otherwise compile against main's lifts instead of the ones beside it.
+~std/compiler:paths {
+    unikraft: {{ ENTRY }}/../..
+}
+
+~import unikraft/ninep
+~import std/io
+
+~unikraft:image(name: "koru") {
+    APPKORU_CFLAGS-y += -DKORU_UNIKRAFT_NINEP=1
+}
+
+// `LIBUK9P` is `default n` (lib/uk9p/Config.uk:5). `LIBVIRTIO_9P` depends on it
+// and selects `LIBVIRTIO_BUS` and `LIBUKSGLIST`; both are named here anyway so
+// the image does not depend on an upstream default staying where it is.
+// `LIBUKSCHED` is not optional: `uk_9preq_waitreply` without it is a bare spin
+// on `req->state` (9preq.c:198) and the virtio interrupt that would change it
+// never gets a chance to run.
+~unikraft:kconfig {
+    CONFIG_OPTIMIZE_SIZE: 'y'
+    CONFIG_OPTIMIZE_DEADELIM: 'y'
+    CONFIG_LIBUKBOOT_BANNER_NONE: 'y'
+    CONFIG_LIBUKDEBUG_ENABLE_ASSERT: 'n'
+    CONFIG_LIBUKALLOC: 'y'
+    CONFIG_LIBUKALLOCBBUDDY: 'y'
+    CONFIG_LIBUKSCHED: 'y'
+    CONFIG_LIBUKSCHEDCOOP: 'y'
+    CONFIG_LIBUKSGLIST: 'y'
+    CONFIG_LIBUK9P: 'y'
+    CONFIG_LIBVIRTIO_9P: 'y'
+    CONFIG_LIBVIRTIO_PCI: 'y'
+    CONFIG_LIBVIRTIO_BUS: 'y'
+}
+
+~unikraft/ninep:probe(): has_transport
+    |> std/io:print.ln("transport:      {{ has_transport:any }}")
+
+~unikraft/ninep:connect(tag: "korufs")
+| ok mount |> unikraft/ninep:version(dev: mount, requested: "9P2000.L")
+    | negotiated v |> std/io:print.ln("version:        {{ v.protocol:s }}, msize {{ v.msize:d }}")
+        |> unikraft/ninep:reply.release(v.reply)
+            | ok rel |> std/io:print.ln("reply.release:  tag returned, was_last {{ rel.was_last:any }}")
+                |> unikraft/ninep:attach(rel.dev, uname: "korunaut", aname: "")
+                    | ok tree |> unikraft/ninep:walk(root: tree, name: "koru.txt")
+                        | ok node |> unikraft/ninep:file.open(file: node, mode: 2)
+                            | ok fh |> unikraft/ninep:file.read(file: fh, offset: 0, count: 512)
+                                | data first |> std/io:print.ln("read  @0:      {{ first.bytes:s }}")
+                                    |> unikraft/ninep:file.write(first.file, offset: 0, bytes: "KORU WROTE THIS OVER 9P -- uk_9p_write through unikraft/ninep, three nested obligations deep.")
+                                        | ok w |> std/io:print.ln("write @0:      {{ w.wrote:d }} bytes accepted")
+                                            |> unikraft/ninep:file.read(w.file, offset: 0, count: 512)
+                                                | data back |> std/io:print.ln("read  @0:      {{ back.bytes:s }}")
+                                                    |> unikraft/ninep:file.close(back.file)
+                                                        | ok closed |> std/io:print.ln("file.close:     fid put, was_last {{ closed.was_last:any }}")
+                                                            |> unikraft/ninep:session.end(closed.root)
+                                                                | ok ended |> std/io:print.ln("session.end:    root put, was_last {{ ended.was_last:any }}")
+                                                                    |> unikraft/ninep:disconnect(ended.dev): rc
+                                                                        |> std/io:print.ln("disconnect:     rc {{ rc:d }}")
+                                                | failed e |> std/io:print.ln("read back: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/ninep:file.close(e.file)
+                                                    | ok c |> unikraft/ninep:session.end(c.root)
+                                                        | ok en |> unikraft/ninep:disconnect(en.dev)
+                                                | rejected r |> std/io:print.ln("read back rejected: {{ r.reason:s }}") |> unikraft/ninep:file.close(r.file)
+                                                    | ok c |> unikraft/ninep:session.end(c.root)
+                                                        | ok en |> unikraft/ninep:disconnect(en.dev)
+                                        | failed e |> std/io:print.ln("write: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/ninep:file.close(e.file)
+                                            | ok c |> unikraft/ninep:session.end(c.root)
+                                                | ok en |> unikraft/ninep:disconnect(en.dev)
+                                        | rejected r |> std/io:print.ln("write rejected: {{ r.reason:s }}") |> unikraft/ninep:file.close(r.file)
+                                            | ok c |> unikraft/ninep:session.end(c.root)
+                                                | ok en |> unikraft/ninep:disconnect(en.dev)
+                                | failed e |> std/io:print.ln("read: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/ninep:file.close(e.file)
+                                    | ok c |> unikraft/ninep:session.end(c.root)
+                                        | ok en |> unikraft/ninep:disconnect(en.dev)
+                                | rejected r |> std/io:print.ln("read rejected: {{ r.reason:s }}") |> unikraft/ninep:file.close(r.file)
+                                    | ok c |> unikraft/ninep:session.end(c.root)
+                                        | ok en |> unikraft/ninep:disconnect(en.dev)
+                            | refused e |> std/io:print.ln("file.open: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/ninep:file.close(e.file)
+                                | ok c |> unikraft/ninep:session.end(c.root)
+                                    | ok en |> unikraft/ninep:disconnect(en.dev)
+                        | refused e |> std/io:print.ln("walk: {{ e.reason:s }} ({{ e.errno:d }})") |> unikraft/ninep:session.end(e.root)
+                            | ok en |> unikraft/ninep:disconnect(en.dev)
+                    | refused e |> std/io:print.ln("attach: {{ e.reason:s }} ({{ e.errno:d }})")
+                        |> unikraft/ninep:session.skipped(e.dev): spent
+                            |> unikraft/ninep:disconnect(dev: spent)
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }} ({{ e.errno:d }})")
+        |> unikraft/ninep:session.skipped(e.dev): spent
+            |> unikraft/ninep:disconnect(dev: spent)
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }} ({{ e.errno:d }})")
+
+// The named escape, on its own connection: opened, versioned, never attached.
+~unikraft/ninep:connect(tag: "korufs")
+| ok spare |> unikraft/ninep:version(dev: spare, requested: "9P2000.L")
+    | negotiated v |> unikraft/ninep:reply.release(v.reply)
+        | ok rel |> unikraft/ninep:session.skipped(rel.dev): unused
+            |> std/io:print.ln("session.skipped: a mount opened and never attached to, said out loud")
+            |> unikraft/ninep:disconnect(dev: unused): rc
+                |> std/io:print.ln("disconnect:     rc {{ rc:d }}")
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }} ({{ e.errno:d }})")
+        |> unikraft/ninep:session.skipped(e.dev): spent
+            |> unikraft/ninep:disconnect(dev: spent)
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }} ({{ e.errno:d }})")
+
+// The SECOND named escape, on a third connection: attached to the tree and no
+// path in it ever walked. `session.end` accepts only <!rooted>, and without
+// this word `<attached!>` has no way to reach it.
+~unikraft/ninep:connect(tag: "korufs")
+| ok third |> unikraft/ninep:version(dev: third, requested: "9P2000.L")
+    | negotiated v |> unikraft/ninep:reply.release(v.reply)
+        | ok rel |> unikraft/ninep:attach(rel.dev, uname: "korunaut", aname: "")
+            | ok tree |> unikraft/ninep:walk.skipped(root: tree): unwalked
+                |> std/io:print.ln("walk.skipped:   a tree attached and never walked into, said out loud")
+                |> unikraft/ninep:session.end(root: unwalked)
+                    | ok ended |> unikraft/ninep:disconnect(ended.dev): rc
+                        |> std/io:print.ln("disconnect:     rc {{ rc:d }}")
+            | refused e |> std/io:print.ln("attach: {{ e.reason:s }} ({{ e.errno:d }})")
+                |> unikraft/ninep:session.skipped(e.dev): spent
+                    |> unikraft/ninep:disconnect(dev: spent)
+    | refused e |> std/io:print.ln("version: {{ e.reason:s }} ({{ e.errno:d }})")
+        |> unikraft/ninep:session.skipped(e.dev): spent
+            |> unikraft/ninep:disconnect(dev: spent)
+| absent why |> std/io:print.ln("connect: {{ why:s }}")
+| refused e |> std/io:print.ln("connect: {{ e.reason:s }} ({{ e.errno:d }})")
