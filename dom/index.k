@@ -32,3 +32,16 @@
 
 pub tor run { title: string }
 ! ?click { action: i64, id: i64 }
+
+// The markup surface — `component(Name) { <markup> }`. A Stage-C transform
+// (body in index.kz): capital tag = a call to that component's synthesized
+// event; anything else passes through untouched (ruled 2026-08-07). The
+// declaration is consumed at compile time; it has no runtime existence.
+[comptime|transform|pre]pub tor component {
+    expr: Expression,
+    source: Source,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult

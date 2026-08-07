@@ -13,17 +13,10 @@ Object.defineProperty(Array.prototype, "len", __koru_len);
 //   (host) and the assembled label cannot live in the store (string columns
 //   refused, char[N] has no JS lowering — see main.k header).
 //
-// append-row — the krausest row markup (Main.js:7-9 rowTemplate, verbatim).
-//   Escaped because Koru has no markup surface on this target yet: the vaxis
-//   `component` transform is the porting candidate.
-//
 // remove-row / mark-row / swap-rows / select-row — the DOM write itself.
 //   The row-targeting logic lives in main.k; these bodies are the retained-
 //   mode write calls a DOM markup surface would synthesize, exactly where
 //   vaxis's generated flows call write-at.
-const rowTemplate = document.createElement("tr");
-rowTemplate.innerHTML =
-  "<td class='col-md-1'> </td><td class='col-md-4'><a> </a></td><td class='col-md-1'><a><span class='glyphicon glyphicon-remove' aria-hidden='true'></span></a></td><td class='col-md-6'></td>";
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
 const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
@@ -33,6 +26,7 @@ function domRandom(max) {
 function domRow(id) {
     return document.querySelector("tr[data-id='" + id + "']");
 }
+const __koru_dom_tpl_Row_0 = (() => { const t = document.createElement("template"); t.innerHTML = "<tr><td class=\"col-md-1\"></td><td class=\"col-md-4\"><a data-action=\"8\"></a></td><td class=\"col-md-1\"><a data-action=\"7\"><span class=\"glyphicon glyphicon-remove\" aria-hidden=\"true\"></span></a></td><td class=\"col-md-6\"></td></tr>"; return t.content.firstChild; })();
 let __koru_store_rows = {
   id: new Array(16384).fill(0),
   pos: new Array(16384).fill(0),
@@ -83,23 +77,6 @@ const main_module = {
   make_label_event: {
     handler(__koru_input) {
       return adjectives[domRandom(adjectives.length)] + " " + colours[domRandom(colours.length)] + " " + nouns[domRandom(nouns.length)];
-    },
-  },
-  append_row_event: {
-    handler(__koru_input) {
-      const id = __koru_input.id;
-      const label = __koru_input.label;
-      const tr = rowTemplate.cloneNode(true);
-      tr.setAttribute("data-id", String(id));
-      tr.childNodes[0].textContent = String(id);
-      const labelAnchor = tr.childNodes[1].firstChild;
-      labelAnchor.textContent = label;
-      labelAnchor.setAttribute("data-action", "8");
-      labelAnchor.setAttribute("data-id", String(id));
-      const removeAnchor = tr.childNodes[2].firstChild;
-      removeAnchor.setAttribute("data-action", "7");
-      removeAnchor.setAttribute("data-id", String(id));
-      document.getElementById("tbody").appendChild(tr);
     },
   },
   remove_row_event: {
@@ -181,7 +158,7 @@ const main_module = {
     handler(__koru_input) {
       const n = __koru_input.n;
 for (let __koru_item = 0; __koru_item < n; __koru_item++) {
-        { const _auto_0 = __koru_item;         const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, __site_line: 79 });
+        { const _auto_0 = __koru_item;         const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, __site_line: 92 });
         if (result_0.tag === "row") {
           const _auto_1 = result_0.row;
           main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
@@ -192,6 +169,20 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
  }
         
     }
+    },
+  },
+  Row_event: {
+    handler(__koru_input) {
+      const parent = __koru_input.parent;
+      const id = __koru_input.id;
+      const label = __koru_input.label;
+      const __root = __koru_dom_tpl_Row_0.cloneNode(true);
+      __root.setAttribute("data-id", String(id));
+      __root.children[0].textContent = String(id);
+      __root.children[1].children[0].setAttribute("data-id", String(id));
+      __root.children[1].children[0].textContent = String(label);
+      __root.children[2].children[0].setAttribute("data-id", String(id));
+      document.querySelector(parent).appendChild(__root);
     },
   },
   __store_insertf_rows_event: {
@@ -216,11 +207,11 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.pos[__koru_new_row] = pos;
       __koru_store_rows.len += 1;
       main_module.__store_inserted_rows_0_event.handler({ id: id });
-      if (__site_line > 85) {
-      main_module.__store_qrow_rows_L85_event.handler({ row: __koru_new_row });
+      if (__site_line > 98) {
+      main_module.__store_qrow_rows_L98_event.handler({ row: __koru_new_row });
       }
-      if (__site_line > 94) {
-      main_module.__store_qrow_rows_L94_event.handler({ row: __koru_new_row });
+      if (__site_line > 107) {
+      main_module.__store_qrow_rows_L107_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -254,17 +245,17 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       }
     },
   },
-  __store_qrow_rows_L85_event: {
+  __store_qrow_rows_L98_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const pos = __koru_store_rows.pos[__koru_r];
       if (!(((((pos) % (10)) + (10)) % (10)) == 0)) return;
-      main_module.__store_qbody_rows_L85_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      main_module.__store_qbody_rows_L98_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
       return;
     },
   },
-  __store_qbody_rows_L85_event: {
+  __store_qbody_rows_L98_event: {
     handler(__koru_input) {
       const pos = __koru_input.pos;
       const __koru_qrow = __koru_input.__koru_qrow;
@@ -276,26 +267,26 @@ if (__koru_store_op.code == 4) {
     }
     },
   },
-  __store_qsweep_rows_L85_event: {
+  __store_qsweep_rows_L98_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L85_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L98_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
     },
   },
-  __store_qrow_rows_L94_event: {
+  __store_qrow_rows_L107_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
-      main_module.__store_qbody_rows_L94_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      main_module.__store_qbody_rows_L107_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
       return;
     },
   },
-  __store_qbody_rows_L94_event: {
+  __store_qbody_rows_L107_event: {
     handler(__koru_input) {
       const __koru_qrow = __koru_input.__koru_qrow;
       const p = main_module.echo_event.handler({ v: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
@@ -352,12 +343,12 @@ if (__koru_store_op.code == 5) {
     }
     },
   },
-  __store_qsweep_rows_L94_event: {
+  __store_qsweep_rows_L107_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L94_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L107_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
@@ -392,18 +383,15 @@ if (__koru_store_op.code == 5) {
       const id = __koru_input.id;
       const l = main_module.make_label_event.handler({});
       {
+        const parent = "#tbody";
         const label = l;
-        const tr = rowTemplate.cloneNode(true);
-        tr.setAttribute("data-id", String(id));
-        tr.childNodes[0].textContent = String(id);
-        const labelAnchor = tr.childNodes[1].firstChild;
-        labelAnchor.textContent = label;
-        labelAnchor.setAttribute("data-action", "8");
-        labelAnchor.setAttribute("data-id", String(id));
-        const removeAnchor = tr.childNodes[2].firstChild;
-        removeAnchor.setAttribute("data-action", "7");
-        removeAnchor.setAttribute("data-id", String(id));
-        document.getElementById("tbody").appendChild(tr);
+        const __root = __koru_dom_tpl_Row_0.cloneNode(true);
+        __root.setAttribute("data-id", String(id));
+        __root.children[0].textContent = String(id);
+        __root.children[1].children[0].setAttribute("data-id", String(id));
+        __root.children[1].children[0].textContent = String(label);
+        __root.children[2].children[0].setAttribute("data-id", String(id));
+        document.querySelector(parent).appendChild(__root);
       }
     },
   },
@@ -416,8 +404,8 @@ if (__koru_store_op.code == 5) {
   },
   __store_stripe_rows_event: {
     handler(__koru_input) {
-      main_module.__store_qsweep_rows_L85_event.handler({});
-      main_module.__store_qsweep_rows_L94_event.handler({});
+      main_module.__store_qsweep_rows_L98_event.handler({});
+      main_module.__store_qsweep_rows_L107_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -586,10 +574,10 @@ if (__koru_store_op.code == 5) {
     },
   },
   flow0() {
-    main_module.__store_qsweep_rows_L85_event.handler({});
+    main_module.__store_qsweep_rows_L98_event.handler({});
   },
   flow1() {
-    main_module.__store_qsweep_rows_L94_event.handler({});
+    main_module.__store_qsweep_rows_L107_event.handler({});
   },
   flow2() {
     const Handlers_9 = {

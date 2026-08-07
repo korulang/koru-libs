@@ -26,7 +26,7 @@
 import { promises as fs } from "node:fs";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,21 +66,31 @@ function loadResults(file) {
 //     lines and the bodies of `~proc …|<target> { … }` blocks (tracked by
 //     brace balance from the proc header). The proc header itself counts as
 //     ESCAPED: it is the line that declares the escape.
-//   - js_escape = host_lines / (host_lines + koru_lines).
+//   - js_escape = js_host_lines / (js_host_lines + koru_lines).
+// Round-3 refinement (disclosed on the board commit): host lines are
+// classified by HOST LANGUAGE, the same discrimination the compiler makes
+// (src/file_types.zig hostLangOfFile / proc.target). A `~proc …|js` body and
+// a bare .kjs host line are JavaScript the app ships — ESCAPED. A
+// `~proc …|zig` body and a bare .kz host line are compile-time Zig (Stage-C
+// transform machinery, e.g. the koru/dom `component` transform) — they never
+// reach the browser and are counted on NEITHER side of a metric named
+// js_escape. Rounds 1 and 2 recomputed under this rule are bit-identical
+// (66.7% = 36/54, 46.2% = 60/130): no |zig line existed in the vehicle then.
 // Scope note: the classifier covers the facet layout (declarations in .k,
 // host bodies in .kjs/.kz). Effect-branch continuation lines under a ~tor
 // inside a HOST file would misclassify as host; the vehicle declares events
 // in .k facets where the question cannot arise.
-function computeJsEscape(srcDir) {
+export function computeJsEscape(srcDir) {
   let koru = 0;
   let host = 0;
-  const classifyHostFile = (text) => {
+  const classifyHostFile = (text, fileHostIsJs) => {
     let depth = 0; // brace depth inside a ~proc host body
+    let bodyIsJs = false; // whether the current proc body is a |js body
     for (const raw of text.split("\n")) {
       const line = raw.trim();
       if (line === "" || line.startsWith("//")) continue;
       if (depth > 0) {
-        host++;
+        if (bodyIsJs) host++;
         for (const ch of line) {
           if (ch === "{") depth++;
           else if (ch === "}") depth--;
@@ -89,18 +99,23 @@ function computeJsEscape(srcDir) {
       }
       if (line.startsWith("~")) {
         if (/^~proc\b.*\|[a-z]+/.test(line)) {
-          host++; // the escape declaration itself
+          const tags = (line.split("{")[0].match(/\|[a-z]+/g) ?? []).map((t) => t.slice(1));
+          const isJs = tags.includes("js");
+          if (isJs) host++; // the escape declaration itself
           let d = 0;
           for (const ch of line) {
             if (ch === "{") d++;
             else if (ch === "}") d--;
           }
-          if (d > 0) depth = d;
+          if (d > 0) {
+            depth = d;
+            bodyIsJs = isJs;
+          }
         } else {
           koru++;
         }
       } else {
-        host++;
+        if (fileHostIsJs) host++;
       }
     }
   };
@@ -121,7 +136,7 @@ function computeJsEscape(srcDir) {
           koru++;
         }
       } else if (/\.(kz|kjs)$/.test(entry)) {
-        classifyHostFile(readFileSync(p, "utf8"));
+        classifyHostFile(readFileSync(p, "utf8"), /\.kjs$/.test(entry));
       }
     }
   };
@@ -283,7 +298,11 @@ ${Object.entries(row.op_verdicts).map(([id, v]) => `| ${id} | ${v} |`).join("\n"
   console.error(`board: bar=${row.bar} current=${row.current} delta=${row.delta} cant_tell=${pct(row.cant_tell)} js_escape=${row.js_escape ? pct(row.js_escape.fraction) : "absent"}`);
 }
 
-main().catch((e) => {
-  console.error("board: fatal:", e.message);
-  process.exit(1);
-});
+// Run only as an entry script — computeJsEscape is importable (the round-3
+// measure recomputation imports it to re-run earlier rounds' trees).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    console.error("board: fatal:", e.message);
+    process.exit(1);
+  });
+}

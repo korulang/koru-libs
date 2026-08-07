@@ -38,8 +38,22 @@ import std/store
 import std/control
 import koru/dom
 
+// The krausest row (vanillajs Main.js:7-9), as markup Koru compiles: the
+// static structure becomes a module-level <template> built once, the
+// {{ id:d }} / {{ label:s }} placeholders become the typed input of the
+// synthesized `Row` event, and every lowercase tag passes through untouched
+// (ruled 2026-08-07: capital = ours, anything else is not inspected).
+koru/dom:component(Row) {
+    <tr data-id={{ id:d }}>
+        <td class="col-md-1">{{ id:d }}</td>
+        <td class="col-md-4"><a data-action="8" data-id={{ id:d }}>{{ label:s }}</a></td>
+        <td class="col-md-1"><a data-action="7" data-id={{ id:d }}><span class="glyphicon glyphicon-remove" aria-hidden="true"></span></a></td>
+        <td class="col-md-6"></td>
+    </tr>
+}
+
 std/store:new(rows, capacity: 16384) { id: i64, pos: i64 }
-! inserted { id } |> make-label(): l |> append-row(id, label: l)
+! inserted { id } |> make-label(): l |> Row(parent: "#tbody", id, label: l)
 ! removed { id } |> remove-row(id) |> std/store:stored { cnt.n: cnt.n - 1 }
 
 std/store:new(seq) { next: 1[i64] }
@@ -51,7 +65,6 @@ std/store:watch(sel)
 ! cur c |> select-row(id: c)
 
 pub tor make-label {} -> string
-pub tor append-row { id: i64, label: string }
 pub tor remove-row { id: i64 }
 pub tor select-row { id: i64 }
 pub tor mark-row { id: i64 }
