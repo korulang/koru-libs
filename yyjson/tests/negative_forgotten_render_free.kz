@@ -1,0 +1,24 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// This is the SECOND obligation, and the one the write lift exists to make
+// unforgettable. `koru/yyjson:render` hands back a buffer yyjson allocated
+// with libc's malloc — NOT out of the doc's arena — so closing the builder
+// does not free it. In C this is the classic yyjson write-path leak: you
+// call `yyjson_mut_doc_free` and feel finished, and the rendered string
+// leaks on every request forever.
+//
+// Here the doc IS closed correctly and the rendered string is NOT freed, so
+// the only thing the build can be complaining about is the string. That is
+// the point of this file: it isolates the leak the read side has no
+// equivalent of.
+//
+// Reproduce:
+//   koruc tests/negative_forgotten_render_free.kz --auto-discharge=disable   # FAILS:
+//     error[KORU030]: Resource 'body' carries obligation <rendered!> was not discharged. Call: koru.yyjson:render.free
+
+~import koru/yyjson
+~import std/io
+
+~koru/yyjson:build(): doc |> koru/yyjson:new.object(doc): root_n |> koru/yyjson:root.set(doc, v: root_n) |> koru/yyjson:render(doc)
+| ok body |> std/io:print.ln("{{ body:s }}") |> koru/yyjson:build.close(doc)
+| err e |> std/io:print.ln("render failed: {{ e.msg:s }}") |> koru/yyjson:build.close(doc)

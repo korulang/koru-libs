@@ -1,0 +1,52 @@
+// TOOLCHAIN REPRO (not a yyjson feature) — an INDENTED `|` branch arm that
+// follows a leading-`|>` CONTINUATION line is silently absorbed into the
+// chain instead of being parsed as a branch, and every arm after it is
+// reported as "stray continuation line". The first arm gets no diagnostic at
+// all, which is the dangerous half: the arm does not fire, and nothing says
+// so.
+//
+// Pure core-language finding, nothing yyjson-specific: reproduced here with
+// std/io only. Surfaced while writing yyjson's write-side example, where a
+// long build chain wants to wrap across lines.
+//
+// The rule, established by bisecting the four combinations:
+//
+//   head on ONE line          + INDENTED arms   -> OK   (read_config.kz)
+//   head on ONE line          + column-0 arms   -> OK
+//   leading-`|>` continuation + column-0 arms   -> OK   (build_request.kz)
+//   leading-`|>` continuation + INDENTED arms   -> BROKEN, this file
+//
+// So the workaround is real and cheap — put the arms at column 0 — but it is
+// undiscoverable from the diagnostic, which points at the SECOND arm and
+// blames it for being stray.
+//
+// Separately (same bisect, different bug): a TRAILING-`|>` continuation
+// (`foo() |>` at end of line, next call on the following line) is miscompiled
+// even with no branches at all, emitting Zig that fails with
+// `output_emitted.zig:N:M: error: expected ',' after field`. Leading-`|>` is
+// the form that works; trailing-`|>` should be rejected at parse time rather
+// than producing bad codegen.
+//
+// EXPECTED (if the association gap is fixed): compiles and runs, printing
+//   a
+//   read ok
+//
+// ACTUAL (current compiler): fails to build with
+//   error[KORU010]: stray continuation line without Koru construct
+//     --> ...:N:5
+//      |
+//    N |     | not-found |> std/io:print.ln("nf")
+//      |     ^
+//   (and the same for `| failed`; the `| ok` arm above them is swallowed
+//   without any diagnostic)
+//
+// Flipping the three arms below to column 0 — changing nothing else — makes
+// this file compile and run.
+
+~import std/io
+
+~std/io:print.ln("a")
+|> std/io:read-file(path: "/etc/hosts")
+    | ok t |> std/io:print.ln("read ok") |> std/io:free(content: t)
+    | not-found |> std/io:print.ln("nf")
+    | failed m |> std/io:print.ln("{{ m:s }}")

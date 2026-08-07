@@ -1,4 +1,4 @@
-// @korulang/yyjson — the definitive Koru yyjson edition (v0: parse + read)
+// @korulang/yyjson — the definitive Koru yyjson edition (read + write)
 // ==========================================================================
 //
 // Lifts yyjson (the fastest conformant JSON library — single-file C, used by
@@ -43,10 +43,21 @@
 // and need the label. See tests/basic.kz for this exact flow, verified
 // end-to-end.)
 //
-// Scope (v0, read path only — see README for what's cut): parse a JSON
-// document, navigate objects/arrays, iterate both, and read scalar leaves.
-// Serialization (building + writing JSON) is a separate depth pass — see
-// README "What it explicitly doesn't do (yet)".
+// Scope: BOTH directions. The read path (`parse` … `close`, above) navigates
+// objects/arrays, iterates both, and reads scalar leaves. The write path
+// (`build` … `build.close`, at the bottom of this file) mints nodes,
+// assembles objects and arrays, and renders to text — with the rendered
+// buffer carrying its own second obligation, because yyjson allocates it
+// from libc rather than the document arena.
+//
+// Not bound, deliberately: reading or writing files by path
+// (`yyjson_read_file` / `yyjson_mut_write_file` — koru already has
+// `std/io:read-file`, and a second file API in a JSON package earns
+// nothing), the immutable/mutable bridges (`yyjson_doc_mut_copy`,
+// `yyjson_mut_doc_imut_copy`), JSON Pointer / Patch / Merge-Patch, unsigned
+// 64-bit integers (no `as.uint` on the read side to mirror, so the hole is
+// symmetric), and all write flags but `PRETTY`. See README for the
+// reasoning on each.
 
 ~import std/build
 ~import std/deps
@@ -306,4 +317,287 @@ pub const Entry = struct {
     // the tag byte instead of calling it.
     const tag: u64 = v.tag;
     return .{ .ok = ((tag & c.YYJSON_SUBTYPE_MASK) >> c.YYJSON_TYPE_BIT) != 0 };
+}
+
+
+// ============================================================================
+// ============================  THE WRITE SIDE  ==============================
+// ============================================================================
+//
+// yyjson's mutable API is a second, separate world from the read API above:
+// a `yyjson_mut_doc` owns its own arena, every `yyjson_mut_val*` minted from
+// it is a raw pointer INTO that arena, and freeing the doc dangles all of
+// them at once — the same footgun as the read side, pointed the other way.
+//
+// It carries one footgun the read side does not have. `yyjson_mut_write`
+// hands back a buffer from LIBC's allocator, not from the doc's arena, so a
+// C caller owes TWO frees — `yyjson_mut_doc_free` for the tree and `free`
+// for the string — and silently leaks the string if it only remembers the
+// first. That is not a hypothetical: it is the single most common yyjson
+// write-path leak, precisely because the two frees look like one job.
+//
+// Two C frees, two Koru obligations, neither of them optional:
+//   • `build` mints `*Builder<open!>`, discharged by `build.close` — exactly
+//     the shape of `parse` / `close` above.
+//   • `render` mints `string<rendered!>`, discharged by `render.free` — the
+//     allocator-owned-buffer idiom `std/io:read-file` already uses for
+//     `string<allocated!>` / `std/io:free`. The rendered text is
+//     deliberately NOT arena-owned: request-building code renders a body,
+//     closes the builder, and only then hands the string to an HTTP tor, and
+//     an arena-owned buffer would turn that ordering into a use-after-free.
+//     Two obligations because there are genuinely two lifetimes.
+//
+// Everything between the two — `new.*`, `object.set`, `array.push`,
+// `root.set` — BORROWS `doc: *Builder<open>`, on the same rule the readers
+// borrow `*Doc<open>`: a `*Node` is a raw pointer into the builder's arena,
+// and the compiler will not let you present it once `build.close` has
+// discharged the obligation.
+//
+// USAGE — one flat chain, because the only step that can fail on data is the
+// render:
+//
+//   ~koru/yyjson:build(): doc |> koru/yyjson:new.object(doc): root_n |> koru/yyjson:new.string(doc, text: "ada"): name_n |> koru/yyjson:object.set(doc, v: root_n, key: "name", value: name_n) |> koru/yyjson:root.set(doc, v: root_n) |> koru/yyjson:render(doc)
+//   | ok body |> std/io:print.ln("{{ body:s }}") |> koru/yyjson:render.free(text: body) |> koru/yyjson:build.close(doc)
+//   | err e |> std/io:print.ln("render failed: {{ e.msg:s }}") |> koru/yyjson:build.close(doc)
+//
+// (Note `render.free(text: body)` carries an explicit label: bare positional
+// args only pun-match when the local's name equals the parameter's, as `doc`
+// does throughout — the same rule the read side's header calls out.)
+//
+// See examples/build_request.kz for the nested-object-containing-an-array-of-
+// objects flow this was lifted for, and tests/kopium_body_parity.kz for the
+// byte-for-byte proof against a hand-rolled escaper.
+
+// A mutable JSON document under construction. `handle` owns the arena every
+// `Node` below is allocated from; the phantom `open` obligation is what
+// forces you to free it (via `build.close`) exactly once.
+pub const Builder = struct {
+    handle: ?*c.yyjson_mut_doc,
+};
+
+// A node in a document under construction — the write-side mirror of
+// `Value`, and like it a direct alias for yyjson's own type rather than a
+// wrapper: no extra struct, no extra allocation, no runtime cost over the C
+// call. A `*Node` is a raw pointer into its Builder's arena, which is why
+// every tor that touches one also takes `doc: *Builder<open>`.
+pub const Node = c.yyjson_mut_val;
+
+// ============================================================================
+// Build / close — mint and discharge the write-side `open` obligation
+// ============================================================================
+//
+// A direct return rather than `| ok | err`: `yyjson_mut_doc_new` fails only
+// on allocation failure, and this module has no OOM branch anywhere (see
+// `parse`'s `catch @panic` and `root`'s `orelse @panic`). Inventing one here
+// would put an unreachable arm on every caller's happy path for nothing.
+
+~pub tor build {} -> *Builder<open!>
+
+~proc build|zig {
+    const handle = c.yyjson_mut_doc_new(null) orelse @panic("yyjson: OOM allocating mutable doc");
+    const b = std.heap.page_allocator.create(Builder) catch @panic("yyjson: OOM allocating Builder");
+    b.* = Builder{ .handle = handle };
+    return b;
+}
+
+~pub tor build.close { doc: *Builder<!open> }
+
+~proc build.close|zig {
+    if (doc.handle) |h| {
+        c.yyjson_mut_doc_free(h);
+    }
+    std.heap.page_allocator.destroy(doc);
+}
+
+// ============================================================================
+// new.* — mint a node. The write-side mirror of `as.*`: where `as.string`
+// reads a `*Value` out as a koru string, `new.string` mints a `*Node` from
+// one. Every one BORROWS `doc`, like every reader above, and every one is a
+// direct return for the reason given at `build`.
+//
+// A minted node is NOT attached to anything yet — it is loose in the arena
+// until `object.set`, `array.push` or `root.set` places it. A node you mint
+// and never place is not a leak (the arena frees it at `build.close`), it is
+// simply absent from the output.
+// ============================================================================
+
+~pub tor new.object { doc: *Builder<open> } -> *Node
+
+~proc new.object|zig {
+    return c.yyjson_mut_obj(doc.handle) orelse @panic("yyjson: OOM minting object node");
+}
+
+~pub tor new.array { doc: *Builder<open> } -> *Node
+
+~proc new.array|zig {
+    return c.yyjson_mut_arr(doc.handle) orelse @panic("yyjson: OOM minting array node");
+}
+
+~pub tor new.string { doc: *Builder<open>, text: string } -> *Node
+
+~proc new.string|zig {
+    // yyjson_mut_strncpy, NOT yyjson_mut_str/strn: those two BORROW the
+    // caller's bytes and require them to outlive the document. A koru string
+    // is a slice with no null terminator and no such promise — it may be a
+    // stack buffer or a slice of a doc that gets closed first — so the
+    // document takes its own copy. The `n` variant is what makes a
+    // non-null-terminated slice safe, same reason `object.get` uses
+    // `yyjson_obj_getn`.
+    return c.yyjson_mut_strncpy(doc.handle, text.ptr, text.len) orelse @panic("yyjson: OOM minting string node");
+}
+
+~pub tor new.int { doc: *Builder<open>, value: i64 } -> *Node
+
+~proc new.int|zig {
+    return c.yyjson_mut_sint(doc.handle, value) orelse @panic("yyjson: OOM minting int node");
+}
+
+~pub tor new.double { doc: *Builder<open>, value: f64 } -> *Node
+
+~proc new.double|zig {
+    return c.yyjson_mut_real(doc.handle, value) orelse @panic("yyjson: OOM minting double node");
+}
+
+~pub tor new.bool { doc: *Builder<open>, value: bool } -> *Node
+
+~proc new.bool|zig {
+    return c.yyjson_mut_bool(doc.handle, value) orelse @panic("yyjson: OOM minting bool node");
+}
+
+~pub tor new.null { doc: *Builder<open> } -> *Node
+
+~proc new.null|zig {
+    return c.yyjson_mut_null(doc.handle) orelse @panic("yyjson: OOM minting null node");
+}
+
+// ============================================================================
+// Assembly — place a node. `object.set` / `array.push` are the mirrors of
+// `object.get` / `array.get`, but deliberately NOT branch-shaped like them,
+// and the difference is worth naming because it looks like an inconsistency
+// and is not.
+//
+// This file's actual rule, read off the read side: a DATA condition gets a
+// loud branch (`not-found`, `out-of-range`, `wrong-type` — all of them
+// depend on what was in the JSON), and an IMPOSSIBLE-or-programmer condition
+// aborts (`root`'s `orelse @panic`, `parse`'s OOM `catch @panic`). A
+// wrong-shape target here is the second kind, not the first: a `*Node` can
+// only ever come from a `new.*` call in the caller's own flow — there is no
+// tor that hands you a Node out of parsed data — so whether `v` is an object
+// is fixed at the line that minted it, three lines up, and never depends on
+// input.
+//
+// Making it a branch would be worse than a panic, not safer. The arm is
+// unreachable by construction, so every caller writes it by rote, fills it
+// with the same cleanup as the happy path, and thereby converts a node-mixup
+// typo into a SILENTLY MISSING FIELD in the output — precisely the class of
+// quiet wrong answer this whole edition exists to refuse. It also buries the
+// one branch on this side that genuinely can fire (`render`'s `err`) at the
+// bottom of a ten-deep pyramid of arms that cannot. An abort naming the tor
+// and the shape it actually got is the loudest available answer, and it
+// leaves building a document as one flat chain.
+// ============================================================================
+
+~pub tor object.set { doc: *Builder<open>, v: *Node, key: string, value: *Node }
+
+~proc object.set|zig {
+    if (!c.yyjson_mut_is_obj(v)) @panic("yyjson: object.set target is not an object — check which new.* minted `v`");
+    // The key is copied for the same reason `new.string` copies: a koru
+    // string is a borrowed, unterminated slice, and yyjson_mut_obj_add_val's
+    // `const char *key` would demand both a null terminator and a lifetime
+    // we cannot promise. Minting the key as a copied string node and using
+    // yyjson_mut_obj_add gives us both.
+    const k = c.yyjson_mut_strncpy(doc.handle, key.ptr, key.len) orelse @panic("yyjson: OOM minting object key");
+    if (!c.yyjson_mut_obj_add(v, k, value)) @panic("yyjson: object.set failed on a well-formed object — unreachable");
+}
+
+~pub tor array.push { doc: *Builder<open>, v: *Node, value: *Node }
+
+~proc array.push|zig {
+    // `doc` is unused by the C call and taken anyway — exactly as every
+    // reader above takes it and discards it. The parameter is not
+    // documentation: it is the borrow that makes presenting a `*Node` after
+    // `build.close` a compile error.
+    _ = doc;
+    if (!c.yyjson_mut_is_arr(v)) @panic("yyjson: array.push target is not an array — check which new.* minted `v`");
+    if (!c.yyjson_mut_arr_add_val(v, value)) @panic("yyjson: array.push failed on a well-formed array — unreachable");
+}
+
+// ============================================================================
+// root.set — the mirror of `root`. Where `root` reads the tree's entry point
+// out of a parsed doc, `root.set` installs it on one being built. A builder
+// with no root renders as an `err` (yyjson refuses to write a rootless
+// document), so this is not optional decoration — it is the step that turns
+// a pile of nodes into a document.
+// ============================================================================
+
+~pub tor root.set { doc: *Builder<open>, v: *Node }
+
+~proc root.set|zig {
+    c.yyjson_mut_doc_set_root(doc.handle, v);
+}
+
+// ============================================================================
+// render — serialize to text, minting the second obligation
+// ============================================================================
+//
+// The returned string is UTF-8, minimally escaped, and byte-identical to
+// what a correct hand-rolled escaper produces: `"` -> `\"`, `\` -> `\\`,
+// control bytes -> `\n` / `\t` / `\uXXXX`, and non-ASCII left as raw UTF-8.
+// We pass flag 0 (YYJSON_WRITE_NOFLAG) deliberately — ESCAPE_UNICODE would
+// turn `å` into `\u00e5` and ESCAPE_SLASHES would turn a model id like
+// `anthropic/claude-haiku-4.5` into `anthropic\/claude-haiku-4.5`. Both are
+// legal JSON, neither is what a hand-rolled body produces, and silently
+// differing from the obvious output is how a "drop-in" replacement stops
+// being one.
+//
+// `ok` carries `rendered!`. Hand it to `render.free`.
+
+~pub tor render { doc: *Builder<open> }
+| ok string<rendered!>
+| err { code: i32, msg: string }
+
+~proc render|zig {
+    var write_err: c.yyjson_write_err = std.mem.zeroes(c.yyjson_write_err);
+    var len: usize = 0;
+    const buf = c.yyjson_mut_write_opts(doc.handle, 0, null, &len, &write_err);
+    if (buf == null) {
+        const msg = if (write_err.msg) |m| std.mem.span(m) else "unknown JSON write error";
+        return .{ .err = .{ .code = @intCast(write_err.code), .msg = msg } };
+    }
+    return .{ .ok = buf[0..len] };
+}
+
+// Same as `render`, indented for humans. yyjson's own PRETTY flag (4-space
+// indent). Carries the same `rendered!` obligation — same buffer, same
+// allocator, same `render.free`.
+
+~pub tor render.pretty { doc: *Builder<open> }
+| ok string<rendered!>
+| err { code: i32, msg: string }
+
+~proc render.pretty|zig {
+    var write_err: c.yyjson_write_err = std.mem.zeroes(c.yyjson_write_err);
+    var len: usize = 0;
+    const buf = c.yyjson_mut_write_opts(doc.handle, c.YYJSON_WRITE_PRETTY, null, &len, &write_err);
+    if (buf == null) {
+        const msg = if (write_err.msg) |m| std.mem.span(m) else "unknown JSON write error";
+        return .{ .err = .{ .code = @intCast(write_err.code), .msg = msg } };
+    }
+    return .{ .ok = buf[0..len] };
+}
+
+// Discharge the `rendered!` obligation on a buffer `render` / `render.pretty`
+// handed back. The one disposer for the one label, same shape as
+// `std/io:free`.
+
+~pub tor render.free { text: string<!rendered> }
+
+~proc render.free|zig {
+    // libc's free, NOT page_allocator: we pass `alc = null` to
+    // yyjson_mut_write_opts, so yyjson allocated this buffer with malloc and
+    // yyjson.h documents `free()` (or `alc->free`) as the matching call.
+    // Freeing it with the allocator the Builder wrapper uses would be a
+    // cross-allocator free — the bug this obligation exists to prevent,
+    // committed by the disposer itself.
+    c.free(@ptrCast(@constCast(text.ptr)));
 }

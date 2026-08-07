@@ -1,0 +1,21 @@
+// NEGATIVE TEST — this file must NOT compile.
+//
+// The write-side mirror of negative_use_after_close.kz. Every write tor that
+// touches a node (`new.*`, `object.set`, `array.push`, `root.set`, `render`)
+// requires `doc: *Builder<open>` — a BORROW of the live obligation, not
+// documentation — so once `build.close` has discharged it, presenting that
+// same binding again is a use-after-free of the mutable arena every `*Node`
+// was allocated out of.
+//
+// This is the claim index.kz's write-side header makes ("the compiler will
+// not let you present it once `build.close` has discharged the obligation").
+// This file is what makes that a fact rather than a comment.
+//
+// Reproduce:
+//   koruc tests/negative_use_after_build_close.kz
+//   EXPECT: CONTAINS Use-after-discharge
+
+~import koru/yyjson
+~import std/io
+
+~koru/yyjson:build(): doc |> koru/yyjson:build.close(doc) |> koru/yyjson:new.object(doc): _ |> std/io:print.ln("should never get here")

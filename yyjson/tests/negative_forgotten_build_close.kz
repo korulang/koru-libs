@@ -1,0 +1,17 @@
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// `koru/yyjson:build` mints the write-side `open!` obligation: the mutable
+// doc MUST be handed back to `koru/yyjson:build.close`, or the whole
+// yyjson_mut_doc arena leaks. Same shape, same flag, same reasoning as
+// negative_forgotten_close.kz on the read side — see that file's header for
+// why the default auto-discharge pass hides this and why the flag is what
+// lays the obligation bare.
+//
+// Reproduce:
+//   koruc tests/negative_forgotten_build_close.kz --auto-discharge=disable   # FAILS:
+//     error[KORU030]: Resource 'doc' carries obligation <open!> was not discharged. Call: koru.yyjson:build.close
+
+~import koru/yyjson
+~import std/io
+
+~koru/yyjson:build(): doc |> koru/yyjson:new.object(doc): root_n |> koru/yyjson:root.set(doc, v: root_n) |> std/io:print.ln("built a doc and walked away")

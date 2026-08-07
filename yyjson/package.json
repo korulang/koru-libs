@@ -1,7 +1,7 @@
 {
   "name": "@korulang/yyjson",
-  "version": "0.0.1",
-  "description": "yyjson (fast conformant JSON) for Koru with phantom obligation types — parse/read v0",
+  "version": "0.1.0",
+  "description": "yyjson (fast conformant JSON) for Koru with phantom obligation types — parse, read, build and render",
   "keywords": ["koru", "korulang", "yyjson", "json", "parser", "phantom-types"],
   "author": "Koru Contributors",
   "license": "MIT",

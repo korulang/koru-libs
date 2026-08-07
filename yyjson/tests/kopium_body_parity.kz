@@ -1,0 +1,62 @@
+// kopium_body_parity — the test this whole write lift exists to pass.
+//
+// koru-examples/kopium/auth.kz hand-rolls its OpenRouter request body with
+// buffer appends plus a hand-written character-escape loop, and says so in a
+// comment: it exists "because yyjson is read-v0 — building JSON has no koru
+// surface yet". This file reproduces that exact body using nothing but the
+// new write tors, on a prompt containing every character the hand-rolled
+// loop bothers to escape, and proves the two agree BYTE FOR BYTE.
+//
+// The escape loop below is transcribed verbatim from
+// koru-examples/kopium/auth.kz:48-65 (read-only; that file is untouched), so
+// the comparison is against the real thing and not a paraphrase of it.
+//
+// The prompt is written ONCE, as a koru string literal, and `hand-rolled`
+// hands it straight back alongside its output — so the yyjson side is fed
+// the identical bytes and a typo could not fake an agreement.
+//
+// EXPECTED output:
+//   hand-rolled: {"model":"anthropic/claude-haiku-4.5","stream":true,"messages":[{"role":"user","content":"she said \"go\\stop\"\n\tnål ✓"}]}
+//   yyjson     : {"model":"anthropic/claude-haiku-4.5","stream":true,"messages":[{"role":"user","content":"she said \"go\\stop\"\n\tnål ✓"}]}
+//   agree      : true
+
+~import koru/yyjson
+~import std/io
+
+const std = @import("std");
+
+// Verbatim from koru-examples/kopium/auth.kz:46-65, widened only to hand the
+// prompt back out so both sides provably see the same bytes.
+~tor hand-rolled { prompt: string } -> { prompt: string, body: string }
+
+~proc hand-rolled|zig {
+    const alloc = std.heap.page_allocator;
+    var out = std.ArrayListUnmanaged(u8){};
+    out.appendSlice(alloc, "{\"model\":\"anthropic/claude-haiku-4.5\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"") catch @panic("kopium: OOM");
+    for (prompt) |ch| {
+        switch (ch) {
+            '"' => out.appendSlice(alloc, "\\\"") catch @panic("kopium: OOM"),
+            '\\' => out.appendSlice(alloc, "\\\\") catch @panic("kopium: OOM"),
+            '\n' => out.appendSlice(alloc, "\\n") catch @panic("kopium: OOM"),
+            '\t' => out.appendSlice(alloc, "\\t") catch @panic("kopium: OOM"),
+            else => {
+                if (ch >= 0x20) out.append(alloc, ch) catch @panic("kopium: OOM");
+            },
+        }
+    }
+    out.appendSlice(alloc, "\"}]}") catch @panic("kopium: OOM");
+    const body = out.toOwnedSlice(alloc) catch @panic("kopium: OOM");
+    return .{ .prompt = prompt, .body = body };
+}
+
+~tor same { a: string, b: string } -> bool
+
+~proc same|zig {
+    return std.mem.eql(u8, a, b);
+}
+
+// The prompt: a double quote, a backslash, a newline, a tab, and two
+// non-ASCII characters (one two-byte `å`, one three-byte `✓`).
+~hand-rolled(prompt: "she said \"go\\stop\"\n\tnål ✓"): h |> koru/yyjson:build(): doc |> koru/yyjson:new.object(doc): root_n |> koru/yyjson:new.string(doc, text: "anthropic/claude-haiku-4.5"): model_n |> koru/yyjson:object.set(doc, v: root_n, key: "model", value: model_n) |> koru/yyjson:new.bool(doc, value: true): stream_n |> koru/yyjson:object.set(doc, v: root_n, key: "stream", value: stream_n) |> koru/yyjson:new.array(doc): msgs_n |> koru/yyjson:object.set(doc, v: root_n, key: "messages", value: msgs_n) |> koru/yyjson:new.object(doc): msg_n |> koru/yyjson:array.push(doc, v: msgs_n, value: msg_n) |> koru/yyjson:new.string(doc, text: "user"): role_n |> koru/yyjson:object.set(doc, v: msg_n, key: "role", value: role_n) |> koru/yyjson:new.string(doc, text: h.prompt): content_n |> koru/yyjson:object.set(doc, v: msg_n, key: "content", value: content_n) |> koru/yyjson:root.set(doc, v: root_n) |> koru/yyjson:render(doc)
+| ok body |> same(a: h.body, b: body): agree |> std/io:print.ln("hand-rolled: {{ h.body:s }}") |> std/io:print.ln("yyjson     : {{ body:s }}") |> std/io:print.ln("agree      : {{ agree:any }}") |> koru/yyjson:render.free(text: body) |> koru/yyjson:build.close(doc)
+| err e |> std/io:print.ln("render failed: {{ e.msg:s }}") |> koru/yyjson:build.close(doc)

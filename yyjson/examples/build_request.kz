@@ -1,0 +1,60 @@
+// build_request — a runnable newcomer example for the write side.
+//
+// Builds a nested object containing an array of objects — the shape almost
+// every JSON API request actually is — renders it twice (compact for the
+// wire, pretty for a human), and prints both. It is deliberately the exact
+// shape of an OpenRouter/Anthropic chat request, because that is the real
+// code this lift was done for.
+//
+// Two obligations are live in this one flow and BOTH are compiler-enforced:
+// the builder's `open!` (discharged by `build.close`) and, on each rendered
+// string, `rendered!` (discharged by `render.free`). Delete any one of the
+// three calls and the build refuses — try it. (Auto-discharge will quietly
+// insert the missing call for you under default settings; add
+// --auto-discharge=disable to see the obligation laid bare, same as
+// tests/negative_forgotten_build_close.kz and
+// tests/negative_forgotten_render_free.kz.)
+//
+// Note the shape of the chain: minting and placing nodes is one flat
+// sequence of `|>` steps, because none of those steps can fail on data — a
+// node's shape is fixed by the `new.*` that minted it. The only branch is
+// the render, which is the only step that depends on anything but your own
+// code. See index.kz's "Assembly" section for why that is deliberate.
+//
+//   $ koruc examples/build_request.kz && ./a.out
+//   compact: {"model":"anthropic/claude-haiku-4.5","stream":true,"messages":[{"role":"user","content":"how do I escape a \" in JSON?"},{"role":"assistant","content":"you don't — the writer does\nit for you"}]}
+//   pretty:
+//   {
+//       "model": "anthropic/claude-haiku-4.5",
+//       ...
+//   }
+
+~import koru/yyjson
+~import std/io
+
+~koru/yyjson:build(): doc
+|> koru/yyjson:new.object(doc): root_n
+|> koru/yyjson:new.string(doc, text: "anthropic/claude-haiku-4.5"): model_n
+|> koru/yyjson:object.set(doc, v: root_n, key: "model", value: model_n)
+|> koru/yyjson:new.bool(doc, value: true): stream_n
+|> koru/yyjson:object.set(doc, v: root_n, key: "stream", value: stream_n)
+|> koru/yyjson:new.array(doc): msgs_n
+|> koru/yyjson:object.set(doc, v: root_n, key: "messages", value: msgs_n)
+|> koru/yyjson:new.object(doc): turn1_n
+|> koru/yyjson:array.push(doc, v: msgs_n, value: turn1_n)
+|> koru/yyjson:new.string(doc, text: "user"): role1_n
+|> koru/yyjson:object.set(doc, v: turn1_n, key: "role", value: role1_n)
+|> koru/yyjson:new.string(doc, text: "how do I escape a \" in JSON?"): text1_n
+|> koru/yyjson:object.set(doc, v: turn1_n, key: "content", value: text1_n)
+|> koru/yyjson:new.object(doc): turn2_n
+|> koru/yyjson:array.push(doc, v: msgs_n, value: turn2_n)
+|> koru/yyjson:new.string(doc, text: "assistant"): role2_n
+|> koru/yyjson:object.set(doc, v: turn2_n, key: "role", value: role2_n)
+|> koru/yyjson:new.string(doc, text: "you don't — the writer does\nit for you"): text2_n
+|> koru/yyjson:object.set(doc, v: turn2_n, key: "content", value: text2_n)
+|> koru/yyjson:root.set(doc, v: root_n)
+|> koru/yyjson:render(doc)
+| ok body |> std/io:print.ln("compact: {{ body:s }}") |> koru/yyjson:render.free(text: body) |> koru/yyjson:render.pretty(doc)
+    | ok indented |> std/io:print.ln("pretty:") |> std/io:print.ln("{{ indented:s }}") |> koru/yyjson:render.free(text: indented) |> koru/yyjson:build.close(doc)
+    | err e |> std/io:print.ln("pretty render failed: {{ e.msg:s }}") |> koru/yyjson:build.close(doc)
+| err e |> std/io:print.ln("render failed: {{ e.msg:s }}") |> koru/yyjson:build.close(doc)
