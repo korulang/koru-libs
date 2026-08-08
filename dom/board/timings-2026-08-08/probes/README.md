@@ -91,3 +91,51 @@ while the reference stashes it as a JavaScript property on the element
 (`tr.data_id = data.id`, `Main.js:349-356`). That is the same open question as
 selection-as-repaint — whether an event can carry identity — arriving from a
 second direction.
+
+## Round 10 — the first candidate that actually won (`*-r10-quiet-*.json`, `mkprop.mjs`)
+
+Nine candidates across four sessions had now measured nothing or worse. The
+tenth is the one, and it came from the same place round 9's real finding did:
+reading what the hand-written reference does instead of reasoning about our own
+code.
+
+Every row we painted carried five attributes the reference's rows do not —
+`data-id` three times, written per row, and `data-action` twice, cloned in from
+the template. They existed for one reason: the click delegation recovered a
+row's identity by parsing it back out of the page. The reference never puts it
+there. It stashes identity as a plain JavaScript property on the element
+(`tr.data_id = data.id`, `Main.js:352`) and decides the action from WHICH CELL
+was hit (`Main.js:168-185`).
+
+`koruprop` does the same: no attributes on a painted row, identity as a
+property, delegation by cell position, and an id→element map for the two host
+escapes that still look a row up. Every replacement asserts its hit count, and
+the probe refuses to write itself if a single `setAttribute("data-id"` survives
+— a half-applied edit would measure the baseline and report it as a win.
+
+Timed on a **quieted machine** (`dom/board/quiet-machine.sh`), all three
+frameworks in one window, read through `dom/board/read-timings.mjs`:
+
+| operation | reference | round 9 | without attributes | |
+|---|---|---|---|---|
+| 01 build 1,000 rows | 26.9 | 1.074 | **1.045** | better |
+| 02 replace all | 30.0 | 1.093 | **1.043** | better |
+| 03 update every 10th | 15.2 | 1.118 | 1.112 | ~same |
+| 04 select a row | 4.4 | 0.773 | **0.727** | better |
+| 05 swap two rows | 18.2 | 1.016 | 1.049 | WORSE |
+| 06 remove one row | 14.6 | 1.021 | **0.973** | better |
+| 07 build 10,000 rows | 293.7 | 1.107 | **1.078** | better |
+| 08 build 1,000 more | 32.2 | 1.068 | **1.040** | better |
+| 09 clear 1,000 rows | 12.0 | 1.283 | **1.200** | better |
+| **geomean** | | **1.053** | **1.021** | |
+
+Better on eight of nine. It moves coherently rather than in one place, which is
+what a real change looks like and what none of the nine dead candidates did:
+fewer attributes is less work when a row is born AND a smaller DOM for every
+operation that touches it afterwards. Only swap regressed, and swap is the one
+operation whose host escape still walks the page.
+
+**This is a probe, not a shipped change.** The `data-id` attributes are the
+APP's markup, and the identity channel that would replace them is the library's
+— which makes the shippable version a change to what a click carries. That is a
+spelling question and it is Lars's.

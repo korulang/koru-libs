@@ -52,11 +52,54 @@ if (!resultsDir || !benchmark) {
     process.exit(2);
 }
 
-// A run's samples, sorted. The driver writes one file per framework/benchmark.
+// A run's samples, sorted, plus when the file was written. The driver leaves
+// one file per framework/benchmark and OVERWRITES IN PLACE, so a directory
+// always looks complete even when half of it is from a run two hours ago.
 function samples(framework) {
     const file = path.join(resultsDir, `${framework}-keyed_${benchmark}.json`);
     if (!fs.existsSync(file)) return null;
-    return JSON.parse(fs.readFileSync(file, "utf8")).values.total.values.slice().sort((a, b) => a - b);
+    return {
+        xs: JSON.parse(fs.readFileSync(file, "utf8")).values.total.values.slice().sort((a, b) => a - b),
+        mtime: fs.statSync(file).mtimeMs,
+    };
+}
+
+// SAME WINDOW OR NOTHING.
+//
+// Comparing two frameworks measured hours apart is the error this whole file
+// exists to prevent, wearing different clothes — and the control check does
+// NOT catch it, because a stale control file can be a perfectly good
+// measurement of a different afternoon. Caught 2026-08-08 reading a fresh
+// probe against two baselines from earlier runs; the tell was that the sample
+// counts disagreed with what had been asked for.
+//
+// Two independent signals, because either alone is defeatable: iteration
+// counts must match (a different --count is a different run), and the files
+// must have been written close enough together to belong to one invocation.
+const SAME_RUN_MINUTES = 90;
+function assertOneWindow(rows) {
+    const counts = [...new Set(rows.map((r) => r.n))];
+    if (counts.length > 1) {
+        console.log("");
+        console.log("  REFUSING TO RANK — these results are from DIFFERENT RUNS.");
+        console.log("  Iteration counts disagree, so they cannot be one invocation:");
+        for (const r of rows) console.log(`    ${r.framework.padEnd(14)} ${r.n} samples`);
+        console.log("");
+        console.log("  The driver overwrites result files in place, so a stale one looks");
+        console.log("  exactly like a fresh one. Re-run every framework together.");
+        process.exit(1);
+    }
+    const span = (Math.max(...rows.map((r) => r.mtime)) - Math.min(...rows.map((r) => r.mtime))) / 60000;
+    if (span > SAME_RUN_MINUTES) {
+        console.log("");
+        console.log(`  REFUSING TO RANK — the result files span ${span.toFixed(0)} minutes.`);
+        for (const r of rows) {
+            console.log(`    ${r.framework.padEnd(14)} written ${new Date(r.mtime).toTimeString().slice(0, 5)}`);
+        }
+        console.log("");
+        console.log("  Whatever else changed between those two moments changed the machine.");
+        process.exit(1);
+    }
 }
 
 // Split at the widest RELATIVE gap between consecutive samples. A run with no
@@ -86,11 +129,13 @@ function median(xs) {
 }
 
 function report(framework) {
-    const xs = samples(framework);
-    if (xs === null) return null;
+    const got = samples(framework);
+    if (got === null) return null;
+    const xs = got.xs;
     const { fast, split, ratio } = fastCluster(xs);
     return {
         framework,
+        mtime: got.mtime,
         n: xs.length,
         fastN: fast.length,
         split,
@@ -107,6 +152,7 @@ if (controlRow === null) {
 }
 
 const rows = [controlRow, ...frameworks.map(report).filter(Boolean)];
+assertOneWindow(rows);
 
 console.log(`\n${benchmark}  —  fast cluster vs naive median\n`);
 console.log(
