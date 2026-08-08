@@ -7,28 +7,28 @@
 //   (host) and the assembled label cannot live in the store (string columns
 //   refused, char[N] has no JS lowering — see main.k header).
 //
-// mark-row / swap-rows / select-row — the DOM write itself. The row-targeting
-//   logic lives in main.k; these bodies are the retained-mode write calls a
-//   DOM markup surface would synthesize.
+// swap-rows / select-row — the two host escapes left, and each is left for a
+//   NAMED reason rather than by default.
 //
-//   REMOVAL is gone from here: a component that takes a `key` remembers what
-//   it painted, so `koru/dom:drop` takes the element off the page in one step.
+//   MARKING IS GONE FROM HERE. A row's text lives in the store, a rule arm
+//   writes it (`e.label: "{{ e.label:s }} !!!"`), and `Row-repaint` pushes it
+//   back through the same markup that painted it. The component describes the
+//   row ONCE and both creating it and updating it fall out of that one
+//   description — which is what a markup surface is for, and what every
+//   hand-written DOM mutation here was standing in for.
 //
-//   MARKING no longer searches either. The rule arm names its row's handle
-//   (`[id]h`) and `koruDomNode` turns that into the element in one step —
-//   measured 1.63x -> 1.09x on the partial-update benchmark, which was the
-//   entire remaining gap to the fastest compiled frameworks.
+//   swap-rows MOVES two elements. That is a change to the PARENT's child
+//   order, not to anything a row's markup describes, so no repaint expresses
+//   it; a keyed list reorder is its own primitive and does not exist yet.
 //
-//   `domRow` survives for SWAP and SELECT only, and they are cheap because
-//   they scan a handful of times rather than a hundred. Retiring it needs the
-//   ops rule to carry handles rather than ids, and the selection to remember a
-//   handle rather than an id — worth doing, not worth doing today.
+//   select-row sets a class on one row and clears it from another. The markup
+//   has no class placeholder, so there is no prop to repaint. Adding one
+//   (`class={{ sel:s }}`) would make selection a store write plus a repaint,
+//   exactly like marking — the store already holds `sel.cur`. Not done here
+//   because it changes the row's markup, which is Lars's.
 //
-//   What keeps ANY of this in host code is that a row's text column can be
-//   read but not extended: building "old + suffix" needs an allocating string
-//   instance per row, because the cheap page-allocated form is a read-only
-//   view. Close that and marking becomes a store write plus a repaint, with
-//   no host escape at all.
+//   make-label is the reference's random three-word label (Main.js:18-73). The
+//   pick is Math.random; it stays host by nature, not by gap.
 
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
@@ -44,10 +44,6 @@ function domRow(id) {
 
 ~proc make-label|js {
     return adjectives[domRandom(adjectives.length)] + " " + colours[domRandom(colours.length)] + " " + nouns[domRandom(nouns.length)];
-}
-
-~proc mark-row|js {
-    koruDomNode(key).childNodes[1].firstChild.textContent = label;
 }
 
 ~proc swap-rows|js {

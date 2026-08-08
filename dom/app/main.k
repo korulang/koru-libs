@@ -26,8 +26,9 @@
 //     it. The chain survives it (690_258); it used to be swallowed.
 //   - rule arms read `e.pos` / `e.id` where the value is used. The bind-first
 //     `echo` dance is gone (690_260, 690_262).
-//   - `mark-row` / `swap-rows` are called directly; the forwarding tors that
-//     existed only to keep a row read away from a |js body are gone (690_262).
+//   - `swap-rows` is called directly; the forwarding tors that existed only to
+//     keep a row read away from a |js body are gone (690_262). `mark-row` is
+//     gone entirely — see below.
 //   - op dispatch STILL lives in body-`if`s rather than `when` guards — and
 //     this one is now a real choice, not a dodge. `stripe` fires ONE FULL
 //     SWEEP PER RULE, so splitting the four op cases into four guarded rules
@@ -38,12 +39,14 @@
 //     — the one wall still standing), so the position index is the `pos`
 //     column, not a grid of handles.
 //
-// A row's label is minted at insert and mutated in place by `mark-row`. That
-// is the LAST shape still carried for a dead wall: a fixed-size char column
-// now lowers to JS and prints identically on both targets (690_261), so the
-// label could live in the store — which is what would let a mark become a
-// store write plus a repaint instead of a hand-written DOM mutation, and it is
-// the remaining 1.57x on partial update. Not done here; it changes the model.
+// A row's label LIVES IN THE STORE (`label: char[40]`), and marking it is a
+// store write — `e.label: "{{ e.label:s }} !!!"` — followed by `Row-repaint`,
+// which pushes the new value back through the same markup that painted it.
+// There is no hand-written DOM mutation for marking any more.
+//
+// That took three compiler changes that landed the same day and are pinned:
+// a written value may build text (690_268), that value survives inside an `if`
+// arm (690_269), and a rule arm stops rewriting string literals (690_267).
 
 import std/store
 import std/control
@@ -83,7 +86,6 @@ std/store:watch(sel)
 
 pub tor make-label {} -> string
 pub tor select-row { id: i64 }
-pub tor mark-row { key: i64, label: string }
 pub tor swap-rows { a: i64, b: i64 }
 
 tor clear {}
@@ -100,7 +102,7 @@ build = for(0..n)
 // row-local (legal); the op dispatch is a body-if (forced, see header).
 [name(tenth)]std/store:rule(rows)
 ! row { [row]e, [id]h } when @mod(e.pos, 10) == 0 |> if(op.code == 4)
-    | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> mark-row(key: h, e.label)
+    | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> Row-repaint(key: h, e.id, e.label)
     | else |> _
 
 // The op sweep: swap (6) exchanges the pos values

@@ -40,28 +40,28 @@ function koruDomNode(key) {
 //   (host) and the assembled label cannot live in the store (string columns
 //   refused, char[N] has no JS lowering — see main.k header).
 //
-// mark-row / swap-rows / select-row — the DOM write itself. The row-targeting
-//   logic lives in main.k; these bodies are the retained-mode write calls a
-//   DOM markup surface would synthesize.
+// swap-rows / select-row — the two host escapes left, and each is left for a
+//   NAMED reason rather than by default.
 //
-//   REMOVAL is gone from here: a component that takes a `key` remembers what
-//   it painted, so `koru/dom:drop` takes the element off the page in one step.
+//   MARKING IS GONE FROM HERE. A row's text lives in the store, a rule arm
+//   writes it (`e.label: "{{ e.label:s }} !!!"`), and `Row-repaint` pushes it
+//   back through the same markup that painted it. The component describes the
+//   row ONCE and both creating it and updating it fall out of that one
+//   description — which is what a markup surface is for, and what every
+//   hand-written DOM mutation here was standing in for.
 //
-//   MARKING no longer searches either. The rule arm names its row's handle
-//   (`[id]h`) and `koruDomNode` turns that into the element in one step —
-//   measured 1.63x -> 1.09x on the partial-update benchmark, which was the
-//   entire remaining gap to the fastest compiled frameworks.
+//   swap-rows MOVES two elements. That is a change to the PARENT's child
+//   order, not to anything a row's markup describes, so no repaint expresses
+//   it; a keyed list reorder is its own primitive and does not exist yet.
 //
-//   `domRow` survives for SWAP and SELECT only, and they are cheap because
-//   they scan a handful of times rather than a hundred. Retiring it needs the
-//   ops rule to carry handles rather than ids, and the selection to remember a
-//   handle rather than an id — worth doing, not worth doing today.
+//   select-row sets a class on one row and clears it from another. The markup
+//   has no class placeholder, so there is no prop to repaint. Adding one
+//   (`class={{ sel:s }}`) would make selection a store write plus a repaint,
+//   exactly like marking — the store already holds `sel.cur`. Not done here
+//   because it changes the row's markup, which is Lars's.
 //
-//   What keeps ANY of this in host code is that a row's text column can be
-//   read but not extended: building "old + suffix" needs an allocating string
-//   instance per row, because the cheap page-allocated form is a read-only
-//   view. Close that and marking becomes a store write plus a repaint, with
-//   no host escape at all.
+//   make-label is the reference's random three-word label (Main.js:18-73). The
+//   pick is Math.random; it stays host by nature, not by gap.
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
 const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
@@ -133,13 +133,6 @@ const main_module = {
       domRow(id).className = "danger";
     },
   },
-  mark_row_event: {
-    handler(__koru_input) {
-      const key = __koru_input.key;
-      const label = __koru_input.label;
-      koruDomNode(key).childNodes[1].firstChild.textContent = label;
-    },
-  },
   swap_rows_event: {
     handler(__koru_input) {
       const a = __koru_input.a;
@@ -170,7 +163,7 @@ const main_module = {
       const n = __koru_input.n;
 for (let __koru_item = 0; __koru_item < n; __koru_item++) {
         { const _auto_0 = __koru_item;         const l = main_module.make_label_event.handler({});
-        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, label: l, __site_line: 96 });
+        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, label: l, __site_line: 98 });
         if (result_0.tag === "row") {
           const _auto_1 = result_0.row;
           main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
@@ -199,6 +192,20 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_dom_track(key, __root);
     },
   },
+  Row_repaint_event: {
+    handler(__koru_input) {
+      const key = __koru_input.key;
+      const id = __koru_input.id;
+      const label = __koru_input.label;
+      const __root = __koru_dom_reg.get(key);
+      if (__root === undefined) return;
+      __root.setAttribute("data-id", String(id));
+      __root.children[0].textContent = String(id);
+      __root.children[1].children[0].setAttribute("data-id", String(id));
+      __root.children[1].children[0].textContent = String(label);
+      __root.children[2].children[0].setAttribute("data-id", String(id));
+    },
+  },
   __store_insertf_rows_event: {
     handler(__koru_input) {
       const id = __koru_input.id;
@@ -223,11 +230,11 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.label[__koru_new_row] = label.slice(0, 40);
       __koru_store_rows.len += 1;
       main_module.__store_inserted_rows_0_event.handler({ id: id, label: label, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
-      if (__site_line > 102) {
-      main_module.__store_qrow_rows_L102_event.handler({ row: __koru_new_row });
+      if (__site_line > 104) {
+      main_module.__store_qrow_rows_L104_event.handler({ row: __koru_new_row });
       }
-      if (__site_line > 111) {
-      main_module.__store_qrow_rows_L111_event.handler({ row: __koru_new_row });
+      if (__site_line > 113) {
+      main_module.__store_qrow_rows_L113_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -267,18 +274,18 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       }
     },
   },
-  __store_qrow_rows_L102_event: {
+  __store_qrow_rows_L104_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const pos = __koru_store_rows.pos[__koru_r];
       const h = __koru_store_rows.__koru_handle_of(__koru_r);
       if (!(((((pos) % (10)) + (10)) % (10)) == 0)) return;
-      main_module.__store_qbody_rows_L102_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      main_module.__store_qbody_rows_L104_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
       return;
     },
   },
-  __store_qbody_rows_L102_event: {
+  __store_qbody_rows_L104_event: {
     handler(__koru_input) {
       const pos = __koru_input.pos;
       const __koru_qrow = __koru_input.__koru_qrow;
@@ -286,37 +293,33 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
 if (__koru_store_op.code == 4) {
         {         const __koru_tmpl_1 = "" + ((__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)]) + " !!!";
         main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 2, value_0: 0, value_1: 0, value_2: __koru_tmpl_1 });
-        {
-          const key = h;
-          const label = (__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)];
-          koruDomNode(key).childNodes[1].firstChild.textContent = label;
-        }
+        main_module.Row_repaint_event.handler({ key: h, id: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)], label: (__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
  }
     } else {
         {  }
     }
     },
   },
-  __store_qsweep_rows_L102_event: {
+  __store_qsweep_rows_L104_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L102_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L104_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
     },
   },
-  __store_qrow_rows_L111_event: {
+  __store_qrow_rows_L113_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
-      main_module.__store_qbody_rows_L111_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      main_module.__store_qbody_rows_L113_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
       return;
     },
   },
-  __store_qbody_rows_L111_event: {
+  __store_qbody_rows_L113_event: {
     handler(__koru_input) {
       const __koru_qrow = __koru_input.__koru_qrow;
 if (__koru_store_op.code == 6) {
@@ -364,12 +367,12 @@ if (__koru_store_op.code == 6) {
     }
     },
   },
-  __store_qsweep_rows_L111_event: {
+  __store_qsweep_rows_L113_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L111_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L113_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
@@ -446,8 +449,8 @@ if (__koru_store_op.code == 6) {
   },
   __store_stripe_rows_event: {
     handler(__koru_input) {
-      main_module.__store_qsweep_rows_L102_event.handler({});
-      main_module.__store_qsweep_rows_L111_event.handler({});
+      main_module.__store_qsweep_rows_L104_event.handler({});
+      main_module.__store_qsweep_rows_L113_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -645,10 +648,10 @@ if (__koru_store_op.code == 6) {
     },
   },
   flow0() {
-    main_module.__store_qsweep_rows_L102_event.handler({});
+    main_module.__store_qsweep_rows_L104_event.handler({});
   },
   flow1() {
-    main_module.__store_qsweep_rows_L111_event.handler({});
+    main_module.__store_qsweep_rows_L113_event.handler({});
   },
   flow2() {
     const Handlers_8 = {
