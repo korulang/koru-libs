@@ -166,6 +166,32 @@ That answers the caveat the 15-iteration ladder had to publish: its Koru column
 was a build the compiler no longer produces, and it turns out that did not cost
 it anything.
 
+## The sibling board replicates this — after one stale cell comes out of it
+
+The 15-iteration ladder in `../ladder-2026-08-08/` was measured by a different
+session, an hour earlier, in its own window. Run the hardened reader over it
+and it refuses, for a reason worth having found: on update-every-10th its
+`korukeyed` column carries **25 samples where every other framework carries
+15**. That cell is not from that run. Almost certainly the same truncation
+described above aborted `korukeyed`'s update cell — it is the same artifact as
+`korupre` here, and 15 iterations carries a 17% chance — leaving an older
+25-iteration file in the results directory for a reader with no window gate to
+pick up as if it belonged.
+
+Dropping that operation and recomputing its remaining eight, which do agree
+across the field:
+
+```
+  vanillajs   1.000    korukeyed 1.054    solid 1.125    svelte 1.179
+  vue 1.278   react-hooks 2.018
+```
+
+**That is this run, independently.** A different session, a different window,
+15 iterations instead of 25, and Koru lands at 1.054 against this run's 1.056
+for the same artifact — with Solid and Svelte in the same places. Two windows
+agreeing to two parts in a thousand is a much stronger statement than either
+window alone, and it is the reason the ranking below is stated flatly.
+
 ## What this supports, and what it does not
 
 **Supports a ranking claim, on this machine, with the failure attached.**
