@@ -16,6 +16,21 @@ const __koru_dom_reg = new Map();
 function __koru_dom_track(key, node) {
     __koru_dom_reg.set(key, node);
 }
+// The library's HOST surface: host code in the same module addresses the
+// element a key owns, instead of searching the page for it.
+//
+// This exists because mutating text in place is still host work. A row's text
+// column can be READ from Koru but not EXTENDED — building "old + suffix"
+// needs an allocating string instance, since the cheap page-allocated form is
+// a read-only view, and on a hot path that is one allocation per row per
+// update. Until a text column can grow in place, the read-modify-write lives
+// here, and the only thing it needs from the library is WHICH element.
+//
+// Returns undefined for a key nothing was painted under; a caller that has a
+// live handle from the store cannot be in that position.
+function koruDomNode(key) {
+    return __koru_dom_reg.get(key);
+}
 // Vehicle |js facet — the host escapes the app carries. Each proc is a leaf
 // DOM writer; WHICH rows it touches is decided on the Koru side (store
 // sweeps, interceptors, the sel watch). Escaped because of named walls:
@@ -27,16 +42,26 @@ function __koru_dom_track(key, node) {
 //
 // mark-row / swap-rows / select-row — the DOM write itself. The row-targeting
 //   logic lives in main.k; these bodies are the retained-mode write calls a
-//   DOM markup surface would synthesize, exactly where vaxis's generated flows
-//   call write-at.
+//   DOM markup surface would synthesize.
 //
-//   REMOVAL no longer appears here: a component that takes a `key` remembers
-//   what it painted, so `koru/dom:drop` takes the element off the page in one
-//   step. What remains are MUTATIONS of a live element, and they still reach
-//   it by searching the page — `domRow` is the last consumer of that scan, and
-//   the reason partial update is still slower than hand-written. The shape
-//   that would retire it is re-painting a prop through the component that owns
-//   the markup, not more lookup helpers here.
+//   REMOVAL is gone from here: a component that takes a `key` remembers what
+//   it painted, so `koru/dom:drop` takes the element off the page in one step.
+//
+//   MARKING no longer searches either. The rule arm names its row's handle
+//   (`[id]h`) and `koruDomNode` turns that into the element in one step —
+//   measured 1.63x -> 1.09x on the partial-update benchmark, which was the
+//   entire remaining gap to the fastest compiled frameworks.
+//
+//   `domRow` survives for SWAP and SELECT only, and they are cheap because
+//   they scan a handful of times rather than a hundred. Retiring it needs the
+//   ops rule to carry handles rather than ids, and the selection to remember a
+//   handle rather than an id — worth doing, not worth doing today.
+//
+//   What keeps ANY of this in host code is that a row's text column can be
+//   read but not extended: building "old + suffix" needs an allocating string
+//   instance per row, because the cheap page-allocated form is a read-only
+//   view. Close that and marking becomes a store write plus a repaint, with
+//   no host escape at all.
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
 const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
@@ -109,8 +134,8 @@ const main_module = {
   },
   mark_row_event: {
     handler(__koru_input) {
-      const id = __koru_input.id;
-      const anchor = domRow(id).childNodes[1].firstChild;
+      const key = __koru_input.key;
+      const anchor = koruDomNode(key).childNodes[1].firstChild;
       anchor.textContent = anchor.textContent + " !!!";
     },
   },
@@ -237,8 +262,9 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const row = __koru_input.row;
       const __koru_r = row;
       const pos = __koru_store_rows.pos[__koru_r];
+      const h = __koru_store_rows.__koru_handle_of(__koru_r);
       if (!(((((pos) % (10)) + (10)) % (10)) == 0)) return;
-      main_module.__store_qbody_rows_L102_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      main_module.__store_qbody_rows_L102_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
       return;
     },
   },
@@ -246,10 +272,11 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
     handler(__koru_input) {
       const pos = __koru_input.pos;
       const __koru_qrow = __koru_input.__koru_qrow;
+      const h = __koru_input.h;
 if (__koru_store_op.code == 4) {
         {         {
-          const id = (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)];
-          const anchor = domRow(id).childNodes[1].firstChild;
+          const key = h;
+          const anchor = koruDomNode(key).childNodes[1].firstChild;
           anchor.textContent = anchor.textContent + " !!!";
         }
  }

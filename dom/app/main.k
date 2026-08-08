@@ -83,7 +83,7 @@ std/store:watch(sel)
 
 pub tor make-label {} -> string
 pub tor select-row { id: i64 }
-pub tor mark-row { id: i64 }
+pub tor mark-row { key: i64 }
 pub tor swap-rows { a: i64, b: i64 }
 
 tor clear {}
@@ -99,8 +99,8 @@ build = for(0..n)
 // Partial update: every 10th row in table order (Main.js:75-80). The guard is
 // row-local (legal); the op dispatch is a body-if (forced, see header).
 [name(tenth)]std/store:rule(rows)
-! row e when @mod(e.pos, 10) == 0 |> if(op.code == 4)
-    | then |> mark-row(e.id)
+! row { [row]e, [id]h } when @mod(e.pos, 10) == 0 |> if(op.code == 4)
+    | then |> mark-row(key: h)
     | else |> _
 
 // The op sweep: swap (6) exchanges the pos values

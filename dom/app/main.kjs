@@ -9,16 +9,26 @@
 //
 // mark-row / swap-rows / select-row — the DOM write itself. The row-targeting
 //   logic lives in main.k; these bodies are the retained-mode write calls a
-//   DOM markup surface would synthesize, exactly where vaxis's generated flows
-//   call write-at.
+//   DOM markup surface would synthesize.
 //
-//   REMOVAL no longer appears here: a component that takes a `key` remembers
-//   what it painted, so `koru/dom:drop` takes the element off the page in one
-//   step. What remains are MUTATIONS of a live element, and they still reach
-//   it by searching the page — `domRow` is the last consumer of that scan, and
-//   the reason partial update is still slower than hand-written. The shape
-//   that would retire it is re-painting a prop through the component that owns
-//   the markup, not more lookup helpers here.
+//   REMOVAL is gone from here: a component that takes a `key` remembers what
+//   it painted, so `koru/dom:drop` takes the element off the page in one step.
+//
+//   MARKING no longer searches either. The rule arm names its row's handle
+//   (`[id]h`) and `koruDomNode` turns that into the element in one step —
+//   measured 1.63x -> 1.09x on the partial-update benchmark, which was the
+//   entire remaining gap to the fastest compiled frameworks.
+//
+//   `domRow` survives for SWAP and SELECT only, and they are cheap because
+//   they scan a handful of times rather than a hundred. Retiring it needs the
+//   ops rule to carry handles rather than ids, and the selection to remember a
+//   handle rather than an id — worth doing, not worth doing today.
+//
+//   What keeps ANY of this in host code is that a row's text column can be
+//   read but not extended: building "old + suffix" needs an allocating string
+//   instance per row, because the cheap page-allocated form is a read-only
+//   view. Close that and marking becomes a store write plus a repaint, with
+//   no host escape at all.
 
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
@@ -37,7 +47,7 @@ function domRow(id) {
 }
 
 ~proc mark-row|js {
-    const anchor = domRow(id).childNodes[1].firstChild;
+    const anchor = koruDomNode(key).childNodes[1].firstChild;
     anchor.textContent = anchor.textContent + " !!!";
 }
 

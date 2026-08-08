@@ -28,6 +28,22 @@ function __koru_dom_track(key, node) {
     __koru_dom_reg.set(key, node);
 }
 
+// The library's HOST surface: host code in the same module addresses the
+// element a key owns, instead of searching the page for it.
+//
+// This exists because mutating text in place is still host work. A row's text
+// column can be READ from Koru but not EXTENDED — building "old + suffix"
+// needs an allocating string instance, since the cheap page-allocated form is
+// a read-only view, and on a hot path that is one allocation per row per
+// update. Until a text column can grow in place, the read-modify-write lives
+// here, and the only thing it needs from the library is WHICH element.
+//
+// Returns undefined for a key nothing was painted under; a caller that has a
+// live handle from the store cannot be in that position.
+function koruDomNode(key) {
+    return __koru_dom_reg.get(key);
+}
+
 ~proc drop|js {
     const node = __koru_dom_reg.get(key);
     if (node === undefined) return;
