@@ -52,9 +52,14 @@ koru/dom:component(Row) {
     </tr>
 }
 
+// The row's HANDLE is what ties the store's row to the element painted for
+// it: `[id]h` on both lifecycle arms is the same value, and it survives the
+// swap-remove that moves a row between slots. So the component is keyed on it
+// at birth and the library is told to let go of it at death — neither side
+// ever searches the page for a row.
 std/store:new(rows, capacity: 16384) { id: i64, pos: i64 }
-! inserted { id } |> make-label(): l |> Row(parent: "#tbody", id, label: l)
-! removed { id } |> remove-row(id) |> std/store:stored { cnt.n: cnt.n - 1 }
+! inserted { id, [id]h } |> make-label(): l |> Row(parent: "#tbody", key: h, id, label: l)
+! removed { [id]h } |> koru/dom:drop(key: h) |> std/store:stored { cnt.n: cnt.n - 1 }
 
 std/store:new(seq) { next: 1[i64] }
 std/store:new(cnt) { n: 0[i64] }
@@ -65,7 +70,6 @@ std/store:watch(sel)
 ! cur c |> select-row(id: c)
 
 pub tor make-label {} -> string
-pub tor remove-row { id: i64 }
 pub tor select-row { id: i64 }
 pub tor mark-row { id: i64 }
 pub tor swap-rows { a: i64, b: i64 }

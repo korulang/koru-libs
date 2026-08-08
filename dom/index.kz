@@ -326,9 +326,13 @@ const std = @import("std");
         }
     };
 
-    // Render one segment's paint body: clone, assign, append.
+    // Render one segment's paint body: clone, assign, append — and, when the
+    // component takes a `key`, remember the element under it. Remembering is
+    // the whole point: without it the only way back to this element is a
+    // search of the live page, which is linear per lookup and quadratic across
+    // a bulk removal (measured at 92% of a thousand-row clear).
     const paintBody = struct {
-        fn call(a: std.mem.Allocator, tpl_var: []const u8, seg: Seg, esc: anytype) []const u8 {
+        fn call(a: std.mem.Allocator, tpl_var: []const u8, seg: Seg, esc: anytype, with_key: bool) []const u8 {
             var b = std.ArrayList(u8).initCapacity(a, 256) catch unreachable;
             b.appendSlice(a, std.fmt.allocPrint(a, "const __root = {s}.cloneNode(true);\n", .{tpl_var}) catch unreachable) catch unreachable;
             for (seg.ops) |op| {
@@ -354,6 +358,7 @@ const std = @import("std");
                 }
             }
             b.appendSlice(a, "document.querySelector(parent).appendChild(__root);") catch unreachable;
+            if (with_key) b.appendSlice(a, "\n__koru_dom_track(key, __root);") catch unreachable;
             return b.toOwnedSlice(a) catch unreachable;
         }
     }.call;
@@ -447,13 +452,28 @@ const std = @import("std");
         }
         if (nodes.items.len == 0) sc.die("component markup is empty");
 
-        // Event input shape: parent selector + every registered prop.
+        // Event input shape: parent selector + every registered prop, and for
+        // a single-root component a `key`.
+        //
+        // `key` is the library's second non-rendered input, exactly what
+        // `parent` already is: the caller supplies it, the markup never shows
+        // it. `parent` says WHERE the element goes; `key` says WHICH ROW owns
+        // it, so the library can find that element again without searching the
+        // page. Pass `[id]h` from a store's lifecycle arm and the association
+        // is the row's handle, which is stable across compaction.
+        //
+        // Only single-root components take one. A component with several roots
+        // has no single element to identify, and inventing a rule for which
+        // one counts would be a guess; without the input, passing `key` to one
+        // is an unknown argument rather than a silently ignored request.
         const mkFields = struct {
-            fn call(a: std.mem.Allocator, pn: []const []const u8, pt: []const []const u8) []ast.Field {
-                const fields = a.alloc(ast.Field, pn.len + 1) catch unreachable;
+            fn call(a: std.mem.Allocator, pn: []const []const u8, pt: []const []const u8, with_key: bool) []ast.Field {
+                const extra: usize = if (with_key) 2 else 1;
+                const fields = a.alloc(ast.Field, pn.len + extra) catch unreachable;
                 fields[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .type = a.dupe(u8, "string") catch unreachable };
+                if (with_key) fields[1] = .{ .name = a.dupe(u8, "key") catch unreachable, .type = a.dupe(u8, "i64") catch unreachable };
                 for (pn, pt, 0..) |n, t, i| {
-                    fields[i + 1] = .{ .name = a.dupe(u8, n) catch unreachable, .type = a.dupe(u8, t) catch unreachable };
+                    fields[i + extra] = .{ .name = a.dupe(u8, n) catch unreachable, .type = a.dupe(u8, t) catch unreachable };
                 }
                 return fields;
             }
@@ -488,7 +508,7 @@ const std = @import("std");
             // Single passthrough root — the component IS its paint proc.
             synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
                 .path = mkPath(allocator, cmodule, cname),
-                .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items) },
+                .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, true) },
                 .branches = &[_]ast.Branch{},
                 .is_public = false,
                 .is_implicit_flow = false,
@@ -499,7 +519,7 @@ const std = @import("std");
             synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
                 .path = mkPath(allocator, cmodule, cname),
                 .body = ast.Source{
-                    .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape),
+                    .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true),
                     .location = cloc,
                     .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                     .phantom_type = null,
@@ -523,7 +543,7 @@ const std = @import("std");
                     const seg_name = std.fmt.allocPrint(allocator, "__{s}-seg{d}", .{ cname, ni }) catch unreachable;
                     synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
                         .path = mkPath(allocator, cmodule, seg_name),
-                        .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items) },
+                        .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, false) },
                         .branches = &[_]ast.Branch{},
                         .is_public = false,
                         .is_implicit_flow = false,
@@ -534,7 +554,7 @@ const std = @import("std");
                     synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
                         .path = mkPath(allocator, cmodule, seg_name),
                         .body = ast.Source{
-                            .text = paintBody(allocator, seg_tpl.items[ni], node.seg, jsEscape),
+                            .text = paintBody(allocator, seg_tpl.items[ni], node.seg, jsEscape, false),
                             .location = cloc,
                             .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                             .phantom_type = null,
@@ -555,7 +575,7 @@ const std = @import("std");
 
             synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
                 .path = mkPath(allocator, cmodule, cname),
-                .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items) },
+                .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, false) },
                 .branches = &[_]ast.Branch{},
                 .is_public = false,
                 .is_implicit_flow = false,

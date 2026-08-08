@@ -13,3 +13,24 @@
         click({ action: action, id: id });
     });
 }
+
+// The keyed element registry. A component declaring `key` records what it
+// painted; `drop` detaches it. This is the library's own book, never the
+// consumer's — an app using the markup surface writes no lookup code at all,
+// which is the difference between a DOM library and a DOM convention.
+//
+// Keyed by whatever the caller supplies. From a store that is a row HANDLE,
+// which survives compaction: `take` swap-removes the last row into the freed
+// slot, so a row's position changes under it while its handle does not.
+const __koru_dom_reg = new Map();
+
+function __koru_dom_track(key, node) {
+    __koru_dom_reg.set(key, node);
+}
+
+~proc drop|js {
+    const node = __koru_dom_reg.get(key);
+    if (node === undefined) return;
+    __koru_dom_reg.delete(key);
+    if (node.parentNode !== null) node.parentNode.removeChild(node);
+}

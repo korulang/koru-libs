@@ -45,3 +45,15 @@ pub tor run { title: string }
     program: *const Program,
     allocator: std.mem.Allocator
 } -> SiteResult
+
+// The inverse of a keyed paint: let go of the element a `key` owns.
+//
+// A component that takes a `key` remembers what it painted under it, so the
+// element is reachable in one step instead of by searching the page. `drop`
+// is how a consumer says the row is gone: it detaches what was painted and
+// forgets it. Pass the same value the paint was given — from a store, that is
+// `[id]` on the `! removed` arm, which is the same handle `! inserted` saw.
+//
+// Dropping a key nothing was painted under is a no-op, not an error: a row
+// that never reached the page has nothing to take off it.
+pub tor drop { key: i64 }

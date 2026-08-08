@@ -7,10 +7,18 @@
 //   (host) and the assembled label cannot live in the store (string columns
 //   refused, char[N] has no JS lowering — see main.k header).
 //
-// remove-row / mark-row / swap-rows / select-row — the DOM write itself.
-//   The row-targeting logic lives in main.k; these bodies are the retained-
-//   mode write calls a DOM markup surface would synthesize, exactly where
-//   vaxis's generated flows call write-at.
+// mark-row / swap-rows / select-row — the DOM write itself. The row-targeting
+//   logic lives in main.k; these bodies are the retained-mode write calls a
+//   DOM markup surface would synthesize, exactly where vaxis's generated flows
+//   call write-at.
+//
+//   REMOVAL no longer appears here: a component that takes a `key` remembers
+//   what it painted, so `koru/dom:drop` takes the element off the page in one
+//   step. What remains are MUTATIONS of a live element, and they still reach
+//   it by searching the page — `domRow` is the last consumer of that scan, and
+//   the reason partial update is still slower than hand-written. The shape
+//   that would retire it is re-painting a prop through the component that owns
+//   the markup, not more lookup helpers here.
 
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
@@ -26,11 +34,6 @@ function domRow(id) {
 
 ~proc make-label|js {
     return adjectives[domRandom(adjectives.length)] + " " + colours[domRandom(colours.length)] + " " + nouns[domRandom(nouns.length)];
-}
-
-~proc remove-row|js {
-    const tr = domRow(id);
-    tr.parentNode.removeChild(tr);
 }
 
 ~proc mark-row|js {
