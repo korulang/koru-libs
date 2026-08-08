@@ -62,38 +62,48 @@ cases where the expensive thing was invisible until a second host ran it.
 
 ---
 
-## Round 9: the searching is gone, and what is left did not survive measurement
+## Round 9: the searching is gone, and nothing we could name replaced it
 
 Retention landed and the gaps closed roughly as the probes predicted. What
-remained was building rows — ten thousand at 1.12× and a thousand more at 1.10×
-— with no page search anywhere in the path, and two candidates were put to it.
+remained was building rows — ten thousand at ~1.10× and a thousand more at
+~1.06× — with no page search anywhere in the path. Two candidates were put to
+it and **both failed**, one of them three times over before it stayed dead.
 
-**Both measured nothing on the big one, and the second one fooled me first.**
 Caching the container element the component looks up per row was the seventh
 candidate in three sessions to measure zero. Batching a task's rows into a
 detached fragment — the trick the reference uses by hand, detaching its table
-body to fill it (`vanillajs Main.js:338-346`) — *appeared* to take the
-ten-thousand-row build from 348.9 ms to 332.3 and was written up as closing 79%
-of the layout gap. **A 25-iteration run refutes that.** Under load the
-distribution goes cleanly bimodal — a fast cluster near 340 ms and a contended
-one near 800 — and the median is then decided by how many fast samples a
-framework happened to catch, not by its code. In the fast cluster the batched
-and unbatched builds sit at ~343 and ~344 ms. There is no difference.
+body to fill it (`vanillajs Main.js:338-346`) — is the eighth, and the first to
+come in *worse*: 1.112× against 1.101× on the big build, 1.090× against 1.061×
+on the small one. It has been reverted.
 
-What survives is smaller and was reproduced in two independent windows, by the
-hand-edited probe and the real library build agreeing to 0.1 ms: on the
-*thousand-rows-after-a-thousand* build, batching is worth about 1.5 ms
-(36.5/35.1 → 34.7/34.5). Real, modest, and nothing like the headline it was
-first written up as.
+**The durable belief from this round is about the instrument, not the DOM, and
+it cost three wrong write-ups to arrive at.** The first said batching won 5%.
+The retraction of that said it won ~1.5 ms on one operation. Both were the same
+error at different magnitudes, and the error is this: *on a machine that is not
+quiet, a timing sample is not a noisy measurement of one value — it is a clean
+measurement of one of two values.* Runs fall into a fast cluster and a contended
+one with nothing in between, because a run either holds a fast core for its
+whole duration or it does not. A median over such a set reports how many fast
+samples a framework caught, and it does not look noisy when it does so. It looks
+like a result.
 
-**The methodological lesson is the durable part, and it is about the
-instrument, not the DOM.** A single fifteen-iteration median is not evidence on
-a loaded machine, and it fails in the most flattering possible way: it does not
-look noisy, it looks like a clean 5% win. The tell was available and unread —
-the *control* in the same window had drifted 2.4× from its own known value.
-**A timing window is only worth reading if the control lands where the control
-is known to land**, and that check costs nothing next to the hour of write-up
-it would have saved.
+Three things follow, all mechanical, all now built:
+
+- **The control gates the window.** The reference is the one program guaranteed
+  not to have changed between runs. In the window that produced the 5% claim it
+  had drifted 2.4× from its own known value, in the same file, unread.
+  `dom/board/read-timings.mjs` refuses to rank a window whose control has moved.
+- **Read the fast cluster, never the median.** Interference only ever adds time.
+- **Quiet the machine with the supervisor's own switch.** The heavy services
+  here are launchd agents declared `KeepAlive true`; killing them by pid is
+  answered in milliseconds. `dom/board/quiet-machine.sh` boots them out
+  reversibly. With them down the bimodality vanishes completely — 25 of 25
+  samples in one cluster for every framework — which is what made the verdict
+  legible at last.
+
+A quiet machine is also simply faster (the reference moved 311.4 → 290.5 ms), so
+a baseline is a property of the machine's state and not of the reference. Any
+number carried across sessions has to say which state it was taken in.
 
 The remaining gap is therefore still unexplained, and one named candidate is
 unmeasured: every row we paint carries five attributes the reference's rows do

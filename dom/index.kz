@@ -16,11 +16,16 @@
 //     → event  `Row { parent: string, id: i64, … }` — props read off the
 //       {{ ident:type }} placeholders (s/d/f/b, as in vaxis)
 //     → a |js paint body: clone a module-level <template> holding the STATIC
-//       markup, assign the dynamic attrs/text, hand the root to
-//       __koru_dom_append, which batches a run of rows off-page and attaches
-//       them in one go (index.kjs). The template is built once at module
+//       markup, assign the dynamic attrs/text, append the root to
+//       document.querySelector(parent). The template is built once at module
 //       load — the same clone-and-fill shape the reference's hand-written
 //       rowTemplate uses (vanillajs Main.js:7-9); here the compiler writes it.
+//
+//       A row goes in AS IT IS PAINTED, one append each. Batching a task's rows
+//       into a detached fragment and attaching once — the trick the reference
+//       uses by hand — was built, measured, and REVERTED: on a quieted machine
+//       it is 1.112x of hand-written against 1.101x without it. See
+//       dom/board/timings-2026-08-08/probes/README.md.
 //
 // Markup dialect (the vaxis attribute forms, extended to passthrough tags):
 //   attr="lit"           static — lives in the template HTML.
@@ -383,7 +388,7 @@ const std = @import("std");
                 }
             }
             if (!repaint) {
-                b.appendSlice(a, "__koru_dom_append(parent, __root);") catch unreachable;
+                b.appendSlice(a, "document.querySelector(parent).appendChild(__root);") catch unreachable;
                 if (with_key) b.appendSlice(a, "\n__koru_dom_track(key, __root);") catch unreachable;
             }
             return b.toOwnedSlice(a) catch unreachable;

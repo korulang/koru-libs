@@ -28,52 +28,6 @@ function __koru_dom_track(key, node) {
     __koru_dom_reg.set(key, node);
 }
 
-// PAINTING A RUN OF ROWS ATTACHES ONCE, NOT ONCE PER ROW.
-//
-// A component's paint hands its finished element here instead of appending it
-// to the live page. Elements pile into a detached fragment; the fragment goes
-// in at the end of the current task. The page therefore sees ONE insertion of
-// N children rather than N insertions of one, and the browser lays the batch
-// out once.
-//
-// This is where the remaining gap against hand-written code was. Building ten
-// thousand rows measured 348.9ms against the reference's 311.4; batching takes
-// it to 332.3, and essentially all of the recovered time is the browser's, not
-// ours (its share fell 299.7 -> 283.4 against a reference 279.0). The
-// reference wins this the same way and by hand: it DETACHES its table body,
-// fills it, and puts it back (vanillajs Main.js:338-346). A markup surface
-// should not need the app to know that trick.
-//
-// "The end of the current task" is a microtask, which is the last moment
-// before anything outside this program can look at the page. Between the paint
-// and the flush the element is real, addressable and mutable — it is simply
-// not in the document yet — so a repaint, a drop, or a `koruDomNode` lookup in
-// that window all behave normally. The one thing that would notice is host
-// code searching the live page for a row it just painted, in the same task; the
-// library's own accessor flushes first so that reads through it never can.
-let __koru_dom_pending = null;
-let __koru_dom_pending_parent = "";
-
-function __koru_dom_flush() {
-    if (__koru_dom_pending === null) return;
-    const frag = __koru_dom_pending;
-    const parent = __koru_dom_pending_parent;
-    __koru_dom_pending = null;
-    document.querySelector(parent).appendChild(frag);
-}
-
-function __koru_dom_append(parent, node) {
-    // A run is one parent. A paint naming a different container ends the run
-    // in progress rather than mixing the two.
-    if (__koru_dom_pending !== null && __koru_dom_pending_parent !== parent) __koru_dom_flush();
-    if (__koru_dom_pending === null) {
-        __koru_dom_pending = document.createDocumentFragment();
-        __koru_dom_pending_parent = parent;
-        queueMicrotask(__koru_dom_flush);
-    }
-    __koru_dom_pending.appendChild(node);
-}
-
 // The library's HOST surface: host code in the same module addresses the
 // element a key owns, instead of searching the page for it.
 //
@@ -87,16 +41,9 @@ function __koru_dom_append(parent, node) {
 // Returns undefined for a key nothing was painted under; a caller that has a
 // live handle from the store cannot be in that position.
 function koruDomNode(key) {
-    // Flush first: a host caller reaching for an element may go on to read the
-    // live page around it, and a half-attached batch is not a state anyone
-    // outside this file should ever observe.
-    __koru_dom_flush();
     return __koru_dom_reg.get(key);
 }
 
-// Deliberately does NOT flush. A row painted and dropped inside one task sits
-// in the pending fragment, so detaching it there is both correct and cheaper —
-// it never reaches the page at all.
 ~proc drop|js {
     const node = __koru_dom_reg.get(key);
     if (node === undefined) return;

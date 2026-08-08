@@ -47,7 +47,7 @@ which is what the reference does by hand when it detaches its table body to fill
 it (`Main.js:338-346`). At n=15 it measured 332.3 — a clean-looking 5% — and
 that number was wrong.
 
-### What refuted it, and why the first run looked so convincing
+### What refuted it, and what a quiet machine finally said
 
 At n=25 under load the create-10k distribution is **bimodal**: a fast cluster
 near 340 ms and a contended one near 800, with nothing in between. The median is
@@ -55,21 +55,34 @@ then set by how many fast samples a framework happens to catch — 1 for the
 reference, 4 for round 8, 9 for the batched build in the same run. Ranking those
 medians ranks scheduling luck.
 
-In the fast cluster: round 8 ~344 ms, batched ~343 ms. **No difference.**
+**The tell was in the same file and went unread.** The reference — the control,
+the one program guaranteed not to have changed — measured 756.8 ms in a window
+where it is known to measure 311.4. `dom/board/read-timings.mjs` now refuses to
+rank a window whose control has drifted, and reads the fast cluster rather than
+the median.
+
+Then the machine was actually quieted. The heavy background services here are
+launchd agents declared `KeepAlive true`, so killing them by pid is answered in
+milliseconds by a new process — an hour of "I killed the noisy things and load
+is unchanged" is the supervisor working, not a mystery.
+`dom/board/quiet-machine.sh` boots them out and puts back exactly what it took.
+
+**With them down the split disappears entirely — 25/25 samples in one cluster,
+every framework — and the verdict reverses:**
 
 | operation | reference | round 8 | batched | |
 |---|---|---|---|---|
-| build 10,000 rows (fast cluster) | ~310 | ~344 | ~343 | no effect |
-| build 1,000 more (two windows) | 33.2 / 33.7 | 36.5 / 35.1 | 34.7 / 34.5 | ~1.5 ms, real |
+| build 10,000 rows | 290.5 | 319.7 (1.101×) | 323.0 (1.112×) | batching is WORSE |
+| build 1,000 more | 31.2 | 33.1 (1.061×) | 34.0 (1.090×) | batching is WORSE |
 
-The smaller build is the part that holds: reproduced in two independent windows,
-with the hand-edited probe and the shipped library build agreeing to 0.1 ms.
+So batching is not a win, and not a wash — it is a small **regression**, on both
+operations, and the "~1.5 ms on the smaller build" that was salvaged from the
+first retraction was contamination too. It has been reverted from `koru/dom`;
+the emitted output is byte-identical to the build that measured 1.101×.
 
-**The tell was in the same file and went unread.** The reference — the control,
-the one program guaranteed not to have changed — measured 756.8 ms in a window
-where it is known to measure 311.4. A window whose control has drifted 2.4×
-cannot rank anything. Reading the control first costs nothing and would have
-saved the write-up.
+**Eighth candidate to measure nothing, and the first to measure worse.** Note
+also that a quiet machine is simply faster: the reference moved 311.4 → 290.5,
+so a baseline is a property of the machine's state, not of the reference.
 
 The gap remains unexplained, with one named unmeasured candidate: every row we
 paint carries five attributes the reference's rows do not (`data-id` ×3,
