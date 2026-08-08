@@ -4,6 +4,18 @@ Object.defineProperty(Array.prototype, "len", __koru_len);
 // koru/dom |js facet — the host bodies for the events declared in index.k.
 // Same facet layout the suite pins in 140_009/140_010: one stem, per-target
 // implementation files, merged at import.
+// The keyed element registry. A component declaring `key` records what it
+// painted; `drop` detaches it. This is the library's own book, never the
+// consumer's — an app using the markup surface writes no lookup code at all,
+// which is the difference between a DOM library and a DOM convention.
+//
+// Keyed by whatever the caller supplies. From a store that is a row HANDLE,
+// which survives compaction: `take` swap-removes the last row into the freed
+// slot, so a row's position changes under it while its handle does not.
+const __koru_dom_reg = new Map();
+function __koru_dom_track(key, node) {
+    __koru_dom_reg.set(key, node);
+}
 // Vehicle |js facet — the host escapes the app carries. Each proc is a leaf
 // DOM writer; WHICH rows it touches is decided on the Koru side (store
 // sweeps, interceptors, the sel watch). Escaped because of named walls:
@@ -13,10 +25,18 @@ Object.defineProperty(Array.prototype, "len", __koru_len);
 //   (host) and the assembled label cannot live in the store (string columns
 //   refused, char[N] has no JS lowering — see main.k header).
 //
-// remove-row / mark-row / swap-rows / select-row — the DOM write itself.
-//   The row-targeting logic lives in main.k; these bodies are the retained-
-//   mode write calls a DOM markup surface would synthesize, exactly where
-//   vaxis's generated flows call write-at.
+// mark-row / swap-rows / select-row — the DOM write itself. The row-targeting
+//   logic lives in main.k; these bodies are the retained-mode write calls a
+//   DOM markup surface would synthesize, exactly where vaxis's generated flows
+//   call write-at.
+//
+//   REMOVAL no longer appears here: a component that takes a `key` remembers
+//   what it painted, so `koru/dom:drop` takes the element off the page in one
+//   step. What remains are MUTATIONS of a live element, and they still reach
+//   it by searching the page — `domRow` is the last consumer of that scan, and
+//   the reason partial update is still slower than hand-written. The shape
+//   that would retire it is re-painting a prop through the component that owns
+//   the markup, not more lookup helpers here.
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
 const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
@@ -79,13 +99,6 @@ const main_module = {
       return adjectives[domRandom(adjectives.length)] + " " + colours[domRandom(colours.length)] + " " + nouns[domRandom(nouns.length)];
     },
   },
-  remove_row_event: {
-    handler(__koru_input) {
-      const id = __koru_input.id;
-      const tr = domRow(id);
-      tr.parentNode.removeChild(tr);
-    },
-  },
   select_row_event: {
     handler(__koru_input) {
       const id = __koru_input.id;
@@ -113,52 +126,24 @@ const main_module = {
       parent.insertBefore(ta, afterB === ta ? tb : afterB);
     },
   },
-  mark_event: {
-    handler(__koru_input) {
-      const id = __koru_input.id;
-      {
-        const anchor = domRow(id).childNodes[1].firstChild;
-        anchor.textContent = anchor.textContent + " !!!";
-      }
-    },
-  },
-  swapdom_event: {
-    handler(__koru_input) {
-      const a = __koru_input.a;
-      const b = __koru_input.b;
-      {
-        const ta = domRow(a);
-        const tb = domRow(b);
-        const parent = ta.parentNode;
-        const afterB = tb.nextSibling;
-        parent.insertBefore(tb, ta);
-        parent.insertBefore(ta, afterB === ta ? tb : afterB);
-      }
-    },
-  },
-  echo_event: {
-    handler(__koru_input) {
-      const v = __koru_input.v;
-      return v;
-    },
-  },
-  sweep_event: {
-    handler(__koru_input) {
-      main_module.__store_stripe_rows_event.handler({});
-    },
-  },
   clear_event: {
     handler(__koru_input) {
-      main_module.__store_write_op_event.handler({ field: 0, value: 5 });
-      main_module.sweep_event.handler({});
-      main_module.__store_write_op_event.handler({ field: 0, value: 0 });
+      {
+        for (let __koru_i = 0; __koru_i < __koru_store_rows.__koru_hslot_next; __koru_i++) {
+        __koru_store_rows.__koru_hslot_gen[__koru_i] += 1;
+        }
+        __koru_store_rows.len = 0;
+        __koru_store_rows.__koru_hslot_free_len = 0;
+        __koru_store_rows.__koru_hslot_next = 0;
+        main_module.__store_cleared_rows_0_event.handler({});
+      }
     },
   },
   build_event: {
     handler(__koru_input) {
       const n = __koru_input.n;
 for (let __koru_item = 0; __koru_item < n; __koru_item++) {
-        { const _auto_0 = __koru_item;         const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, __site_line: 92 });
+        { const _auto_0 = __koru_item;         const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, __site_line: 96 });
         if (result_0.tag === "row") {
           const _auto_1 = result_0.row;
           main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
@@ -174,6 +159,7 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
   Row_event: {
     handler(__koru_input) {
       const parent = __koru_input.parent;
+      const key = __koru_input.key;
       const id = __koru_input.id;
       const label = __koru_input.label;
       const __root = __koru_dom_tpl_Row_0.cloneNode(true);
@@ -183,6 +169,7 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __root.children[1].children[0].textContent = String(label);
       __root.children[2].children[0].setAttribute("data-id", String(id));
       document.querySelector(parent).appendChild(__root);
+      __koru_dom_track(key, __root);
     },
   },
   __store_insertf_rows_event: {
@@ -206,12 +193,12 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.id[__koru_new_row] = id;
       __koru_store_rows.pos[__koru_new_row] = pos;
       __koru_store_rows.len += 1;
-      main_module.__store_inserted_rows_0_event.handler({ id: id });
-      if (__site_line > 98) {
-      main_module.__store_qrow_rows_L98_event.handler({ row: __koru_new_row });
+      main_module.__store_inserted_rows_0_event.handler({ id: id, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
+      if (__site_line > 102) {
+      main_module.__store_qrow_rows_L102_event.handler({ row: __koru_new_row });
       }
-      if (__site_line > 107) {
-      main_module.__store_qrow_rows_L107_event.handler({ row: __koru_new_row });
+      if (__site_line > 111) {
+      main_module.__store_qrow_rows_L111_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -245,66 +232,63 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       }
     },
   },
-  __store_qrow_rows_L98_event: {
+  __store_qrow_rows_L102_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const pos = __koru_store_rows.pos[__koru_r];
       if (!(((((pos) % (10)) + (10)) % (10)) == 0)) return;
-      main_module.__store_qbody_rows_L98_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      main_module.__store_qbody_rows_L102_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
       return;
     },
   },
-  __store_qbody_rows_L98_event: {
+  __store_qbody_rows_L102_event: {
     handler(__koru_input) {
       const pos = __koru_input.pos;
       const __koru_qrow = __koru_input.__koru_qrow;
 if (__koru_store_op.code == 4) {
-        {         main_module.mark_event.handler({ id: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
+        {         {
+          const id = (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)];
+          const anchor = domRow(id).childNodes[1].firstChild;
+          anchor.textContent = anchor.textContent + " !!!";
+        }
  }
     } else {
         {  }
     }
     },
   },
-  __store_qsweep_rows_L98_event: {
+  __store_qsweep_rows_L102_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L98_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L102_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
     },
   },
-  __store_qrow_rows_L107_event: {
+  __store_qrow_rows_L111_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
-      main_module.__store_qbody_rows_L107_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      main_module.__store_qbody_rows_L111_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
       return;
     },
   },
-  __store_qbody_rows_L107_event: {
+  __store_qbody_rows_L111_event: {
     handler(__koru_input) {
       const __koru_qrow = __koru_input.__koru_qrow;
-      const p = main_module.echo_event.handler({ v: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
-      const rid = main_module.echo_event.handler({ v: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
-if (__koru_store_op.code == 5) {
-        {         const result_2 = main_module.__store_take_rows_event.handler({ row: __koru_qrow });
-        const _auto_5 = result_2.item;
+if (__koru_store_op.code == 6) {
+        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
+        {           main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b });
+          main_module.__store_write_op_event.handler({ field: 3, value: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
  }
     } else {
-        { if (__koru_store_op.code == 6) {
-        { if (p == __koru_store_op.a) {
-        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b });
-            main_module.__store_write_op_event.handler({ field: 3, value: rid });
- }
-    } else {
-        { if (p == __koru_store_op.b) {
-        {               main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a });
-              main_module.__store_write_op_event.handler({ field: 4, value: rid });
+        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.b) {
+        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a });
+            main_module.__store_write_op_event.handler({ field: 4, value: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
  }
     } else {
         {  }
@@ -314,10 +298,10 @@ if (__koru_store_op.code == 5) {
  }
     } else {
         { if (__koru_store_op.code == 7) {
-        { if (rid == __koru_store_op.a) {
-        {               main_module.__store_write_op_event.handler({ field: 2, value: p });
-              const result_3 = main_module.__store_take_rows_event.handler({ row: __koru_qrow });
-              const _auto_6 = result_3.item;
+        { if ((__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
+        {             main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
+            const result_2 = main_module.__store_take_rows_event.handler({ row: __koru_qrow });
+            const _auto_5 = result_2.item;
  }
     } else {
         {  }
@@ -325,8 +309,8 @@ if (__koru_store_op.code == 5) {
  }
     } else {
         { if (__koru_store_op.code == 77) {
-        { if (p > __koru_store_op.b) {
-        {                 main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: p - 1 });
+        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] > __koru_store_op.b) {
+        {               main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1 });
  }
     } else {
         {  }
@@ -334,8 +318,6 @@ if (__koru_store_op.code == 5) {
  }
     } else {
         {  }
-    }
- }
     }
  }
     }
@@ -343,12 +325,12 @@ if (__koru_store_op.code == 5) {
     }
     },
   },
-  __store_qsweep_rows_L107_event: {
+  __store_qsweep_rows_L111_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L107_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L111_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
@@ -362,7 +344,7 @@ if (__koru_store_op.code == 5) {
       const __koru_gone_slot = __koru_store_rows.__koru_row_hslot[__koru_r];
       const __koru_out_id = __koru_store_rows.id[__koru_r];
       const __koru_out_pos = __koru_store_rows.pos[__koru_r];
-      main_module.__store_removed_rows_0_event.handler({ id: __koru_out_id });
+      main_module.__store_removed_rows_0_event.handler({ h: __koru_store_rows.__koru_handle_of(__koru_r) });
       const __koru_last = __koru_store_rows.len - 1;
       if (__koru_r != __koru_last) {
       __koru_store_rows.id[__koru_r] = __koru_store_rows.id[__koru_last];
@@ -381,9 +363,11 @@ if (__koru_store_op.code == 5) {
   __store_inserted_rows_0_event: {
     handler(__koru_input) {
       const id = __koru_input.id;
+      const h = __koru_input.h;
       const l = main_module.make_label_event.handler({});
       {
         const parent = "#tbody";
+        const key = h;
         const label = l;
         const __root = __koru_dom_tpl_Row_0.cloneNode(true);
         __root.setAttribute("data-id", String(id));
@@ -392,20 +376,38 @@ if (__koru_store_op.code == 5) {
         __root.children[1].children[0].textContent = String(label);
         __root.children[2].children[0].setAttribute("data-id", String(id));
         document.querySelector(parent).appendChild(__root);
+        __koru_dom_track(key, __root);
       }
     },
   },
   __store_removed_rows_0_event: {
     handler(__koru_input) {
-      const id = __koru_input.id;
-      main_module.remove_row_event.handler({ id: id });
+      const h = __koru_input.h;
+      main_module.drop_event.handler({ key: h });
       main_module.__store_write_cnt_event.handler({ field: 0, value: __koru_store_cnt.n - 1 });
+    },
+  },
+  __store_cleared_rows_0_event: {
+    handler(__koru_input) {
+      main_module.drop_all_event.handler({});
+      main_module.__store_write_cnt_event.handler({ field: 0, value: 0 });
+    },
+  },
+  __store_clear_rows_event: {
+    handler(__koru_input) {
+      for (let __koru_i = 0; __koru_i < __koru_store_rows.__koru_hslot_next; __koru_i++) {
+      __koru_store_rows.__koru_hslot_gen[__koru_i] += 1;
+      }
+      __koru_store_rows.len = 0;
+      __koru_store_rows.__koru_hslot_free_len = 0;
+      __koru_store_rows.__koru_hslot_next = 0;
+      main_module.__store_cleared_rows_0_event.handler({});
     },
   },
   __store_stripe_rows_event: {
     handler(__koru_input) {
-      main_module.__store_qsweep_rows_L98_event.handler({});
-      main_module.__store_qsweep_rows_L107_event.handler({});
+      main_module.__store_qsweep_rows_L102_event.handler({});
+      main_module.__store_qsweep_rows_L111_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -422,8 +424,8 @@ if (__koru_store_op.code == 5) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_4 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
-      const _auto_7 = result_4.next;
+      const result_3 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
+      const _auto_6 = result_3.next;
     },
   },
   __store_announce_seq_event: {
@@ -446,8 +448,8 @@ if (__koru_store_op.code == 5) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_5 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
-      const _auto_8 = result_5.n;
+      const result_4 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
+      const _auto_7 = result_4.n;
     },
   },
   __store_announce_cnt_event: {
@@ -474,21 +476,21 @@ if (__koru_store_op.code == 5) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_6 = main_module.__store_apply_op_event.handler({ field: field, value: value });
-      if (result_6.tag === "code") {
-        const _auto_9 = result_6.code;
+      const result_5 = main_module.__store_apply_op_event.handler({ field: field, value: value });
+      if (result_5.tag === "code") {
+        const _auto_8 = result_5.code;
       }
-      if (result_6.tag === "a") {
-        const _auto_10 = result_6.a;
+      if (result_5.tag === "a") {
+        const _auto_9 = result_5.a;
       }
-      if (result_6.tag === "b") {
-        const _auto_11 = result_6.b;
+      if (result_5.tag === "b") {
+        const _auto_10 = result_5.b;
       }
-      if (result_6.tag === "ida") {
-        const _auto_12 = result_6.ida;
+      if (result_5.tag === "ida") {
+        const _auto_11 = result_5.ida;
       }
-      if (result_6.tag === "idb") {
-        const _auto_13 = result_6.idb;
+      if (result_5.tag === "idb") {
+        const _auto_12 = result_5.idb;
       }
     },
   },
@@ -512,8 +514,8 @@ if (__koru_store_op.code == 5) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_7 = main_module.__store_apply_sel_event.handler({ field: field, value: value });
-      const c = result_7.cur;
+      const result_6 = main_module.__store_apply_sel_event.handler({ field: field, value: value });
+      const c = result_6.cur;
       {
         const id = c;
         const prev = document.querySelector("tr.danger");
@@ -534,8 +536,8 @@ if (__koru_store_op.code == 5) {
   __store_announce_sel_event: {
     handler(__koru_input) {
       const field = __koru_input.field;
-      const result_8 = main_module.__store_peek_sel_event.handler({ field: field });
-      const c = result_8.cur;
+      const result_7 = main_module.__store_peek_sel_event.handler({ field: field });
+      const c = result_7.cur;
       {
         const id = c;
         const prev = document.querySelector("tr.danger");
@@ -573,17 +575,46 @@ if (__koru_store_op.code == 5) {
       });
     },
   },
+  drop_event: {
+    handler(__koru_input) {
+      const key = __koru_input.key;
+      const node = __koru_dom_reg.get(key);
+      if (node === undefined) return;
+      __koru_dom_reg.delete(key);
+      if (node.parentNode !== null) node.parentNode.removeChild(node);
+    },
+  },
+  drop_all_event: {
+    handler(__koru_input) {
+      // Per-node detach, deliberately. A "clear the whole container in one call"
+      // path was built and MEASURED AT ZERO: 17.1ms against 16.6ms without it.
+      // Reading why is the useful part — the container carries a whitespace text
+      // node from the page's own HTML, so the "do we own every child?" test never
+      // matched and the fast branch never ran once. It was dead code that
+      // benchmarked as noise.
+      //
+      // Making it fire would mean either taking nodes the library did not create
+      // (wrong: a container we do not wholly own is not ours to empty) or walking
+      // the children to partition them, which is the scan this whole design
+      // exists to delete. What remains is ~3.6ms of a thousand-row clear, and it
+      // is honest work: N nodes leave the page, so N detaches happen.
+      for (const node of __koru_dom_reg.values()) {
+      if (node.parentNode !== null) node.parentNode.removeChild(node);
+      }
+      __koru_dom_reg.clear();
+    },
+  },
   flow0() {
-    main_module.__store_qsweep_rows_L98_event.handler({});
+    main_module.__store_qsweep_rows_L102_event.handler({});
   },
   flow1() {
-    main_module.__store_qsweep_rows_L107_event.handler({});
+    main_module.__store_qsweep_rows_L111_event.handler({});
   },
   flow2() {
-    const Handlers_9 = {
-      click(__arm_10) {
+    const Handlers_8 = {
+      click(__arm_9) {
         {
-          const action = __arm_10.action;
+          const action = __arm_9.action;
           if (action == 1) {
             main_module.clear_event.handler({});
             main_module.build_event.handler({ n: 1000 });
@@ -591,7 +622,7 @@ if (__koru_store_op.code == 5) {
           }
         }
         {
-          const action = __arm_10.action;
+          const action = __arm_9.action;
           if (action == 2) {
             main_module.clear_event.handler({});
             main_module.build_event.handler({ n: 10000 });
@@ -599,37 +630,37 @@ if (__koru_store_op.code == 5) {
           }
         }
         {
-          const action = __arm_10.action;
+          const action = __arm_9.action;
           if (action == 3) {
             main_module.build_event.handler({ n: 1000 });
             return;
           }
         }
         {
-          const action = __arm_10.action;
+          const action = __arm_9.action;
           if (action == 4) {
             main_module.__store_write_op_event.handler({ field: 0, value: 4 });
-            main_module.sweep_event.handler({});
+            main_module.__store_stripe_rows_event.handler({});
             main_module.__store_write_op_event.handler({ field: 0, value: 0 });
             return;
           }
         }
         {
-          const action = __arm_10.action;
+          const action = __arm_9.action;
           if (action == 5) {
             main_module.clear_event.handler({});
             return;
           }
         }
         {
-          const action = __arm_10.action;
+          const action = __arm_9.action;
           if (action == 6) {
 if (__koru_store_cnt.n > 998) {
         {               main_module.__store_write_op_event.handler({ field: 0, value: 6 });
               main_module.__store_write_op_event.handler({ field: 1, value: 1 });
               main_module.__store_write_op_event.handler({ field: 2, value: 998 });
-              main_module.sweep_event.handler({});
-              main_module.swapdom_event.handler({ a: __koru_store_op.ida, b: __koru_store_op.idb });
+              main_module.__store_stripe_rows_event.handler({});
+              main_module.swap_rows_event.handler({ a: __koru_store_op.ida, b: __koru_store_op.idb });
               main_module.__store_write_op_event.handler({ field: 0, value: 0 });
  }
     } else {
@@ -639,21 +670,21 @@ if (__koru_store_cnt.n > 998) {
           }
         }
         {
-          const action = __arm_10.action;
-          const id = __arm_10.id;
+          const action = __arm_9.action;
+          const id = __arm_9.id;
           if (action == 7) {
             main_module.__store_write_op_event.handler({ field: 0, value: 7 });
             main_module.__store_write_op_event.handler({ field: 1, value: id });
-            main_module.sweep_event.handler({});
+            main_module.__store_stripe_rows_event.handler({});
             main_module.__store_write_op_event.handler({ field: 0, value: 77 });
-            main_module.sweep_event.handler({});
+            main_module.__store_stripe_rows_event.handler({});
             main_module.__store_write_op_event.handler({ field: 0, value: 0 });
             return;
           }
         }
         {
-          const action = __arm_10.action;
-          const id = __arm_10.id;
+          const action = __arm_9.action;
+          const id = __arm_9.id;
           if (action == 8) {
             main_module.__store_write_sel_event.handler({ field: 0, value: id });
             return;
@@ -661,7 +692,7 @@ if (__koru_store_cnt.n > 998) {
         }
       },
     };
-    main_module.run_event.handler({ title: "Koru-DOM (keyed)" }, Handlers_9);
+    main_module.run_event.handler({ title: "Koru-DOM (keyed)" }, Handlers_8);
   },
 };
 main_module.flow0();
