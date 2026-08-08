@@ -49,6 +49,29 @@ compiler can emit a plausible-looking wrong program passes it. The branch check
 is the general guard; the output check is one specific tripwire that happened
 to be cheap because we had just watched it fail.
 
+**And a COMMITTED artifact does not track its compiler either** — measured
+2026-08-08 at 22:04, three hours after the belief above was written. The
+benchmark app's emitted JavaScript is checked in beside its source. Rebuilding
+it from unchanged sources, with the gate above passing and the compiler tree
+on main and clean, did not reproduce the committed file: `koruc` had been
+rebuilt at 21:06 and now wraps the row-removal body in a tag dispatch that the
+committed build ran unconditionally.
+
+This is the same disease with the diagnosis inverted. Above, the build was
+suspect and the fix was to name the compiler. Here the build was *not* suspect
+— it was committed, reviewed, and had a passing conformance run behind it —
+and the compiler moved out from under it afterwards. A checked-in artifact
+looks like a fact about the source; it is a fact about a moment. The gate the
+build runs cannot help, because nobody runs a build.
+
+What the gate cannot give you, a rebuild-and-compare can, and it costs nine
+seconds: before measuring or publishing a committed artifact, rebuild it and
+diff. If the bytes differ, the thing you were about to characterise is not the
+thing the compiler now produces. On this occasion the difference turned out to
+cost nothing — both builds measured 1.058 and 1.056 against hand-written
+vanilla, identical on the very operation the change touched — but that was
+found by measuring both, not by assuming either.
+
 Relates to [[frag-a-bisect-is-only-as-good-as-the-artifact-under-test]] — the
 same disease one layer down. There the artifact under test was stale; here the
 *compiler that produced the artifact* was, which is worse, because rebuilding

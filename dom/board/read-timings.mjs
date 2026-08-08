@@ -23,13 +23,17 @@
 //      you think and NOTHING in it may be ranked. This is the check that was
 //      available and unread.
 //
+// The fast-cluster reader and the same-window gate now live in window.mjs, so
+// that this file and ladder.mjs cannot drift into two different standards of
+// proof. The rules and their reasons are unchanged; the comments moved with
+// the code.
+//
 // Usage:
 //   node read-timings.mjs --results <dir> --benchmark 07_create10k \
 //        --control vanillajs --expect 311 [--tolerance 0.15] \
 //        --framework korurp --framework korubatch
 
-import fs from "node:fs";
-import path from "node:path";
+import { report as reportOne, windowFault } from "./window.mjs";
 
 const argv = process.argv.slice(2);
 function opt(name, fallback) {
@@ -52,98 +56,15 @@ if (!resultsDir || !benchmark) {
     process.exit(2);
 }
 
-// A run's samples, sorted, plus when the file was written. The driver leaves
-// one file per framework/benchmark and OVERWRITES IN PLACE, so a directory
-// always looks complete even when half of it is from a run two hours ago.
-function samples(framework) {
-    const file = path.join(resultsDir, `${framework}-keyed_${benchmark}.json`);
-    if (!fs.existsSync(file)) return null;
-    return {
-        xs: JSON.parse(fs.readFileSync(file, "utf8")).values.total.values.slice().sort((a, b) => a - b),
-        mtime: fs.statSync(file).mtimeMs,
-    };
-}
-
-// SAME WINDOW OR NOTHING.
-//
-// Comparing two frameworks measured hours apart is the error this whole file
-// exists to prevent, wearing different clothes — and the control check does
-// NOT catch it, because a stale control file can be a perfectly good
-// measurement of a different afternoon. Caught 2026-08-08 reading a fresh
-// probe against two baselines from earlier runs; the tell was that the sample
-// counts disagreed with what had been asked for.
-//
-// Two independent signals, because either alone is defeatable: iteration
-// counts must match (a different --count is a different run), and the files
-// must have been written close enough together to belong to one invocation.
-const SAME_RUN_MINUTES = 90;
 function assertOneWindow(rows) {
-    const counts = [...new Set(rows.map((r) => r.n))];
-    if (counts.length > 1) {
-        console.log("");
-        console.log("  REFUSING TO RANK — these results are from DIFFERENT RUNS.");
-        console.log("  Iteration counts disagree, so they cannot be one invocation:");
-        for (const r of rows) console.log(`    ${r.framework.padEnd(14)} ${r.n} samples`);
-        console.log("");
-        console.log("  The driver overwrites result files in place, so a stale one looks");
-        console.log("  exactly like a fresh one. Re-run every framework together.");
-        process.exit(1);
-    }
-    const span = (Math.max(...rows.map((r) => r.mtime)) - Math.min(...rows.map((r) => r.mtime))) / 60000;
-    if (span > SAME_RUN_MINUTES) {
-        console.log("");
-        console.log(`  REFUSING TO RANK — the result files span ${span.toFixed(0)} minutes.`);
-        for (const r of rows) {
-            console.log(`    ${r.framework.padEnd(14)} written ${new Date(r.mtime).toTimeString().slice(0, 5)}`);
-        }
-        console.log("");
-        console.log("  Whatever else changed between those two moments changed the machine.");
-        process.exit(1);
-    }
+    const fault = windowFault(rows);
+    if (fault === null) return;
+    console.log("");
+    for (const line of fault.lines) console.log(`  ${line}`);
+    process.exit(1);
 }
 
-// Split at the widest RELATIVE gap between consecutive samples. A run with no
-// interference has no such gap and the whole set is one cluster; a run with
-// interference has an obvious one, because the two regimes differ by a factor
-// rather than by noise. The 1.25x floor is what makes "no split" possible —
-// without it every set splits somewhere.
-const SPLIT_RATIO = 1.25;
-function fastCluster(xs) {
-    let cut = -1;
-    let widest = SPLIT_RATIO;
-    for (let i = 0; i < xs.length - 1; i++) {
-        const ratio = xs[i + 1] / xs[i];
-        if (ratio > widest) {
-            widest = ratio;
-            cut = i;
-        }
-    }
-    if (cut === -1) return { fast: xs, split: false, ratio: 1 };
-    return { fast: xs.slice(0, cut + 1), split: true, ratio: widest };
-}
-
-function median(xs) {
-    if (xs.length === 0) return NaN;
-    const m = Math.floor(xs.length / 2);
-    return xs.length % 2 ? xs[m] : (xs[m - 1] + xs[m]) / 2;
-}
-
-function report(framework) {
-    const got = samples(framework);
-    if (got === null) return null;
-    const xs = got.xs;
-    const { fast, split, ratio } = fastCluster(xs);
-    return {
-        framework,
-        mtime: got.mtime,
-        n: xs.length,
-        fastN: fast.length,
-        split,
-        ratio,
-        fastMedian: median(fast),
-        naiveMedian: median(xs),
-    };
-}
+const report = (framework) => reportOne(resultsDir, framework, benchmark);
 
 const controlRow = report(control);
 if (controlRow === null) {
