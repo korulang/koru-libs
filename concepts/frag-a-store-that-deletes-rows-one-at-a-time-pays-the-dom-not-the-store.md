@@ -59,3 +59,45 @@ whether an interceptor's payload gains identity is surface, not plumbing.
 
 Relates to [[frag-a-cost-the-optimizer-deletes-was-never-there]]: both are
 cases where the expensive thing was invisible until a second host ran it.
+
+---
+
+## Round 9: once the searching stopped, the remaining cost had moved to the other side
+
+Retention landed and the gaps closed roughly as the probes predicted. What was
+left was building rows: ten thousand of them at 1.12× and a thousand more at
+1.10×, with no search anywhere in the path. The natural continuation of the
+belief above is that some other per-row thing *we* do is expensive, and the
+named suspect fit that shape perfectly — the component looked its container up
+with `document.querySelector` once per row where the reference caches it once.
+
+**It measured zero.** Seventh candidate across three sessions to do that, and
+the first to be wrong in an instructive direction rather than merely dead.
+
+The answer was in the control's own source, five lines with no comment on them:
+the reference detaches its table body, fills it, and puts it back
+(`vanillajs Main.js:338-346`). Ten thousand rows enter its page as one
+insertion. They entered ours as ten thousand.
+
+Batching a task's rows into a detached fragment took the ten-thousand-row build
+from 1.120× to 1.067×. **And our own script time went UP while doing it** —
+37.5 to 40.5 ms — while the browser's share fell 299.7 to 283.4 against a
+reference 279.0. Batching closes 79% of the layout gap and none of the script
+gap.
+
+So the belief above is right about its case and too narrow as a rule. A per-row
+DOM write has two prices and they are paid by different parties: *issuing* it,
+which is our program's time and was the whole story while we were searching the
+page, and *receiving* it, which is the browser's and becomes the whole story
+once the searching stops. A markup surface is the only layer that knows a run
+of rows is in flight, so it is the only layer that can pay the second price
+down — the app cannot, and the store should not have to know it is talking to a
+page.
+
+The script gap that remains has a visible candidate, unmeasured: every row we
+paint carries five attributes the reference's rows do not, because our click
+delegation reads a row's identity out of the DOM while the reference stashes it
+as a JavaScript property on the element (`tr.data_id = data.id`). That is the
+open question at the bottom of this file — what identifies the row a component
+painted — arriving from a second direction, and it is now the last named thing
+between us and the reference.
