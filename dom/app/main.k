@@ -12,27 +12,38 @@
 // `op` is the pending-operation register: click arms stage an op code (and
 // operands a/b), run the sweep, and reset. Sweeps dispatch on op.code.
 //
-// Shapes forced by pinned JS-lane walls (reproductions in dom/tests/frontier/):
-//   - `sweep`/`clear` wrap `stripe` terminally in a tor body because a chain
-//     NEVER survives past stripe() — the tail is silently dropped, BOTH lanes
-//     (stripe_swallows_chain_tail.k). Round-1 walls 1-4 still stand.
-//   - rule arms bind row reads FIRST (`echo(v: e.pos): p`) because a row
-//     read inside a nested if CONDITION emits the raw binding name `e.pos`
-//     into the JS output (rule_row_read_in_nested_if_condition_js.k) —
-//     the bind-first idiom of 320_128, forced rather than chosen.
-//   - op dispatch lives in body-`if`s, not `when` guards, because a
-//     cross-store singleton read in a rule GUARD emits the bare store name
-//     (`op.code`, unrenamed) into the JS output
-//     (rule_guard_cross_store_read_js.k). Row-local guards lower fine.
-//   - mark/swapdom forward through Koru tors before any |js body, because a
-//     row read passed straight to a |js-bodied proc splices the Zig read
-//     (round-1 wall 3, rule_row_read_call_arg_js.k).
-//   - std/grid has NO JS lowering (grid_write_no_js_lowering.k), so the
-//     position index is the `pos` column, not a grid of handles.
+// ⛔ THIS HEADER ONCE LISTED FIVE SHAPES AS "FORCED BY PINNED JS-LANE WALLS".
+// All five walls were FIXED IN THE COMPILER THE SAME NIGHT they were found
+// (690_258/259/260/261/262, green on the board), and the workarounds sat here
+// for a day afterwards describing them in the present tense. The cost is not
+// hypothetical: a later session read this header, believed it, and reasoned
+// from a dead constraint while designing the next piece of work. A shape kept
+// past its reason does not just sit there — it teaches.
 //
-// The label still cannot live in the store (string columns are refused by
-// KORU161; char[N] has no JS lowering — round-1 wall 2), so it is minted at
-// insert and updated in place by mark-row; the store selects WHICH rows.
+// So: state what is true, and say why a shape exists on its own terms.
+//
+//   - `clear` and the click arms call `std/store:stripe(rows)` where they mean
+//     it. The chain survives it (690_258); it used to be swallowed.
+//   - rule arms read `e.pos` / `e.id` where the value is used. The bind-first
+//     `echo` dance is gone (690_260, 690_262).
+//   - `mark-row` / `swap-rows` are called directly; the forwarding tors that
+//     existed only to keep a row read away from a |js body are gone (690_262).
+//   - op dispatch STILL lives in body-`if`s rather than `when` guards — and
+//     this one is now a real choice, not a dodge. `stripe` fires ONE FULL
+//     SWEEP PER RULE, so splitting the four op cases into four guarded rules
+//     would cost four passes over every row instead of one. Cross-store reads
+//     in a guard lower correctly today (690_259); the shape stays for its own
+//     reason.
+//   - std/grid still has NO JS lowering (dom/tests/frontier/grid_write_no_js_lowering.k
+//     — the one wall still standing), so the position index is the `pos`
+//     column, not a grid of handles.
+//
+// A row's label is minted at insert and mutated in place by `mark-row`. That
+// is the LAST shape still carried for a dead wall: a fixed-size char column
+// now lowers to JS and prints identically on both targets (690_261), so the
+// label could live in the store — which is what would let a mark become a
+// store write plus a repaint instead of a hand-written DOM mutation, and it is
+// the remaining 1.57x on partial update. Not done here; it changes the model.
 
 import std/store
 import std/control
@@ -74,20 +85,8 @@ pub tor select-row { id: i64 }
 pub tor mark-row { id: i64 }
 pub tor swap-rows { a: i64, b: i64 }
 
-tor mark { id: i64 }
-mark = mark-row(id)
-
-tor swapdom { a: i64, b: i64 }
-swapdom = swap-rows(a, b)
-
-tor echo { v: i64 } -> i64
-echo -> v
-
-tor sweep {}
-sweep = std/store:stripe(rows)
-
 tor clear {}
-clear = std/store:stored { op.code: 5 } |> sweep() |> std/store:stored { op.code: 0 }
+clear = std/store:stored { op.code: 5 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
 
 tor build { n: i64 }
 
@@ -100,7 +99,7 @@ build = for(0..n)
 // row-local (legal); the op dispatch is a body-if (forced, see header).
 [name(tenth)]std/store:rule(rows)
 ! row e when @mod(e.pos, 10) == 0 |> if(op.code == 4)
-    | then |> mark(e.id)
+    | then |> mark-row(e.id)
     | else |> _
 
 // The op sweep: clear (5) takes every row; swap (6) exchanges the pos values
@@ -108,23 +107,23 @@ build = for(0..n)
 // remove (7) takes the row with id op.a and stashes its pos; compact (77)
 // closes the pos gap the remove left.
 [name(ops)]std/store:rule(rows)
-! row e |> echo(v: e.pos): p |> echo(v: e.id): rid |> if(op.code == 5)
+! row e |> if(op.code == 5)
     | then |> std/store:take(rows[e])
         | item _ |> _
     | else |> if(op.code == 6)
-        | then |> if(p == op.a)
-            | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: rid }
-            | else |> if(p == op.b)
-                | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: rid }
+        | then |> if(e.pos == op.a)
+            | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: e.id }
+            | else |> if(e.pos == op.b)
+                | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: e.id }
                 | else |> _
         | else |> if(op.code == 7)
-            | then |> if(rid == op.a)
-                | then |> std/store:stored { op.b: p } |> std/store:take(rows[e])
+            | then |> if(e.id == op.a)
+                | then |> std/store:stored { op.b: e.pos } |> std/store:take(rows[e])
                     | item _ |> _
                 | else |> _
             | else |> if(op.code == 77)
-                | then |> if(p > op.b)
-                    | then |> std/store:stored { e.pos: p - 1 }
+                | then |> if(e.pos > op.b)
+                    | then |> std/store:stored { e.pos: e.pos - 1 }
                     | else |> _
                 | else |> _
 
@@ -132,10 +131,10 @@ koru/dom:run(title: "Koru-DOM (keyed)")
 ! click { action } when action == 1 |> clear() |> build(n: 1000)
 ! click { action } when action == 2 |> clear() |> build(n: 10000)
 ! click { action } when action == 3 |> build(n: 1000)
-! click { action } when action == 4 |> std/store:stored { op.code: 4 } |> sweep() |> std/store:stored { op.code: 0 }
+! click { action } when action == 4 |> std/store:stored { op.code: 4 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
 ! click { action } when action == 5 |> clear()
 ! click { action } when action == 6 |> if(cnt.n > 998)
-    | then |> std/store:stored { op.code: 6 } |> std/store:stored { op.a: 1 } |> std/store:stored { op.b: 998 } |> sweep() |> swapdom(a: op.ida, b: op.idb) |> std/store:stored { op.code: 0 }
+    | then |> std/store:stored { op.code: 6 } |> std/store:stored { op.a: 1 } |> std/store:stored { op.b: 998 } |> std/store:stripe(rows) |> swap-rows(a: op.ida, b: op.idb) |> std/store:stored { op.code: 0 }
     | else |> _
-! click { action, id } when action == 7 |> std/store:stored { op.code: 7 } |> std/store:stored { op.a: id } |> sweep() |> std/store:stored { op.code: 77 } |> sweep() |> std/store:stored { op.code: 0 }
+! click { action, id } when action == 7 |> std/store:stored { op.code: 7 } |> std/store:stored { op.a: id } |> std/store:stripe(rows) |> std/store:stored { op.code: 77 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
 ! click { action, id } when action == 8 |> std/store:stored { sel.cur: id }
