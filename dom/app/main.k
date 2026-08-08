@@ -58,10 +58,10 @@ import koru/dom
 // synthesized `Row` event, and every lowercase tag passes through untouched
 // (ruled 2026-08-07: capital = ours, anything else is not inspected).
 koru/dom:component(Row) {
-    <tr data-id={{ id:d }}>
+    <tr>
         <td class="col-md-1">{{ id:d }}</td>
-        <td class="col-md-4"><a data-action="8" data-id={{ id:d }}>{{ label:s }}</a></td>
-        <td class="col-md-1"><a data-action="7" data-id={{ id:d }}><span class="glyphicon glyphicon-remove" aria-hidden="true"></span></a></td>
+        <td class="col-md-4"><a data-action="8">{{ label:s }}</a></td>
+        <td class="col-md-1"><a data-action="7"><span class="glyphicon glyphicon-remove" aria-hidden="true"></span></a></td>
         <td class="col-md-6"></td>
     </tr>
 }
@@ -105,23 +105,23 @@ build = for(0..n)
     | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> Row-repaint-label(key: h, e.label)
     | else |> _
 
-// The op sweep: swap (6) exchanges the pos values
-// of the rows at positions op.a/op.b and stashes their ids for the DOM move;
-// remove (7) takes the row with id op.a and stashes its pos; compact (77)
-// closes the pos gap the remove left.
+// The op sweep, now only two cases wide. Swap (6) exchanges the pos values of
+// the rows at positions op.a/op.b and stashes their HANDLES so the DOM move can
+// address the elements it has to reorder; compact (77) closes the pos gap a
+// removal left.
+//
+// Removal used to be the third case here, and it was the expensive one: a full
+// sweep comparing every row's id against the clicked one, purely to find a row
+// the user had just pointed at. The click carries the row's handle now, so the
+// removal addresses it directly and that whole pass is gone.
 [name(ops)]std/store:rule(rows)
-! row e |> if(op.code == 6)
+! row { [row]e, [id]h } |> if(op.code == 6)
     | then |> if(e.pos == op.a)
-        | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: e.id }
+        | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: h }
         | else |> if(e.pos == op.b)
-            | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: e.id }
+            | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: h }
             | else |> _
-    | else |> if(op.code == 7)
-        | then |> if(e.id == op.a)
-            | then |> std/store:stored { op.b: e.pos } |> std/store:take(rows[e])
-                | item _ |> _
-            | else |> _
-        | else |> if(op.code == 77)
+    | else |> if(op.code == 77)
             | then |> if(e.pos > op.b)
                 | then |> std/store:stored { e.pos: e.pos - 1 }
                 | else |> _
@@ -136,5 +136,6 @@ koru/dom:run(title: "Koru-DOM (keyed)")
 ! click { action } when action == 6 |> if(cnt.n > 998)
     | then |> std/store:stored { op.code: 6 } |> std/store:stored { op.a: 1 } |> std/store:stored { op.b: 998 } |> std/store:stripe(rows) |> swap-rows(a: op.ida, b: op.idb) |> std/store:stored { op.code: 0 }
     | else |> _
-! click { action, id } when action == 7 |> std/store:stored { op.code: 7 } |> std/store:stored { op.a: id } |> std/store:stripe(rows) |> std/store:stored { op.code: 77 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
-! click { action, id } when action == 8 |> std/store:stored { sel.cur: id }
+! click { action, key } when action == 7 |> std/store:stored { op.b: rows[key].pos } |> std/store:take(rows[key])
+    | item _ |> std/store:stored { op.code: 77 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
+! click { action, key } when action == 8 |> std/store:stored { sel.cur: key }

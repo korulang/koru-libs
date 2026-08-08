@@ -139,3 +139,48 @@ operation whose host escape still walks the page.
 APP's markup, and the identity channel that would replace them is the library's
 — which makes the shippable version a change to what a click carries. That is a
 spelling question and it is Lars's.
+
+## Round 11 — the identity channel, shipped (`*-r11-shipped-*.json`)
+
+Round 10's probe is now the library's behaviour. `koru/dom` records both
+directions of the pairing it always had in hand — the map from key to element,
+and the key on the element — and a click walks up to the nearest keyed ancestor
+and carries that key in its payload. The app's markup carries no identity at
+all; `data-id` is gone from every row.
+
+Measured in one window against the previous build, quiet machine, read through
+`read-timings.mjs`:
+
+| operation | reference | before | shipped | |
+|---|---|---|---|---|
+| 01 build 1,000 rows | 27.2 | 1.074 | **1.044** | better |
+| 02 replace all | 30.4 | 1.079 | **1.049** | better |
+| 03 update every 10th | 14.5 | 1.055 | 1.083 | worse |
+| 04 select a row | 3.3 | 0.939 | 0.970 | worse |
+| 05 swap two rows | 17.3 | 1.035 | **1.023** | better |
+| 06 remove one row | 14.0 | 1.050 | **1.007** | better |
+| 07 build 10,000 rows | 290.3 | 1.097 | **1.077** | better |
+| 08 build 1,000 more | 32.0 | 1.056 | **1.012** | better |
+| 09 clear 1,000 rows | 12.1 | 1.223 | **1.182** | better |
+| **geomean** | | **1.065** | **1.048** | |
+
+**The structural win is bigger than the number.** Removing a row used to stage
+the clicked id and sweep every row in the store comparing ids — an O(n) scan to
+find the row the user had just pointed at — then sweep again to close the
+position gap. The click carries the handle now, so the removal addresses the
+row directly and the first pass is deleted outright: the op sweep went from
+three cases to two, and remove went 1.050 to 1.007.
+
+**Honest about the gap to the probe.** Round 10's hand-edit measured 1.021; the
+shipped form lands at 1.048, and the baseline itself read 1.053 there against
+1.065 here — so roughly a third of the apparent difference is window-to-window
+drift of the *same* build, and the rest is that the probe also stripped the two
+`data-action` attributes and decided the action from cell position. That was
+right for pricing and wrong to ship: which action an element performs is the
+app's declaration, and cell position is a fact about this one table, not
+something a markup library can assume.
+
+Two operations regressed slightly. Selection now resolves through the library's
+registry rather than a page query and is a shade slower at 0.970 (still ahead
+of hand-written); partial update at 1.083 does not touch the click path at all
+and is inside this benchmark's run-to-run spread.

@@ -58,9 +58,18 @@ fi
 # back to main gave a current koru_std/ against a koruc binary five hours old,
 # and the app failed on `CompilerEnv has no member named 'library'` — a symbol
 # from work that had landed in between.
+# Only src/ is compared, and the exclusion of koru_std/ is the point rather
+# than an oversight: the standard library is READ FROM DISK at compile time, so
+# it is always current and a newer file there means nothing. src/ is the half
+# that is compiled in and can silently lag.
+#
+# (The mtime is a sound signal in this direction only. Zig caches on CONTENT,
+# so the binary's timestamp does not advance for a rebuild that changed
+# nothing — which is why this asks "are the sources newer", never "is the
+# binary fresh enough".)
 KORUC_BIN="$COMPILER_TREE/zig-out/bin/koruc"
 if [ -x "$KORUC_BIN" ]; then
-    newer="$(find "$COMPILER_TREE/src" "$COMPILER_TREE/koru_std" -type f -newer "$KORUC_BIN" 2>/dev/null | head -3)"
+    newer="$(find "$COMPILER_TREE/src" -type f -newer "$KORUC_BIN" 2>/dev/null | head -3)"
     if [ -n "$newer" ]; then
         cat >&2 <<EOF
 

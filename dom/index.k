@@ -30,8 +30,20 @@
 //     transforms DO run under --lang=js (std/store's new/insert/rule are
 //     transforms and pass); the dom retarget is round-2 work, not blocked.
 
+// A click carries WHERE IT LANDED, not just what was pressed.
+//
+// `key` is the key of the nearest keyed element the click happened inside —
+// the same value the component was painted with. A consumer keyed on a store
+// row therefore gets the row's handle back from the click directly, instead of
+// reading an identifier out of the page and searching for the row that matches
+// it.
+//
+// It is 0 when the click landed outside anything keyed, which is a designed
+// absence rather than a sentinel picked for convenience: `std/store` reserves
+// brand 0 precisely so no small integer can ever pass as a row address, so 0
+// is the one i64 guaranteed not to name a row of any store.
 pub tor run { title: string }
-! ?click { action: i64, id: i64 }
+! ?click { action: i64, id: i64, key: i64 }
 
 // The markup surface — `component(Name) { <markup> }`. A Stage-C transform
 // (body in index.kz): capital tag = a call to that component's synthesized

@@ -10,7 +10,14 @@
         const action = parseInt(el.getAttribute("data-action"), 10);
         const idAttr = el.getAttribute("data-id");
         const id = idAttr === null ? 0 : parseInt(idAttr, 10);
-        click({ action: action, id: id });
+        // WHERE the click landed, carried as a value rather than read back out
+        // of the page. The paint stashed the key on the element it created, so
+        // walking up to the nearest one that has it answers "which row" in a
+        // few parent steps — no attribute to parse, no document to search, and
+        // nothing the consumer had to write into its markup to make it work.
+        let owner = ev.target;
+        while (owner !== null && owner.__koru_key === undefined) owner = owner.parentNode;
+        click({ action: action, id: id, key: owner === null ? 0 : owner.__koru_key });
     });
 }
 
@@ -24,8 +31,20 @@
 // slot, so a row's position changes under it while its handle does not.
 const __koru_dom_reg = new Map();
 
+// Both directions, because the paint is the one moment both are in hand.
+//
+// The map answers "which element does this key own" — that is what a repaint
+// and a drop need. The property on the element answers the inverse, "which key
+// painted this", which is what a CLICK needs, and recording it here is the
+// whole reason a consumer no longer has to write its rows' identity into the
+// page as text for the delegation to parse back out.
+//
+// The reference does exactly this and nothing more (`tr.data_id = data.id`,
+// vanillajs Main.js:352). An expando on a node the library created is not
+// state anyone else can collide with.
 function __koru_dom_track(key, node) {
     __koru_dom_reg.set(key, node);
+    node.__koru_key = key;
 }
 
 // The library's HOST surface: host code in the same module addresses the

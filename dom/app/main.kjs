@@ -44,8 +44,11 @@ function domRandom(max) {
     return Math.round(Math.random() * 1000) % max;
 }
 
-function domRow(id) {
-    return document.querySelector("tr[data-id='" + id + "']");
+// The two host escapes below address elements the library painted, by the same
+// handle the store issued. Nothing searches the page for a row any more, and
+// nothing needs a row's identity written into the markup for it to be findable.
+function domRow(key) {
+    return koruDomNode(key);
 }
 
 ~proc make-label|js {
@@ -64,5 +67,6 @@ function domRow(id) {
 ~proc select-row|js {
     const prev = document.querySelector("tr.danger");
     if (prev !== null) prev.className = "";
-    domRow(id).className = "danger";
+    const row = domRow(id);
+    if (row !== undefined) row.className = "danger";
 }

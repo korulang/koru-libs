@@ -13,8 +13,20 @@ Object.defineProperty(Array.prototype, "len", __koru_len);
 // which survives compaction: `take` swap-removes the last row into the freed
 // slot, so a row's position changes under it while its handle does not.
 const __koru_dom_reg = new Map();
+// Both directions, because the paint is the one moment both are in hand.
+//
+// The map answers "which element does this key own" — that is what a repaint
+// and a drop need. The property on the element answers the inverse, "which key
+// painted this", which is what a CLICK needs, and recording it here is the
+// whole reason a consumer no longer has to write its rows' identity into the
+// page as text for the delegation to parse back out.
+//
+// The reference does exactly this and nothing more (`tr.data_id = data.id`,
+// vanillajs Main.js:352). An expando on a node the library created is not
+// state anyone else can collide with.
 function __koru_dom_track(key, node) {
     __koru_dom_reg.set(key, node);
+    node.__koru_key = key;
 }
 // The library's HOST surface: host code in the same module addresses the
 // element a key owns, instead of searching the page for it.
@@ -74,8 +86,11 @@ const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie"
 function domRandom(max) {
     return Math.round(Math.random() * 1000) % max;
 }
-function domRow(id) {
-    return document.querySelector("tr[data-id='" + id + "']");
+// The two host escapes below address elements the library painted, by the same
+// handle the store issued. Nothing searches the page for a row any more, and
+// nothing needs a row's identity written into the markup for it to be findable.
+function domRow(key) {
+    return koruDomNode(key);
 }
 const __koru_dom_tpl_Row_0 = (() => { const t = document.createElement("template"); t.innerHTML = "<tr><td class=\"col-md-1\"></td><td class=\"col-md-4\"><a data-action=\"8\"></a></td><td class=\"col-md-1\"><a data-action=\"7\"><span class=\"glyphicon glyphicon-remove\" aria-hidden=\"true\"></span></a></td><td class=\"col-md-6\"></td></tr>"; return t.content.firstChild; })();
 let __koru_store_rows = {
@@ -136,7 +151,8 @@ const main_module = {
       const id = __koru_input.id;
       const prev = document.querySelector("tr.danger");
       if (prev !== null) prev.className = "";
-      domRow(id).className = "danger";
+      const row = domRow(id);
+      if (row !== undefined) row.className = "danger";
     },
   },
   swap_rows_event: {
@@ -155,7 +171,7 @@ const main_module = {
     handler(__koru_input) {
       {
         for (let __koru_i = 0; __koru_i < __koru_store_rows.__koru_hslot_next; __koru_i++) {
-        __koru_store_rows.__koru_hslot_gen[__koru_i] += 1;
+        __koru_store_rows.__koru_hslot_gen[__koru_i] = (__koru_store_rows.__koru_hslot_gen[__koru_i] + 1) % 2097152;
         }
         __koru_store_rows.len = 0;
         __koru_store_rows.__koru_hslot_free_len = 0;
@@ -189,11 +205,8 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const id = __koru_input.id;
       const label = __koru_input.label;
       const __root = __koru_dom_tpl_Row_0.cloneNode(true);
-      __root.setAttribute("data-id", String(id));
       __root.children[0].textContent = String(id);
-      __root.children[1].children[0].setAttribute("data-id", String(id));
       __root.children[1].children[0].textContent = String(label);
-      __root.children[2].children[0].setAttribute("data-id", String(id));
       document.querySelector(parent).appendChild(__root);
       __koru_dom_track(key, __root);
     },
@@ -234,8 +247,8 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       if (__site_line > 104) {
       main_module.__store_qrow_rows_L104_event.handler({ row: __koru_new_row });
       }
-      if (__site_line > 113) {
-      main_module.__store_qrow_rows_L113_event.handler({ row: __koru_new_row });
+      if (__site_line > 118) {
+      main_module.__store_qrow_rows_L118_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -265,13 +278,13 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const value_2 = __koru_input.value_2;
       const result_1 = main_module.__store_apply_rows_event.handler({ row: row, field: field, value_0: value_0, value_1: value_1, value_2: value_2 });
       if (result_1.tag === "id") {
-        const _auto_3 = result_1.id;
+        const _auto_4 = result_1.id;
       }
       if (result_1.tag === "pos") {
-        const _auto_4 = result_1.pos;
+        const _auto_5 = result_1.pos;
       }
       if (result_1.tag === "label") {
-        const _auto_5 = result_1.label;
+        const _auto_6 = result_1.label;
       }
     },
   },
@@ -312,48 +325,39 @@ if (__koru_store_op.code == 4) {
       return;
     },
   },
-  __store_qrow_rows_L113_event: {
+  __store_qrow_rows_L118_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
-      main_module.__store_qbody_rows_L113_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) });
+      const h = __koru_store_rows.__koru_handle_of(__koru_r);
+      main_module.__store_qbody_rows_L118_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
       return;
     },
   },
-  __store_qbody_rows_L113_event: {
+  __store_qbody_rows_L118_event: {
     handler(__koru_input) {
       const __koru_qrow = __koru_input.__koru_qrow;
+      const h = __koru_input.h;
 if (__koru_store_op.code == 6) {
         { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
         {           main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b, value_2: "" });
-          main_module.__store_write_op_event.handler({ field: 3, value: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
+          main_module.__store_write_op_event.handler({ field: 3, value: h });
  }
     } else {
         { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.b) {
         {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a, value_2: "" });
-            main_module.__store_write_op_event.handler({ field: 4, value: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
+            main_module.__store_write_op_event.handler({ field: 4, value: h });
  }
     } else {
         {  }
     }
  }
-    }
- }
-    } else {
-        { if (__koru_store_op.code == 7) {
-        { if ((__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
-        {             main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
-            const result_2 = main_module.__store_take_rows_event.handler({ row: __koru_qrow });
-            const _auto_6 = result_2.item;
- }
-    } else {
-        {  }
     }
  }
     } else {
         { if (__koru_store_op.code == 77) {
         { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] > __koru_store_op.b) {
-        {               main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1, value_2: "" });
+        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1, value_2: "" });
  }
     } else {
         {  }
@@ -361,19 +365,17 @@ if (__koru_store_op.code == 6) {
  }
     } else {
         {  }
-    }
- }
     }
  }
     }
     },
   },
-  __store_qsweep_rows_L113_event: {
+  __store_qsweep_rows_L118_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L113_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L118_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
@@ -399,7 +401,7 @@ if (__koru_store_op.code == 6) {
       __koru_store_rows.__koru_row_hslot[__koru_r] = __koru_mv_slot;
       }
       __koru_store_rows.len = __koru_last;
-      __koru_store_rows.__koru_hslot_gen[__koru_gone_slot] += 1;
+      __koru_store_rows.__koru_hslot_gen[__koru_gone_slot] = (__koru_store_rows.__koru_hslot_gen[__koru_gone_slot] + 1) % 2097152;
       __koru_store_rows.__koru_hslot_free[__koru_store_rows.__koru_hslot_free_len] = __koru_gone_slot;
       __koru_store_rows.__koru_hslot_free_len += 1;
       return { tag: "item", item: { id: __koru_out_id, pos: __koru_out_pos, label: __koru_out_label } };
@@ -414,11 +416,8 @@ if (__koru_store_op.code == 6) {
         const parent = "#tbody";
         const key = h;
         const __root = __koru_dom_tpl_Row_0.cloneNode(true);
-        __root.setAttribute("data-id", String(id));
         __root.children[0].textContent = String(id);
-        __root.children[1].children[0].setAttribute("data-id", String(id));
         __root.children[1].children[0].textContent = String(label);
-        __root.children[2].children[0].setAttribute("data-id", String(id));
         document.querySelector(parent).appendChild(__root);
         __koru_dom_track(key, __root);
       }
@@ -440,7 +439,7 @@ if (__koru_store_op.code == 6) {
   __store_clear_rows_event: {
     handler(__koru_input) {
       for (let __koru_i = 0; __koru_i < __koru_store_rows.__koru_hslot_next; __koru_i++) {
-      __koru_store_rows.__koru_hslot_gen[__koru_i] += 1;
+      __koru_store_rows.__koru_hslot_gen[__koru_i] = (__koru_store_rows.__koru_hslot_gen[__koru_i] + 1) % 2097152;
       }
       __koru_store_rows.len = 0;
       __koru_store_rows.__koru_hslot_free_len = 0;
@@ -451,7 +450,7 @@ if (__koru_store_op.code == 6) {
   __store_stripe_rows_event: {
     handler(__koru_input) {
       main_module.__store_qsweep_rows_L104_event.handler({});
-      main_module.__store_qsweep_rows_L113_event.handler({});
+      main_module.__store_qsweep_rows_L118_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -468,8 +467,8 @@ if (__koru_store_op.code == 6) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_3 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
-      const _auto_7 = result_3.next;
+      const result_2 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
+      const _auto_7 = result_2.next;
     },
   },
   __store_announce_seq_event: {
@@ -492,8 +491,8 @@ if (__koru_store_op.code == 6) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_4 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
-      const _auto_8 = result_4.n;
+      const result_3 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
+      const _auto_8 = result_3.n;
     },
   },
   __store_announce_cnt_event: {
@@ -520,21 +519,21 @@ if (__koru_store_op.code == 6) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_5 = main_module.__store_apply_op_event.handler({ field: field, value: value });
-      if (result_5.tag === "code") {
-        const _auto_9 = result_5.code;
+      const result_4 = main_module.__store_apply_op_event.handler({ field: field, value: value });
+      if (result_4.tag === "code") {
+        const _auto_9 = result_4.code;
       }
-      if (result_5.tag === "a") {
-        const _auto_10 = result_5.a;
+      if (result_4.tag === "a") {
+        const _auto_10 = result_4.a;
       }
-      if (result_5.tag === "b") {
-        const _auto_11 = result_5.b;
+      if (result_4.tag === "b") {
+        const _auto_11 = result_4.b;
       }
-      if (result_5.tag === "ida") {
-        const _auto_12 = result_5.ida;
+      if (result_4.tag === "ida") {
+        const _auto_12 = result_4.ida;
       }
-      if (result_5.tag === "idb") {
-        const _auto_13 = result_5.idb;
+      if (result_4.tag === "idb") {
+        const _auto_13 = result_4.idb;
       }
     },
   },
@@ -558,13 +557,14 @@ if (__koru_store_op.code == 6) {
     handler(__koru_input) {
       const field = __koru_input.field;
       const value = __koru_input.value;
-      const result_6 = main_module.__store_apply_sel_event.handler({ field: field, value: value });
-      const c = result_6.cur;
+      const result_5 = main_module.__store_apply_sel_event.handler({ field: field, value: value });
+      const c = result_5.cur;
       {
         const id = c;
         const prev = document.querySelector("tr.danger");
         if (prev !== null) prev.className = "";
-        domRow(id).className = "danger";
+        const row = domRow(id);
+        if (row !== undefined) row.className = "danger";
       }
     },
   },
@@ -580,13 +580,14 @@ if (__koru_store_op.code == 6) {
   __store_announce_sel_event: {
     handler(__koru_input) {
       const field = __koru_input.field;
-      const result_7 = main_module.__store_peek_sel_event.handler({ field: field });
-      const c = result_7.cur;
+      const result_6 = main_module.__store_peek_sel_event.handler({ field: field });
+      const c = result_6.cur;
       {
         const id = c;
         const prev = document.querySelector("tr.danger");
         if (prev !== null) prev.className = "";
-        domRow(id).className = "danger";
+        const row = domRow(id);
+        if (row !== undefined) row.className = "danger";
       }
     },
   },
@@ -615,7 +616,14 @@ if (__koru_store_op.code == 6) {
       const action = parseInt(el.getAttribute("data-action"), 10);
       const idAttr = el.getAttribute("data-id");
       const id = idAttr === null ? 0 : parseInt(idAttr, 10);
-      click({ action: action, id: id });
+      // WHERE the click landed, carried as a value rather than read back out
+      // of the page. The paint stashed the key on the element it created, so
+      // walking up to the nearest one that has it answers "which row" in a
+      // few parent steps — no attribute to parse, no document to search, and
+      // nothing the consumer had to write into its markup to make it work.
+      let owner = ev.target;
+      while (owner !== null && owner.__koru_key === undefined) owner = owner.parentNode;
+      click({ action: action, id: id, key: owner === null ? 0 : owner.__koru_key });
       });
     },
   },
@@ -652,13 +660,13 @@ if (__koru_store_op.code == 6) {
     main_module.__store_qsweep_rows_L104_event.handler({});
   },
   flow1() {
-    main_module.__store_qsweep_rows_L113_event.handler({});
+    main_module.__store_qsweep_rows_L118_event.handler({});
   },
   flow2() {
-    const Handlers_8 = {
-      click(__arm_9) {
+    const Handlers_7 = {
+      click(__arm_8) {
         {
-          const action = __arm_9.action;
+          const action = __arm_8.action;
           if (action == 1) {
             main_module.clear_event.handler({});
             main_module.build_event.handler({ n: 1000 });
@@ -666,7 +674,7 @@ if (__koru_store_op.code == 6) {
           }
         }
         {
-          const action = __arm_9.action;
+          const action = __arm_8.action;
           if (action == 2) {
             main_module.clear_event.handler({});
             main_module.build_event.handler({ n: 10000 });
@@ -674,14 +682,14 @@ if (__koru_store_op.code == 6) {
           }
         }
         {
-          const action = __arm_9.action;
+          const action = __arm_8.action;
           if (action == 3) {
             main_module.build_event.handler({ n: 1000 });
             return;
           }
         }
         {
-          const action = __arm_9.action;
+          const action = __arm_8.action;
           if (action == 4) {
             main_module.__store_write_op_event.handler({ field: 0, value: 4 });
             main_module.__store_stripe_rows_event.handler({});
@@ -690,14 +698,14 @@ if (__koru_store_op.code == 6) {
           }
         }
         {
-          const action = __arm_9.action;
+          const action = __arm_8.action;
           if (action == 5) {
             main_module.clear_event.handler({});
             return;
           }
         }
         {
-          const action = __arm_9.action;
+          const action = __arm_8.action;
           if (action == 6) {
 if (__koru_store_cnt.n > 998) {
         {               main_module.__store_write_op_event.handler({ field: 0, value: 6 });
@@ -714,12 +722,12 @@ if (__koru_store_cnt.n > 998) {
           }
         }
         {
-          const action = __arm_9.action;
-          const id = __arm_9.id;
+          const action = __arm_8.action;
+          const key = __arm_8.key;
           if (action == 7) {
-            main_module.__store_write_op_event.handler({ field: 0, value: 7 });
-            main_module.__store_write_op_event.handler({ field: 1, value: id });
-            main_module.__store_stripe_rows_event.handler({});
+            main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(key)] });
+            const result_9 = main_module.__store_take_rows_event.handler({ row: key });
+            const _auto_3 = result_9.item;
             main_module.__store_write_op_event.handler({ field: 0, value: 77 });
             main_module.__store_stripe_rows_event.handler({});
             main_module.__store_write_op_event.handler({ field: 0, value: 0 });
@@ -727,16 +735,16 @@ if (__koru_store_cnt.n > 998) {
           }
         }
         {
-          const action = __arm_9.action;
-          const id = __arm_9.id;
+          const action = __arm_8.action;
+          const key = __arm_8.key;
           if (action == 8) {
-            main_module.__store_write_sel_event.handler({ field: 0, value: id });
+            main_module.__store_write_sel_event.handler({ field: 0, value: key });
             return;
           }
         }
       },
     };
-    main_module.run_event.handler({ title: "Koru-DOM (keyed)" }, Handlers_8);
+    main_module.run_event.handler({ title: "Koru-DOM (keyed)" }, Handlers_7);
   },
 };
 main_module.flow0();
