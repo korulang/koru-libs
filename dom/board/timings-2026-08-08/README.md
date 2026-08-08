@@ -106,3 +106,77 @@ did. It penalises every probe geomean above by a small amount.
 
 No numbers in this file are invented; every figure is re-derivable from the
 JSONs beside it, those in `probes/`, or from `cohorts.json`.
+
+---
+
+# The fix, measured — 2026-08-08, later the same day
+
+The gap above was diagnosed as a forgotten reference, not a store cost. Both
+halves were then built and the prediction held.
+
+**What changed.** `std/store`'s request block now reaches the lifecycle arms,
+so a row's birth and death can name its handle (`[id]h`, koru 690_250). And a
+`koru/dom` component takes a `key` — the library's second non-rendered input,
+exactly what `parent` already was — remembers the element it painted under it,
+and `koru/dom:drop(key:)` is the inverse. The app's removal code is deleted.
+
+**Clean three-way run**, all arms in one session so the ratios are internally
+consistent (cross-session drift is real — the same untouched operation read
+16.7ms in the first board and 23.2ms here; ratios travel, absolute times do
+not).
+
+| operation | hand-written | before | after | after ratio |
+|---|---:|---:|---:|---:|
+| 01 create 1k | 32.4 | 32.1 | 32.2 | 0.99 |
+| 02 replace all | 33.4 | 53.7 | **37.3** | 1.12 |
+| 03 partial update | 23.2 | 37.4 | 36.4 | 1.57 |
+| 04 select row | 5.3 | 5.5 | **5.3** | 1.00 |
+| 05 swap rows | 19.2 | 24.9 | **19.9** | 1.04 |
+| 06 remove row | 14.8 | 15.8 | 16.1 | 1.09 |
+| 07 create 10k | 300.0 | 331.9 | 344.3 | 1.15 |
+| 08 append 1k | 32.8 | 34.4 | 34.9 | 1.06 |
+| 09 clear 1k | 13.0 | 87.5 | **20.2** | 1.55 |
+
+**Geomean over all nine: 1.45 → 1.16.**
+
+**The prediction held.** The hand-edited probe that priced this fix before it
+existed measured clear at 19.2ms; the real implementation measures 20.2 in the
+three-way run and 19.6 on its own. Pricing before building was right about the
+mechanism AND the magnitude.
+
+Conformance re-verified at 11/11 including keyedness on the exact committed
+build, before and after the dead-code cleanup.
+
+## What is still open, in order of size
+
+1. **Partial update, 1.57×.** Marking a row still finds its element by
+   scanning the page — `domRow` is the last consumer of that search. Named in
+   `dom/app/main.kjs`. The shape that retires it is re-painting a prop through
+   the component that owns the markup, which needs the row's text to live in
+   the store.
+2. **Clear's remaining 1.55×.** This is the bulk-removal path: the probes put
+   it at 1.05×. A verb is not enough — the removal hook is per-row and is
+   where an app keeps its own counters, so an aggregate removal needs an
+   aggregate form of that hook. `drain` is unavailable (it already means a
+   row handing over an owned resource).
+3. **Create 10k drifted 1.11 → 1.15**, the only number that moved the wrong
+   way. Small, possibly noise, but a registry entry per row is the suspect.
+
+## Stale walls found while measuring
+
+`dom/tests/frontier/` pins seven compiler walls the vehicle is shaped around.
+Re-run against the current compiler, most no longer fire. Two verified dead by
+output, not just by compiling:
+
+- **`char_column_js`** — a fixed-size text column lowers to JavaScript and
+  prints identically on both targets. So the claim in `dom/app/main.k`'s header
+  that a row's label cannot live in the store is STALE, and that claim is
+  exactly what forces marking a row to be a hand-written DOM mutation.
+- **`stripe_swallows_chain_tail`** — the repro now prints `tail survived`. The
+  vehicle's `sweep`/`clear` tor-wrapping exists only to dodge this.
+
+Three more (`rule_row_read_call_arg_js`, `rule_guard_cross_store_read`,
+`rule_arm_if_row_read_condition`) run clean where they used to emit garbage;
+their failure mode was wrong output rather than refusal, so read as fixed but
+they deserve their stated expectations checked one at a time before the pins
+are retired.
