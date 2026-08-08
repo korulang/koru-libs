@@ -34,3 +34,22 @@ function __koru_dom_track(key, node) {
     __koru_dom_reg.delete(key);
     if (node.parentNode !== null) node.parentNode.removeChild(node);
 }
+
+~proc drop-all|js {
+    // Per-node detach, deliberately. A "clear the whole container in one call"
+    // path was built and MEASURED AT ZERO: 17.1ms against 16.6ms without it.
+    // Reading why is the useful part — the container carries a whitespace text
+    // node from the page's own HTML, so the "do we own every child?" test never
+    // matched and the fast branch never ran once. It was dead code that
+    // benchmarked as noise.
+    //
+    // Making it fire would mean either taking nodes the library did not create
+    // (wrong: a container we do not wholly own is not ours to empty) or walking
+    // the children to partition them, which is the scan this whole design
+    // exists to delete. What remains is ~3.6ms of a thousand-row clear, and it
+    // is honest work: N nodes leave the page, so N detaches happen.
+    for (const node of __koru_dom_reg.values()) {
+        if (node.parentNode !== null) node.parentNode.removeChild(node);
+    }
+    __koru_dom_reg.clear();
+}

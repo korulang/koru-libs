@@ -71,6 +71,7 @@ koru/dom:component(Row) {
 std/store:new(rows, capacity: 16384) { id: i64, pos: i64 }
 ! inserted { id, [id]h } |> make-label(): l |> Row(parent: "#tbody", key: h, id, label: l)
 ! removed { [id]h } |> koru/dom:drop(key: h) |> std/store:stored { cnt.n: cnt.n - 1 }
+! cleared _ |> koru/dom:drop-all() |> std/store:stored { cnt.n: 0 }
 
 std/store:new(seq) { next: 1[i64] }
 std/store:new(cnt) { n: 0[i64] }
@@ -86,7 +87,7 @@ pub tor mark-row { id: i64 }
 pub tor swap-rows { a: i64, b: i64 }
 
 tor clear {}
-clear = std/store:stored { op.code: 5 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
+clear = std/store:clear(rows)
 
 tor build { n: i64 }
 
@@ -102,30 +103,27 @@ build = for(0..n)
     | then |> mark-row(e.id)
     | else |> _
 
-// The op sweep: clear (5) takes every row; swap (6) exchanges the pos values
+// The op sweep: swap (6) exchanges the pos values
 // of the rows at positions op.a/op.b and stashes their ids for the DOM move;
 // remove (7) takes the row with id op.a and stashes its pos; compact (77)
 // closes the pos gap the remove left.
 [name(ops)]std/store:rule(rows)
-! row e |> if(op.code == 5)
-    | then |> std/store:take(rows[e])
-        | item _ |> _
-    | else |> if(op.code == 6)
-        | then |> if(e.pos == op.a)
-            | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: e.id }
-            | else |> if(e.pos == op.b)
-                | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: e.id }
+! row e |> if(op.code == 6)
+    | then |> if(e.pos == op.a)
+        | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: e.id }
+        | else |> if(e.pos == op.b)
+            | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: e.id }
+            | else |> _
+    | else |> if(op.code == 7)
+        | then |> if(e.id == op.a)
+            | then |> std/store:stored { op.b: e.pos } |> std/store:take(rows[e])
+                | item _ |> _
+            | else |> _
+        | else |> if(op.code == 77)
+            | then |> if(e.pos > op.b)
+                | then |> std/store:stored { e.pos: e.pos - 1 }
                 | else |> _
-        | else |> if(op.code == 7)
-            | then |> if(e.id == op.a)
-                | then |> std/store:stored { op.b: e.pos } |> std/store:take(rows[e])
-                    | item _ |> _
-                | else |> _
-            | else |> if(op.code == 77)
-                | then |> if(e.pos > op.b)
-                    | then |> std/store:stored { e.pos: e.pos - 1 }
-                    | else |> _
-                | else |> _
+            | else |> _
 
 koru/dom:run(title: "Koru-DOM (keyed)")
 ! click { action } when action == 1 |> clear() |> build(n: 1000)

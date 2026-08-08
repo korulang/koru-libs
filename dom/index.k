@@ -57,3 +57,11 @@ pub tor run { title: string }
 // Dropping a key nothing was painted under is a no-op, not an error: a row
 // that never reached the page has nothing to take off it.
 pub tor drop { key: i64 }
+
+// The aggregate inverse: let go of EVERY element the library is holding.
+//
+// The twin of `drop` the way `std/store:clear` is the twin of `std/store:take`
+// — and it exists for the same reason. Calling `drop` once per row is not the
+// expensive part; being ASKED once per row is. A store's `! cleared` arm fires
+// once, and this is what it calls.
+pub tor drop-all {}
