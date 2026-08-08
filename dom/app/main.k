@@ -68,8 +68,8 @@ koru/dom:component(Row) {
 // swap-remove that moves a row between slots. So the component is keyed on it
 // at birth and the library is told to let go of it at death — neither side
 // ever searches the page for a row.
-std/store:new(rows, capacity: 16384) { id: i64, pos: i64 }
-! inserted { id, [id]h } |> make-label(): l |> Row(parent: "#tbody", key: h, id, label: l)
+std/store:new(rows, capacity: 16384) { id: i64, pos: i64, label: char[40] }
+! inserted { id, label, [id]h } |> Row(parent: "#tbody", key: h, id, label)
 ! removed { [id]h } |> koru/dom:drop(key: h) |> std/store:stored { cnt.n: cnt.n - 1 }
 ! cleared _ |> koru/dom:drop-all() |> std/store:stored { cnt.n: 0 }
 
@@ -83,7 +83,7 @@ std/store:watch(sel)
 
 pub tor make-label {} -> string
 pub tor select-row { id: i64 }
-pub tor mark-row { key: i64 }
+pub tor mark-row { key: i64, label: string }
 pub tor swap-rows { a: i64, b: i64 }
 
 tor clear {}
@@ -92,7 +92,7 @@ clear = std/store:clear(rows)
 tor build { n: i64 }
 
 build = for(0..n)
-! each _ |> std/store:insert(rows) { id: seq.next, pos: cnt.n }
+! each _ |> make-label(): l |> std/store:insert(rows) { id: seq.next, pos: cnt.n, label: l }
     | row _ |> std/store:stored { seq.next: seq.next + 1 } |> std/store:stored { cnt.n: cnt.n + 1 }
     | full |> _
 
@@ -100,7 +100,7 @@ build = for(0..n)
 // row-local (legal); the op dispatch is a body-if (forced, see header).
 [name(tenth)]std/store:rule(rows)
 ! row { [row]e, [id]h } when @mod(e.pos, 10) == 0 |> if(op.code == 4)
-    | then |> mark-row(key: h)
+    | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> mark-row(key: h, e.label)
     | else |> _
 
 // The op sweep: swap (6) exchanges the pos values

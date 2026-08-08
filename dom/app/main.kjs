@@ -47,8 +47,7 @@ function domRow(id) {
 }
 
 ~proc mark-row|js {
-    const anchor = koruDomNode(key).childNodes[1].firstChild;
-    anchor.textContent = anchor.textContent + " !!!";
+    koruDomNode(key).childNodes[1].firstChild.textContent = label;
 }
 
 ~proc swap-rows|js {

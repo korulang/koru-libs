@@ -75,6 +75,7 @@ const __koru_dom_tpl_Row_0 = (() => { const t = document.createElement("template
 let __koru_store_rows = {
   id: new Array(16384).fill(0),
   pos: new Array(16384).fill(0),
+  label: new Array(16384).fill(""),
   len: 0,
   __koru_hslot_row: new Array(16384).fill(0),
   __koru_hslot_gen: new Array(16384).fill(0),
@@ -135,8 +136,8 @@ const main_module = {
   mark_row_event: {
     handler(__koru_input) {
       const key = __koru_input.key;
-      const anchor = koruDomNode(key).childNodes[1].firstChild;
-      anchor.textContent = anchor.textContent + " !!!";
+      const label = __koru_input.label;
+      koruDomNode(key).childNodes[1].firstChild.textContent = label;
     },
   },
   swap_rows_event: {
@@ -168,7 +169,8 @@ const main_module = {
     handler(__koru_input) {
       const n = __koru_input.n;
 for (let __koru_item = 0; __koru_item < n; __koru_item++) {
-        { const _auto_0 = __koru_item;         const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, __site_line: 96 });
+        { const _auto_0 = __koru_item;         const l = main_module.make_label_event.handler({});
+        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, label: l, __site_line: 96 });
         if (result_0.tag === "row") {
           const _auto_1 = result_0.row;
           main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
@@ -201,6 +203,7 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
     handler(__koru_input) {
       const id = __koru_input.id;
       const pos = __koru_input.pos;
+      const label = __koru_input.label;
       const __site_line = __koru_input.__site_line;
       if (__koru_store_rows.len >= 16384) return { tag: "full", full: {} };
       if (__koru_store_rows.len >= 16384) throw new Error("std/store: store 'rows' is full (capacity 16384) - declared capacity and the `| full` branch are pinned at 690_011");
@@ -217,8 +220,9 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.__koru_row_hslot[__koru_new_row] = __koru_hslot;
       __koru_store_rows.id[__koru_new_row] = id;
       __koru_store_rows.pos[__koru_new_row] = pos;
+      __koru_store_rows.label[__koru_new_row] = label.slice(0, 40);
       __koru_store_rows.len += 1;
-      main_module.__store_inserted_rows_0_event.handler({ id: id, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
+      main_module.__store_inserted_rows_0_event.handler({ id: id, label: label, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
       if (__site_line > 102) {
       main_module.__store_qrow_rows_L102_event.handler({ row: __koru_new_row });
       }
@@ -234,10 +238,12 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const field = __koru_input.field;
       const value_0 = __koru_input.value_0;
       const value_1 = __koru_input.value_1;
+      const value_2 = __koru_input.value_2;
       const __koru_r = row;
       switch (field) {
       case 0: { __koru_store_rows.id[__koru_r] = value_0; return { tag: "id", id: value_0 }; }
       case 1: { __koru_store_rows.pos[__koru_r] = value_1; return { tag: "pos", pos: value_1 }; }
+      case 2: { __koru_store_rows.label[__koru_r] = value_2.slice(0, 40); return { tag: "label", label: value_2 }; }
       }
       throw new Error("__store_apply_rows: field index " + field + " is not a column of store 'rows'");
     },
@@ -248,12 +254,16 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const field = __koru_input.field;
       const value_0 = __koru_input.value_0;
       const value_1 = __koru_input.value_1;
-      const result_1 = main_module.__store_apply_rows_event.handler({ row: row, field: field, value_0: value_0, value_1: value_1 });
+      const value_2 = __koru_input.value_2;
+      const result_1 = main_module.__store_apply_rows_event.handler({ row: row, field: field, value_0: value_0, value_1: value_1, value_2: value_2 });
       if (result_1.tag === "id") {
         const _auto_3 = result_1.id;
       }
       if (result_1.tag === "pos") {
         const _auto_4 = result_1.pos;
+      }
+      if (result_1.tag === "label") {
+        const _auto_5 = result_1.label;
       }
     },
   },
@@ -274,10 +284,12 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const __koru_qrow = __koru_input.__koru_qrow;
       const h = __koru_input.h;
 if (__koru_store_op.code == 4) {
-        {         {
+        {         const __koru_tmpl_1 = "" + ((__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)]) + " !!!";
+        main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 2, value_0: 0, value_1: 0, value_2: __koru_tmpl_1 });
+        {
           const key = h;
-          const anchor = koruDomNode(key).childNodes[1].firstChild;
-          anchor.textContent = anchor.textContent + " !!!";
+          const label = (__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)];
+          koruDomNode(key).childNodes[1].firstChild.textContent = label;
         }
  }
     } else {
@@ -309,12 +321,12 @@ if (__koru_store_op.code == 4) {
       const __koru_qrow = __koru_input.__koru_qrow;
 if (__koru_store_op.code == 6) {
         { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
-        {           main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b });
+        {           main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b, value_2: "" });
           main_module.__store_write_op_event.handler({ field: 3, value: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
  }
     } else {
         { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.b) {
-        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a });
+        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a, value_2: "" });
             main_module.__store_write_op_event.handler({ field: 4, value: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
  }
     } else {
@@ -328,7 +340,7 @@ if (__koru_store_op.code == 6) {
         { if ((__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
         {             main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
             const result_2 = main_module.__store_take_rows_event.handler({ row: __koru_qrow });
-            const _auto_5 = result_2.item;
+            const _auto_6 = result_2.item;
  }
     } else {
         {  }
@@ -337,7 +349,7 @@ if (__koru_store_op.code == 6) {
     } else {
         { if (__koru_store_op.code == 77) {
         { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] > __koru_store_op.b) {
-        {               main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1 });
+        {               main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1, value_2: "" });
  }
     } else {
         {  }
@@ -371,11 +383,13 @@ if (__koru_store_op.code == 6) {
       const __koru_gone_slot = __koru_store_rows.__koru_row_hslot[__koru_r];
       const __koru_out_id = __koru_store_rows.id[__koru_r];
       const __koru_out_pos = __koru_store_rows.pos[__koru_r];
+      const __koru_out_label = __koru_store_rows.label[__koru_r];
       main_module.__store_removed_rows_0_event.handler({ h: __koru_store_rows.__koru_handle_of(__koru_r) });
       const __koru_last = __koru_store_rows.len - 1;
       if (__koru_r != __koru_last) {
       __koru_store_rows.id[__koru_r] = __koru_store_rows.id[__koru_last];
       __koru_store_rows.pos[__koru_r] = __koru_store_rows.pos[__koru_last];
+      __koru_store_rows.label[__koru_r] = __koru_store_rows.label[__koru_last];
       const __koru_mv_slot = __koru_store_rows.__koru_row_hslot[__koru_last];
       __koru_store_rows.__koru_hslot_row[__koru_mv_slot] = __koru_r;
       __koru_store_rows.__koru_row_hslot[__koru_r] = __koru_mv_slot;
@@ -384,18 +398,17 @@ if (__koru_store_op.code == 6) {
       __koru_store_rows.__koru_hslot_gen[__koru_gone_slot] += 1;
       __koru_store_rows.__koru_hslot_free[__koru_store_rows.__koru_hslot_free_len] = __koru_gone_slot;
       __koru_store_rows.__koru_hslot_free_len += 1;
-      return { tag: "item", item: { id: __koru_out_id, pos: __koru_out_pos } };
+      return { tag: "item", item: { id: __koru_out_id, pos: __koru_out_pos, label: __koru_out_label } };
     },
   },
   __store_inserted_rows_0_event: {
     handler(__koru_input) {
       const id = __koru_input.id;
+      const label = __koru_input.label;
       const h = __koru_input.h;
-      const l = main_module.make_label_event.handler({});
       {
         const parent = "#tbody";
         const key = h;
-        const label = l;
         const __root = __koru_dom_tpl_Row_0.cloneNode(true);
         __root.setAttribute("data-id", String(id));
         __root.children[0].textContent = String(id);
@@ -452,7 +465,7 @@ if (__koru_store_op.code == 6) {
       const field = __koru_input.field;
       const value = __koru_input.value;
       const result_3 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
-      const _auto_6 = result_3.next;
+      const _auto_7 = result_3.next;
     },
   },
   __store_announce_seq_event: {
@@ -476,7 +489,7 @@ if (__koru_store_op.code == 6) {
       const field = __koru_input.field;
       const value = __koru_input.value;
       const result_4 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
-      const _auto_7 = result_4.n;
+      const _auto_8 = result_4.n;
     },
   },
   __store_announce_cnt_event: {
@@ -505,19 +518,19 @@ if (__koru_store_op.code == 6) {
       const value = __koru_input.value;
       const result_5 = main_module.__store_apply_op_event.handler({ field: field, value: value });
       if (result_5.tag === "code") {
-        const _auto_8 = result_5.code;
+        const _auto_9 = result_5.code;
       }
       if (result_5.tag === "a") {
-        const _auto_9 = result_5.a;
+        const _auto_10 = result_5.a;
       }
       if (result_5.tag === "b") {
-        const _auto_10 = result_5.b;
+        const _auto_11 = result_5.b;
       }
       if (result_5.tag === "ida") {
-        const _auto_11 = result_5.ida;
+        const _auto_12 = result_5.ida;
       }
       if (result_5.tag === "idb") {
-        const _auto_12 = result_5.idb;
+        const _auto_13 = result_5.idb;
       }
     },
   },
