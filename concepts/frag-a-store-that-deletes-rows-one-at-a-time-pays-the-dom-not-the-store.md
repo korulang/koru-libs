@@ -62,42 +62,43 @@ cases where the expensive thing was invisible until a second host ran it.
 
 ---
 
-## Round 9: once the searching stopped, the remaining cost had moved to the other side
+## Round 9: the searching is gone, and what is left did not survive measurement
 
-Retention landed and the gaps closed roughly as the probes predicted. What was
-left was building rows: ten thousand of them at 1.12× and a thousand more at
-1.10×, with no search anywhere in the path. The natural continuation of the
-belief above is that some other per-row thing *we* do is expensive, and the
-named suspect fit that shape perfectly — the component looked its container up
-with `document.querySelector` once per row where the reference caches it once.
+Retention landed and the gaps closed roughly as the probes predicted. What
+remained was building rows — ten thousand at 1.12× and a thousand more at 1.10×
+— with no page search anywhere in the path, and two candidates were put to it.
 
-**It measured zero.** Seventh candidate across three sessions to do that, and
-the first to be wrong in an instructive direction rather than merely dead.
+**Both measured nothing on the big one, and the second one fooled me first.**
+Caching the container element the component looks up per row was the seventh
+candidate in three sessions to measure zero. Batching a task's rows into a
+detached fragment — the trick the reference uses by hand, detaching its table
+body to fill it (`vanillajs Main.js:338-346`) — *appeared* to take the
+ten-thousand-row build from 348.9 ms to 332.3 and was written up as closing 79%
+of the layout gap. **A 25-iteration run refutes that.** Under load the
+distribution goes cleanly bimodal — a fast cluster near 340 ms and a contended
+one near 800 — and the median is then decided by how many fast samples a
+framework happened to catch, not by its code. In the fast cluster the batched
+and unbatched builds sit at ~343 and ~344 ms. There is no difference.
 
-The answer was in the control's own source, five lines with no comment on them:
-the reference detaches its table body, fills it, and puts it back
-(`vanillajs Main.js:338-346`). Ten thousand rows enter its page as one
-insertion. They entered ours as ten thousand.
+What survives is smaller and was reproduced in two independent windows, by the
+hand-edited probe and the real library build agreeing to 0.1 ms: on the
+*thousand-rows-after-a-thousand* build, batching is worth about 1.5 ms
+(36.5/35.1 → 34.7/34.5). Real, modest, and nothing like the headline it was
+first written up as.
 
-Batching a task's rows into a detached fragment took the ten-thousand-row build
-from 1.120× to 1.067×. **And our own script time went UP while doing it** —
-37.5 to 40.5 ms — while the browser's share fell 299.7 to 283.4 against a
-reference 279.0. Batching closes 79% of the layout gap and none of the script
-gap.
+**The methodological lesson is the durable part, and it is about the
+instrument, not the DOM.** A single fifteen-iteration median is not evidence on
+a loaded machine, and it fails in the most flattering possible way: it does not
+look noisy, it looks like a clean 5% win. The tell was available and unread —
+the *control* in the same window had drifted 2.4× from its own known value.
+**A timing window is only worth reading if the control lands where the control
+is known to land**, and that check costs nothing next to the hour of write-up
+it would have saved.
 
-So the belief above is right about its case and too narrow as a rule. A per-row
-DOM write has two prices and they are paid by different parties: *issuing* it,
-which is our program's time and was the whole story while we were searching the
-page, and *receiving* it, which is the browser's and becomes the whole story
-once the searching stops. A markup surface is the only layer that knows a run
-of rows is in flight, so it is the only layer that can pay the second price
-down — the app cannot, and the store should not have to know it is talking to a
-page.
-
-The script gap that remains has a visible candidate, unmeasured: every row we
-paint carries five attributes the reference's rows do not, because our click
-delegation reads a row's identity out of the DOM while the reference stashes it
-as a JavaScript property on the element (`tr.data_id = data.id`). That is the
-open question at the bottom of this file — what identifies the row a component
-painted — arriving from a second direction, and it is now the last named thing
-between us and the reference.
+The remaining gap is therefore still unexplained, and one named candidate is
+unmeasured: every row we paint carries five attributes the reference's rows do
+not (`data-id` three times, `data-action` twice), because our click delegation
+reads a row's identity out of the DOM while the reference stashes it as a
+JavaScript property on the element (`tr.data_id = data.id`). That is the open
+question at the bottom of this file — what identifies the row a component
+painted — arriving from a second direction.

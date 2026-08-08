@@ -45,6 +45,39 @@ EOF
     exit 1
 fi
 
+# SECOND HALF OF THE SAME TRAP, and the branch check does not see it: koruc is
+# a COMPILED BINARY, and its sources are only half of what a build uses. The
+# standard library under koru_std/ is read from disk at compile time, so a
+# `git switch` updates it instantly; src/ is compiled INTO koruc and does not
+# move until someone runs `zig build`. Land on a tree where those two disagree
+# and the emitted backend calls into a compiler that does not have the function
+# it is calling — which at least fails loudly, unlike the branch case, but
+# fails somewhere that names neither cause.
+#
+# Measured immediately after the branch gate was built: bringing the checkout
+# back to main gave a current koru_std/ against a koruc binary five hours old,
+# and the app failed on `CompilerEnv has no member named 'library'` — a symbol
+# from work that had landed in between.
+KORUC_BIN="$COMPILER_TREE/zig-out/bin/koruc"
+if [ -x "$KORUC_BIN" ]; then
+    newer="$(find "$COMPILER_TREE/src" "$COMPILER_TREE/koru_std" -type f -newer "$KORUC_BIN" 2>/dev/null | head -3)"
+    if [ -n "$newer" ]; then
+        cat >&2 <<EOF
+
+REFUSING TO BUILD — koruc is older than the compiler sources it is meant to be.
+
+  $KORUC_BIN was built before these files changed:
+$(echo "$newer" | sed 's/^/    /')
+
+  koru_std/ is read from disk at compile time and is already current; src/ is
+  compiled into the binary and is not. Run 'zig build' in $COMPILER_TREE first
+  — but NOT while a regression suite is live anywhere on this machine
+  (pgrep -fl "run_regression|zig build").
+EOF
+        exit 1
+    fi
+fi
+
 dirty="$(git -C "$COMPILER_TREE" status --porcelain -- koru_std src | head -20)"
 if [ -n "$dirty" ]; then
     echo "note: the compiler tree has uncommitted changes under koru_std/ or src/ —" >&2

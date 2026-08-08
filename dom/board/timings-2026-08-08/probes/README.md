@@ -31,42 +31,50 @@ from 1.77 to 1.11. Per-row dispatch over 1,000 rows costs ~1.9 ms of 18.6.
 A prediction was recorded before the data and **falsified**: retention alone
 was expected to land clear at 2–2.7×; it landed at 1.48×.
 
-## Round 9 — where the last of the gap actually was (`*-r9-*.json`)
+## Round 9 — two candidates, and a lesson about the instrument (`*-r9-*.json`)
 
-By round 8 the app was within ~7-9% of hand-written code on most operations,
-and the largest remaining absolute gap was building ten thousand rows: 348.9 ms
-against the reference's 311.4. Two suspects were named and both were measured
-rather than argued.
+By round 8 the app was within ~7-9% of hand-written code on most operations and
+the largest remaining absolute gap was building ten thousand rows: 348.9 ms
+against the reference's 311.4.
 
-**The suspect I named was wrong.** The component looked up its container with
-`document.querySelector(parent)` once per row, where the reference caches that
-element once (`vanillajs Main.js:187`). `korucache` does the lookup through a
-selector→element map. It is the SEVENTH candidate across three sessions to
-measure zero — 344.9 against 348.9, comfortably inside a ±10 ms spread, and
-slightly WORSE on the thousand-row build.
+**`korucache`** caches the container element the component otherwise looks up
+once per row (the reference caches it once, `vanillajs Main.js:187`). Zero —
+344.9 against 348.9, and slightly worse on the thousand-row build. Seventh
+candidate across three sessions to measure nothing.
 
-**What was actually there came from reading the control's source, not from
-reasoning about ours.** The reference detaches its table body, fills it, and
-puts it back (`Main.js:338-346`), so ten thousand rows enter the page as one
-insertion. Ours entered as ten thousand. `korufrag` batches a task's rows into
-a detached fragment and attaches once:
+**`korufrag`** batches a task's rows into a detached fragment and attaches once,
+which is what the reference does by hand when it detaches its table body to fill
+it (`Main.js:338-346`). At n=15 it measured 332.3 — a clean-looking 5% — and
+that number was wrong.
 
-| operation | reference | round 8 | `korufrag` | |
+### What refuted it, and why the first run looked so convincing
+
+At n=25 under load the create-10k distribution is **bimodal**: a fast cluster
+near 340 ms and a contended one near 800, with nothing in between. The median is
+then set by how many fast samples a framework happens to catch — 1 for the
+reference, 4 for round 8, 9 for the batched build in the same run. Ranking those
+medians ranks scheduling luck.
+
+In the fast cluster: round 8 ~344 ms, batched ~343 ms. **No difference.**
+
+| operation | reference | round 8 | batched | |
 |---|---|---|---|---|
-| build 10,000 rows | 311.4 | 348.9 (1.120×) | 332.3 (**1.067×**) | |
-| build 1,000 more | 33.2 | 36.5 (1.099×) | 34.7 (**1.045×**) | |
-| build 1,000 rows | 28.6 | 30.6 (1.070×) | 30.3 (1.059×) | |
+| build 10,000 rows (fast cluster) | ~310 | ~344 | ~343 | no effect |
+| build 1,000 more (two windows) | 33.2 / 33.7 | 36.5 / 35.1 | 34.7 / 34.5 | ~1.5 ms, real |
 
-**Nearly all of it is the browser's time, not ours.** On the ten-thousand-row
-build our own script time went slightly UP (37.5 → 40.5 ms) while the browser's
-share fell 299.7 → 283.4 against a reference 279.0 — so batching closes 79% of
-the layout gap and none of the script gap. A per-row append is not expensive to
-issue; it is expensive to be on the receiving end of.
+The smaller build is the part that holds: reproduced in two independent windows,
+with the hand-edited probe and the shipped library build agreeing to 0.1 ms.
 
-The script gap that remains has a visible candidate, unmeasured as of this
-round: every row we paint carries five attributes the reference's rows do not
-(`data-id` three times, `data-action` twice), because our click delegation
-reads identity out of the DOM while the reference stashes it as a JavaScript
-property on the element (`tr.data_id = data.id`, `Main.js:349-356`). That is
-the same open question as selection-as-repaint — whether an event can carry
-identity — arriving from a second direction.
+**The tell was in the same file and went unread.** The reference — the control,
+the one program guaranteed not to have changed — measured 756.8 ms in a window
+where it is known to measure 311.4. A window whose control has drifted 2.4×
+cannot rank anything. Reading the control first costs nothing and would have
+saved the write-up.
+
+The gap remains unexplained, with one named unmeasured candidate: every row we
+paint carries five attributes the reference's rows do not (`data-id` ×3,
+`data-action` ×2), because our click delegation reads identity out of the DOM
+while the reference stashes it as a JavaScript property on the element
+(`tr.data_id = data.id`, `Main.js:349-356`). That is the same open question as
+selection-as-repaint — whether an event can carry identity — arriving from a
+second direction.
