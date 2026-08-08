@@ -198,18 +198,13 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_dom_track(key, __root);
     },
   },
-  Row_repaint_event: {
+  Row_repaint_label_event: {
     handler(__koru_input) {
       const key = __koru_input.key;
-      const id = __koru_input.id;
       const label = __koru_input.label;
       const __root = __koru_dom_reg.get(key);
       if (__root === undefined) return;
-      __root.setAttribute("data-id", String(id));
-      __root.children[0].textContent = String(id);
-      __root.children[1].children[0].setAttribute("data-id", String(id));
       __root.children[1].children[0].textContent = String(label);
-      __root.children[2].children[0].setAttribute("data-id", String(id));
     },
   },
   __store_insertf_rows_event: {
@@ -299,7 +294,7 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
 if (__koru_store_op.code == 4) {
         {         const __koru_tmpl_1 = "" + ((__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)]) + " !!!";
         main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 2, value_0: 0, value_1: 0, value_2: __koru_tmpl_1 });
-        main_module.Row_repaint_event.handler({ key: h, id: (__koru_store_rows.id)[__koru_store_rows.__koru_resolve(__koru_qrow)], label: (__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
+        main_module.Row_repaint_label_event.handler({ key: h, label: (__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
  }
     } else {
         {  }

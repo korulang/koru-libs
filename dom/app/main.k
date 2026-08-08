@@ -102,7 +102,7 @@ build = for(0..n)
 // row-local (legal); the op dispatch is a body-if (forced, see header).
 [name(tenth)]std/store:rule(rows)
 ! row { [row]e, [id]h } when @mod(e.pos, 10) == 0 |> if(op.code == 4)
-    | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> Row-repaint(key: h, e.id, e.label)
+    | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> Row-repaint-label(key: h, e.label)
     | else |> _
 
 // The op sweep: swap (6) exchanges the pos values

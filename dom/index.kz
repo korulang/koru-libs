@@ -332,7 +332,7 @@ const std = @import("std");
     // search of the live page, which is linear per lookup and quadratic across
     // a bulk removal (measured at 92% of a thousand-row clear).
     const paintBody = struct {
-        fn call(a: std.mem.Allocator, tpl_var: []const u8, seg: Seg, esc: anytype, with_key: bool, repaint: bool) []const u8 {
+        fn call(a: std.mem.Allocator, tpl_var: []const u8, seg: Seg, esc: anytype, with_key: bool, repaint: bool, only_prop: []const u8) []const u8 {
             var b = std.ArrayList(u8).initCapacity(a, 256) catch unreachable;
             // A REPAINT addresses the element this key already owns and re-runs
             // the same assignments. Identical op list, no clone, no append —
@@ -348,6 +348,18 @@ const std = @import("std");
                 b.appendSlice(a, std.fmt.allocPrint(a, "const __root = {s}.cloneNode(true);\n", .{tpl_var}) catch unreachable) catch unreachable;
             }
             for (seg.ops) |op| {
+                // A per-prop repaint runs ONLY the assignments that mention its
+                // prop. Re-running the whole row to change one value is five
+                // DOM writes where one will do — measured at +13% on partial
+                // update, which is the entire cost of the repaint being
+                // whole-row rather than targeted.
+                if (only_prop.len > 0) {
+                    var mentions = false;
+                    for (op.parts) |pt| {
+                        if (pt.is_ident and std.mem.eql(u8, pt.text, only_prop)) mentions = true;
+                    }
+                    if (!mentions) continue;
+                }
                 var target = std.ArrayList(u8).initCapacity(a, 32) catch unreachable;
                 target.appendSlice(a, "__root") catch unreachable;
                 for (op.path) |idx| {
@@ -533,7 +545,7 @@ const std = @import("std");
             synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
                 .path = mkPath(allocator, cmodule, cname),
                 .body = ast.Source{
-                    .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, false),
+                    .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, false, ""),
                     .location = cloc,
                     .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                     .phantom_type = null,
@@ -543,22 +555,21 @@ const std = @import("std");
                 .location = cloc,
                 .module = allocator.dupe(u8, cmodule) catch unreachable,
             } }) catch unreachable;
-            // ── the repaint sibling ───────────────────────────────────────
-            // A keyed component describes a row once; that description is
-            // enough to CREATE the element and to UPDATE it. `Row-repaint`
-            // takes the same props (minus `parent`, which only creating needs)
-            // and re-runs the assignments against the element the key owns.
+            // ── the repaint siblings, ONE PER PROP ────────────────────────
+            // A keyed component describes a row once, and that description is
+            // enough to CREATE the element and to UPDATE any one value in it.
+            // `Row-repaint-label(key, label)` addresses the element the key
+            // owns and re-runs only the assignments that mention `label`.
             //
-            // This is what lets a consumer stop hand-writing DOM mutations: the
-            // store holds the row, a write updates it, and the repaint pushes
-            // the same values through the same markup that painted them.
-            {
-                const rp_name = std.fmt.allocPrint(allocator, "{s}-repaint", .{cname}) catch unreachable;
-                const rp_fields = allocator.alloc(ast.Field, prop_name.items.len + 1) catch unreachable;
+            // Per PROP rather than per component, because a whole-row repaint
+            // is five DOM writes where one will do — measured at +13% on
+            // partial update before this split. The markup already knows which
+            // assignments a prop drives; nothing new has to be declared.
+            for (prop_name.items, prop_type.items) |pn, pt| {
+                const rp_name = std.fmt.allocPrint(allocator, "{s}-repaint-{s}", .{ cname, pn }) catch unreachable;
+                const rp_fields = allocator.alloc(ast.Field, 2) catch unreachable;
                 rp_fields[0] = .{ .name = allocator.dupe(u8, "key") catch unreachable, .type = allocator.dupe(u8, "i64") catch unreachable };
-                for (prop_name.items, prop_type.items, 0..) |n, t, i| {
-                    rp_fields[i + 1] = .{ .name = allocator.dupe(u8, n) catch unreachable, .type = allocator.dupe(u8, t) catch unreachable };
-                }
+                rp_fields[1] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .type = allocator.dupe(u8, pt) catch unreachable };
                 synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
                     .path = mkPath(allocator, cmodule, rp_name),
                     .input = ast.Shape{ .fields = rp_fields },
@@ -572,7 +583,7 @@ const std = @import("std");
                 synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
                     .path = mkPath(allocator, cmodule, rp_name),
                     .body = ast.Source{
-                        .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, true),
+                        .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, true, pn),
                         .location = cloc,
                         .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                         .phantom_type = null,
@@ -608,7 +619,7 @@ const std = @import("std");
                     synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
                         .path = mkPath(allocator, cmodule, seg_name),
                         .body = ast.Source{
-                            .text = paintBody(allocator, seg_tpl.items[ni], node.seg, jsEscape, false, false),
+                            .text = paintBody(allocator, seg_tpl.items[ni], node.seg, jsEscape, false, false, ""),
                             .location = cloc,
                             .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                             .phantom_type = null,
