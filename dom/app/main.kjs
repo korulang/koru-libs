@@ -21,11 +21,17 @@
 //   order, not to anything a row's markup describes, so no repaint expresses
 //   it; a keyed list reorder is its own primitive and does not exist yet.
 //
-//   select-row sets a class on one row and clears it from another. The markup
-//   has no class placeholder, so there is no prop to repaint. Adding one
-//   (`class={{ sel:s }}`) would make selection a store write plus a repaint,
-//   exactly like marking — the store already holds `sel.cur`. Not done here
-//   because it changes the row's markup, which is Lars's.
+//   select-row sets a class on one row and clears it from another. A class
+//   placeholder (`class={{ sel:s }}`) LOOKS like it would make this a store
+//   write plus a repaint, exactly like marking. It would not, and the reason
+//   is worth writing down: a repaint is addressed by the row's HANDLE, and a
+//   click only carries the row's ID — it reads it off the element. Getting
+//   from one to the other means a scan of the store per click, or a sweep that
+//   repaints every row to change one class. Selecting is at PARITY with
+//   hand-written today (1.00x); both routes cost more than the single DOM
+//   write it does now. So this is a design question about carrying identity
+//   through an event, not a markup spelling — and it is not obviously worth
+//   winning.
 //
 //   make-label is the reference's random three-word label (Main.js:18-73). The
 //   pick is Math.random; it stays host by nature, not by gap.
