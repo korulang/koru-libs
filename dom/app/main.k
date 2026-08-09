@@ -39,7 +39,7 @@
 //     — the one wall still standing), so the position index is the `pos`
 //     column, not a grid of handles.
 //
-// A row's label LIVES IN THE STORE (`label: char[40]`), and marking it is a
+// A row's label LIVES IN THE STORE (`label: char[48]`), and marking it is a
 // store write — `e.label: "{{ e.label:s }} !!!"` — followed by `Row-repaint`,
 // which pushes the new value back through the same markup that painted it.
 // There is no hand-written DOM mutation for marking any more.
@@ -71,7 +71,13 @@ koru/dom:component(Row) {
 // swap-remove that moves a row between slots. So the component is keyed on it
 // at birth and the library is told to let go of it at death — neither side
 // ever searches the page for a row.
-std/store:new(rows, capacity: 16384) { id: i64, pos: i64, label: char[40] }
+// The label column is sized from the reference's own arithmetic, not guessed.
+// Its word lists top out at "inexpensive yellow sandwich" — 27 characters — and
+// the partial-update benchmark clicks four times, appending " !!!" each time for
+// 16 more. 43 is the real maximum; 40 silently truncated it, so roughly twelve
+// rows in a thousand rendered the wrong text on every run and the reference
+// harness aborted on row 991. 48 covers 43 with one mark of slack.
+std/store:new(rows, capacity: 16384) { id: i64, pos: i64, label: char[48] }
 ! inserted { id, label, [id]h } |> Row(parent: "#tbody", key: h, id, label)
 ! removed { [id]h } |> koru/dom:drop(key: h) |> std/store:stored { cnt.n: cnt.n - 1 }
 ! cleared _ |> koru/dom:drop-all() |> std/store:stored { cnt.n: 0 }

@@ -185,7 +185,7 @@ const main_module = {
       const n = __koru_input.n;
 for (let __koru_item = 0; __koru_item < n; __koru_item++) {
         { const _auto_0 = __koru_item;         const l = main_module.make_label_event.handler({});
-        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, label: l, __site_line: 98 });
+        const result_0 = main_module.__store_insertf_rows_event.handler({ id: __koru_store_seq.next, pos: __koru_store_cnt.n, label: l, __site_line: 104 });
         if (result_0.tag === "row") {
           const _auto_1 = result_0.row;
           main_module.__store_write_seq_event.handler({ field: 0, value: __koru_store_seq.next + 1 });
@@ -241,14 +241,14 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.__koru_row_hslot[__koru_new_row] = __koru_hslot;
       __koru_store_rows.id[__koru_new_row] = id;
       __koru_store_rows.pos[__koru_new_row] = pos;
-      __koru_store_rows.label[__koru_new_row] = label.slice(0, 40);
+      __koru_store_rows.label[__koru_new_row] = label.slice(0, 48);
       __koru_store_rows.len += 1;
       main_module.__store_inserted_rows_0_event.handler({ id: id, label: label, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
-      if (__site_line > 104) {
-      main_module.__store_qrow_rows_L104_event.handler({ row: __koru_new_row });
+      if (__site_line > 110) {
+      main_module.__store_qrow_rows_L110_event.handler({ row: __koru_new_row });
       }
-      if (__site_line > 118) {
-      main_module.__store_qrow_rows_L118_event.handler({ row: __koru_new_row });
+      if (__site_line > 124) {
+      main_module.__store_qrow_rows_L124_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -264,7 +264,7 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       switch (field) {
       case 0: { __koru_store_rows.id[__koru_r] = value_0; return { tag: "id", id: value_0 }; }
       case 1: { __koru_store_rows.pos[__koru_r] = value_1; return { tag: "pos", pos: value_1 }; }
-      case 2: { __koru_store_rows.label[__koru_r] = value_2.slice(0, 40); return { tag: "label", label: value_2 }; }
+      case 2: { __koru_store_rows.label[__koru_r] = value_2.slice(0, 48); return { tag: "label", label: value_2 }; }
       }
       throw new Error("__store_apply_rows: field index " + field + " is not a column of store 'rows'");
     },
@@ -278,28 +278,28 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const value_2 = __koru_input.value_2;
       const result_1 = main_module.__store_apply_rows_event.handler({ row: row, field: field, value_0: value_0, value_1: value_1, value_2: value_2 });
       if (result_1.tag === "id") {
-        const _auto_4 = result_1.id;
+        const _auto_5 = result_1.id;
       }
       if (result_1.tag === "pos") {
-        const _auto_5 = result_1.pos;
+        const _auto_6 = result_1.pos;
       }
       if (result_1.tag === "label") {
-        const _auto_6 = result_1.label;
+        const _auto_7 = result_1.label;
       }
     },
   },
-  __store_qrow_rows_L104_event: {
+  __store_qrow_rows_L110_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const pos = __koru_store_rows.pos[__koru_r];
       const h = __koru_store_rows.__koru_handle_of(__koru_r);
       if (!(((((pos) % (10)) + (10)) % (10)) == 0)) return;
-      main_module.__store_qbody_rows_L104_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      main_module.__store_qbody_rows_L110_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
       return;
     },
   },
-  __store_qbody_rows_L104_event: {
+  __store_qbody_rows_L110_event: {
     handler(__koru_input) {
       const pos = __koru_input.pos;
       const __koru_qrow = __koru_input.__koru_qrow;
@@ -314,27 +314,27 @@ if (__koru_store_op.code == 4) {
     }
     },
   },
-  __store_qsweep_rows_L104_event: {
+  __store_qsweep_rows_L110_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L104_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L110_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
     },
   },
-  __store_qrow_rows_L118_event: {
+  __store_qrow_rows_L124_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const h = __koru_store_rows.__koru_handle_of(__koru_r);
-      main_module.__store_qbody_rows_L118_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      main_module.__store_qbody_rows_L124_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
       return;
     },
   },
-  __store_qbody_rows_L118_event: {
+  __store_qbody_rows_L124_event: {
     handler(__koru_input) {
       const __koru_qrow = __koru_input.__koru_qrow;
       const h = __koru_input.h;
@@ -370,12 +370,12 @@ if (__koru_store_op.code == 6) {
     }
     },
   },
-  __store_qsweep_rows_L118_event: {
+  __store_qsweep_rows_L124_event: {
     handler(__koru_input) {
       let __koru_i = 0;
       while (__koru_i < __koru_store_rows.len) {
       const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L118_event.handler({ row: __koru_i });
+      main_module.__store_qrow_rows_L124_event.handler({ row: __koru_i });
       if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
       }
       return;
@@ -449,8 +449,8 @@ if (__koru_store_op.code == 6) {
   },
   __store_stripe_rows_event: {
     handler(__koru_input) {
-      main_module.__store_qsweep_rows_L104_event.handler({});
-      main_module.__store_qsweep_rows_L118_event.handler({});
+      main_module.__store_qsweep_rows_L110_event.handler({});
+      main_module.__store_qsweep_rows_L124_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -468,7 +468,7 @@ if (__koru_store_op.code == 6) {
       const field = __koru_input.field;
       const value = __koru_input.value;
       const result_2 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
-      const _auto_7 = result_2.next;
+      const _auto_8 = result_2.next;
     },
   },
   __store_announce_seq_event: {
@@ -492,7 +492,7 @@ if (__koru_store_op.code == 6) {
       const field = __koru_input.field;
       const value = __koru_input.value;
       const result_3 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
-      const _auto_8 = result_3.n;
+      const _auto_9 = result_3.n;
     },
   },
   __store_announce_cnt_event: {
@@ -521,19 +521,19 @@ if (__koru_store_op.code == 6) {
       const value = __koru_input.value;
       const result_4 = main_module.__store_apply_op_event.handler({ field: field, value: value });
       if (result_4.tag === "code") {
-        const _auto_9 = result_4.code;
+        const _auto_10 = result_4.code;
       }
       if (result_4.tag === "a") {
-        const _auto_10 = result_4.a;
+        const _auto_11 = result_4.a;
       }
       if (result_4.tag === "b") {
-        const _auto_11 = result_4.b;
+        const _auto_12 = result_4.b;
       }
       if (result_4.tag === "ida") {
-        const _auto_12 = result_4.ida;
+        const _auto_13 = result_4.ida;
       }
       if (result_4.tag === "idb") {
-        const _auto_13 = result_4.idb;
+        const _auto_14 = result_4.idb;
       }
     },
   },
@@ -657,10 +657,10 @@ if (__koru_store_op.code == 6) {
     },
   },
   flow0() {
-    main_module.__store_qsweep_rows_L104_event.handler({});
+    main_module.__store_qsweep_rows_L110_event.handler({});
   },
   flow1() {
-    main_module.__store_qsweep_rows_L118_event.handler({});
+    main_module.__store_qsweep_rows_L124_event.handler({});
   },
   flow2() {
     const Handlers_7 = {
@@ -727,10 +727,16 @@ if (__koru_store_cnt.n > 998) {
           if (action == 7) {
             main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(key)] });
             const result_9 = main_module.__store_take_rows_event.handler({ row: key });
-            const _auto_3 = result_9.item;
-            main_module.__store_write_op_event.handler({ field: 0, value: 77 });
-            main_module.__store_stripe_rows_event.handler({});
-            main_module.__store_write_op_event.handler({ field: 0, value: 0 });
+            if (result_9.tag === "item") {
+              const _auto_3 = result_9.item;
+              main_module.__store_write_op_event.handler({ field: 0, value: 77 });
+              main_module.__store_stripe_rows_event.handler({});
+              main_module.__store_write_op_event.handler({ field: 0, value: 0 });
+            }
+            if (result_9.tag === "empty") {
+              const _auto_4 = result_9.empty;
+              (() => { throw new Error("unhandled panic branch 'empty' fired at runtime"); })();
+            }
             return;
           }
         }
