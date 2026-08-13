@@ -211,8 +211,12 @@ function dev(argv) {
 }
 
 function deploy(args) {
-  build(args);
   const deployDir = join(resolve(args.proj), "deploy");
+  const wasm = join(deployDir, "wasm", "handler.wasm");
+  const cfg = join(deployDir, "vercel.json");
+  if (!existsSync(wasm) || !existsSync(cfg)) {
+    fail(`nothing staged at ${deployDir} — run 'koru-vercel build' first`);
+  }
   console.log("→ vercel deploy --prod");
   execFileSync("vercel", ["deploy", "--prod", "--yes"], { cwd: deployDir, stdio: "inherit" });
 }

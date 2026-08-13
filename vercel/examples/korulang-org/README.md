@@ -5,7 +5,7 @@ The fully-prerendered static site (`~/src/korulang_org/build`) is embedded into
 an Orisha wasm module, and the genuinely live paths are reverse-proxied to the
 korulang-org backend.
 
-This is exactly what `~/src/korulang_org/scripts/publish-orisha.sh` runs on every
+This is exactly what `~/src/korulang_org/scripts/publish-orisha.mjs` runs on every
 publish — the build/stage/deploy machinery lives in `koru/vercel`; the script is
 only the site's thin config (bake → hybrid flags → link the live project).
 

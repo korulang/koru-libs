@@ -83,8 +83,8 @@ Vercel project linkage so `koru-vercel deploy` pushes to the same project rather
 than creating a new one.
 
 **korulang.org runs this way** — see `examples/korulang-org/` and the site's
-`scripts/publish-orisha.sh`, which is now only thin site config around
-`koru-vercel build` + `koru-vercel deploy`.
+`scripts/publish-orisha.mjs` (a source script, no shell), which is now only thin
+site config around `koru-vercel build` + `koru-vercel deploy`.
 
 ## Status
 
