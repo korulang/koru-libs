@@ -30,6 +30,45 @@
 //   ~orisha:handler = orisha:static-router(name: "site")
 
 import std/build
+import std/compiler
+
+// ============================================================================
+// BUILD COMMANDS — floated by this import: `koruc <site> build | dev | deploy`.
+// The Zig implementations live in the companion index.kz.
+// ============================================================================
+
+std/compiler:command.declare {
+  "name": "build",
+  "description": "Embed the site into an Orisha wasm reactor and stage a Vercel deploy dir"
+}
+
+[comptime|command]pub tor build {
+    program: *const Program,
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+}
+
+std/compiler:command.declare {
+  "name": "dev",
+  "description": "Serve the staged deployment locally through the real adapter"
+}
+
+[comptime|command]pub tor dev {
+    program: *const Program,
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+}
+
+std/compiler:command.declare {
+  "name": "deploy",
+  "description": "Build and push the staged deployment to Vercel"
+}
+
+[comptime|command]pub tor deploy {
+    program: *const Program,
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+}
 
 // ---------------------------------------------------------------------------
 // The handler contract the generated reactor calls.
@@ -40,3 +79,24 @@ import std/build
 [abstract|retain] pub tor body-for { path: string } -> string
 
 body-for -> ""
+
+// ============================================================================
+// SITE — declare the deployment surface. Read by the `build`/`dev`/`deploy`
+// build commands (koruc <site> <verb>), so a site's release config lives in its
+// own Koru, not in a separate tool.
+// ============================================================================
+// - name:     site identifier
+// - root:     static directory to embed (relative to this file)
+// - fallback: shell file, served ONLY for the declared `routes` (client-only
+//             paths that cannot be baked) — never a catch-all for missing paths
+// - routes:   browser-only paths that hydrate from the shell
+// - backend:  a live backend to reverse-proxy the `dynamic` prefixes to
+// - dynamic:  genuinely server-side path prefixes (kept on the backend)
+[comptime|norun] pub tor site {
+    name: string,
+    root: string,
+    fallback: ?string,
+    routes: []const []const u8,
+    backend: ?string,
+    dynamic: []const []const u8,
+}
