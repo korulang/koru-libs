@@ -1,0 +1,5 @@
+{
+  "name": "koru-vercel-deploy",
+  "private": true,
+  "type": "module"
+}

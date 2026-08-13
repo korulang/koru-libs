@@ -1,0 +1,32 @@
+{
+  "name": "@korulang/vercel",
+  "version": "0.0.1",
+  "description": "Turnkey hosting of Koru/Orisha sites on Vercel",
+  "keywords": ["koru", "korulang", "vercel", "orisha", "wasm", "serverless", "deploy", "static"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/vercel"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "bin": {
+    "koru-vercel": "./bin/koru-vercel.mjs"
+  },
+  "type": "module",
+  "files": [
+    "index.k",
+    "bin/",
+    "scaffold/",
+    "README.md",
+    "examples/"
+  ],
+  "koru": {
+    "entry": "index.k",
+    "requires": {}
+  }
+}

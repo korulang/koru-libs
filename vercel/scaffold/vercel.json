@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/serve.mjs": {
+      "includeFiles": "wasm/**"
+    }
+  },
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/serve" }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@korulang/vercel",
+  "version": "0.0.1",
+  "description": "Turnkey hosting of Koru/Orisha sites on Vercel",
+  "paths": {
+    "std": "../../koru/koru_std",
+    "orisha": "../../orisha/lib"
+  }
+}
