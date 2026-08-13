@@ -22,6 +22,7 @@
     "index.k",
     "bin/",
     "scaffold/",
+    "reactor/",
     "README.md",
     "examples/"
   ],

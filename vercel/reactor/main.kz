@@ -1,0 +1,56 @@
+// koru/vercel — the reactor entry. Committed Koru source; the site-hosted
+// build compiles THIS, so the wasm reactor is owned by Koru, not by a host
+// script.
+//
+// The only per-site lines are inside the SITE-CONFIG block below (the static
+// root, the SPA fallback, and the Orisha names). Everything else — the
+// wasm32-freestanding target, the three exported host windows (request / handle
+// / response), the zero-copy answer path — is the same for every site and lives
+// here once. `koru-vercel build` fills the site block, then runs koruc, which is
+// the next command you see in this file's contract.
+//
+// Why the host seam has to live here and not in a library: `kernel`-level Zig
+// in an imported module is wrapped in a struct by the emitter, and a Zig
+// `export fn` only becomes a real wasm export at container level. The seam is
+// the price of the platform owning the loop — and it is fully ours, in source.
+
+const std = @import("std");
+
+~import std/build
+~import orisha
+
+~std/build:config {
+    "target": "wasm32-freestanding"
+}
+~std/build:requires {
+    exe.entry = .disabled;
+    exe.rdynamic = true;
+    exe.root_module.link_libc = false;
+    exe.root_module.optimize = .ReleaseSmall;
+}
+
+//=== SITE-CONFIG-BEGIN ===
+// koru-vercel build replaces this whole block with the site's own config.
+~orisha:static(name: "site", root: "public", fallback: "200.html")
+~orisha:handler = orisha:static-router(name: "site")
+//=== SITE-CONFIG-END ===
+
+// --- The host seam. Request windows in, answer bytes out. ---
+var request_buf: [8192]u8 = undefined;
+var out_ptr: [*]const u8 = undefined;
+var out_len: usize = 0;
+
+export fn request_ptr() [*]u8          { return &request_buf; }
+export fn request_cap() u32            { return @intCast(request_buf.len); }
+export fn response_ptr() [*]const u8   { return out_ptr; }
+
+export fn handle(raw_len: u32) u32 {
+    const raw = request_buf[0..@min(raw_len, request_buf.len)];
+    const answer = koru_orisha.answer_event.handler(.{ .raw = raw });
+    if (answer.body.len == 0) {
+        out_ptr = answer.head.ptr;
+        out_len = answer.head.len;
+        return @intCast(out_len);
+    }
+    return 0;
+}
