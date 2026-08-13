@@ -37,6 +37,7 @@ const std = @import("std");
 
 // --- The host seam. Request windows in, answer bytes out. ---
 var request_buf: [8192]u8 = undefined;
+var response_buf: [65536]u8 = undefined;
 var out_ptr: [*]const u8 = undefined;
 var out_len: usize = 0;
 
@@ -48,9 +49,19 @@ export fn handle(raw_len: u32) u32 {
     const raw = request_buf[0..@min(raw_len, request_buf.len)];
     const answer = koru_orisha.answer_event.handler(.{ .raw = raw });
     if (answer.body.len == 0) {
+        // A static route hands back a COMPLETE pre-rendered response in `head`
+        // (status, headers, gzip, ETag) and an empty body — pass the zero-copy
+        // pointer straight out, nothing allocated.
         out_ptr = answer.head.ptr;
         out_len = answer.head.len;
         return @intCast(out_len);
     }
-    return 0;
+    // A generated response (a real 404, a custom handler) has a body — assemble
+    // head + body into the response buffer. This is the loud-failure path: a
+    // missing path must actually answer 404, which needs a body to say so.
+    var stream = std.io.fixedBufferStream(&response_buf);
+    stream.writer().print("{s}{s}", .{ answer.head, answer.body }) catch return 0;
+    out_ptr = response_buf[0..stream.pos].ptr;
+    out_len = stream.pos;
+    return @intCast(out_len);
 }

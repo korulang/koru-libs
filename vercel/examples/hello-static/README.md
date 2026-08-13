@@ -21,6 +21,7 @@ What lands in `deploy/`:
 - `vercel.json` — route every path to the adapter
 - `test-adapter.mjs` — the local harness `koru-vercel dev` runs
 
-The reactor serves pre-rendered HTTP: correct status/headers per file, and any
-unknown path falls back to `200.html` (the SPA shell) — same contract the
-korulang.org site uses.
+The reactor serves pre-rendered HTTP: correct status/headers per file. A path
+the site does not have is a **real 404** — no SPA shell sweep. (A site with
+genuine client-only routes declares them with `--routes`; see the package
+README. korulang.org does this for `/playground`.)

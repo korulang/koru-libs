@@ -50,7 +50,7 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const args = { proj: ".", root: "public", fallback: "200.html", name: "site", backend: null, dynamic: null, link: null };
+  const args = { proj: ".", root: "public", fallback: null, name: "site", backend: null, dynamic: null, link: null, routes: null };
   const rest = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -60,6 +60,7 @@ function parseArgs(argv) {
     else if (a === "--backend") args.backend = argv[++i];
     else if (a === "--dynamic") args.dynamic = argv[++i];
     else if (a === "--link") args.link = argv[++i];
+    else if (a === "--routes") args.routes = argv[++i];
     else if (a.startsWith("--")) fail(`unknown option: ${a}`);
     else rest.push(a);
   }
@@ -72,8 +73,17 @@ function parseArgs(argv) {
   if (args.dynamic !== null && args.backend === null) {
     fail("--dynamic requires --backend");
   }
+  if (args.routes && args.fallback === null) {
+    fail("--routes requires --fallback (the shell file those client routes hydrate from)");
+  }
+  if (args.fallback !== null && args.routes === null) {
+    // A blanket shell is a banned fallback: it masks missing paths as 200.
+    // The shell is a designed state for declared real routes only.
+    fail("--fallback requires --routes (the shell is served for declared client routes, never as a catch-all)");
+  }
   args.hybrid = args.backend !== null;
   args.dynamicList = args.dynamic ? args.dynamic.split(",").map((s) => s.trim()).filter(Boolean) : null;
+  args.routesList = args.routes ? args.routes.split(",").map((s) => s.trim()).filter(Boolean) : null;
   return args;
 }
 
@@ -89,9 +99,6 @@ function build(args) {
   const proj = resolve(args.proj);
   const rootAbs = resolve(proj, args.root);
   if (!existsSync(rootAbs)) fail(`static root not found: ${rootAbs}`);
-  if (!existsSync(join(rootAbs, args.fallback))) {
-    console.warn(`⚠ fallback '${args.fallback}' not present in ${rootAbs} — unknown paths will 404.`);
-  }
 
   const buildDir = join(proj, "build");
   const deployDir = join(proj, "deploy");
@@ -103,10 +110,18 @@ function build(args) {
   // then the ordinary `koruc build` step — the KORU part of the pipeline owns the
   // artifact, and the host script only orchestrates.
   const relRoot = relative(buildDir, rootAbs);
+  if (args.fallback && !existsSync(join(rootAbs, args.fallback))) {
+    console.warn(`⚠ fallback '${args.fallback}' not present in ${rootAbs} — declared client routes will 404.`);
+  }
   const reactorPath = join(here, "..", "reactor", "main.kz");
   const reactor = readFileSync(reactorPath, "utf-8");
+  // The reactor NEVER takes a fallback: it answers baked files and 404s
+  // everything else — the real surface, fail loud. The shell file (200.html)
+  // is baked like any other file; the adapter serves it ONLY for declared
+  // client routes, never as a blanket catch-all for missing paths.
+  const staticLine = `~orisha:static(name: "${args.name}", root: "${relRoot}")`;
   const siteConfig = `//=== SITE-CONFIG-BEGIN ===
-~orisha:static(name: "${args.name}", root: "${relRoot}", fallback: "${args.fallback}")
+${staticLine}
 ~orisha:handler = orisha:static-router(name: "${args.name}")
 //=== SITE-CONFIG-END ===`;
   const BEGIN = "//=== SITE-CONFIG-BEGIN ===";
@@ -140,18 +155,26 @@ function build(args) {
 
   for (const f of SCAFFOLD_FILES) {
     const dst = f === "serve.mjs" ? join(deployDir, "api", f) : join(deployDir, f);
-    if (f === "serve.mjs" && args.hybrid) {
-      // Hybrid mode: parameterize the reverse-proxy adapter with the site config.
-      const tpl = readFileSync(join(SCAFFOLD, "serve.hybrid.mjs"), "utf-8")
-        .replaceAll("__BACKEND__", args.backend)
-        .replaceAll("__DYNAMIC_JSON__", JSON.stringify(args.dynamicList));
+    if (f === "serve.mjs") {
+      // The one adapter, generated from the site's declared surface: dynamic
+      // prefixes (hybrid proxy) and declared client routes (shell) as designed
+      // states; the reactor 404s what the site does not have.
+      const tpl = readFileSync(join(SCAFFOLD, "serve.mjs"), "utf-8")
+        .replaceAll("__BACKEND__", args.backend ? JSON.stringify(args.backend) : "null")
+        .replaceAll("__DYNAMIC_JSON__", args.hybrid ? JSON.stringify(args.dynamicList) : "null")
+        .replaceAll("__CLIENT_ROUTES_JSON__", args.routes ? JSON.stringify(args.routesList) : "null")
+        .replaceAll("__FALLBACK_PATH__", args.fallback ? JSON.stringify(`/${args.fallback}`) : "null");
       writeFileSync(dst, tpl);
     } else {
       cpSync(join(SCAFFOLD, f), dst);
     }
   }
 
-  const mode = args.hybrid ? `hybrid → ${args.backend} (${args.dynamicList.length} prefixes)` : "static";
+  const parts = [];
+  if (args.hybrid) parts.push(`dynamic→${args.backend} (${args.dynamicList.length})`);
+  if (args.routes) parts.push(`shell:[${args.routesList.join(",")}]`);
+  if (!parts.length) parts.push("static (404 on miss)");
+  const mode = parts.join(" · ");
   const kb = Math.max(1, Math.round(statSync(wasm).size / 1024));
   console.log(`✓ staged ${deployDir} (wasm ${kb} KB, ${mode})`);
 

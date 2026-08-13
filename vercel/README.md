@@ -22,8 +22,8 @@ entirely. That is the whole trick, and it is why the module is a few KB and
 imports almost nothing.
 
 For a static site, your files are compiled *into* the module and served as
-pre-rendered HTTP (correct status/headers per file, `200.html` as the SPA
-fallback, no per-request parsing, no libc).
+pre-rendered HTTP (correct status/headers per file; a missing path is a real
+404, no per-request parsing, no libc).
 
 ## The layout
 
@@ -64,20 +64,40 @@ with env vars if they aren't at the default locations:
 | `KORU_STDLIB` | `$KORU_REPO/koru_std` |
 | `ORISHA_PATH` | `~/src/orisha/lib` |
 
-## Hybrid: static reactor + a live backend
+## Real surface, fail loud — the shell is not a fallback
+
+A path the site does not have is a **real 404**, always. The reactor never takes
+a catch-all fallback: it answers baked files and 404s everything else.
+
+The one exception is a **designed state**: a site with genuine client-only routes
+that cannot be baked (browser-only, `prerender = false`) declares them, and the
+adapter serves the shell for exactly those paths:
+
+```bash
+koru-vercel build . \
+  --root ./build --name site \
+  --routes /playground \
+  --fallback 200.html
+```
+
+`/playground` then hydrates from the shell; `/nope` still 404s. This is the
+house rule (no fallbacks — a degraded path becomes the default): the shell is a
+declared real route, never a sweep for "anything not found".
+
+## Hybrid: static reactor plus a live backend
 
 A site with a genuinely dynamic surface (forms, admin, auth) is hosted with
 `--backend` + `--dynamic`:
 
 ```bash
 koru-vercel build . \
-  --root ./build --fallback 200.html --name site \
+  --root ./build --name site \
   --backend https://my-backend.example.com \
   --dynamic /api/,/admin,/feedback \
   --link /path/to/a-linked-vercel-dir
 ```
 
-The wasm reactor answers every static path (or the SPA fallback); the listed
+The wasm reactor answers every baked static path (or a real 404); the listed
 dynamic prefixes reverse-proxy to the backend. `--link` carries an existing
 Vercel project linkage so `koru-vercel deploy` pushes to the same project rather
 than creating a new one.
