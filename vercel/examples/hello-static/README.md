@@ -1,27 +1,32 @@
 # hello-static
 
 The smallest thing `koru/vercel` hosts: a directory of static files, served
-through Orisha as a wasm reactor on Vercel. No Koru of your own is required.
+through Orisha as a wasm reactor on Vercel. The whole site is a pure-Koru file —
+`site.k` — and the release verbs float onto the compiler from `import koru/vercel`.
 
-```bash
-# 1. build — embed ./public into a wasm reactor, stage the deploy dir
-koru-vercel build .          # from this directory
+```koru
+// site.k — the whole site
+import vercel
 
-# 2. prove it locally through the real adapter
-koru-vercel dev .            # then: curl localhost:3200/
-
-# 3. ship
-koru-vercel deploy .
+vercel:site {
+    name: "site",
+    root: "public",
+    fallback: null,
+    routes: [],
+    backend: null,
+    dynamic: [],
+}
 ```
 
-What lands in `deploy/`:
+```bash
+koruc site.k build      # embed ./public → wasm reactor → stage deploy/
+koruc site.k dev        # serve the staged deployment locally (localhost:3200)
+koruc site.k deploy     # vercel deploy --prod
+```
 
-- `wasm/handler.wasm` — the compiled Orisha reactor (a few KB, embeds `public/`)
-- `api/serve.mjs` — the Vercel adapter (the only platform code)
-- `vercel.json` — route every path to the adapter
-- `test-adapter.mjs` — the local harness `koru-vercel dev` runs
-
-The reactor serves pre-rendered HTTP: correct status/headers per file. A path
-the site does not have is a **real 404** — no SPA shell sweep. (A site with
-genuine client-only routes declares them with `--routes`; see the package
-README. korulang.org does this for `/playground`.)
+`build` reads the `vercel:site` declaration from the AST, generates the reactor
+from the committed template, compiles it, and stages `deploy/` (wasm + the Vercel
+adapter + `vercel.json` + the local harness). `dev` serves that staged deployment
+through the real adapter; a path the site does not have is a **real 404** — no
+SPA-shell sweep. A site with genuine client-only routes declares them with
+`routes` (see the package README).

@@ -1,5 +1,5 @@
-// koru/vercel — implementation companion. The build `koruc <site> build | dev |
-// deploy` commands are floated here: a site that `~import koru/vercel` gets these
+// koru/vercel — implementation companion. The `koruc <site> build | dev |
+// deploy` commands are floated here: a site that imports koru/vercel gets these
 // verbs on the compiler, so the release path is Koru-owned, not a sidecar CLI.
 
 const std = @import("std");
@@ -20,6 +20,11 @@ const DeployConfig = struct {
     dynamic: [][]const u8 = &.{},
 };
 
+fn stripQ(s: []const u8) []const u8 {
+    if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') return s[1 .. s.len - 1];
+    return s;
+}
+
 fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast").Program) DeployConfig {
     const ast = @import("ast");
     var cfg = DeployConfig{};
@@ -35,17 +40,21 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
             if (!std.mem.eql(u8, mq, "vercel")) continue;
             if (flow.inv().path.segments.len != 1) continue;
             if (!std.mem.eql(u8, flow.inv().path.segments[0], "site")) continue;
-for (flow.inv().args) |arg| {
-                    if (std.mem.eql(u8, arg.name, "name")) {
-                        cfg.name = stripQ(arg.value);
-                    } else if (std.mem.eql(u8, arg.name, "root")) {
-                        cfg.root = stripQ(arg.value);
-                    } else if (std.mem.eql(u8, arg.name, "fallback")) {
-                        cfg.fallback = if (std.mem.eql(u8, arg.value, "null")) null else stripQ(arg.value);
-                    } else if (std.mem.eql(u8, arg.name, "backend")) {
-                        cfg.backend = if (std.mem.eql(u8, arg.value, "null")) null else stripQ(arg.value);
-                    }
+            for (flow.inv().args) |arg| {
+                if (std.mem.eql(u8, arg.name, "name")) {
+                    cfg.name = stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "root")) {
+                    cfg.root = stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "fallback")) {
+                    cfg.fallback = if (std.mem.eql(u8, arg.value, "null")) null else stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "backend")) {
+                    cfg.backend = if (std.mem.eql(u8, arg.value, "null")) null else stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "routes")) {
+                    routes.append(allocator, stripQ(arg.value)) catch {};
+                } else if (std.mem.eql(u8, arg.name, "dynamic")) {
+                    dynamic.append(allocator, stripQ(arg.value)) catch {};
                 }
+            }
         }
     }
     cfg.routes = routes.toOwnedSlice(allocator) catch &.{};
@@ -53,40 +62,213 @@ for (flow.inv().args) |arg| {
     return cfg;
 }
 
-fn stripQ(s: []const u8) []const u8 {
-    if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') return s[1 .. s.len - 1];
-    return s;
-}
-
-// Find this module's directory (koru-libs/vercel) so the command can reach the
-// committed reactor template and the adapter scaffold.
-fn moduleDir(program: *const @import("ast").Program) ?[]const u8 {
+/// Find a module's canonical path by (suffix of) its logical name.
+fn modulePath(program: *const @import("ast").Program, want: []const u8) ?[]const u8 {
     for (program.items) |item| {
         if (item != .module_decl) continue;
         const m = item.module_decl;
-        // koru/vercel imports as logical name "vercel" (or koru.vercel)
-        if (std.mem.endsWith(u8, m.logical_name, "vercel") or std.mem.eql(u8, m.logical_name, "vercel")) {
-            // For this package the canonical_path IS the module directory
-            // (koru-libs/vercel) — the reactor template and scaffold live there.
+        if (std.mem.eql(u8, m.logical_name, want) or std.mem.endsWith(u8, m.logical_name, want)) {
+            if (std.mem.endsWith(u8, m.canonical_path, "/index.kz")) {
+                if (std.mem.lastIndexOf(u8, m.canonical_path, "/")) |i| return m.canonical_path[0..i];
+            }
             return m.canonical_path;
         }
     }
     return null;
 }
 
+fn moduleDir(program: *const @import("ast").Program) ?[]const u8 {
+    return modulePath(program, "vercel");
+}
+
+fn wjoin(allocator: std.mem.Allocator, parts: []const []const u8) []const u8 {
+    return std.fs.path.join(allocator, parts) catch "";
+}
+
+fn wread(allocator: std.mem.Allocator, path: []const u8) []const u8 {
+    return std.fs.cwd().readFileAlloc(allocator, path, 1 << 22) catch "";
+}
+
+fn wwrite(path: []const u8, data: []const u8) bool {
+    std.fs.cwd().makePath(std.fs.path.dirname(path) orelse ".") catch {};
+    std.fs.cwd().writeFile(.{ .sub_path = path, .data = data }) catch return false;
+    return true;
+}
+
+fn wrun(cmd: []const []const u8, cwd: ?[]const u8) bool {
+    var child = std.process.Child.init(cmd, std.heap.page_allocator);
+    child.cwd = cwd;
+    const term = child.spawnAndWait() catch return false;
+    return (term == .Exited and term.Exited == 0);
+}
+
+
+fn jsonList(allocator: std.mem.Allocator, items: []const []const u8) []const u8 {
+    if (items.len == 0) return "null";
+    var buf = std.ArrayList(u8){};
+    defer buf.deinit(allocator);
+    buf.appendSlice(allocator, "[") catch return "null";
+    for (items, 0..) |it, i| {
+        if (i > 0) buf.append(allocator, ',') catch return "null";
+        buf.append(allocator, '"') catch return "null";
+        buf.appendSlice(allocator, it) catch return "null";
+        buf.append(allocator, '"') catch return "null";
+    }
+    buf.append(allocator, ']') catch return "null";
+    return buf.toOwnedSlice(allocator) catch "null";
+}
+
 // ============================================================================
-// COMMAND: build
+// BUILD — generate the reactor, compile it, stage the deploy dir. Shared by the
+// `build` and `deploy` commands.
+// ============================================================================
+fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
+    const S = @import("std");
+    std.debug.print("→ koru/vercel build\n", .{});
+    const cfg = readDeployConfig(a, program);
+    const dir = moduleDir(program) orelse {
+        std.debug.print("✗ could not locate the koru/vercel module directory\n", .{});
+        return false;
+    };
+    const cwd_path = S.process.getCwdAlloc(a) catch return false;
+    defer a.free(cwd_path);
+
+    const root_abs = if (S.fs.path.isAbsolute(cfg.root))
+        a.dupe(u8, cfg.root) catch ""
+    else
+        wjoin(a, &.{ cwd_path, cfg.root });
+    defer a.free(root_abs);
+    if (root_abs.len == 0) {
+        S.debug.print("✗ static root not found: {s}\n", .{root_abs});
+        return false;
+    }
+    var root_dir = S.fs.cwd().openDir(root_abs, .{}) catch {
+        S.debug.print("✗ static root not found: {s}\n", .{root_abs});
+        return false;
+    };
+    root_dir.close();
+
+    const build_dir = wjoin(a, &.{ cwd_path, "build" });
+    const deploy_dir = wjoin(a, &.{ cwd_path, "deploy" });
+    S.fs.cwd().makePath(build_dir) catch {};
+    S.fs.cwd().makePath(deploy_dir) catch {};
+
+    // ---- 1. Reactor entry from the committed template + the site surface ----
+    const reactor_file = wjoin(a, &.{ dir, "reactor", "main.kz" });
+    const reactor_src = wread(a, reactor_file);
+    if (reactor_src.len == 0) {
+        S.debug.print("✗ reactor template not found: {s}\n", .{reactor_file});
+        return false;
+    }
+    const begin = "//=== SITE-CONFIG-BEGIN ===";
+    const end = "//=== SITE-CONFIG-END ===";
+    const s = S.mem.indexOf(u8, reactor_src, begin) orelse {
+        S.debug.print("✗ reactor template missing SITE-CONFIG block\n", .{});
+        return false;
+    };
+    const e = S.mem.indexOf(u8, reactor_src, end) orelse return false;
+    const static_line = S.fmt.allocPrint(a, "~orisha:static(name: \"{s}\", root: \"{s}\")", .{ cfg.name, root_abs }) catch return false;
+    const handler_line = S.fmt.allocPrint(a, "~orisha:handler = orisha:static-router(name: \"{s}\")", .{ cfg.name }) catch return false;
+    const site_block = S.fmt.allocPrint(a, "{s}\n{s}\n{s}\n{s}\n", .{ begin, static_line, handler_line, end }) catch return false;
+    const main_src = S.mem.concat(a, u8, &.{ reactor_src[0..s], site_block, reactor_src[e + end.len ..] }) catch return false;
+    const main_file = wjoin(a, &.{ build_dir, "main.kz" });
+    if (!wwrite(main_file, main_src)) return false;
+    S.debug.print("  wrote reactor entry {s}\n", .{main_file});
+
+    // ---- 2. koru.json with std/orisha/vercel paths for the reactor build ----
+    const std_dir = modulePath(program, "std") orelse "";
+    const orisha_dir = modulePath(program, "orisha") orelse "";
+    const koru_json = S.fmt.allocPrint(a,
+        \\{{ "name": "{s}", "paths": {{ "std": "{s}", "orisha": "{s}", "vercel": "{s}" }} }}
+        \\
+    , .{ cfg.name, std_dir, orisha_dir, dir }) catch return false;
+    if (!wwrite(wjoin(a, &.{ build_dir, "koru.json" }), koru_json)) return false;
+
+    // ---- 3. Compile the reactor ----
+    S.debug.print("  compiling reactor (embeds {s})\n", .{root_abs});
+    if (!wrun(&.{ "koruc", "build", "main.kz" }, build_dir)) {
+        S.debug.print("✗ reactor compile failed\n", .{});
+        return false;
+    }
+    const wasm = wjoin(a, &.{ build_dir, "a.out" });
+    const wasm_out = wjoin(a, &.{ deploy_dir, "wasm", "handler.wasm" });
+    S.fs.cwd().makePath(wjoin(a, &.{ deploy_dir, "wasm" })) catch {};
+    S.fs.cwd().copyFile(wasm, S.fs.cwd(), wasm_out, .{}) catch {
+        S.debug.print("✗ could not copy wasm into the deploy dir\n", .{});
+        return false;
+    };
+
+    // ---- 4. Adapter from the scaffold, parameterized by the site surface ----
+    const scaffold = wjoin(a, &.{ dir, "scaffold" });
+    const serve_tpl = wread(a, wjoin(a, &.{ scaffold, "serve.mjs" }));
+    if (serve_tpl.len == 0) {
+        S.debug.print("✗ adapter scaffold missing\n", .{});
+        return false;
+    }
+    const routes_json = jsonList(a, cfg.routes);
+    const dynamic_json = jsonList(a, cfg.dynamic);
+    const fallback_json = if (cfg.fallback) |f| S.fmt.allocPrint(a, "\"{s}\"", .{f}) catch "null" else "null";
+    const backend_json = if (cfg.backend) |b| S.fmt.allocPrint(a, "\"{s}\"", .{b}) catch "null" else "null";
+    var serve = S.mem.replaceOwned(u8, a, serve_tpl, "__CLIENT_ROUTES_JSON__", routes_json) catch serve_tpl;
+    const d1 = serve;
+    serve = S.mem.replaceOwned(u8, a, d1, "__FALLBACK_PATH__", fallback_json) catch d1;
+    const d2 = serve;
+    serve = S.mem.replaceOwned(u8, a, d2, "__DYNAMIC_JSON__", dynamic_json) catch d2;
+    const d3 = serve;
+    serve = S.mem.replaceOwned(u8, a, d3, "__BACKEND__", backend_json) catch d3;
+    if (!wwrite(wjoin(a, &.{ deploy_dir, "api", "serve.mjs" }), serve)) return false;
+    for (&[_][]const u8{ "vercel.json", "test-adapter.mjs", "package.json", ".vercelignore", ".gitignore" }) |name| {
+        const src = wread(a, wjoin(a, &.{ scaffold, name }));
+        if (src.len > 0) _ = wwrite(wjoin(a, &.{ deploy_dir, name }), src);
+    }
+
+    var kb: u64 = 0;
+    if (S.fs.cwd().statFile(wasm)) |st| kb = @max(1, st.size / 1024) else |_| {}
+    if (cfg.backend != null) {
+        S.debug.print("✓ staged {s} (wasm {d} KB, dynamic + shell)\n", .{ deploy_dir, kb });
+    } else if (cfg.routes.len > 0) {
+        S.debug.print("✓ staged {s} (wasm {d} KB, declared shell routes)\n", .{ deploy_dir, kb });
+    } else {
+        S.debug.print("✓ staged {s} (wasm {d} KB, static 404-on-miss)\n", .{ deploy_dir, kb });
+    }
+    return true;
+}
+
+// ============================================================================
+// COMMAND: build — generate the reactor, compile it, stage the deploy dir.
 // ============================================================================
 ~proc build|zig {
-    _ = argv;
-    std.debug.print("→ koru/vercel build\n", .{});
-
-    const cfg = readDeployConfig(allocator, program);
-    std.debug.print("  deploy: name={s} root={s} fallback={?s} backend={?s}\n", .{ cfg.name, cfg.root, cfg.fallback, cfg.backend });
-
-    const dir = moduleDir(program) orelse {
-        std.debug.print("✗ could not locate koru/vercel module directory\n", .{});
+    const S = @import("std");
+    _ = runBuild(allocator, program);
+    _ = S;
+}
+// ============================================================================
+// COMMAND: dev — serve the staged deployment locally through the real adapter.
+// ============================================================================
+~proc dev|zig {
+    const S = @import("std");
+    const cwd_path = S.process.getCwdAlloc(allocator) catch return;
+    defer allocator.free(cwd_path);
+    const adapter = wjoin(allocator, &.{ cwd_path, "deploy", "test-adapter.mjs" });
+    if (S.fs.cwd().access(adapter, .{})) |_| {
+        // adapter present — serve it
+    } else |_| {
+        std.debug.print("✗ no staged deploy dir — run `koruc <site> build` first\n", .{});
         return;
-    };
-    std.debug.print("  vercel module dir: {s}\n", .{dir});
+    }
+    std.debug.print("→ serving {s} on http://localhost:3200\n", .{adapter});
+    _ = wrun(&.{ "node", adapter }, cwd_path);
+}
+
+// ============================================================================
+// COMMAND: deploy — build, then push to Vercel.
+// ============================================================================
+~proc deploy|zig {
+    const S = @import("std");
+    if (!runBuild(allocator, program)) return;
+    const cwd_path = S.process.getCwdAlloc(allocator) catch return;
+    defer allocator.free(cwd_path);
+    const deploy_dir = wjoin(allocator, &.{ cwd_path, "deploy" });
+    std.debug.print("→ vercel deploy --prod\n", .{});
+    _ = wrun(&.{ "vercel", "deploy", "--prod", "--yes" }, deploy_dir);
 }

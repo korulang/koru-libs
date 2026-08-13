@@ -1,15 +1,32 @@
 # koru/vercel
 
-Host a Koru/Orisha site on Vercel, turnkey. A completely static site needs **zero
-Koru of your own**: `koru-vercel build` embeds your static directory into an
-Orisha WebAssembly reactor, compiles it, and stages a Vercel deployable. Then
-`koru-vercel deploy` ships it.
+Host a Koru/Orisha site on Vercel, turnkey — and Koru-owned. The release verbs
+float onto the **compiler** from `import koru/vercel`, so a site's build/dev/deploy
+are `koruc` commands, not a sidecar CLI:
+
+```koru
+// site.k — the whole site, pure Koru
+import vercel
+
+vercel:site {
+    name: "site",
+    root: "public",
+    fallback: null,   // shell file, served ONLY for the declared routes
+    routes: [],       // browser-only paths that hydrate from the shell
+    backend: null,    // a live backend to reverse-proxy `dynamic` to
+    dynamic: [],      // genuinely server-side path prefixes
+}
+```
 
 ```bash
-koru-vercel build .     # embed ./public → wasm reactor → stage deploy/
-koru-vercel dev  .      # prove it locally through the real adapter
-koru-vercel deploy .    # vercel deploy --prod
+koruc site.k build      # embed ./public → wasm reactor → stage deploy/
+koruc site.k dev        # serve the staged deployment locally
+koruc site.k deploy     # vercel deploy --prod
 ```
+
+A completely static site needs **no Koru beyond that one file**. `build` reads the
+`vercel:site` declaration from the AST, generates the reactor from the committed
+template, compiles it, and stages the Vercel deployable.
 
 ## Why it feels like magic
 
@@ -29,8 +46,9 @@ pre-rendered HTTP (correct status/headers per file; a missing path is a real
 
 ```
 vercel/
-  index.k            # the pure-Koru contract (the user-facing surface)
-  bin/koru-vercel    # the turnkey builder (build/dev/deploy)
+  index.k            # the pure-Koru contract + the site config tor
+  index.kz           # the build/dev/deploy command implementations
+  reactor/main.kz    # the committed wasm-reactor entry the build command emits
   scaffold/          # the Vercel adapter + config + local harness
   examples/hello-static/
 ```
@@ -39,7 +57,7 @@ vercel/
 
 `index.k` is pure Koru — no Zig, no socket, no `~`. The Zig half of this library
 (the wasm reactor host seam: the exported request/response windows and `handle`)
-is **generated** into your build directory by `koru-vercel build`. It is the
+is **generated** into your build directory by the `build` command. It is the
 plumbing — fine as `.kz` — and you never write it. The convention matches Orisha's
 own: the contract is `.k`, the Zig implementation is the companion `.kz`.
 
@@ -70,14 +88,18 @@ A path the site does not have is a **real 404**, always. The reactor never takes
 a catch-all fallback: it answers baked files and 404s everything else.
 
 The one exception is a **designed state**: a site with genuine client-only routes
-that cannot be baked (browser-only, `prerender = false`) declares them, and the
-adapter serves the shell for exactly those paths:
+that cannot be baked (browser-only, `prerender = false`) declares them in
+`routes`, and the adapter serves the shell for exactly those paths:
 
-```bash
-koru-vercel build . \
-  --root ./build --name site \
-  --routes /playground \
-  --fallback 200.html
+```koru
+vercel:site {
+    name: "site",
+    root: "build",
+    routes: ["/playground"],
+    fallback: "200.html",
+    backend: null,
+    dynamic: [],
+}
 ```
 
 `/playground` then hydrates from the shell; `/nope` still 404s. This is the
@@ -86,31 +108,30 @@ declared real route, never a sweep for "anything not found".
 
 ## Hybrid: static reactor plus a live backend
 
-A site with a genuinely dynamic surface (forms, admin, auth) is hosted with
-`--backend` + `--dynamic`:
+A site with a genuinely dynamic surface (forms, admin, auth) declares the
+backend and the `dynamic` prefixes it proxies:
 
-```bash
-koru-vercel build . \
-  --root ./build --name site \
-  --backend https://my-backend.example.com \
-  --dynamic /api/,/admin,/feedback \
-  --link /path/to/a-linked-vercel-dir
+```koru
+vercel:site {
+    name: "site",
+    root: "build",
+    routes: [],
+    backend: "https://my-backend.example.com",
+    dynamic: ["/api/", "/admin"],
+}
 ```
 
 The wasm reactor answers every baked static path (or a real 404); the listed
-dynamic prefixes reverse-proxy to the backend. `--link` carries an existing
-Vercel project linkage so `koru-vercel deploy` pushes to the same project rather
-than creating a new one.
-
-**korulang.org runs this way** — see `examples/korulang-org/` and the site's
-`scripts/publish-orisha.mjs` (a source script, no shell), which is now only thin
-site config around `koru-vercel build` + `koru-vercel deploy`.
+dynamic prefixes reverse-proxy to the backend.
 
 ## Status
 
-- **Completely static sites** — verified (see `examples/hello-static/`).
-- **Hybrid (static reactor + dynamic reverse-proxy)** — verified and live: it is
-  how korulang.org is served today (`examples/korulang-org/`).
-- Custom Koru handlers (`main.k`, pure `.k`) and owning the dynamic surface
-  itself (Convex, serverless app logic) are the next increments, not yet wired by
+- **`koruc build`/`dev`/`deploy` float under `import koru/vercel`** — verified on
+  `examples/hello-static/`: `build` stages the deploy dir, `dev` serves it
+  locally through the real adapter (missing paths → real 404).
+- **Hybrid (static reactor + dynamic reverse-proxy)** — supported by `vercel:site`
+  (`backend`/`dynamic`); still served live today via the earlier CLI-based path
+  (`korulang_org/scripts/publish-orisha.mjs`), which is the next port onto `koruc`.
+- Custom Koru handlers and owning the dynamic surface itself (Convex, serverless
+  app logic) are the next increments, not yet wired by the builder.
   the builder.

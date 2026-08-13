@@ -31,6 +31,7 @@
 
 import std/build
 import std/compiler
+import orisha
 
 // ============================================================================
 // BUILD COMMANDS — floated by this import: `koruc <site> build | dev | deploy`.
