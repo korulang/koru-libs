@@ -94,12 +94,17 @@ export default async function handler(req, res) {
 
   const wasm = await ready;
 
-  // 2. Declared client-only routes → the shell. This is the designed state for
-  //    a real route that cannot be baked (browser-only); it is never a sweep
-  //    for "anything not found" — everything else falls through to the reactor,
-  //    which answers 404 for paths the site does not have.
+  // 2. Declared client-only routes → the shell. A client route is a whole
+  //    subtree that hydrates from the shell, so its ROOT and every path below
+  //    it must serve the shell — an exact-root match would break every deep
+  //    link and crawler hit. The shell is still never a sweep for "anything
+  //    not found": only DECLARED client routes get it, everything else falls
+  //    through to the reactor, which answers 404 for paths the site does not
+  //    have.
   const target =
-    CLIENT_ROUTES && CLIENT_ROUTES.includes(pathname) ? FALLBACK_PATH : pathname;
+    CLIENT_ROUTES && CLIENT_ROUTES.some((r) => pathname === r || pathname.startsWith(r + "/"))
+      ? FALLBACK_PATH
+      : pathname;
 
   const { status, headers, body } = await answerFromReactor(wasm, target);
   res.statusCode = status;
