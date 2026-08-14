@@ -432,15 +432,14 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
 // ============================================================================
 ~proc build|zig {
     const S = @import("std");
-    _ = runBuild(allocator, program);
-    _ = S;
+    _ = runBuild(S.heap.page_allocator, program);
 }
 // ============================================================================
 // COMMAND: dev — serve the staged deployment locally through the real adapter.
 // ============================================================================
 ~proc dev|zig {
     const S = @import("std");
-    const cwd_path = S.process.getCwdAlloc(allocator) catch return;
+    const cwd_path = S.process.getCwdAlloc(S.heap.page_allocator) catch return;
     defer allocator.free(cwd_path);
     const adapter = wjoin(allocator, &.{ cwd_path, "deploy", "test-adapter.mjs" });
     if (S.fs.cwd().access(adapter, .{})) |_| {
@@ -458,8 +457,8 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
 // ============================================================================
 ~proc deploy|zig {
     const S = @import("std");
-    if (!runBuild(allocator, program)) return;
-    const cwd_path = S.process.getCwdAlloc(allocator) catch return;
+    if (!runBuild(S.heap.page_allocator, program)) return;
+    const cwd_path = S.process.getCwdAlloc(S.heap.page_allocator) catch return;
     defer allocator.free(cwd_path);
     const deploy_dir = wjoin(allocator, &.{ cwd_path, "deploy" });
     std.debug.print("→ vercel deploy --prod\n", .{});
