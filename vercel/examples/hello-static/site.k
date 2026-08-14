@@ -9,4 +9,5 @@ vercel:site {
     routes: [],
     backend: null,
     dynamic: [],
+    link: null,
 }

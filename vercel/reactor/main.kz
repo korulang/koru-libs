@@ -6,7 +6,7 @@
 // root, the SPA fallback, and the Orisha names). Everything else — the
 // wasm32-freestanding target, the three exported host windows (request / handle
 // / response), the zero-copy answer path — is the same for every site and lives
-// here once. `koru-vercel build` fills the site block, then runs koruc, which is
+// here once. `koruc site.k build` fills the site block, then runs koruc, which is
 // the next command you see in this file's contract.
 //
 // Why the host seam has to live here and not in a library: `kernel`-level Zig
@@ -30,7 +30,7 @@ const std = @import("std");
 }
 
 //=== SITE-CONFIG-BEGIN ===
-// koru-vercel build replaces this whole block with the site's own config.
+// `koruc site.k build` replaces this whole block with the site's own config.
 ~orisha:static(name: "site", root: "public", fallback: "200.html")
 ~orisha:handler = orisha:static-router(name: "site")
 //=== SITE-CONFIG-END ===

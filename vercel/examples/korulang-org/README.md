@@ -6,23 +6,34 @@ an Orisha wasm module and serves **every page** on Orisha; the data on the
 client-rendered pages comes from Convex directly in the browser. Only the
 genuinely server-side pieces are reverse-proxied to the korulang-org backend.
 
-This is exactly what `~/src/korulang_org/scripts/publish-orisha.mjs` runs on every
-publish — the build/stage/deploy machinery lives in `koru/vercel`; the script is
-only the site's thin config (bake → surface flags → link the live project).
+The publish path is `~/src/korulang_org/scripts/publish-orisha.mjs`: it bakes the
+site, runs the deploy command, and verifies the live artifact. The hosting
+surface is declared in the site's own `site.k` — importing `koru/vercel` floats
+`build`/`dev`/`deploy` onto the compiler, so there is no sidecar CLI:
+
+```koru
+import vercel
+
+vercel:site {
+    name: "site",
+    root: "build",                      // baked static site (STATIC_BUILD=1 build:local)
+    fallback: "200.html",               // shell, served ONLY for the declared routes
+    routes: ["/playground", "/learn"],  // browser-only paths that hydrate from the shell
+    backend: "https://korulang-org.vercel.app",
+    dynamic: ["/api/", "/blog/drafts"], // only true server pieces stay proxied
+    link: "/Users/larsde/src/orisha/examples/korulang-site-wasm-vercel",
+}
+```
 
 ```bash
-koru-vercel build . \
-  --root /Users/larsde/src/korulang_org/build \
-  --name site \
-  --routes /playground,/learn \      # browser-only routes hydrate from the shell
-  --fallback 200.html \
-  --backend https://korulang-org.vercel.app \
-  --dynamic /api/,/blog/drafts \     # only true server pieces stay proxied
-  --link /Users/larsde/src/orisha/examples/korulang-site-wasm-vercel
-
-koru-vercel dev   .      # local proof through the real adapter
-koru-vercel deploy .     # vercel deploy --prod (aliased to korulang.org)
+koruc site.k build      # embed build/ → wasm reactor → stage deploy/
+koruc site.k dev        # serve the staged deployment locally through the real adapter
+koruc site.k deploy     # build + vercel deploy --prod (project linkage carried from `link`)
 ```
+
+The `link` field carries the existing Vercel project linkage (`.vercel/project.json`)
+into the staged deploy dir, so `deploy` pushes to the live project instead of
+minting a new one.
 
 The surface, in order: baked static pages answer from the reactor (real page,
 correct status/gzip/ETag); declared client routes (`/learn`, `/playground`) get

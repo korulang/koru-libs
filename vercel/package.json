@@ -14,13 +14,9 @@
   "bugs": {
     "url": "https://github.com/korulang/koru/issues"
   },
-  "bin": {
-    "koru-vercel": "./bin/koru-vercel.mjs"
-  },
   "type": "module",
   "files": [
     "index.k",
-    "bin/",
     "scaffold/",
     "reactor/",
     "README.md",

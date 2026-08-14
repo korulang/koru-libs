@@ -18,11 +18,151 @@ const DeployConfig = struct {
     routes: [][]const u8 = &.{},
     backend: ?[]const u8 = null,
     dynamic: [][]const u8 = &.{},
+    link: ?[]const u8 = null,
 };
 
 fn stripQ(s: []const u8) []const u8 {
     if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') return s[1 .. s.len - 1];
     return s;
+}
+
+const ConfigPair = struct { name: []const u8, value: []const u8 };
+
+/// Drop `//` line comments from a site body, STRING-AWARE — a `//` inside a
+/// quoted value (`"https://…"`) is data, not a comment. Without this, a trailing
+/// comment on one value line swallows the next `name: value` pair into the same
+/// comma segment (the newline is not a separator) and the field vanishes.
+fn stripComments(allocator: std.mem.Allocator, text: []const u8) []const u8 {
+    var out = std.ArrayList(u8){};
+    var i: usize = 0;
+    var in_string = false;
+    var s_char: u8 = '"';
+    while (i < text.len) {
+        const c = text[i];
+        if (in_string) {
+            if (c == '\\' and i + 1 < text.len) {
+                out.append(allocator, c) catch {};
+                out.append(allocator, text[i + 1]) catch {};
+                i += 2;
+                continue;
+            }
+            if (c == s_char) in_string = false;
+            out.append(allocator, c) catch {};
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            in_string = true;
+            s_char = c;
+            out.append(allocator, c) catch {};
+            i += 1;
+            continue;
+        }
+        if (c == '/' and i + 1 < text.len and text[i + 1] == '/') {
+            while (i < text.len and text[i] != '\n') i += 1;
+            continue;
+        }
+        out.append(allocator, c) catch {};
+        i += 1;
+    }
+    return out.toOwnedSlice(allocator) catch allocator.alloc(u8, 0) catch "";
+}
+
+/// Split a `vercel:site` body (`name: "x", root: "y", routes: ["/a","/b"]`) into
+/// (name, value) pairs at TOP-LEVEL commas only — strings, brackets, braces, and
+/// parens are atomic, so an array-literal argument does not fragment. The brace
+/// block arrives as a single `source` arg whose value is the whole body.
+fn splitConfigPairs(allocator: std.mem.Allocator, text: []const u8) std.ArrayList(ConfigPair) {
+    var out = std.ArrayList(ConfigPair){};
+    var i: usize = 0;
+    var start: usize = 0;
+    var in_string = false;
+    var s_char: u8 = '"';
+    var bracket: usize = 0;
+    var brace: usize = 0;
+    var paren: usize = 0;
+    while (i <= text.len) {
+        const at_end = i == text.len;
+        const c = if (at_end) ',' else text[i];
+        if (in_string) {
+            if (c == '\\' and !at_end) {
+                i += 2;
+                continue;
+            }
+            if (c == s_char) in_string = false;
+            i += 1;
+            continue;
+        }
+        if (c == '"' or c == '\'') {
+            in_string = true;
+            s_char = c;
+            i += 1;
+            continue;
+        }
+        switch (c) {
+            '[' => bracket += 1,
+            ']' => bracket -|= 1,
+            '{' => brace += 1,
+            '}' => brace -|= 1,
+            '(' => paren += 1,
+            ')' => paren -|= 1,
+            else => {},
+        }
+        if ((c == ',' or at_end) and bracket == 0 and brace == 0 and paren == 0) {
+            const slice = std.mem.trim(u8, text[start..i], " \t\r\n");
+            if (slice.len > 0) {
+                if (std.mem.indexOfScalar(u8, slice, ':')) |ci| {
+                    const name = std.mem.trim(u8, slice[0..ci], " \t\r\n");
+                    const value = std.mem.trim(u8, slice[ci + 1 ..], " \t\r\n");
+                    out.append(allocator, .{ .name = name, .value = value }) catch {};
+                }
+            }
+            start = i + 1;
+        }
+        i += 1;
+    }
+    return out;
+}
+
+/// Parse a string-array literal value — `["/a", "/b"]` or `[]` — into its elements.
+/// An empty interior yields ZERO elements (not one empty string): `[]` must mean
+/// "no declared routes", so it cannot leave a single `""` behind.
+fn parseStringArray(allocator: std.mem.Allocator, value: []const u8) [][]const u8 {
+    var out = std.ArrayList([]const u8){};
+    const t = std.mem.trim(u8, value, " \t\r\n");
+    if (t.len >= 2 and t[0] == '[' and t[t.len - 1] == ']') {
+        const inner = t[1 .. t.len - 1];
+        var i: usize = 0;
+        var seg_start: usize = 0;
+        var in_string = false;
+        var s_char: u8 = '"';
+        while (i <= inner.len) {
+            const at_end = i == inner.len;
+            const c = if (at_end) ',' else inner[i];
+            if (in_string) {
+                if (c == '\\' and !at_end) {
+                    i += 2;
+                    continue;
+                }
+                if (c == s_char) in_string = false;
+                i += 1;
+                continue;
+            }
+            if (c == '"' or c == '\'') {
+                in_string = true;
+                s_char = c;
+                i += 1;
+                continue;
+            }
+            if (c == ',' or at_end) {
+                const elem = std.mem.trim(u8, inner[seg_start..i], " \t\r\n");
+                if (elem.len > 0) out.append(allocator, stripQ(elem)) catch {};
+                seg_start = i + 1;
+            }
+            i += 1;
+        }
+    }
+    return out.toOwnedSlice(allocator) catch &.{};
 }
 
 fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast").Program) DeployConfig {
@@ -40,19 +180,43 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
             if (!std.mem.eql(u8, mq, "vercel")) continue;
             if (flow.inv().path.segments.len != 1) continue;
             if (!std.mem.eql(u8, flow.inv().path.segments[0], "site")) continue;
+            // The site is declared either as named args (`vercel:site(name: x, ...)`)
+            // or, in the brace-block form, as ONE `source` arg whose value is the
+            // whole `name: v, root: w, ...` body. Normalize both to a flat pair list.
+            // (No free of the stripped body: cfg strings and route/dynamic entries
+            // are slices into it, and this one-shot build command leaks its buffers
+            // wholesale — matching that is safer than dangling pointers.)
+            var pairs = std.ArrayList(ConfigPair){};
+            defer pairs.deinit(allocator);
             for (flow.inv().args) |arg| {
+                if (std.mem.eql(u8, arg.name, "source")) {
+                    const body = stripComments(allocator, arg.value);
+                    var nested = splitConfigPairs(allocator, body);
+                    defer nested.deinit(allocator);
+                    for (nested.items) |p| pairs.append(allocator, p) catch {};
+                } else {
+                    pairs.append(allocator, .{ .name = arg.name, .value = arg.value }) catch {};
+                }
+            }
+            for (pairs.items) |arg| {
                 if (std.mem.eql(u8, arg.name, "name")) {
                     cfg.name = stripQ(arg.value);
                 } else if (std.mem.eql(u8, arg.name, "root")) {
                     cfg.root = stripQ(arg.value);
                 } else if (std.mem.eql(u8, arg.name, "fallback")) {
-                    cfg.fallback = if (std.mem.eql(u8, arg.value, "null")) null else stripQ(arg.value);
+                    cfg.fallback = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
                 } else if (std.mem.eql(u8, arg.name, "backend")) {
-                    cfg.backend = if (std.mem.eql(u8, arg.value, "null")) null else stripQ(arg.value);
+                    cfg.backend = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
                 } else if (std.mem.eql(u8, arg.name, "routes")) {
-                    routes.append(allocator, stripQ(arg.value)) catch {};
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |r| routes.append(allocator, r) catch {};
                 } else if (std.mem.eql(u8, arg.name, "dynamic")) {
-                    dynamic.append(allocator, stripQ(arg.value)) catch {};
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |d| dynamic.append(allocator, d) catch {};
+                } else if (std.mem.eql(u8, arg.name, "link")) {
+                    cfg.link = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
                 }
             }
         }
@@ -126,6 +290,11 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     const S = @import("std");
     std.debug.print("→ koru/vercel build\n", .{});
     const cfg = readDeployConfig(a, program);
+    // cfg.{routes,dynamic} are arrays of pointers into AST-owned string memory;
+    // only the pointer arrays themselves are allocator-owned. Free them here (the
+    // sole consumer); the strings live as long as the program AST.
+    defer a.free(cfg.routes);
+    defer a.free(cfg.dynamic);
     const dir = moduleDir(program) orelse {
         std.debug.print("✗ could not locate the koru/vercel module directory\n", .{});
         return false;
@@ -148,8 +317,11 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     };
     root_dir.close();
 
-    const build_dir = wjoin(a, &.{ cwd_path, "build" });
     const deploy_dir = wjoin(a, &.{ cwd_path, "deploy" });
+    // Compiler scratch, nested UNDER the deploy dir — never `cwd/build`, because a
+    // site's static root may itself be `cwd/build` (korulang_org), and compiling
+    // into the embedded root would serve main.kz/a.out as pages.
+    const build_dir = wjoin(a, &.{ deploy_dir, "build" });
     S.fs.cwd().makePath(build_dir) catch {};
     S.fs.cwd().makePath(deploy_dir) catch {};
 
@@ -207,7 +379,10 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     }
     const routes_json = jsonList(a, cfg.routes);
     const dynamic_json = jsonList(a, cfg.dynamic);
-    const fallback_json = if (cfg.fallback) |f| S.fmt.allocPrint(a, "\"{s}\"", .{f}) catch "null" else "null";
+    const fallback_json = if (cfg.fallback) |f|
+        (if (f.len > 0 and f[0] == '/') S.fmt.allocPrint(a, "\"{s}\"", .{f}) catch "null" else S.fmt.allocPrint(a, "\"/{s}\"", .{f}) catch "null")
+    else
+        "null";
     const backend_json = if (cfg.backend) |b| S.fmt.allocPrint(a, "\"{s}\"", .{b}) catch "null" else "null";
     var serve = S.mem.replaceOwned(u8, a, serve_tpl, "__CLIENT_ROUTES_JSON__", routes_json) catch serve_tpl;
     const d1 = serve;
@@ -220,6 +395,24 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     for (&[_][]const u8{ "vercel.json", "test-adapter.mjs", "package.json", ".vercelignore", ".gitignore" }) |name| {
         const src = wread(a, wjoin(a, &.{ scaffold, name }));
         if (src.len > 0) _ = wwrite(wjoin(a, &.{ deploy_dir, name }), src);
+    }
+
+    // ---- 5. Carry an existing Vercel project linkage so deploy pushes to the
+    //         SAME project instead of minting a new one (mirrors legacy --link).
+    if (cfg.link) |link_dir| {
+        const link_abs = if (S.fs.path.isAbsolute(link_dir))
+            a.dupe(u8, link_dir) catch ""
+        else
+            wjoin(a, &.{ cwd_path, link_dir });
+        defer a.free(link_abs);
+        const proj_file = wjoin(a, &.{ link_abs, ".vercel", "project.json" });
+        const proj_json = wread(a, proj_file);
+        if (proj_json.len == 0) {
+            S.debug.print("✗ link dir has no .vercel/project.json: {s}\n", .{link_abs});
+            return false;
+        }
+        if (!wwrite(wjoin(a, &.{ deploy_dir, ".vercel", "project.json" }), proj_json)) return false;
+        std.debug.print("  linked to Vercel project: {s}\n", .{link_abs});
     }
 
     var kb: u64 = 0;

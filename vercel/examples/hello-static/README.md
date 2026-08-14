@@ -15,6 +15,7 @@ vercel:site {
     routes: [],
     backend: null,
     dynamic: [],
+    link: null,          // a path with .vercel/project.json, to hit an existing project
 }
 ```
 

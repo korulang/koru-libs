@@ -15,6 +15,7 @@ vercel:site {
     routes: [],       // browser-only paths that hydrate from the shell
     backend: null,    // a live backend to reverse-proxy `dynamic` to
     dynamic: [],      // genuinely server-side path prefixes
+    link: null,       // a dir with .vercel/project.json, so deploy hits an existing project
 }
 ```
 
@@ -99,6 +100,7 @@ vercel:site {
     fallback: "200.html",
     backend: null,
     dynamic: [],
+    link: null,
 }
 ```
 
@@ -118,6 +120,7 @@ vercel:site {
     routes: [],
     backend: "https://my-backend.example.com",
     dynamic: ["/api/", "/admin"],
+    link: null,
 }
 ```
 
@@ -129,9 +132,11 @@ dynamic prefixes reverse-proxy to the backend.
 - **`koruc build`/`dev`/`deploy` float under `import koru/vercel`** — verified on
   `examples/hello-static/`: `build` stages the deploy dir, `dev` serves it
   locally through the real adapter (missing paths → real 404).
-- **Hybrid (static reactor + dynamic reverse-proxy)** — supported by `vercel:site`
-  (`backend`/`dynamic`); still served live today via the earlier CLI-based path
-  (`korulang_org/scripts/publish-orisha.mjs`), which is the next port onto `koruc`.
+- **Hybrid (static reactor + dynamic reverse-proxy) + project linkage** — the
+  full surface (`routes`, `fallback`, `backend`, `dynamic`, `link`) is parsed from
+  the `vercel:site` declaration and served. korulang.org publishes through this
+  path: `examples/korulang-org` documents the config, and
+  `korulang_org/scripts/publish-orisha.mjs` is `koruc site.k deploy` after baking
+  the static site.
 - Custom Koru handlers and owning the dynamic surface itself (Convex, serverless
   app logic) are the next increments, not yet wired by the builder.
-  the builder.
