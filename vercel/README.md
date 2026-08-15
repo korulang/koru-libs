@@ -16,18 +16,30 @@ vercel:site {
     backend: null,    // a live backend to reverse-proxy `dynamic` to
     dynamic: [],      // genuinely server-side path prefixes
     link: null,       // a dir with .vercel/project.json, so deploy hits an existing project
+    bake: [],         // a command to run before the embed (the site's generator)
+    bake_env: [],     // KEY=VALUE env overrides for the bake command
+    alias: null,      // where the deployed site is aliased (verify's base URL)
+    verify: [],       // paths that must answer 200 with a REAL page after deploy
 }
 ```
 
 ```bash
-koruc site.k build      # embed ./public → wasm reactor → stage deploy/
-koruc site.k dev        # serve the staged deployment locally
-koruc site.k deploy     # vercel deploy --prod
+koruc site.k build       # (bake, if declared) embed ./public → wasm reactor → stage deploy/
+koruc site.k dev         # serve the staged deployment locally
+koruc site.k deploy      # bake + build + vercel deploy --prod + verify the live site
+koruc site.k deploy /new # … and prove /new is a real page, not the shell
+koruc site.k verify      # re-check the live site any time (no staging, no push)
 ```
 
 A completely static site needs **no Koru beyond that one file**. `build` reads the
 `vercel:site` declaration from the AST, generates the reactor from the committed
-template, compiles it, and stages the Vercel deployable.
+template, compiles it, and stages the Vercel deployable. `deploy` composes the
+whole publish: run the declared `bake` (a site's own generator, e.g.
+`["bun", "run", "build:local"]` with `bake_env` overrides), embed the result,
+push through Vercel with the `link`ed project, and run the `verify` checks — each
+path must answer HTTP 200 with a body that is NOT the shell (a shell response is
+a failed publish, not a success). Extra paths ride argv for the per-publish
+freshness check (`koruc site.k deploy /blog/<just-written>`).
 
 ## Why it feels like magic
 
@@ -101,6 +113,10 @@ vercel:site {
     backend: null,
     dynamic: [],
     link: null,
+    bake: [],
+    bake_env: [],
+    alias: null,
+    verify: ["/playground"],
 }
 ```
 
@@ -121,6 +137,10 @@ vercel:site {
     backend: "https://my-backend.example.com",
     dynamic: ["/api/", "/admin"],
     link: null,
+    bake: [],
+    bake_env: [],
+    alias: null,
+    verify: [],
 }
 ```
 
@@ -129,14 +149,14 @@ dynamic prefixes reverse-proxy to the backend.
 
 ## Status
 
-- **`koruc build`/`dev`/`deploy` float under `import koru/vercel`** — verified on
-  `examples/hello-static/`: `build` stages the deploy dir, `dev` serves it
+- **`koruc build`/`dev`/`verify`/`deploy` float under `import koru/vercel`** — verified
+  on `examples/hello-static/`: `build` stages the deploy dir, `dev` serves it
   locally through the real adapter (missing paths → real 404).
-- **Hybrid (static reactor + dynamic reverse-proxy) + project linkage** — the
-  full surface (`routes`, `fallback`, `backend`, `dynamic`, `link`) is parsed from
-  the `vercel:site` declaration and served. korulang.org publishes through this
-  path: `examples/korulang-org` documents the config, and
-  `korulang_org/scripts/publish-orisha.mjs` is `koruc site.k deploy` after baking
-  the static site.
+- **Full surface + composed publish** — `routes`/`fallback`/`backend`/`dynamic`/
+  `link`/`bake`/`bake_env`/`alias`/`verify` are parsed from the `vercel:site`
+  declaration, and `deploy` runs the whole publish: bake → embed → push (linkage
+  carried) → verify (each path must answer a REAL page, not the shell).
+  korulang.org publishes through this path: `examples/korulang-org` documents the
+  config, and the publish IS `koruc site.k deploy` — no script in the repo.
 - Custom Koru handlers and owning the dynamic surface itself (Convex, serverless
   app logic) are the next increments, not yet wired by the builder.

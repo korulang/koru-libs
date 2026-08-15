@@ -16,6 +16,10 @@ vercel:site {
     backend: null,
     dynamic: [],
     link: null,          // a path with .vercel/project.json, to hit an existing project
+    bake: [],            // no generator step — the site is already baked
+    bake_env: [],
+    alias: null,         // no verify — nothing deploys against a live alias here
+    verify: [],
 }
 ```
 

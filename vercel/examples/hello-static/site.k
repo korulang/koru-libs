@@ -10,4 +10,8 @@ vercel:site {
     backend: null,
     dynamic: [],
     link: null,
+    bake: [],
+    bake_env: [],
+    alias: null,
+    verify: [],
 }
