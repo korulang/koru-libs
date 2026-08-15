@@ -63,10 +63,21 @@ std/compiler:command.declare {
 
 std/compiler:command.declare {
   "name": "deploy",
-  "description": "Build and push the staged deployment to Vercel"
+  "description": "Bake (if declared), build and push to Vercel, then verify"
 }
 
 [comptime|command]pub tor deploy {
+    program: *const Program,
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+}
+
+std/compiler:command.declare {
+  "name": "verify",
+  "description": "Check the deployed site answers REAL pages — HTTP 200, never the shell"
+}
+
+[comptime|command]pub tor verify {
     program: *const Program,
     allocator: std.mem.Allocator,
     argv: []const []const u8,
@@ -97,6 +108,14 @@ body-for -> ""
 // - link:     directory holding the Vercel project linkage (.vercel/project.json);
 //             carried into the staged deploy dir so `deploy` pushes to the SAME
 //             project instead of minting a new one
+// - bake:     a command to run BEFORE the embed — the site's own generator
+//             (e.g. ["bun", "run", "build:local"]). Empty = no bake step.
+// - bake_env: KEY=VALUE environment overrides for the bake command
+//             ("STATIC_BUILD=1"). The current environment is inherited.
+// - alias:    where the production deploy is aliased — the base `deploy` and
+//             `verify` fetch their proofs from
+// - verify:   paths that must answer HTTP 200 with a REAL page after `deploy` —
+//             a response equal to the shell is a failed publish, not a success
 [comptime|norun] pub tor site {
     name: string,
     root: string,
@@ -105,6 +124,10 @@ body-for -> ""
     backend: ?string,
     dynamic: []const []const u8,
     link: ?string,
+    bake: []const []const u8,
+    bake_env: []const []const u8,
+    alias: ?string,
+    verify: []const []const u8,
     pixie: ?bool = false,
 }
 

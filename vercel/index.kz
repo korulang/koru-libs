@@ -19,6 +19,10 @@ const DeployConfig = struct {
     backend: ?[]const u8 = null,
     dynamic: [][]const u8 = &.{},
     link: ?[]const u8 = null,
+    bake: [][]const u8 = &.{},
+    bake_env: [][]const u8 = &.{},
+    alias: ?[]const u8 = null,
+    verify: [][]const u8 = &.{},
     pixie: bool = false,
 };
 
@@ -171,8 +175,14 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
     var cfg = DeployConfig{};
     var routes = std.ArrayList([]const u8){};
     var dynamic = std.ArrayList([]const u8){};
+    var bake = std.ArrayList([]const u8){};
+    var bake_env = std.ArrayList([]const u8){};
+    var verify_paths = std.ArrayList([]const u8){};
     defer routes.deinit(allocator);
     defer dynamic.deinit(allocator);
+    defer bake.deinit(allocator);
+    defer bake_env.deinit(allocator);
+    defer verify_paths.deinit(allocator);
 
     const flows = ast.allFlows(std.heap.page_allocator, program);
     defer std.heap.page_allocator.free(flows);
@@ -218,6 +228,20 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
                     for (parsed) |d| dynamic.append(allocator, d) catch {};
                 } else if (std.mem.eql(u8, arg.name, "link")) {
                     cfg.link = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "bake")) {
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |r| bake.append(allocator, r) catch {};
+                } else if (std.mem.eql(u8, arg.name, "bake_env")) {
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |r| bake_env.append(allocator, r) catch {};
+                } else if (std.mem.eql(u8, arg.name, "alias")) {
+                    cfg.alias = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "verify")) {
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |r| verify_paths.append(allocator, r) catch {};
                 } else if (std.mem.eql(u8, arg.name, "pixie")) {
                     cfg.pixie = std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "true");
                 }
@@ -226,6 +250,9 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
     }
     cfg.routes = routes.toOwnedSlice(allocator) catch &.{};
     cfg.dynamic = dynamic.toOwnedSlice(allocator) catch &.{};
+    cfg.bake = bake.toOwnedSlice(allocator) catch &.{};
+    cfg.bake_env = bake_env.toOwnedSlice(allocator) catch &.{};
+    cfg.verify = verify_paths.toOwnedSlice(allocator) catch &.{};
     return cfg;
 }
 
@@ -263,10 +290,48 @@ fn wwrite(path: []const u8, data: []const u8) bool {
 }
 
 fn wrun(cmd: []const []const u8, cwd: ?[]const u8) bool {
+    return wrunEnv(cmd, cwd, &.{});
+}
+
+/// Run a command with KEY=VALUE environment overrides layered over the current
+/// environment (missing on failure). The overrides are only applied when the
+/// command needs them; a plain call passes through untouched.
+fn wrunEnv(cmd: []const []const u8, cwd: ?[]const u8, overrides: []const []const u8) bool {
     var child = std.process.Child.init(cmd, std.heap.page_allocator);
     child.cwd = cwd;
+    // Optional, hoisted to FUNCTION scope: a defer inside the if-block would
+    // free the map before spawnAndWait reads it (the freed table was reused by
+    // the next allocation, and the header() alignCast panicked on it).
+    var env_map: ?std.process.EnvMap = null;
+    defer if (env_map) |*m| m.deinit();
+    if (overrides.len > 0) {
+        env_map = std.process.getEnvMap(std.heap.page_allocator) catch return false;
+        for (overrides) |kv| {
+            const eq = std.mem.indexOfScalar(u8, kv, '=') orelse continue;
+            env_map.?.put(kv[0..eq], kv[eq + 1 ..]) catch {};
+        }
+        child.env_map = &env_map.?;
+    }
     const term = child.spawnAndWait() catch return false;
     return (term == .Exited and term.Exited == 0);
+}
+
+/// Run a command and return its trimmed stdout — or "" on any failure. Used by
+/// the verify step's HTTP probes.
+fn wout(a: std.mem.Allocator, cmd: []const []const u8) []const u8 {
+    var child = std.process.Child.init(cmd, a);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.spawn() catch return "";
+    var out = std.ArrayList(u8){};
+    var err = std.ArrayList(u8){};
+    child.collectOutput(a, &out, &err, 1 << 20) catch {
+        _ = child.kill() catch {};
+        _ = child.wait() catch {};
+        return "";
+    };
+    _ = child.wait() catch {};
+    return std.mem.trim(u8, out.items, " \t\r\n");
 }
 
 
@@ -286,6 +351,59 @@ fn jsonList(allocator: std.mem.Allocator, items: []const []const u8) []const u8 
 }
 
 // ============================================================================
+// VERIFY — prove the live deployment answers with REAL pages, not the shell.
+// Every checked path must return HTTP 200, and a response equal to the shell
+// body means the page was NOT baked — a failed publish wearing a success.
+// `extra` carries per-invocation paths (`koruc site.k verify /blog/<new>`).
+// ============================================================================
+fn verifyPath(a: std.mem.Allocator, base: []const u8, shell_body: []const u8, p: []const u8) bool {
+    const S = @import("std");
+    const url = S.fmt.allocPrint(a, "{s}{s}", .{ base, p }) catch return false;
+    const code = wout(a, &.{ "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "60", url });
+    if (!std.mem.eql(u8, code, "200")) {
+        std.debug.print("✗ {s} → HTTP {s} (expect 200)\n", .{ p, code });
+        return false;
+    }
+    if (shell_body.len > 0) {
+        const body = wout(a, &.{ "curl", "-s", "--compressed", "--max-time", "60", url });
+        if (body.len > 0 and std.mem.eql(u8, body, shell_body)) {
+            std.debug.print("✗ {s} → HTTP 200 but it is the SHELL — the page was not baked\n", .{p});
+            return false;
+        }
+    }
+    std.debug.print("✓ {s} → HTTP 200, real page\n", .{p});
+    return true;
+}
+
+fn runVerify(a: std.mem.Allocator, cfg: DeployConfig, extra: []const []const u8) bool {
+    const S = @import("std");
+    if (cfg.verify.len == 0 and extra.len == 0) return true;
+    const base = cfg.alias orelse {
+        S.debug.print("✗ verify paths declared but no `alias` — what URL answers the deploy?\n", .{});
+        return false;
+    };
+    var shell_body: []const u8 = "";
+    if (cfg.fallback) |fb| {
+        const shell_url = S.fmt.allocPrint(a, "{s}/{s}", .{ base, fb }) catch return false;
+        shell_body = wout(a, &.{ "curl", "-s", "--compressed", "--max-time", "60", shell_url });
+    }
+    var ok = true;
+    S.debug.print("→ verify {d} path(s) against {s}\n", .{ cfg.verify.len + extra.len, base });
+    for (cfg.verify) |p| {
+        if (!verifyPath(a, base, shell_body, p)) ok = false;
+    }
+    for (extra) |p| {
+        if (!verifyPath(a, base, shell_body, p)) ok = false;
+    }
+    if (!ok) {
+        S.debug.print("✗ verify failed — the deploy is not serving real pages\n", .{});
+        return false;
+    }
+    std.debug.print("✓ verified {d} path(s) — real pages, none is the shell\n", .{ cfg.verify.len + extra.len });
+    return true;
+}
+
+// ============================================================================
 // BUILD — generate the reactor, compile it, stage the deploy dir. Shared by the
 // `build` and `deploy` commands.
 // ============================================================================
@@ -293,17 +411,34 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     const S = @import("std");
     std.debug.print("→ koru/vercel build\n", .{});
     const cfg = readDeployConfig(a, program);
-    // cfg.{routes,dynamic} are arrays of pointers into AST-owned string memory;
-    // only the pointer arrays themselves are allocator-owned. Free them here (the
-    // sole consumer); the strings live as long as the program AST.
+    // cfg.{routes,dynamic,bake,bake_env,verify} are arrays of pointers into
+    // AST/body-owned string memory; only the pointer arrays themselves are
+    // allocator-owned. Free them here (the sole consumer); the strings live as
+    // long as the program AST / stripped body.
     defer a.free(cfg.routes);
     defer a.free(cfg.dynamic);
+    defer a.free(cfg.bake);
+    defer a.free(cfg.bake_env);
+    defer a.free(cfg.verify);
     const dir = moduleDir(program) orelse {
         std.debug.print("✗ could not locate the koru/vercel module directory\n", .{});
         return false;
     };
     const cwd_path = S.process.getCwdAlloc(a) catch return false;
     defer a.free(cwd_path);
+
+    // ---- 0. Bake: run the site's own generator BEFORE embedding, so the root
+    //         holds fresh output. Declared data — the command and its env — not
+    //         a script in the repo.
+    if (cfg.bake.len > 0) {
+        std.debug.print("→ bake: {s}", .{cfg.bake[0]});
+        for (cfg.bake[1..]) |part| std.debug.print(" {s}", .{part});
+        std.debug.print("\n", .{});
+        if (!wrunEnv(cfg.bake, cwd_path, cfg.bake_env)) {
+            S.debug.print("✗ bake failed — nothing embedded\n", .{});
+            return false;
+        }
+    }
 
     const root_abs = if (S.fs.path.isAbsolute(cfg.root))
         a.dupe(u8, cfg.root) catch ""
@@ -438,7 +573,7 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
 // ============================================================================
 ~proc build|zig {
     const S = @import("std");
-    _ = runBuild(S.heap.page_allocator, program);
+    if (!runBuild(S.heap.page_allocator, program)) S.process.exit(1);
 }
 // ============================================================================
 // COMMAND: dev — serve the staged deployment locally through the real adapter.
@@ -446,29 +581,45 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
 ~proc dev|zig {
     const S = @import("std");
     const cwd_path = S.process.getCwdAlloc(S.heap.page_allocator) catch return;
-    defer allocator.free(cwd_path);
-    const adapter = wjoin(allocator, &.{ cwd_path, "deploy", "test-adapter.mjs" });
+    defer S.heap.page_allocator.free(cwd_path);
+    const adapter = wjoin(S.heap.page_allocator, &.{ cwd_path, "deploy", "test-adapter.mjs" });
     if (S.fs.cwd().access(adapter, .{})) |_| {
         // adapter present — serve it
     } else |_| {
         std.debug.print("✗ no staged deploy dir — run `koruc <site> build` first\n", .{});
-        return;
+        S.process.exit(1);
     }
     std.debug.print("→ serving {s} on http://localhost:3200\n", .{adapter});
     _ = wrun(&.{ "node", adapter }, cwd_path);
 }
 
 // ============================================================================
-// COMMAND: deploy — build, then push to Vercel.
+// COMMAND: deploy — bake (if declared), build, push to Vercel, verify.
 // ============================================================================
 ~proc deploy|zig {
     const S = @import("std");
-    if (!runBuild(S.heap.page_allocator, program)) return;
+    if (!runBuild(S.heap.page_allocator, program)) S.process.exit(1);
     const cwd_path = S.process.getCwdAlloc(S.heap.page_allocator) catch return;
-    defer allocator.free(cwd_path);
-    const deploy_dir = wjoin(allocator, &.{ cwd_path, "deploy" });
+    defer S.heap.page_allocator.free(cwd_path);
+    const deploy_dir = wjoin(S.heap.page_allocator, &.{ cwd_path, "deploy" });
     std.debug.print("→ vercel deploy --prod\n", .{});
-    _ = wrun(&.{ "vercel", "deploy", "--prod", "--yes" }, deploy_dir);
+    if (!wrun(&.{ "vercel", "deploy", "--prod", "--yes" }, deploy_dir)) {
+        S.debug.print("✗ vercel deploy failed\n", .{});
+        S.process.exit(1);
+    }
+    // Prove the live deploy: the declared `verify` paths plus any argv extras
+    // (`koruc site.k deploy /blog/<new-post>` — the per-publish freshness arg).
+    const cfg = readDeployConfig(S.heap.page_allocator, program);
+    if (!runVerify(S.heap.page_allocator, cfg, argv)) S.process.exit(1);
+    std.debug.print("✓ deployed and verified\n", .{});
+}
+// ============================================================================
+// COMMAND: verify — check the live site answers REAL pages (no staging, no push).
+// ============================================================================
+~proc verify|zig {
+    const S = @import("std");
+    const cfg = readDeployConfig(S.heap.page_allocator, program);
+    if (!runVerify(S.heap.page_allocator, cfg, argv)) S.process.exit(1);
 }
 
 
