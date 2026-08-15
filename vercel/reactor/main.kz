@@ -18,6 +18,7 @@ const std = @import("std");
 
 ~import std/build
 ~import orisha
+~import vercel
 
 ~std/build:config {
     "target": "wasm32-freestanding"
@@ -38,6 +39,10 @@ const std = @import("std");
 // --- The host seam. Request windows in, answer bytes out. ---
 var request_buf: [8192]u8 = undefined;
 var response_buf: [65536]u8 = undefined;
+// Persistent scratch for generated responses (api-voice) — a body slice pointing
+// at a handler-frame stack buffer would dangle after the frame unwinds; this
+// lives at module scope so the answer survives to be copied out.
+var api_resp_buf: [16384]u8 = undefined;
 var out_ptr: [*]const u8 = undefined;
 var out_len: usize = 0;
 

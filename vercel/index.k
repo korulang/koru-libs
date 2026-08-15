@@ -105,4 +105,20 @@ body-for -> ""
     backend: ?string,
     dynamic: []const []const u8,
     link: ?string,
+    pixie: ?bool = false,
 }
+
+// ============================================================================
+// API-VOICE — a transform that inlines the pixie-voice endpoint into a router
+// branch (mirrors orisha:static-router's mechanism). Declared HERE so the
+// library owns the transform; the compiler collects transforms program-wide,
+// and the emitted inline code runs in the branch scope and RETURNS a response.
+// ============================================================================
+// Usage in a handler:
+//   ! [POST /api/pixie-voice] req |> vercel:api-voice(name: "site")
+[comptime|transform|pre] pub tor api-voice {
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator,
+} -> SiteResult

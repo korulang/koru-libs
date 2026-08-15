@@ -19,6 +19,7 @@ const DeployConfig = struct {
     backend: ?[]const u8 = null,
     dynamic: [][]const u8 = &.{},
     link: ?[]const u8 = null,
+    pixie: bool = false,
 };
 
 fn stripQ(s: []const u8) []const u8 {
@@ -217,6 +218,8 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
                     for (parsed) |d| dynamic.append(allocator, d) catch {};
                 } else if (std.mem.eql(u8, arg.name, "link")) {
                     cfg.link = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "pixie")) {
+                    cfg.pixie = std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "true");
                 }
             }
         }
@@ -340,7 +343,10 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     };
     const e = S.mem.indexOf(u8, reactor_src, end) orelse return false;
     const static_line = S.fmt.allocPrint(a, "~orisha:static(name: \"{s}\", root: \"{s}\")", .{ cfg.name, root_abs }) catch return false;
-    const handler_line = S.fmt.allocPrint(a, "~orisha:handler = orisha:static-router(name: \"{s}\")", .{ cfg.name }) catch return false;
+    const handler_line = if (cfg.pixie)
+        S.fmt.allocPrint(a, "~orisha:handler = orisha:router(req)\n! [POST /api/pixie-voice] req |> vercel:api-voice(name: \"{s}\")\n! [*] req |> orisha:static-router(name: \"{s}\")", .{ cfg.name, cfg.name }) catch return false
+    else
+        S.fmt.allocPrint(a, "~orisha:handler = orisha:static-router(name: \"{s}\")", .{ cfg.name }) catch return false;
     const site_block = S.fmt.allocPrint(a, "{s}\n{s}\n{s}\n{s}\n", .{ begin, static_line, handler_line, end }) catch return false;
     const main_src = S.mem.concat(a, u8, &.{ reactor_src[0..s], site_block, reactor_src[e + end.len ..] }) catch return false;
     const main_file = wjoin(a, &.{ build_dir, "main.kz" });
@@ -463,4 +469,91 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     const deploy_dir = wjoin(allocator, &.{ cwd_path, "deploy" });
     std.debug.print("→ vercel deploy --prod\n", .{});
     _ = wrun(&.{ "vercel", "deploy", "--prod", "--yes" }, deploy_dir);
+}
+
+
+// ============================================================================
+// TRANSFORM: api-voice — inline the pixie-voice endpoint into a router branch.
+// Mirrors orisha:static-router's top-level replacement: build the inline dispatch,
+// set it as the flow's inline_body with @pass_ran, and return `.replacement` —
+// the runner places it into the holding branch whether the site is root or
+// nested (the nested-position bug is why `whole_program` is NOT used here).
+// ============================================================================
+~proc api-voice|zig {
+    const ast_mod = @import("ast");
+
+    const flow = if (item.* == .flow)
+        &item.flow
+    else
+        return .{};
+
+    for (flow.inv().annotations) |ann| {
+        if (std.mem.startsWith(u8, ann, "@pass_ran")) {
+            return .{};
+        }
+    }
+
+    var site_name: []const u8 = "site";
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "name")) {
+            site_name = stripQ(arg.value);
+            break;
+        }
+    }
+
+    // Inline body: the pixie-voice response, built in the branch scope (req bound).
+    // Production logic only: parse the reminders array, hash each with the
+    // client-identical JS hashText, keep the ones whose mp3 is baked (present in
+    // the generated routes table — no sockets, no outbound calls), return JSON.
+    const inline_body_str =
+        \\//@koru:inline_stmt
+        \\    const _routes = @import("generated/site_routes.zig");
+        \\    const _bdy: []const u8 = if (req.body) |b| b else "";
+        \\    var _voices_out: [2048]u8 = undefined;
+        \\    var _used: usize = 0;
+        \\    var _total: usize = 0;
+        \\    var _cached: usize = 0;
+        \\    const _open = std.mem.indexOfScalar(u8, _bdy, '[') orelse 0;
+        \\    var _i: usize = _open + 1;
+        \\    while (_i < _bdy.len) : (_i += 1) {
+        \\        if (_bdy[_i] != '"') continue;
+        \\        const _close = std.mem.indexOfPos(u8, _bdy, _i + 1, "\"") orelse break;
+        \\        const _rem = _bdy[_i + 1 .. _close];
+        \\        _total += 1;
+        \\        var _h: u32 = 0;
+        \\        for (_rem) |_c| _h = (_h << 5) -% _h +% _c;
+        \\        const _abs: u32 = @intCast(@abs(@as(i32, @bitCast(_h))));
+        \\        var _hbuf: [24]u8 = undefined;
+        \\        const _hhex = std.fmt.bufPrint(&_hbuf, "{x}", .{_abs}) catch unreachable;
+        \\        var _urlbuf: [128]u8 = undefined;
+        \\        const _url = std.fmt.bufPrint(&_urlbuf, "/sounds/pixie/{s}.mp3", .{_hhex}) catch unreachable;
+        \\        if (_routes.lookup("GET", _url) != null) {
+        \\            _cached += 1;
+        \\            if (_used > 0) { _voices_out[_used] = ','; _used += 1; }
+        \\            const _pair = std.fmt.bufPrint(_voices_out[_used..], "\"{s}\":\"{s}\"", .{ _hhex, _url }) catch break;
+        \\            _used += _pair.len;
+        \\        }
+        \\        _i = _close;
+        \\    }
+        \\    const _wanted: []const u8 = _voices_out[0.._used];
+        \\    const _json = std.fmt.bufPrint(&main_module.api_resp_buf, "{{\"voices\":{{{s}}},\"generated\":0,\"cached\":{d},\"total\":{d},\"missing\":{d}}}", .{ _wanted, _cached, _total, _total -% _cached }) catch unreachable;
+        \\    return .{ .status = 200, .body = _json, .content_type = "application/json" };
+        ;
+
+    const new_inv_annotations = allocator.alloc([]const u8, flow.inv().annotations.len + 1) catch unreachable;
+    for (flow.inv().annotations, 0..) |ann, j| new_inv_annotations[j] = ann;
+    new_inv_annotations[flow.inv().annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
+
+    const new_invocation = ast_mod.Invocation{
+        .path = flow.inv().path,
+        .args = flow.inv().args,
+        .annotations = new_inv_annotations,
+    };
+    const empty_conts = allocator.alloc(ast_mod.Continuation, 0) catch unreachable;
+
+    var transformed_flow = flow.*;
+    transformed_flow.body = ast_mod.rootSite(new_invocation, empty_conts, flow.location);
+    transformed_flow.inline_body = inline_body_str;
+
+    return .{ .replacement = ast_mod.Item{ .flow = transformed_flow } };
 }

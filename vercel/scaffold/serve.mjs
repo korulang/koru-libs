@@ -56,15 +56,16 @@ function parseRawResponse(buffer) {
   return { status, headers, body };
 }
 
-async function answerFromReactor(wasm, req, target) {
-  // The reactor already parses method, Host, If-None-Match, and body. Forging
-  // `GET … Host: korulang.org` with no validators meant every request was a
-  // full body — ETags were computed and sent, then never asked about.
+async function answerFromReactor(wasm, req, target, body) {
+  // The reactor parses method, Host, If-None-Match, and body — forward all of
+  // them so a POST handler (e.g. /api/pixie-voice) actually gets its request.
   const host = req.headers.host ?? "localhost";
   const inm = req.headers["if-none-match"];
-  const lines = [`GET ${target} HTTP/1.1`, `Host: ${host}`];
+  const lines = [`${req.method ?? "GET"} ${target} HTTP/1.1`, `Host: ${host}`];
   if (inm) lines.push(`If-None-Match: ${inm}`);
-  const rawRequest = encoder.encode(lines.join("\r\n") + "\r\n\r\n");
+  const rawRequest = encoder.encode(
+    lines.join("\r\n") + "\r\n\r\n" + (body ? body.toString("latin1") : ""),
+  );
   if (rawRequest.length > wasm.request_cap()) return { status: 414, headers: {}, body: Buffer.alloc(0) };
   // Re-read memory.buffer per request — growing a wasm memory detaches every
   // view taken before the growth, and a stale view reads zeroes silently.
@@ -76,8 +77,16 @@ async function answerFromReactor(wasm, req, target) {
   return parseRawResponse(raw);
 }
 
+async function readBody(req) {
+  if (["GET", "HEAD"].includes(req.method)) return Buffer.alloc(0);
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  return Buffer.concat(chunks);
+}
+
 export default async function handler(req, res) {
   const { pathname, search } = new URL(req.url, "http://localhost");
+  const reqBody = await readBody(req);
 
   // 1. Genuinely live surface → the backend, the same way it would be asked
   //    today. Nothing here decides codes or content types.
@@ -90,7 +99,7 @@ export default async function handler(req, res) {
         cookie: req.headers["cookie"] ?? "",
         "content-type": req.headers["content-type"] ?? "",
       },
-      body: ["GET", "HEAD"].includes(req.method) ? undefined : req,
+      body: reqBody.length ? reqBody : undefined,
     });
     const body = Buffer.from(await upstream.arrayBuffer());
     res.statusCode = upstream.status;
@@ -115,7 +124,7 @@ export default async function handler(req, res) {
       ? FALLBACK_PATH
       : pathname;
 
-  const { status, headers, body } = await answerFromReactor(wasm, req, target);
+  const { status, headers, body } = await answerFromReactor(wasm, req, target, reqBody);
   res.statusCode = status;
   for (const [name, value] of Object.entries(headers)) {
     if (HOP_BY_HOP.has(name.toLowerCase())) continue;
