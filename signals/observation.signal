@@ -1,0 +1,6 @@
+name: observation
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: something about the system established by running it, short of a measured number — e.g. that f32 scalar params cross the koru event boundary into raylib draw procs and render
