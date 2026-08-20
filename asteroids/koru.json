@@ -1,0 +1,12 @@
+{
+  "name": "asteroids",
+  "version": "0.1.0",
+  "libs": {
+    "raylib": "../raylib",
+    "store": "../../../koru/koru_std/store"
+  },
+  "paths": {
+    "libs": "..",
+    "sim": "./sim"
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "asteroids-tests",
+  "version": "0.1.0",
+  "paths": {
+    "libs": "../..",
+    "sim": "../sim"
+  }
+}

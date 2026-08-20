@@ -1,0 +1,14 @@
+{
+  "name": "@korulang/asteroids",
+  "version": "0.1.0",
+  "description": "Asteroids on raylib for Koru — the pure rules in sim.k, a fixed-step ship slice in main.k",
+  "keywords": ["koru", "korulang", "raylib", "asteroids", "game", "gamedev"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "koru": {
+    "entry": "main.k",
+    "requires": {
+      "system": ["raylib"]
+    }
+  }
+}

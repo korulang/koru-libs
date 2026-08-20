@@ -189,6 +189,27 @@ pub const Frame = struct {
 ~proc release.frame|zig { _ = &f; }
 
 // ============================================================================
+// Input — polling, not events. raylib's keyboard state is a global "is the key
+// down right now" check; the poll maps to a bare bool tor (same shape as the
+// resource-bridge's `-> bool`). `down` is a held state per frame, `pressed`
+// edges (this frame only) — the classic mac/key distinction the player needs.
+// Keys are raylib's integer scan codes (KEY_A 65, KEY_W 87, KEY_SPACE 32, ...);
+// the game module declares its own named key constants.
+// ============================================================================
+
+~pub tor input.key.down { key: i32 } -> bool
+
+~proc input.key.down|zig {
+    return c.IsKeyDown(key);
+}
+
+~pub tor input.key.pressed { key: i32 } -> bool
+
+~proc input.key.pressed|zig {
+    return c.IsKeyPressed(key);
+}
+
+// ============================================================================
 // Colors — raylib's Color is a 4-byte by-value C struct, and it crosses the
 // koru event boundary BY VALUE in both directions (verified 2026-07-17:
 // constructor return + draw param, including inside an inlined ! frame
