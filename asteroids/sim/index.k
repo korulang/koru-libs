@@ -28,6 +28,13 @@ const {
     KEY_W: 87
     KEY_SPACE: 32
     KEY_ENTER: 257
+    RNG_M: 12981
+    RNG_A: 28411
+    RNG_N: 65536
+    DEG_RAD: 0.0174533[f32]
+    SPLIT_COS: 0.743145[f32]
+    SPLIT_SIN: 0.669131[f32]
+    CHILD_MIN_R: 16.0[f32]
 }
 
 // The ship's facing unit vector. Straight up at rotation 0.
@@ -68,3 +75,71 @@ drag-x -> vx * @exp(@log(SHIP_DRAG) * dt)
 pub tor drag-y { vy: f32, dt: f32 } -> f32
 
 drag-y -> vy * @exp(@log(SHIP_DRAG) * dt)
+// ── RNG ──────────────────────────────────────────────────────────────────────
+// Deterministic 16-bit LCG, one draw per call; the returned s2 is the next
+// seed, v is the draw. Constants chosen so NO intermediate product overflows
+// (65535 * 12981 + 28411 < 2^30) — the sequence is fully pinned. Full period
+// 65536 (12981 ≡ 1 mod 4, 28411 odd). The game threads s into the grid; the
+// regression tests pin exact (s2, v) pairs, so a knob change is a board flip.
+
+// Advance the LCG once. v = s2's low 12 bits (0..4095) — one draw, ~359 plus
+// a 4-bit edge marker, biased but harmless for a game.
+pub tor rand { s: u32 } -> { s2: u32, v: u32 }
+
+rand -> { s2: (s * RNG_M + RNG_A) % RNG_N, v: (s * RNG_M + RNG_A) % 4096 }
+
+// A uniform draw under n.
+pub tor rand-under { s: u32, n: u32 } -> { s2: u32, v: u32 }
+
+rand-under -> { s2: (s * RNG_M + RNG_A) % RNG_N, v: (s * RNG_M + RNG_A) % n }
+
+// ── Geometry ─────────────────────────────────────────────────────────────────
+// Unit velocity from degrees, game-facing convention (0 = straight up,
+// y grows down). speed scales it.
+pub tor dir { deg: u32, speed: f32 } -> { dx: f32, dy: f32 }
+
+dir -> { dx: @sin(@as(f32, @floatFromInt(deg % 360)) * DEG_RAD) * speed, dy: -@cos(@as(f32, @floatFromInt(deg % 360)) * DEG_RAD) * speed }
+
+// Position along an axis as a fraction of a draw (0..99 -> 0..scale).
+pub tor edge-pos { v: u32, scale: f32 } -> f32
+
+edge-pos -> @as(f32, @floatFromInt(v % 100)) / 100.0 * scale
+
+// Ship nose: SHIP_SIZE along the facing from the ship center.
+pub tor nose { x: f32, y: f32, rotation: f32 } -> { x: f32, y: f32 }
+
+nose -> { x: x + @sin(rotation) * SHIP_SIZE, y: y - @cos(rotation) * SHIP_SIZE }
+
+// Muzzle velocity: ship velocity + BULLET_SPEED along the facing.
+pub tor bullet-vel { dx: f32, dy: f32, rotation: f32 } -> { dx: f32, dy: f32 }
+
+bullet-vel -> { dx: dx + @sin(rotation) * BULLET_SPEED, dy: dy - @cos(rotation) * BULLET_SPEED }
+
+// ── Asteroids ───────────────────────────────────────────────────────────────
+// Split: the two children keep the parent's velocity rotated by ±42 deg, each
+// speed-scaled 1.00..1.24 from the draw so the pair diverges.
+pub tor split { s: u32, dx: f32, dy: f32 } -> { s2: u32, dx1: f32, dy1: f32, dx2: f32, dy2: f32 }
+
+split -> { s2: (s * RNG_M + RNG_A) % RNG_N, dx1: (dx * SPLIT_COS - dy * SPLIT_SIN) * (1.0 + @as(f32, @floatFromInt(s / 25 % 25)) / 100.0), dy1: (dx * SPLIT_SIN + dy * SPLIT_COS) * (1.0 + @as(f32, @floatFromInt(s / 25 % 25)) / 100.0), dx2: (dx * SPLIT_COS + dy * SPLIT_SIN) * (1.0 + @as(f32, @floatFromInt(s % 25)) / 100.0), dy2: (0.0 - dx * SPLIT_SIN + dy * SPLIT_COS) * (1.0 + @as(f32, @floatFromInt(s % 25)) / 100.0) }
+
+// How many children a destroyed asteroid leaves: 2 above the small floor,
+// else 0 (small shards are the last tier).
+pub tor split-count { r: f32 } -> i32
+
+split-count -> if (r > CHILD_MIN_R) 2 else 0
+
+// Child radius: half the parent, floored at CHILD_MIN_R.
+pub tor child-r { r: f32 } -> f32
+
+child-r -> if (r * 0.5 < CHILD_MIN_R) CHILD_MIN_R else r * 0.5
+
+// ── Collision & bullets ─────────────────────────────────────────────────────
+// Circle-circle. Squared compare, no sqrt.
+pub tor collide { ax: f32, ay: f32, ar: f32, bx: f32, by: f32, br: f32 } -> bool
+
+collide -> (ax - bx) * (ax - bx) + (ay - by) * (ay - by) <= (ar + br) * (ar + br)
+
+// One bullet''s motion: straight line, lifetime draining.
+pub tor bullet-tick { x: f32, y: f32, dx: f32, dy: f32, t: f32, dt: f32 } -> { x: f32, y: f32, t: f32 }
+
+bullet-tick -> { x: x + dx * dt, y: y + dy * dt, t: t - dt }
