@@ -54,7 +54,7 @@
 ~[comptime|command]pub tor unikraft {
     program: *const Program,
     allocator: __koru_std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 ~proc unikraft|zig {
