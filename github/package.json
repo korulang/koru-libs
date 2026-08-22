@@ -1,0 +1,28 @@
+{
+  "name": "@korulang/github",
+  "version": "0.0.1",
+  "description": "The GitHub-side release surface for a Koru site — commands floated onto the compiler, config as the source of truth",
+  "keywords": ["koru", "korulang", "github", "release", "ci", "publish", "npm"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/github"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "type": "module",
+  "files": [
+    "index.k",
+    "index.kz",
+    "README.md",
+    "examples/"
+  ],
+  "koru": {
+    "entry": "index.k",
+    "requires": {}
+  }
+}

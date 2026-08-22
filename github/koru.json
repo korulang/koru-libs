@@ -1,0 +1,8 @@
+{
+  "name": "@korulang/github",
+  "version": "0.0.1",
+  "description": "The GitHub-side release surface for a Koru site",
+  "paths": {
+    "std": "../../koru/koru_std"
+  }
+}

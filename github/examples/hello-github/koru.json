@@ -1,0 +1,7 @@
+{
+  "name": "hello-github",
+  "paths": {
+    "std": "../../../../koru/koru_std",
+    "github": "../.."
+  }
+}
