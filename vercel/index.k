@@ -47,7 +47,7 @@ std/compiler:command.declare {
 [comptime|command]pub tor build {
     program: *const Program,
     allocator: std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 std/compiler:command.declare {
@@ -58,7 +58,7 @@ std/compiler:command.declare {
 [comptime|command]pub tor dev {
     program: *const Program,
     allocator: std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 std/compiler:command.declare {
@@ -69,7 +69,7 @@ std/compiler:command.declare {
 [comptime|command]pub tor deploy {
     program: *const Program,
     allocator: std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 std/compiler:command.declare {
@@ -80,7 +80,7 @@ std/compiler:command.declare {
 [comptime|command]pub tor verify {
     program: *const Program,
     allocator: std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 // ---------------------------------------------------------------------------
@@ -120,14 +120,14 @@ body-for -> ""
     name: string,
     root: string,
     fallback: ?string,
-    routes: []const []const u8,
+    routes: []string,
     backend: ?string,
-    dynamic: []const []const u8,
+    dynamic: []string,
     link: ?string,
-    bake: []const []const u8,
-    bake_env: []const []const u8,
+    bake: []string,
+    bake_env: []string,
     alias: ?string,
-    verify: []const []const u8,
+    verify: []string,
     pixie: ?bool = false,
 }
 

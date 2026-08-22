@@ -34,7 +34,7 @@ std/compiler:command.declare {
 [comptime|command]pub tor release {
     program: *const Program,
     allocator: std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 std/compiler:command.declare {
@@ -46,7 +46,7 @@ std/compiler:command.declare {
 [comptime|command]pub tor publish-npm {
     program: *const Program,
     allocator: std.mem.Allocator,
-    argv: []const []const u8,
+    argv: []string,
 }
 
 // ============================================================================
