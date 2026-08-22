@@ -371,16 +371,21 @@ fn verifyPath(a: std.mem.Allocator, base: []const u8, shell_body: []const u8, p:
             return false;
         }
     }
-    // ORISHA ONLY — a served response that carries the SvelteKit/SPA client
-    // hydration shell is NOT a Koru/Orisha page. The reactor bakes static HTML
-    // with no `_app/immutable` chunk graph; a SvelteKit app ships one. Detect
-    // the chunk graph and refuse the deploy outright — this is the enforced
-    // invariant that korulang.org cannot be served as the SvelteKit app.
+    // ORISHA ONLY — a served response that is a CLIENT-SIDE HYDRATION SHELL is
+    // NOT a Koru/Orisha page. The reactor bakes fully-prerendered HTML; a
+    // SvelteKit app that is NOT prerendered ships a shell that renders empty
+    // and hydrates client-side (an un-baked service worker / prerendered page).
+    //
+    // The distinguishing marker is NOT the `_app/immutable` path — a correctly
+    // SSR-rendered page carries those hashed asset URLs for lazy chunks while
+    // still being full static HTML with the crown. What marks a shell is the
+    // hydration frame SvelteKit injects when it must render in the browser:
+    // `data-sveltekit-hydrate` (a real shell) on a body that holds no content.
+    // Presence of the marker with real content is fine; presence of the shell
+    // with no rendered text is the refusal.
     const body = wout(a, &.{ "curl", "-s", "--compressed", "--max-time", "60", url });
-    if (std.mem.indexOf(u8, body, "_app/immutable") != null or
-        std.mem.indexOf(u8, body, "data-sveltekit") != null)
-    {
-        std.debug.print("✗ {s} → HTTP 200 but it is the SVELTEKIT app, not Orisha — the deploy refused\n", .{p});
+    if (std.mem.indexOf(u8, body, "data-sveltekit-hydrate") != null) {
+        std.debug.print("✗ {s} → HTTP 200 but it is the SVELTEKIT shell, not a baked Orisha page — the deploy refused\n", .{p});
         return false;
     }
     std.debug.print("✓ {s} → HTTP 200, real Orisha page\n", .{p});
