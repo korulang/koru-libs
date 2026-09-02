@@ -13,18 +13,22 @@
 // case through a `koruc` subprocess, and scores it. Zero koru-toolchain
 // changes — pure external orchestration.
 //
-// EXPECTATIONS live INLINE in the test file itself (resolved fork — see
-// REGRESSIONS_RUNNER_DESIGN.md "v1 proposal"), as `//~` directives:
+// EXPECTATIONS are DECLARED PROGRAM SURFACE in the test file itself — norun
+// markers like `case`, collected from the test's own AST (program.ast.json)
+// by `run-exec`. The compiler parses, resolves, and validates them; a typo is
+// a compile error with a location. The retired `//~` comment grammar survives
+// nowhere in this corpus — frontend negatives, whose AST never materializes,
+// are the one structural residue, deferred (see compile-fail below):
 //
-//   //~ run                                      compile + run + exit 0 + no leaks
-//   //~ compile_fail(frontend|backend)           must fail, pinned to stage
-//   //~ error[KORU030]: Phantom state mismatch   pinned diagnostic (ID + substring)
-//   //~ expect: <substring>                      produced-program output must contain it
-//   //~ expect-not: <substring>                  produced-program output must NOT contain it
-//   //~ leaks: allow <reason>                    opt out of the leak gate (reasoned)
+//   ~koru/regressions:run()                             compile + run + exit 0 + no leaks
+//   ~koru/regressions:compile-fail(stage: backend)      must fail, pinned to stage
+//   ~koru/regressions:error(id: "KORU030", msg: "…")    pinned diagnostic (ID + substring)
+//   ~koru/regressions:expect(text: "…")                 produced-program output must contain it
+//   ~koru/regressions:expect-not(text: "…")             produced-program output must NOT contain it
+//   ~koru/regressions:leaks-allow(reason: "…")          opt out of the leak gate (reasoned)
 //
 // The suite stays pure composition (a case = a label + a file). A JSON "kind"
-// is retired and rejected with teaching. An unpinned compile_fail is itself a
+// is retired and rejected with teaching. An unpinned compile-fail is itself a
 // failure. Leak gate is default-ON and overrides pass (same detection as
 // koru's run_regression.sh: the Zig GPA "memory address … leaked" report).
 //
@@ -268,7 +272,7 @@ const std = @import("std");
         const dir = std.fs.path.dirname(c.file) orelse ".";
         const base = std.fs.path.basename(c.file);
         // Traverse via the overridable `run` seam — a user can swap this whole
-        // behavior with `~koru/regressions:run = <their flow>`.
+        // behavior with `~koru/regressions:score = <their flow>`.
         if (c.legacy_kind) {
             failed += 1;
             outcomes.append(a, .{ .name = c.name, .passed = false, .reason = "legacy \"kind\" declaration (retired in v3)" }) catch {};
@@ -277,7 +281,7 @@ const std = @import("std");
             std.debug.print("      \x1b[2mAnnotate it with //~ run or //~ compile_fail(frontend|backend) and delete \"kind\" from the case block.\x1b[0m\n", .{});
             continue;
         }
-        const result = run_event.handler(.{
+        const result = score_event.handler(.{
             .dir = dir,
             .base = base,
             .allocator = a,
@@ -402,14 +406,18 @@ const std = @import("std");
 }
 
 // ============================================================================
-// `run` — the OVERRIDABLE runner seam (abstract event, same pattern as
+// `score` — the OVERRIDABLE runner seam (abstract event, same pattern as
 // compiler:coordinate). The default below scores a case by driving `koruc` as a
-// subprocess; a user swaps the entire behavior with `~koru/regressions:run = …`
+// subprocess; a user swaps the entire behavior with `~koru/regressions:score = …`
 // (e.g. to run pytest/cargo, or to traverse a dependency graph). "Traverses
 // stuff" today = one case; the seam is what a future graph-runner plugs into.
+//
+// Named `score`, not `run` — the expectation marker below owns `run()`, and a
+// tor name is unique per module (measured: two `run` tors emitted a duplicate
+// `run_event` struct in the backend).
 // ============================================================================
 
-~[comptime|abstract] pub tor run {
+~[comptime|abstract] pub tor score {
     dir: string,
     base: string,
     allocator: __koru_std.mem.Allocator,
@@ -417,16 +425,17 @@ const std = @import("std");
 | passed
 | failed string
 
-// Default = a FLOW that delegates to the zig executor and re-produces `run`'s
-// own branches. Using a flow default (not a bare `~proc run|zig`) is what makes
-// `run.default(...)` available to overrides — the compiler:coordinate idiom.
-~run = run-exec(dir, base, allocator)
+// Default = a FLOW that delegates to the zig executor and re-produces `score`'s
+// own branches. Using a flow default (not a bare `~proc score|zig`) is what
+// makes `score.default(...)` available to overrides — the compiler:coordinate
+// idiom.
+~score = run-exec(dir, base, allocator)
 | passed => passed
 | failed f => failed f
 
 // The actual subprocess executor (leaf zig work), behind the flow above.
-// Reads the test file's own `//~` directives (the test is self-describing),
-// then drives koruc and scores against them.
+// Drives koruc, walks the test's own AST (program.ast.json) for its declared
+// expectations, and scores against them.
 ~[comptime] tor run-exec {
     dir: string,
     base: string,
@@ -436,10 +445,29 @@ const std = @import("std");
 | failed string
 
 ~proc run-exec|zig {
-    // ---- read the test file and parse its //~ directives ----
-    const path = std.fs.path.join(allocator, &.{ dir, base }) catch return .{ .failed = "out of memory" };
-    const source = std.fs.cwd().readFileAlloc(allocator, path, 10 * 1024 * 1024) catch
-        return .{ .failed = std.fmt.allocPrint(allocator, "cannot read test file '{s}'", .{path}) catch "cannot read test file" };
+    // ---- expectations are DECLARED program surface, collected from the
+    // test's own AST. Drive koruc first (it writes the test's
+    // program.ast.json once the frontend succeeds — even when the backend
+    // then rejects the program), then walk that AST for koru/regressions
+    // markers: the compiler has already parsed, resolved, and validated
+    // them. A stale ast.json from an earlier compile in the same dir is
+    // deleted first, and the walk filters by the file's own source_module.
+    const ast_path = std.fs.path.join(allocator, &.{ dir, "program.ast.json" }) catch return .{ .failed = "out of memory" };
+    std.fs.cwd().deleteFile(ast_path) catch {};
+
+    // ---- drive koruc ----
+    const compile = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "koruc", base },
+        .cwd = dir,
+    }) catch return .{ .failed = "koruc failed to spawn" };
+    defer allocator.free(compile.stdout);
+    defer allocator.free(compile.stderr);
+    const compiled_ok = compile.term == .Exited and compile.term.Exited == 0;
+    // Phase progress goes to koruc's stdout; "backend reached" = the frontend
+    // handed off (generated backend.zig / started building the executable).
+    const backend_reached = std.mem.indexOf(u8, compile.stdout, "backend.zig") != null or
+        std.mem.indexOf(u8, compile.stdout, "Building executable") != null;
 
     const Pin = struct { id: []const u8, substr: []const u8 };
     const Kind = enum { unset, run, compile_fail };
@@ -452,74 +480,142 @@ const std = @import("std");
     var expects = std.ArrayListUnmanaged([]const u8){};
     var expects_not = std.ArrayListUnmanaged([]const u8){};
 
-    var lines = std.mem.splitScalar(u8, source, '\n');
-    while (lines.next()) |raw| {
-        const line = std.mem.trim(u8, raw, " \t\r");
-        if (!std.mem.startsWith(u8, line, "//~")) continue;
-        const d = std.mem.trim(u8, line[3..], " \t");
-        if (std.mem.eql(u8, d, "run")) {
-            if (kind != .unset) return .{ .failed = "conflicting //~ directives: kind declared twice" };
-            kind = .run;
-        } else if (std.mem.startsWith(u8, d, "compile_fail")) {
-            if (kind != .unset) return .{ .failed = "conflicting //~ directives: kind declared twice" };
-            kind = .compile_fail;
-            const rest = std.mem.trim(u8, d["compile_fail".len..], " \t");
-            if (std.mem.eql(u8, rest, "(frontend)")) {
-                stage = .frontend;
-            } else if (std.mem.eql(u8, rest, "(backend)")) {
-                stage = .backend;
-            } else if (rest.len == 0) {
-                return .{ .failed = "//~ compile_fail needs a stage pin: compile_fail(frontend) or compile_fail(backend)" };
-            } else {
-                return .{ .failed = std.fmt.allocPrint(allocator, "unscoreable compile_fail stage '{s}' — v1 scores (frontend) and (backend); the finer backend-compile/backend-runtime/backend-exec split needs per-stage driving and isn't enforced yet", .{rest}) catch "unscoreable compile_fail stage" };
-            }
-        } else if (std.mem.startsWith(u8, d, "error[")) {
-            const close = std.mem.indexOfScalar(u8, d, ']') orelse
-                return .{ .failed = "malformed //~ error[…] pin: missing ']'" };
-            const id = d["error[".len..close];
-            if (id.len == 0) return .{ .failed = "malformed //~ error[…] pin: empty diagnostic ID" };
-            const after = std.mem.trim(u8, d[close + 1 ..], " \t");
-            if (after.len > 0 and after[0] == '@')
-                return .{ .failed = "named line markers (@marker) are reserved but not enforced yet — backend diagnostics don't carry a real source file:line (see REGRESSIONS_RUNNER_DESIGN.md, float F1); pin by ID + message substring for now" };
-            var substr: []const u8 = "";
-            if (after.len > 0) {
-                if (after[0] != ':')
-                    return .{ .failed = std.fmt.allocPrint(allocator, "malformed //~ error[…] pin — expected ':' after error[{s}]", .{id}) catch "malformed //~ error[…] pin" };
-                substr = std.mem.trim(u8, after[1..], " \t");
-            }
-            pins.append(allocator, .{ .id = id, .substr = substr }) catch return .{ .failed = "out of memory" };
-        } else if (std.mem.startsWith(u8, d, "expect-not:")) {
-            // Order matters: expect-not must be checked before expect.
-            const substr = std.mem.trim(u8, d["expect-not:".len..], " \t");
-            if (substr.len == 0) return .{ .failed = "//~ expect-not: needs a substring — an empty not-assertion is a label that lies" };
-            expects_not.append(allocator, substr) catch return .{ .failed = "out of memory" };
-        } else if (std.mem.startsWith(u8, d, "expect:")) {
-            const substr = std.mem.trim(u8, d["expect:".len..], " \t");
-            if (substr.len == 0) return .{ .failed = "//~ expect: needs a substring — an empty assertion matches everything" };
-            expects.append(allocator, substr) catch return .{ .failed = "out of memory" };
-        } else if (std.mem.startsWith(u8, d, "leaks:")) {
-            const rest = std.mem.trim(u8, d["leaks:".len..], " \t");
-            if (!std.mem.startsWith(u8, rest, "allow"))
-                return .{ .failed = std.fmt.allocPrint(allocator, "unknown //~ leaks: form '{s}' — only 'leaks: allow <reason>' exists (the gate is default-ON)", .{rest}) catch "unknown //~ leaks: form" };
-            const reason = std.mem.trim(u8, rest["allow".len..], " \t");
-            if (reason.len == 0)
-                return .{ .failed = "//~ leaks: allow requires a reason — a leak waiver without a why is a silent fallback" };
-            leaks_allowed = true;
-        } else if (std.mem.startsWith(u8, d, "backends:")) {
-            return .{ .failed = "//~ backends: is reserved for cross-backend parity (v1.1) and not enforced yet — remove it rather than carry a label that lies" };
-        } else {
-            return .{ .failed = std.fmt.allocPrint(allocator, "unknown //~ directive: '{s}'", .{d}) catch "unknown //~ directive" };
-        }
-    }
+    // base without its extension = the source_module the AST stamps on the
+    // test file's own declarations (input.kz -> input).
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
+    const base_mod = base[0..dot];
 
-    if (kind == .unset)
-        return .{ .failed = "no //~ kind directive — a test is self-describing: annotate it with //~ run or //~ compile_fail(frontend|backend)" };
+    // String-literal args arrive as parsed_expression.node.literal.string
+    // (already unquoted); everything else falls back to the raw `value` text.
+    const argValue = struct {
+        fn go(v: std.json.Value) []const u8 {
+            if (v != .object) return "";
+            if (v.object.get("parsed_expression")) |pe| {
+                if (pe == .object) {
+                    if (pe.object.get("node")) |pn| {
+                        if (pn == .object) {
+                            if (pn.object.get("literal")) |lit| {
+                                if (lit == .object) {
+                                    if (lit.object.get("string")) |s| {
+                                        if (s == .string) return s.string;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (v.object.get("value")) |raw| {
+                if (raw == .string) return raw.string;
+            }
+            return "";
+        }
+    }.go;
+
+    const namedArg = struct {
+        fn go(inv: std.json.Value, name: []const u8) []const u8 {
+            if (inv != .object) return "";
+            const args = inv.object.get("args") orelse return "";
+            if (args != .array) return "";
+            for (args.array.items) |arg| {
+                if (arg != .object) continue;
+                const an = arg.object.get("name") orelse continue;
+                if (an == .string and std.mem.eql(u8, an.string, name)) return argValue(arg);
+            }
+            return "";
+        }
+    }.go;
+
+    if (std.fs.cwd().readFileAlloc(allocator, ast_path, 64 * 1024 * 1024)) |ast_text| {
+        defer allocator.free(ast_text);
+        if (std.json.parseFromSlice(std.json.Value, allocator, ast_text, .{})) |parsed| {
+            defer parsed.deinit();
+            const root = parsed.value;
+            if (root == .object) {
+                if (root.object.get("items")) |items| {
+                    if (items == .array) {
+                        for (items.array.items) |item| {
+                            if (item != .object) continue;
+                            const flow = item.object.get("flow") orelse continue;
+                            if (flow != .object) continue;
+                            const body = flow.object.get("body") orelse continue;
+                            if (body != .object) continue;
+                            const node = body.object.get("node") orelse continue;
+                            if (node != .object) continue;
+                            const inv = node.object.get("invocation") orelse continue;
+                            if (inv != .object) continue;
+                            const p = inv.object.get("path") orelse continue;
+                            if (p != .object) continue;
+                            const mq = p.object.get("module_qualifier") orelse continue;
+                            if (mq != .string) continue;
+                            if (!(std.mem.eql(u8, mq.string, "koru.regressions") or std.mem.eql(u8, mq.string, "regressions"))) continue;
+                            const segs = p.object.get("segments") orelse continue;
+                            if (segs != .array or segs.array.items.len != 1) continue;
+                            const seg = segs.array.items[0];
+                            if (seg != .string) continue;
+                            const src = inv.object.get("source_module") orelse continue;
+                            if (src != .string) continue;
+                            if (!std.mem.eql(u8, src.string, base_mod)) continue;
+
+                            if (std.mem.eql(u8, seg.string, "run")) {
+                                if (kind != .unset) return .{ .failed = "conflicting expectations: kind declared twice (run + compile-fail?)" };
+                                kind = .run;
+                            } else if (std.mem.eql(u8, seg.string, "compile-fail")) {
+                                if (kind != .unset) return .{ .failed = "conflicting expectations: kind declared twice (run + compile-fail?)" };
+                                kind = .compile_fail;
+                                const st = namedArg(inv, "stage");
+                                if (std.mem.eql(u8, st, "frontend")) {
+                                    return .{ .failed = "compile-fail(stage: frontend) is unscoreable — a file that fails at the frontend never materializes its AST, so it cannot declare its own expectation. Frontend negatives are the one //~ residue, deferred until the corpus has one." };
+                                } else if (std.mem.eql(u8, st, "backend")) {
+                                    stage = .backend;
+                                } else if (st.len == 0) {
+                                    return .{ .failed = "compile-fail needs a stage: compile-fail(stage: backend)" };
+                                } else {
+                                    return .{ .failed = std.fmt.allocPrint(allocator, "unscoreable compile-fail stage '{s}' — v1 scores backend; frontend is structurally unscoreable (no AST)", .{st}) catch "unscoreable compile-fail stage" };
+                                }
+                            } else if (std.mem.eql(u8, seg.string, "error")) {
+                                const id = namedArg(inv, "id");
+                                const msg = namedArg(inv, "msg");
+                                if (id.len == 0) return .{ .failed = "error(id: …, msg: …) needs a diagnostic ID" };
+                                pins.append(allocator, .{ .id = id, .substr = msg }) catch return .{ .failed = "out of memory" };
+                            } else if (std.mem.eql(u8, seg.string, "expect")) {
+                                const text = namedArg(inv, "text");
+                                if (text.len == 0) return .{ .failed = "expect(text: …) needs a substring — an empty assertion matches everything" };
+                                expects.append(allocator, text) catch return .{ .failed = "out of memory" };
+                            } else if (std.mem.eql(u8, seg.string, "expect-not")) {
+                                const text = namedArg(inv, "text");
+                                if (text.len == 0) return .{ .failed = "expect-not(text: …) needs a substring — an empty not-assertion is a label that lies" };
+                                expects_not.append(allocator, text) catch return .{ .failed = "out of memory" };
+                            } else if (std.mem.eql(u8, seg.string, "leaks-allow")) {
+                                const reason = namedArg(inv, "reason");
+                                if (reason.len == 0) return .{ .failed = "leaks-allow(reason: …) requires a reason — a leak waiver without a why is a silent fallback" };
+                                leaks_allowed = true;
+                            } else {
+                                return .{ .failed = std.fmt.allocPrint(allocator, "unknown koru/regressions marker: {s}", .{seg.string}) catch "unknown koru/regressions marker" };
+                            }
+                        }
+                    }
+                }
+            }
+        } else |_| {}
+    } else |_| {}
+
+    // No AST = the file never got past the frontend. Either it is a broken
+    // positive (report the compiler's own diagnostics) or a frontend-negative
+    // (structurally unscoreable — see above). Both are reds; the teaching
+    // names both.
+    if (kind == .unset) {
+        if (!compiled_ok) {
+            return .{ .failed = std.fmt.allocPrint(allocator, "compile error (the program failed before its expectations could be collected)\n{s}", .{std.mem.trim(u8, compile.stderr, " \t\r\n")}) catch "compile error" };
+        }
+        return .{ .failed = "a test is self-describing — declare its expectations in the program: koru/regressions:run() or koru/regressions:compile-fail(stage: backend)" };
+    }
     if (kind == .compile_fail and pins.items.len == 0)
-        return .{ .failed = "unpinned negative — //~ compile_fail requires at least one //~ error[KORUnnn] pin (an unpinned negative is itself a failure)" };
+        return .{ .failed = "unpinned negative — compile-fail requires at least one error(id: …, msg: …) pin (an unpinned negative is itself a failure)" };
     if (kind == .run and pins.items.len > 0)
-        return .{ .failed = "//~ error[…] pins on a //~ run case — pins only score compile failures" };
+        return .{ .failed = "error(id: …, msg: …) pins on a run case — pins only score compile failures" };
     if (kind == .compile_fail and (expects.items.len > 0 or expects_not.items.len > 0))
-        return .{ .failed = "//~ expect / expect-not pins score produced-program output — a compile_fail case has no produced program; pin its diagnostics with //~ error[…] instead" };
+        return .{ .failed = "expect / expect-not pins score produced-program output — a compile_fail case has no produced program; pin its diagnostics with error(id: …, msg: …) instead" };
 
     // Two leak surfaces, two detections:
     //   - koruc's own compile-phase leaks: the Zig GPA report line
@@ -539,24 +635,11 @@ const std = @import("std");
         }
     }.go;
 
-    // ---- drive koruc ----
-    const compile = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "koruc", base },
-        .cwd = dir,
-    }) catch return .{ .failed = "koruc failed to spawn" };
-    defer allocator.free(compile.stdout);
-    defer allocator.free(compile.stderr);
-    const compiled_ok = compile.term == .Exited and compile.term.Exited == 0;
-    // Phase progress goes to koruc's stdout; "backend reached" = the frontend
-    // handed off (generated backend.zig / started building the executable).
-    const backend_reached = std.mem.indexOf(u8, compile.stdout, "backend.zig") != null or
-        std.mem.indexOf(u8, compile.stdout, "Building executable") != null;
     const leak_in_compile = hasLeak(compile.stderr);
 
     if (kind == .compile_fail) {
         if (compiled_ok)
-            return .{ .failed = "compiled, but //~ compile_fail expected" };
+            return .{ .failed = "compiled, but compile-fail expected" };
         if (!leaks_allowed and leak_in_compile)
             return .{ .failed = "memory leak during compile — the leak gate overrides the expected failure" };
         if (stage == .frontend and backend_reached)
@@ -637,3 +720,49 @@ const std = @import("std");
 ~proc case|zig {
     // Void — collected during AST walking by the `test` command.
 }
+
+// ============================================================================
+// The EXPECTATION markers — a test file's self-description as declared program
+// surface (they replace the retired //~ comment grammar). Each is collected
+// from the test program's AST — via its program.ast.json — by `run-exec`, the
+// same walk that collects `case` from suite.k. The compiler parses, resolves,
+// and validates them: a typo is a compile error with a location, an unknown
+// directive is impossible, and "can't drift" lives in the type system.
+//
+// Spelling maps 1:1 onto the retired //~ directives:
+//   //~ run                  -> koru/regressions:run()
+//   //~ compile_fail(backend)-> koru/regressions:compile-fail(backend)
+//   //~ error[ID]: msg       -> koru/regressions:error("ID", "msg")
+//   //~ expect: text         -> koru/regressions:expect("text")
+//   //~ expect-not: text     -> koru/regressions:expect-not("text")
+//   //~ leaks: allow reason  -> koru/regressions:leaks-allow("reason")
+//
+// `compile-fail(frontend)` is rejected by the runner with teaching: a file
+// that fails at the frontend never materializes its AST, so it structurally
+// cannot declare its own expectation — the one true //~ residue, deferred
+// until a frontend negative exists in the corpus.
+// ============================================================================
+
+// Positive: compiles, runs, exits 0, no leaks.
+~[comptime|norun]pub tor run {}
+~proc run|zig {}
+
+// Negative, pinned to a stage. `frontend` is unscoreable (see above).
+~[comptime|norun]pub tor compile-fail { stage: Expression }
+~proc compile-fail|zig {}
+
+// Diagnostic pin: diagnostic ID + message substring.
+~[comptime|norun]pub tor error { id: Expression, msg: Expression }
+~proc error|zig {}
+
+// Produced-program output must contain this substring.
+~[comptime|norun]pub tor expect { text: Expression }
+~proc expect|zig {}
+
+// Produced-program output must NOT contain this substring.
+~[comptime|norun]pub tor expect-not { text: Expression }
+~proc expect-not|zig {}
+
+// Reasoned opt-out of the leak gate — a reason is required.
+~[comptime|norun]pub tor leaks-allow { reason: Expression }
+~proc leaks-allow|zig {}

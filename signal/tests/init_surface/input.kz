@@ -1,5 +1,7 @@
-//~ run
-//~ expect: init(Breath) ok
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "init(Breath) ok")
 //
 // A1 pin: store-parallel init(Breath) — transform rewrites to init.model at compile time.
 

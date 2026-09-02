@@ -1,5 +1,7 @@
-//~ run
-//~ expect: shape + init ok
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "shape + init ok")
 //
 // D1 pin: koru/signal:shape(Breath) { … } is norun metadata (kernel-parallel).
 // Shape declares ports only; carried state uses name[type] in the tick block.

@@ -1,13 +1,15 @@
-//~ compile_fail(backend)
-//~ error[KORU030]: Phantom state mismatch
+~import koru/regressions
+
+~koru/regressions:compile-fail(stage: backend)
+~koru/regressions:error(id: "KORU030", msg: "Phantom state mismatch")
 
 // NEGATIVE (must FAIL to compile): use-after-free of a finished stream.
 //
 // `deflate.finish` transitions the Deflater from <fed!> to <done!>. Pushing
 // to it afterwards (deflate.push requires <!open|!fed>) is a use-after-free:
 // the zlib z_stream has already had deflateEnd() called on it. The phantom
-// checker rejects this at compile time — the //~ pins above are the
-// machine-checked expectation (they replaced the old prose EXPECTED: note,
+// checker rejects this at compile time — the declared expectations above are
+// the machine-checked contract (they replaced the old prose EXPECTED: note,
 // which could drift into a doc-lie).
 //
 // Note we push a real chunk BEFORE finishing — that is what reaches the <fed!>

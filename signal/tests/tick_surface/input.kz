@@ -1,5 +1,7 @@
-//~ run
-//~ expect: tick alarm=
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "tick alarm=")
 //
 // A2 pin: store-parallel tick(Breath, pass_rate: r) after init(Breath).
 

@@ -1,5 +1,7 @@
-//~ run
-//~ expect: PASS: C3 breath-only build
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "PASS: C3 breath-only build")
 //
 // C3 pin: Breath-only program links signal_breath, not signal_floor.
 

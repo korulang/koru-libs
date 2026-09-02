@@ -1,5 +1,7 @@
-//~ run
-//~ expect: PASS: koru/signal external tick matches breath oracle
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "PASS: koru/signal external tick matches breath oracle")
 //
 // External-clock pin: caller loops synthetic pass_rate snapshots and ticks
 // koru/signal(Breath) each step. Matches breath_harness / codegen oracle:

@@ -1,6 +1,8 @@
-//~ run
-//~ expect: expected err:
-//~ expect-not: unexpected tick success
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "expected err:")
+~koru/regressions:expect-not(text: "unexpected tick success")
 //
 // B2 pin: tick without init hits the honest err branch.
 

@@ -31,8 +31,19 @@ Verified 2026-09-02: a backend-fail compile still materializes the AST
 serialize as `module_qualifier` + `segments` — walkable with the exact pattern
 the runner already uses on suite.k's in-process AST.
 
-Open: the exact tor spellings (compile-fail / expect / expect-not / error /
-leaks-allow names); the frontend-negative residue's vehicle (`//~` kept as a
-narrow exception, or deferred — the current corpus has zero frontend
-negatives); the program.ast.json bridge as a compiler-serialization coupling
-and what it costs if the format churns.
+Implemented the same day (commit after 3f20751): the tors exist
+(`run`, `compile-fail(stage:)`, `error(id:, msg:)`, `expect(text:)`,
+`expect-not(text:)`, `leaks-allow(reason:)` — koru-natural hyphenated names,
+labeled args; the runner's overridable seam moved from `run` to `score` to
+free the marker name after the duplicate-`run_event` measurement). The runner
+drives koruc, deletes a stale `program.ast.json` first, then walks the fresh
+one filtered by the file's own `source_module`. A typo'd marker is a real
+compiler error (`KORU040 unknown tor`) at the backend stage; wrong arg labels
+are `PARSE006` at the frontend. All 13 suite cases migrated; every red path
+forced by sabotage (expect miss, expect-not violation, unpinned negative,
+conflicting kind, no declarations, typo).
+
+Open: the frontend-negative residue's vehicle (`compile-fail(frontend)` is
+rejected with teaching — the corpus has zero frontend negatives); the
+program.ast.json bridge as a compiler-serialization coupling and what it
+costs if the format churns.

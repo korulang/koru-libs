@@ -1,5 +1,7 @@
-//~ run
-//~ expect: PASS: C3 two-model build
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "PASS: C3 two-model build")
 //
 // C3 pin: program naming Breath and Floor links both signal_breath and signal_floor.
 

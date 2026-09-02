@@ -1,5 +1,7 @@
-//~ run
-//~ expect: PASS: two-model registry
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "PASS: two-model registry")
 //
 // F3 pin: two named models share the registry — Breath and Floor tick
 // independently without cross-contaminating state.

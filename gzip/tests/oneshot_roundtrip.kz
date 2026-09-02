@@ -1,5 +1,7 @@
-//~ run
-//~ expect: hello hello hello world world world
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "hello hello hello world world world")
 
 // POSITIVE: one-shot compress then one-shot decompress.
 // Proves the migrated whole-buffer API still round-trips.

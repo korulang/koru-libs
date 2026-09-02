@@ -1,5 +1,7 @@
-//~ run
-//~ expect: Round-trip OK
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "Round-trip OK")
 
 // gzip round-trip test: compress then decompress and assert the bytes
 // come back byte-identical. This is the first real exercise of
