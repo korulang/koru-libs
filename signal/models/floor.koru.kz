@@ -1,0 +1,14 @@
+// Koru-authored Floor model — reference spine (see signal/AUTHORING.md).
+
+~koru/signal:shape(Floor) {
+    pass_rate[percent]
+    alarm[1]
+}
+
+const {
+    floor: 80
+}
+
+block {
+    alarm = pass_rate < floor ? 1 : 0
+}

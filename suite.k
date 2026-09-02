@@ -23,3 +23,64 @@ koru/regressions:case(gzip use-after-finish is rejected) {
   "category": ["c-libs", "smoke"],
   "tags": ["phantom-obligations"]
 }
+
+koru/regressions:case(signal external tick) {
+  "file": "signal/tests/external_tick/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "external-clock"]
+}
+
+koru/regressions:case(signal init surface) {
+  "file": "signal/tests/init_surface/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "transform"]
+}
+
+koru/regressions:case(signal tick surface) {
+  "file": "signal/tests/tick_surface/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "transform"]
+}
+
+koru/regressions:case(signal reference surface) {
+  "file": "signal/tests/reference_surface/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "transform"]
+}
+
+koru/regressions:case(signal tick before init) {
+  "file": "signal/tests/tick_before_init/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "error-path"]
+}
+
+koru/regressions:case(signal shape surface) {
+  "file": "signal/tests/shape_surface/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "shape"]
+}
+
+koru/regressions:case(signal model spine) {
+  "file": "signal/tests/model_spine/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "authoring"]
+}
+
+koru/regressions:case(signal two models) {
+  "file": "signal/tests/two_models/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "registry"]
+}
+
+koru/regressions:case(signal breath only build) {
+  "file": "signal/tests/breath_only_build/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "build"]
+}
+
+koru/regressions:case(signal two models build) {
+  "file": "signal/tests/two_models_build/input.kz",
+  "category": ["c-libs", "signal"],
+  "tags": ["signal-processing", "build"]
+}
+

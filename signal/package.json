@@ -1,0 +1,35 @@
+{
+  "name": "@korulang/signal",
+  "version": "0.0.1",
+  "description": "Stateful signal graphs — named models, external clock, compile-to-Zig through shared signal-processing codegen",
+  "keywords": ["koru", "korulang", "signal", "signal-processing", "dsp"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "signal"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md",
+    "THIRD_PARTY.md",
+    "AUTHORING.md",
+    "models/breath.zig",
+    "models/breath.koru.eel",
+    "models/breath.koru.kz",
+    "models/floor.zig",
+    "models/floor.koru.eel",
+    "models/floor.koru.kz",
+    "examples/",
+    "codegen/",
+    "SERIES.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}

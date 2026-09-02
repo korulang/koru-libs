@@ -1,0 +1,24 @@
+//~ run
+//
+// C3 pin: Breath-only program links signal_breath, not signal_floor.
+
+~import koru/signal
+~import std/io
+
+~koru/signal:init(Breath)
+| ok |> check-build
+| err e |> std/io:print.ln("init failed: {{ e:s }}")
+
+~tor check-build {}
+
+~proc check-build|zig {
+    const std = @import("std");
+    const build_out = @embedFile("build_output.zig");
+    if (std.mem.indexOf(u8, build_out, "signal_floor") != null) {
+        @panic("C3 leak: breath-only program linked signal_floor");
+    }
+    if (std.mem.indexOf(u8, build_out, "signal_breath") == null) {
+        @panic("C3 miss: breath-only program did not link signal_breath");
+    }
+    std.debug.print("PASS: C3 breath-only build (signal_breath yes, signal_floor no)\n", .{});
+}

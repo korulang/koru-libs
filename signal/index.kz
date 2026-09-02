@@ -1,0 +1,366 @@
+// @korulang/signal — stateful signal graphs, Koru-native surface.
+// Discrete-time signal processing: named models, external clock, compile-to-Zig.
+//
+// INSTANCE MODEL — parallel to std/store + std/kernel:
+//
+//   koru/signal:shape(Breath) { pass_rate: f64 ... }   port/wire declaration (norun)
+//   const { depth_floor: 8 ... }                     design constants (010_004)
+//   koru/signal:init(Breath) { peak: 0 ... }         carried-state seed
+//   block { peak[f64] ... }                          tick body (reduce name[type] grammar)
+//   koru/signal:init(Breath)                   compile + register named instance
+//   koru/signal(Breath)                        bare reference to compiled model
+//   koru/signal:tick(Breath, pass_rate: r)     external-clock step (operation)
+//
+// `:init` is the compile boundary; `:tick` is the external-clock join — the
+// caller owns the loop and pushes snapshots; signal does not own a pump.
+//
+// v0 models: Breath (sustained drawdown) + Floor (threshold). F3 widens registry.
+//
+// SLICES (mechanical blocks — see signal/SERIES.md):
+//   A  surface transforms — A1+A2+A3 landed
+//   B  instance registry — B1+B2 landed
+//   C  emit pipeline — C2 regen; C3 per-model link via appended imports + signal_rt/
+//   D  :shape norun — D1 landed
+//   E  Koru → EEL IR → emitModule
+
+~import std/build
+~import std/compiler
+
+const std = @import("std");
+
+const ModelKind = enum {
+    breath,
+    floor,
+};
+
+var registered_breath: bool = false;
+var registered_floor: bool = false;
+var runtime_import_breath: bool = false;
+var runtime_import_floor: bool = false;
+
+const stripModelName = struct {
+    fn call(raw: []const u8) []const u8 {
+        if (raw.len >= 2 and raw[0] == '"') return raw[1 .. raw.len - 1];
+        return raw;
+    }
+}.call;
+
+fn modelKind(model: []const u8) ?ModelKind {
+    if (std.mem.eql(u8, model, "Breath")) return .breath;
+    if (std.mem.eql(u8, model, "Floor")) return .floor;
+    return null;
+}
+
+fn runtimeModuleQualifier(kind: ModelKind) []const u8 {
+    return switch (kind) {
+        .breath => "koru.signal_rt.breath",
+        .floor => "koru.signal_rt.floor",
+    };
+}
+
+fn runtimeImportPath(kind: ModelKind) []const u8 {
+    return switch (kind) {
+        .breath => "koru/signal_rt/breath",
+        .floor => "koru/signal_rt/floor",
+    };
+}
+
+fn runtimeImportAppend(allocator: std.mem.Allocator, kind: ModelKind, flow_module: []const u8, flow_location: @import("errors").SourceLocation) []const @import("ast").Item {
+    const ast = @import("ast");
+    switch (kind) {
+        .breath => {
+            if (runtime_import_breath) return &.{};
+            runtime_import_breath = true;
+        },
+        .floor => {
+            if (runtime_import_floor) return &.{};
+            runtime_import_floor = true;
+        },
+    }
+    const path = runtimeImportPath(kind);
+    const items = allocator.alloc(ast.Item, 1) catch unreachable;
+    items[0] = ast.Item{ .import_decl = ast.ImportDecl{
+        .path = allocator.dupe(u8, path) catch unreachable,
+        .local_name = null,
+        .location = flow_location,
+        .module = allocator.dupe(u8, flow_module) catch unreachable,
+    } };
+    return items;
+}
+
+fn runtimeCallPath(allocator: std.mem.Allocator, kind: ModelKind, tor_name: []const u8) @import("ast").DottedPath {
+    const segs = allocator.alloc([]const u8, 1) catch unreachable;
+    segs[0] = allocator.dupe(u8, tor_name) catch unreachable;
+    return .{
+        .module_qualifier = allocator.dupe(u8, runtimeModuleQualifier(kind)) catch unreachable,
+        .segments = segs,
+    };
+}
+
+~[norun]pub tor shape {
+    expr: Expression,
+    source: Source
+}
+
+~[keyword|comptime|transform]pub tor init {
+    expr: Expression,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    reporter: *std/compiler:ErrorReporter,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~[transform]proc init|zig {
+    const ast = @import("ast");
+    const ast_functional = @import("ast_functional");
+
+    if (item.* != .flow) return .{ .transformed = .{} };
+    const flow = &item.flow;
+
+    const stripQuotes = struct {
+        fn call(raw: []const u8) []const u8 {
+            if (raw.len >= 2 and raw[0] == '"') return raw[1 .. raw.len - 1];
+            return raw;
+        }
+    }.call;
+
+    var model_name: []const u8 = "";
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "expr")) model_name = stripQuotes(arg.value);
+    }
+    if (model_name.len == 0) {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal:init(Breath) — bare model name required (v0: Breath, Floor)", .{}) } };
+    }
+    const kind = modelKind(model_name) orelse {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal:init({s}) — unknown model (v0: Breath, Floor)", .{model_name}) } };
+    };
+
+    const runtime_path = runtimeCallPath(allocator, kind, "init");
+    const call_args = allocator.alloc(ast.Arg, 0) catch unreachable;
+
+    const call_inv = blk: {
+        var inv = ast_functional.cloneInvocation(allocator, invocation) catch unreachable;
+        inv.path = runtime_path;
+        inv.args = call_args;
+        break :blk inv;
+    };
+
+    const conts = allocator.alloc(ast.Continuation, flow.body.continuations.len) catch unreachable;
+    for (flow.body.continuations, 0..) |*c, i| {
+        conts[i] = ast_functional.cloneContinuation(allocator, c) catch unreachable;
+    }
+
+    const appended = runtimeImportAppend(allocator, kind, flow.module, flow.location);
+
+    return .{ .transformed = .{
+        .replacement = ast.Item{ .flow = ast.Flow{
+            .body = ast.rootSite(call_inv, conts, flow.location),
+            .pre_label = null,
+            .impl_of = flow.impl_of,
+            .super_shape = null,
+            .inline_body = null,
+            .preamble_code = null,
+            .is_pure = false,
+            .is_transitively_pure = false,
+            .location = flow.location,
+            .module = allocator.dupe(u8, flow.module) catch unreachable,
+        } },
+        .appended = appended,
+    } };
+}
+
+~pub tor init.model { model: string }
+| ok
+| err string
+
+~proc init.model|zig {
+    _ = model;
+    return .{ .err = "koru/signal:init.model is deprecated — use koru/signal:init(Breath) or koru/signal:init(Floor)" };
+}
+
+~[keyword|comptime|transform]pub tor tick {
+    expr: Expression,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    reporter: *std/compiler:ErrorReporter,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~[transform]proc tick|zig {
+    const ast = @import("ast");
+    const ast_functional = @import("ast_functional");
+
+    if (item.* != .flow) return .{ .transformed = .{} };
+    const flow = &item.flow;
+
+    const stripQuotes = struct {
+        fn call(raw: []const u8) []const u8 {
+            if (raw.len >= 2 and raw[0] == '"') return raw[1 .. raw.len - 1];
+            return raw;
+        }
+    }.call;
+
+    var model_name: []const u8 = "";
+    var extra_count: usize = 0;
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "expr")) {
+            model_name = stripQuotes(arg.value);
+        } else {
+            extra_count += 1;
+        }
+    }
+    if (model_name.len == 0) {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal:tick(Breath, pass_rate: r) — bare model name required (v0: Breath, Floor)", .{}) } };
+    }
+    const kind = modelKind(model_name) orelse {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal:tick({s}, …) — unknown model (v0: Breath, Floor)", .{model_name}) } };
+    };
+
+    const runtime_path = runtimeCallPath(allocator, kind, "tick");
+    const call_args = allocator.alloc(ast.Arg, extra_count) catch unreachable;
+    var ei: usize = 0;
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "expr")) continue;
+        call_args[ei] = .{
+            .name = allocator.dupe(u8, arg.name) catch unreachable,
+            .value = allocator.dupe(u8, arg.value) catch unreachable,
+            .source_value = arg.source_value,
+            .expression_value = arg.expression_value,
+            .parsed_expression = arg.parsed_expression,
+            .phantom_type = if (arg.phantom_type) |pt| allocator.dupe(u8, pt) catch unreachable else null,
+        };
+        ei += 1;
+    }
+
+    const call_inv = blk: {
+        var inv = ast_functional.cloneInvocation(allocator, invocation) catch unreachable;
+        inv.path = runtime_path;
+        inv.args = call_args;
+        break :blk inv;
+    };
+
+    const conts = allocator.alloc(ast.Continuation, flow.body.continuations.len) catch unreachable;
+    for (flow.body.continuations, 0..) |*c, i| {
+        conts[i] = ast_functional.cloneContinuation(allocator, c) catch unreachable;
+    }
+
+    const appended = runtimeImportAppend(allocator, kind, flow.module, flow.location);
+
+    return .{ .transformed = .{
+        .replacement = ast.Item{ .flow = ast.Flow{
+            .body = ast.rootSite(call_inv, conts, flow.location),
+            .pre_label = null,
+            .impl_of = flow.impl_of,
+            .super_shape = null,
+            .inline_body = null,
+            .preamble_code = null,
+            .is_pure = false,
+            .is_transitively_pure = false,
+            .location = flow.location,
+            .module = allocator.dupe(u8, flow.module) catch unreachable,
+        } },
+        .appended = appended,
+    } };
+}
+
+~pub tor tick.model { model: string, pass_rate: f64 }
+| out { alarm: f64, dip_ticks: f64 }
+| err string
+
+~proc tick.model|zig {
+    _ = model;
+    _ = pass_rate;
+    return .{ .err = "koru/signal:tick.model is deprecated — use koru/signal:tick(Breath, pass_rate: r)" };
+}
+
+~[norun]pub tor nop {}
+
+~pub tor register.model { model: string }
+
+~proc register.model|zig {
+    const name = stripModelName(model);
+    const kind = modelKind(name) orelse return;
+    switch (kind) {
+        .breath => registered_breath = true,
+        .floor => registered_floor = true,
+    }
+}
+
+~proc nop|zig {}
+
+~[keyword|comptime|transform|pre]pub tor default {
+    expr: Expression,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    reporter: *std/compiler:ErrorReporter,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~[transform]proc default|zig {
+    const ast = @import("ast");
+
+    if (item.* != .flow) return .{ .transformed = .{} };
+    const flow = &item.flow;
+
+    if (invocation.args.len == 0) {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal(Breath) — the reference form needs a model name", .{}) } };
+    }
+    const model_name = stripModelName(invocation.args[0].value);
+
+    if (modelKind(model_name) == null) {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal({s}): unknown model (v0: Breath, Floor)", .{model_name}) } };
+    }
+
+    if (flow.body.continuations.len > 0 and flow.body.continuations[0].kind == .effect) {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal({s}): reactive attach (`!` arms) is not built yet — use koru/signal:init({s}) and koru/signal:tick({s}, pass_rate: r) with an external clock", .{ model_name, model_name, model_name }) } };
+    }
+    if (flow.body.continuations.len > 0) {
+        return .{ .transformed = .{ .replacement = ast.refusal(allocator, reporter, .KORU161, flow.location, flow.module, "koru/signal({s}): the operation form of the reference is not built — operate by name (koru/signal:init({s}), koru/signal:tick({s}, …))", .{ model_name, model_name, model_name }) } };
+    }
+
+    const mq = invocation.path.module_qualifier orelse flow.module;
+    const home_ns = allocator.dupe(u8, mq) catch unreachable;
+
+    const register_segs = allocator.alloc([]const u8, 2) catch unreachable;
+    register_segs[0] = allocator.dupe(u8, "register") catch unreachable;
+    register_segs[1] = allocator.dupe(u8, "model") catch unreachable;
+    const model_lit = std.fmt.allocPrint(allocator, "\"{s}\"", .{model_name}) catch unreachable;
+    const register_args = allocator.alloc(ast.Arg, 1) catch unreachable;
+    register_args[0] = .{
+        .name = allocator.dupe(u8, "model") catch unreachable,
+        .value = model_lit,
+        .source_value = null,
+        .expression_value = null,
+        .parsed_expression = null,
+        .phantom_type = null,
+    };
+    const register_inv = ast.Invocation{
+        .path = .{
+            .module_qualifier = home_ns,
+            .segments = register_segs,
+        },
+        .args = register_args,
+    };
+
+    const kind = modelKind(model_name).?;
+    const appended = runtimeImportAppend(allocator, kind, flow.module, flow.location);
+
+    return .{ .transformed = .{
+        .replacement = ast.Item{ .flow = ast.Flow{
+            .body = ast.rootSite(register_inv, &.{}, flow.location),
+            .pre_label = null,
+            .impl_of = flow.impl_of,
+            .super_shape = null,
+            .inline_body = null,
+            .preamble_code = null,
+            .is_pure = false,
+            .is_transitively_pure = false,
+            .location = flow.location,
+            .module = allocator.dupe(u8, flow.module) catch unreachable,
+        } },
+        .appended = appended,
+    } };
+}

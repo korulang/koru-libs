@@ -1,0 +1,8 @@
+{
+  "name": "@korulang/signal",
+  "version": "0.0.1",
+  "description": "Stateful signal graphs — named models, external clock, compile-to-Zig through shared signal-processing codegen",
+  "paths": {
+    "std": "../../koru/koru_std"
+  }
+}

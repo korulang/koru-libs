@@ -1,0 +1,25 @@
+// Koru-authored breath model — lowers to the same EEL init/block sections as the reference oracle.
+// Source surface: breath.koru.kz (shape + init const + tick body).
+// Emit: codegen/koru_emit.zig → shared 6digit-world emitModule.
+
+@unit pass_rate     percent
+@unit peak          percent
+@unit drawdown      percent
+@unit depth_floor   percent
+@unit dip_ticks     1
+@unit dur_threshold 1
+@unit alarm         1
+@unit surprise      1
+
+@init
+peak = 0;
+dip_ticks = 0;
+depth_floor = 8;
+dur_threshold = 18;
+
+@block
+peak = pass_rate > peak ? pass_rate : peak;
+drawdown = peak - pass_rate;
+dip_ticks = drawdown >= depth_floor ? dip_ticks + 1 : 0;
+alarm = dip_ticks >= dur_threshold ? 1 : 0;
+surprise = dip_ticks;

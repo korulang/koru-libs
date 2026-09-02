@@ -1,0 +1,42 @@
+//~ run
+//
+// F3 pin: two named models share the registry — Breath and Floor tick
+// independently without cross-contaminating state.
+
+~import koru/signal
+~import std/io
+
+const std = @import("std");
+
+~koru/signal:shape(Breath) {
+    pass_rate[percent]
+    drawdown[percent]
+    alarm[1]
+    surprise[1]
+}
+
+~koru/signal:shape(Floor) {
+    pass_rate[percent]
+    alarm[1]
+}
+
+~koru/signal:init(Breath)
+| ok |> koru/signal:init(Floor)
+    | ok |> koru/signal:tick(Floor, pass_rate: 90.0)
+        | out f90 |> koru/signal:tick(Floor, pass_rate: 70.0)
+            | out f70 |> koru/signal:tick(Breath, pass_rate: 90.0)
+                | out b90 |> check(f90: f90.alarm, f70: f70.alarm, b90: b90.alarm)
+                | err e |> std/io:print.ln("breath tick failed: {{ e:s }}")
+            | err e |> std/io:print.ln("floor 70 tick failed: {{ e:s }}")
+        | err e |> std/io:print.ln("floor 90 tick failed: {{ e:s }}")
+    | err e |> std/io:print.ln("floor init failed: {{ e:s }}")
+| err e |> std/io:print.ln("breath init failed: {{ e:s }}")
+
+~tor check { f90: f64, f70: f64, b90: f64 }
+
+~proc check|zig {
+    if (f90 >= 0.5) @panic("floor alarm at 90");
+    if (f70 < 0.5) @panic("floor missed alarm at 70");
+    if (b90 >= 0.5) @panic("breath alarm too early at 90");
+    std.debug.print("PASS: two-model registry (Floor alarm={d}, Breath alarm={d})\n", .{ f70, b90 });
+}

@@ -1,0 +1,40 @@
+//~ run
+//
+// External-clock pin: caller loops synthetic pass_rate snapshots and ticks
+// koru/signal(Breath) each step. Matches breath_harness / codegen oracle:
+// 90, 85, then 70 for 18 ticks → alarm fires OOS (tick 20, dip_ticks >= 18).
+
+~import koru/signal
+~import std/io
+
+const std = @import("std");
+
+~koru/signal:init(Breath)
+| ok |> for(0..20)
+    ! each i |> snapshot-rate(i): r
+        |> koru/signal:tick(Breath, pass_rate: r)
+            | out s |> check-step(i, s.alarm, dip-ticks: s.dip_ticks)
+            | err e |> std/io:print.ln("tick failed: {{ e:s }}")
+| err e |> std/io:print.ln("init failed: {{ e:s }}")
+
+~tor snapshot-rate { i: usize } -> f64
+
+~proc snapshot-rate|zig {
+    return switch (i) {
+        0 => 90.0,
+        1 => 85.0,
+        else => 70.0,
+    };
+}
+
+~tor check-step { i: usize, alarm: f64, dip-ticks: f64 }
+
+~proc check-step|zig {
+    if (i != 19) return;
+    if (alarm < 0.5) @panic("sustained inhale never tripped alarm");
+    if (dip_ticks < 18.0) @panic("dip_ticks below dur_threshold");
+    std.debug.print(
+        "PASS: koru/signal external tick matches breath oracle (alarm={d}, dip_ticks={d})\n",
+        .{ alarm, dip_ticks },
+    );
+}

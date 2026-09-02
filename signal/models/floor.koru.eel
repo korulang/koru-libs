@@ -1,0 +1,13 @@
+// Floor — one-shot threshold: alarm when pass_rate drops below floor.
+// Koru surface: koru/signal:shape(Floor) { pass_rate, floor, alarm }
+
+@unit pass_rate percent
+@unit floor     percent
+@unit alarm     1
+
+@init
+floor = 80;
+alarm = 0;
+
+@block
+alarm = pass_rate < floor ? 1 : 0;

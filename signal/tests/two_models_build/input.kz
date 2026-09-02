@@ -1,0 +1,26 @@
+//~ run
+//
+// C3 pin: program naming Breath and Floor links both signal_breath and signal_floor.
+
+~import koru/signal
+~import std/io
+
+~koru/signal:init(Breath)
+| ok |> koru/signal:init(Floor)
+    | ok |> check-build
+    | err e |> std/io:print.ln("floor init failed: {{ e:s }}")
+| err e |> std/io:print.ln("breath init failed: {{ e:s }}")
+
+~tor check-build {}
+
+~proc check-build|zig {
+    const std = @import("std");
+    const build_out = @embedFile("build_output.zig");
+    if (std.mem.indexOf(u8, build_out, "signal_breath") == null) {
+        @panic("C3 miss: two-model program did not link signal_breath");
+    }
+    if (std.mem.indexOf(u8, build_out, "signal_floor") == null) {
+        @panic("C3 miss: two-model program did not link signal_floor");
+    }
+    std.debug.print("PASS: C3 two-model build (signal_breath yes, signal_floor yes)\n", .{});
+}

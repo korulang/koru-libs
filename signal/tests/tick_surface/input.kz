@@ -1,0 +1,12 @@
+//~ run
+//
+// A2 pin: store-parallel tick(Breath, pass_rate: r) after init(Breath).
+
+~import koru/signal
+~import std/io
+
+~koru/signal:init(Breath)
+| ok |> koru/signal:tick(Breath, pass_rate: 90.0)
+    | out s |> std/io:print.ln("tick alarm={{ s.alarm:f }} dip={{ s.dip_ticks:f }}")
+    | err e |> std/io:print.ln("tick failed: {{ e:s }}")
+| err e |> std/io:print.ln("init failed: {{ e:s }}")

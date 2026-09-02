@@ -1,0 +1,7 @@
+{
+  "name": "signal-breath-demo",
+  "version": "0.1.0",
+  "paths": {
+    "libs": "../.."
+  }
+}

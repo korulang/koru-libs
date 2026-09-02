@@ -1,0 +1,29 @@
+// Input text for signal-model-emit (codegen/model_emit.zig) — NOT a koruc host program.
+// shape → const → init seed → tick block; lowered to EEL → models/breath.zig via codegen/run.sh.
+
+~koru/signal:shape(Breath) {
+    pass_rate[percent]
+    drawdown[percent]
+    alarm[1]
+    surprise[1]
+}
+
+const {
+    depth_floor: 8
+    dur_threshold: 18
+}
+
+~koru/signal:init(Breath) {
+    peak: 0
+    dip_ticks: 0
+}
+
+block {
+    peak[percent]
+    dip_ticks[1]
+    peak = pass_rate > peak ? pass_rate : peak
+    drawdown = peak - pass_rate
+    dip_ticks = drawdown >= depth_floor ? dip_ticks + 1 : 0
+    alarm = dip_ticks >= dur_threshold ? 1 : 0
+    surprise = dip_ticks
+}

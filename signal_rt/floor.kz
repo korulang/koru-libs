@@ -1,0 +1,50 @@
+// Floor runtime — owns State slot + init/tick. Appended when the program names Floor (C3).
+
+~import std/compiler
+
+~std/build:requires {
+    const floor_mod = b.createModule(.{
+        .root_source_file = .{ .cwd_relative = "${REL_TO_ROOT}/../koru-libs/signal/models/floor.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("signal_floor", floor_mod);
+}
+
+~std/compiler:requires {
+    const floor_mod = b.createModule(.{
+        .root_source_file = .{ .cwd_relative = "${REL_TO_ROOT}/../koru-libs/signal/models/floor.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("signal_floor", floor_mod);
+}
+
+const std = @import("std");
+const floor = @import("signal_floor");
+
+var slot: floor.State = .{};
+var inited: bool = false;
+
+~pub tor init {}
+| ok
+| err string
+
+~proc init|zig {
+    if (!inited) {
+        _ = floor.init(&slot);
+        inited = true;
+    }
+    return .{ .ok = .{} };
+}
+
+~pub tor tick { pass_rate: f64 }
+| out { alarm: f64, dip_ticks: f64 }
+| err string
+
+~proc tick|zig {
+    if (!inited) return .{ .err = "koru/signal:tick — koru/signal:init(Floor) required before tick" };
+    slot.pass_rate = pass_rate;
+    _ = floor.block(&slot);
+    return .{ .out = .{ .alarm = slot.alarm, .dip_ticks = 0 } };
+}

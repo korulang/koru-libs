@@ -1,0 +1,19 @@
+//~ run
+//
+// Host pin for the Breath authoring spine (ports + init).
+// Full spine — const, tick block, unit labels on carried slots — lives in
+// models/breath.koru.kz and is welded by signal/codegen/run.sh.
+
+~import koru/signal
+~import std/io
+
+~koru/signal:shape(Breath) {
+    pass_rate[percent]
+    drawdown[percent]
+    alarm[1]
+    surprise[1]
+}
+
+~koru/signal:init(Breath)
+| ok |> std/io:print.ln("PASS: signal model spine (host shape + init; see breath.koru.kz)")
+| err e |> std/io:print.ln("init failed: {{ e:s }}")
