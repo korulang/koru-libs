@@ -1,4 +1,5 @@
 //~ run
+//~ expect: init(Breath) ok
 //
 // A1 pin: store-parallel init(Breath) — transform rewrites to init.model at compile time.
 

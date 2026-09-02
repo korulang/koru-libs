@@ -1,4 +1,6 @@
 //~ run
+//~ expect: expected err:
+//~ expect-not: unexpected tick success
 //
 // B2 pin: tick without init hits the honest err branch.
 

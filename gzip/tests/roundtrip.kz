@@ -1,4 +1,5 @@
 //~ run
+//~ expect: Round-trip OK
 
 // gzip round-trip test: compress then decompress and assert the bytes
 // come back byte-identical. This is the first real exercise of
@@ -21,7 +22,7 @@ const original: []const u8 =
     | error e |> fail(msg: e)
 | error e |> fail(msg: e)
 
-~tor verify { original: []const u8, roundtripped: []const u8, compressed_len: usize }
+~tor verify { original: string, roundtripped: string, compressed_len: usize }
 
 ~proc verify|zig {
     if (!std.mem.eql(u8, original, roundtripped)) {
@@ -37,7 +38,7 @@ const original: []const u8 =
     );
 }
 
-~tor fail { msg: []const u8 }
+~tor fail { msg: string }
 
 ~proc fail|zig {
     std.debug.print("gzip operation failed: {s}\n", .{msg});

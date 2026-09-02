@@ -19,15 +19,28 @@
 //   //~ run                                      compile + run + exit 0 + no leaks
 //   //~ compile_fail(frontend|backend)           must fail, pinned to stage
 //   //~ error[KORU030]: Phantom state mismatch   pinned diagnostic (ID + substring)
+//   //~ expect: <substring>                      produced-program output must contain it
+//   //~ expect-not: <substring>                  produced-program output must NOT contain it
 //   //~ leaks: allow <reason>                    opt out of the leak gate (reasoned)
 //
 // The suite stays pure composition (a case = a label + a file). A JSON "kind"
 // is retired and rejected with teaching. An unpinned compile_fail is itself a
 // failure. Leak gate is default-ON and overrides pass (same detection as
 // koru's run_regression.sh: the Zig GPA "memory address … leaked" report).
+//
+// HISTORY — a ledger (.koru-regressions/latest.json, gitignored) records the
+// last COMPLETE run's verdicts; the board diffs against it (NEW / FIXED /
+// REGRESSION) and a green→red flip — or any red — exits 1, so
+// `koruc suite.k test` is an honest CI gate.
+//
+// SELECTION — case blocks may declare "category" and "tags" arrays; the
+// invocation selects with --category/-c, --tag/-t, --smoke. Filtered runs
+// never write the ledger (a partial board must not clobber history), and a
+// filter matching nothing is refused, not silently green.
+//
 // Next: named line markers (@marker — blocked on backend diagnostics carrying
-// real file:line), cross-backend parity (backends: zig js), category/tags
-// selection, snapshots + regression tracking, general run-recipe (pytest/cargo).
+// real file:line), cross-backend parity (backends: zig js), result cache +
+// parallelism, general run-recipe (pytest/cargo).
 
 ~import std/compiler
 
@@ -45,18 +58,70 @@ const std = @import("std");
 }
 
 ~proc test|zig {
-    _ = argv;
-
     // All per-run scratch (JSON arenas, brace-wraps, the case list) lives in one
     // arena — a single deinit reclaims everything, so the runner never leaks.
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
+    // ---- selection: --category/-c <name>, --tag/-t <name>, --smoke ----
+    // A filtered run never touches the ledger (koru's own rule: a partial
+    // board must not clobber history — see the write gate below).
+    var sel_categories = std.ArrayListUnmanaged([]const u8){};
+    var sel_tags = std.ArrayListUnmanaged([]const u8){};
+    var arg_i: usize = 0;
+    while (arg_i < argv.len) : (arg_i += 1) {
+        const arg = argv[arg_i];
+        if (std.mem.eql(u8, arg, "--category") or std.mem.eql(u8, arg, "-c")) {
+            arg_i += 1;
+            if (arg_i >= argv.len) {
+                std.debug.print("--category needs a name\n", .{});
+                std.process.exit(1);
+            }
+            sel_categories.append(a, argv[arg_i]) catch {};
+        } else if (std.mem.eql(u8, arg, "--tag") or std.mem.eql(u8, arg, "-t")) {
+            arg_i += 1;
+            if (arg_i >= argv.len) {
+                std.debug.print("--tag needs a name\n", .{});
+                std.process.exit(1);
+            }
+            sel_tags.append(a, argv[arg_i]) catch {};
+        } else if (std.mem.startsWith(u8, arg, "--category=")) {
+            sel_categories.append(a, arg["--category=".len..]) catch {};
+        } else if (std.mem.startsWith(u8, arg, "--tag=")) {
+            sel_tags.append(a, arg["--tag=".len..]) catch {};
+        } else if (std.mem.eql(u8, arg, "--smoke")) {
+            sel_categories.append(a, "smoke") catch {};
+        } else {
+            std.debug.print("unknown flag: {s} (selection: --category <name> / --tag <name> / --smoke)\n", .{arg});
+            std.process.exit(1);
+        }
+    }
+    const filtered = sel_categories.items.len > 0 or sel_tags.items.len > 0;
+
     // `legacy_kind` marks a case that still declares "kind" in its JSON block —
     // retired in v3 (expectations moved into the test file); scored as a loud
     // per-case failure with teaching, never silently honored.
-    const Case = struct { name: []const u8, file: []const u8, legacy_kind: bool };
+    const Case = struct {
+        name: []const u8,
+        file: []const u8,
+        legacy_kind: bool,
+        categories: []const []const u8,
+        tags: []const []const u8,
+    };
+
+    const matchesSelection = struct {
+        fn go(c: Case, sels_c: []const []const u8, sels_t: []const []const u8) bool {
+            if (sels_c.len == 0 and sels_t.len == 0) return true;
+            for (sels_c) |s| {
+                for (c.categories) |cc| if (std.mem.eql(u8, cc, s)) return true;
+            }
+            for (sels_t) |s| {
+                for (c.tags) |ct| if (std.mem.eql(u8, ct, s)) return true;
+            }
+            return false;
+        }
+    }.go;
 
     const stripQuotes = struct {
         fn go(v: []const u8) []const u8 {
@@ -95,6 +160,8 @@ const std = @import("std");
 
         var file: []const u8 = "";
         var legacy_kind = false;
+        var categories = std.ArrayListUnmanaged([]const u8){};
+        var tags = std.ArrayListUnmanaged([]const u8){};
         if (jt.len > 0) {
             if (std.json.parseFromSlice(std.json.Value, a, jt, .{})) |parsed| {
                 // Owned by the arena `a`; strings stay valid until arena.deinit().
@@ -104,6 +171,20 @@ const std = @import("std");
                         if (v == .string) file = v.string;
                     }
                     if (obj.get("kind") != null) legacy_kind = true;
+                    if (obj.get("category")) |v| {
+                        if (v == .array) {
+                            for (v.array.items) |cat_item| {
+                                if (cat_item == .string) categories.append(a, cat_item.string) catch {};
+                            }
+                        }
+                    }
+                    if (obj.get("tags")) |v| {
+                        if (v == .array) {
+                            for (v.array.items) |tag_item| {
+                                if (tag_item == .string) tags.append(a, tag_item.string) catch {};
+                            }
+                        }
+                    }
                 }
             } else |_| {
                 std.debug.print("  json parse failed for case '{s}': {s}\n", .{ label, jt });
@@ -112,7 +193,7 @@ const std = @import("std");
 
         const name = if (label.len > 0) label else file;
         if (file.len > 0) {
-            cases.append(a, .{ .name = name, .file = file, .legacy_kind = legacy_kind }) catch {
+            cases.append(a, .{ .name = name, .file = file, .legacy_kind = legacy_kind, .categories = categories.items, .tags = tags.items }) catch {
                 std.debug.print("out of memory\n", .{});
                 return;
             };
@@ -125,18 +206,72 @@ const std = @import("std");
     }
 
     // ---- run + board ----
+    var run_count: usize = 0;
+    for (cases.items) |c| {
+        if (!filtered or matchesSelection(c, sel_categories.items, sel_tags.items)) run_count += 1;
+    }
+    if (run_count == 0) {
+        std.debug.print("Selection matched no cases — the filter is a lie, not a fast path.\n", .{});
+        std.process.exit(1);
+    }
     std.debug.print("\n═══ koru/regressions ═══\n", .{});
-    std.debug.print("Running {d} case(s)...\n\n", .{cases.items.len});
+    if (filtered) {
+        std.debug.print("Running {d} of {d} case(s) — filtered run, no ledger write\n\n", .{ run_count, cases.items.len });
+    } else {
+        std.debug.print("Running {d} case(s)...\n\n", .{cases.items.len});
+    }
+
+    // ---- snapshots → history → regression detection ----
+    // The ledger records the LAST COMPLETE run's verdicts; the board diffs
+    // against it and a green→red flip is a REGRESSION (exit 1). Written
+    // atomically only at the end of a complete run — filtered runs must NOT
+    // clobber the snapshot (koru's own rule), so everything below is gated.
+    const ledger_path = ".koru-regressions/latest.json";
+    const PrevVerdict = enum { passed, failed };
+    const Prev = struct { verdict: PrevVerdict, reason: []const u8 };
+    var prev = std.StringHashMap(Prev).init(a);
+    if (!filtered) {
+        if (std.fs.cwd().readFileAlloc(a, ledger_path, 1024 * 1024)) |ledger_text| {
+            if (std.json.parseFromSlice(std.json.Value, a, ledger_text, .{})) |parsed| {
+                if (parsed.value == .object) {
+                    if (parsed.value.object.get("cases")) |cases_node| {
+                        if (cases_node == .object) {
+                            var it = cases_node.object.iterator();
+                            while (it.next()) |entry| {
+                                const v = entry.value_ptr.*;
+                                var verdict: PrevVerdict = .passed;
+                                var reason: []const u8 = "";
+                                if (v == .object) {
+                                    if (v.object.get("verdict")) |vv| {
+                                        if (vv == .string and std.mem.eql(u8, vv.string, "failed")) verdict = .failed;
+                                    }
+                                    if (v.object.get("reason")) |rr| {
+                                        if (rr == .string) reason = rr.string;
+                                    }
+                                }
+                                prev.put(entry.key_ptr.*, .{ .verdict = verdict, .reason = reason }) catch {};
+                            }
+                        }
+                    }
+                }
+            } else |_| {}
+        } else |_| {}
+    }
+
+    const Outcome = struct { name: []const u8, passed: bool, reason: []const u8 };
+    var outcomes = std.ArrayListUnmanaged(Outcome){};
 
     var passed: usize = 0;
     var failed: usize = 0;
     for (cases.items) |c| {
+        if (filtered and !matchesSelection(c, sel_categories.items, sel_tags.items)) continue;
         const dir = std.fs.path.dirname(c.file) orelse ".";
         const base = std.fs.path.basename(c.file);
         // Traverse via the overridable `run` seam — a user can swap this whole
         // behavior with `~koru/regressions:run = <their flow>`.
         if (c.legacy_kind) {
             failed += 1;
+            outcomes.append(a, .{ .name = c.name, .passed = false, .reason = "legacy \"kind\" declaration (retired in v3)" }) catch {};
             std.debug.print("  \x1b[31m✗\x1b[0m {s}\n", .{c.name});
             std.debug.print("      \x1b[2msuite declares \"kind\" — retired in v3: expectations moved into the test file.\x1b[0m\n", .{});
             std.debug.print("      \x1b[2mAnnotate it with //~ run or //~ compile_fail(frontend|backend) and delete \"kind\" from the case block.\x1b[0m\n", .{});
@@ -150,10 +285,12 @@ const std = @import("std");
         switch (result) {
             .passed => {
                 passed += 1;
+                outcomes.append(a, .{ .name = c.name, .passed = true, .reason = "" }) catch {};
                 std.debug.print("  \x1b[32m✓\x1b[0m {s}\n", .{c.name});
             },
             .failed => |reason| {
                 failed += 1;
+                outcomes.append(a, .{ .name = c.name, .passed = false, .reason = reason }) catch {};
                 std.debug.print("  \x1b[31m✗\x1b[0m {s}\n", .{c.name});
                 // A verification runner that hides the compiler's own output is
                 // worse than no runner. Surface the real diagnostic (koruc's
@@ -168,11 +305,100 @@ const std = @import("std");
     }
 
     std.debug.print("\n────────────────────────\n", .{});
+    const total_ran = if (filtered) run_count else cases.items.len;
     if (failed == 0) {
-        std.debug.print("\x1b[32mRESULTS: {d}/{d} passed\x1b[0m\n\n", .{ passed, cases.items.len });
+        std.debug.print("\x1b[32mRESULTS: {d}/{d} passed\x1b[0m\n\n", .{ passed, total_ran });
     } else {
-        std.debug.print("\x1b[31mRESULTS: {d}/{d} passed, {d} failed\x1b[0m\n\n", .{ passed, cases.items.len, failed });
+        std.debug.print("\x1b[31mRESULTS: {d}/{d} passed, {d} failed\x1b[0m\n\n", .{ passed, total_ran, failed });
     }
+
+    // ---- transitions: this run vs the last complete run ----
+    if (filtered) {
+        std.debug.print("── filtered run — no history comparison (ledger untouched) ──\n\n", .{});
+    } else {
+        var regressions: usize = 0;
+        var fixes: usize = 0;
+        var brand_new: usize = 0;
+        std.debug.print("──── history (vs last complete run) ────\n", .{});
+        for (outcomes.items) |o| {
+            const had = prev.get(o.name);
+            if (had == null) {
+                brand_new += 1;
+                std.debug.print("  \x1b[2mNEW\x1b[0m {s}\n", .{o.name});
+                continue;
+            }
+            const was_passed = had.?.verdict == .passed;
+            if (was_passed and !o.passed) {
+                regressions += 1;
+                std.debug.print("  \x1b[31mREGRESSION\x1b[0m {s} — was ✓, now ✗\n", .{o.name});
+            } else if (!was_passed and o.passed) {
+                fixes += 1;
+                std.debug.print("  \x1b[32mFIXED\x1b[0m {s} — was ✗, now ✓\n", .{o.name});
+            }
+        }
+        if (regressions == 0 and fixes == 0 and brand_new == 0) {
+            std.debug.print("  no changes\n", .{});
+        } else {
+            std.debug.print("  {d} new, {d} fixed, {d} regression(s)\n", .{ brand_new, fixes, regressions });
+        }
+        std.debug.print("────────────────────────\n", .{});
+    }
+
+    // ---- persist the ledger (atomic: tmp + rename) ----
+    if (!filtered) {
+        const firstLine = struct {
+            fn go(r: []const u8) []const u8 {
+                var s = r;
+                if (std.mem.indexOfScalar(u8, s, '\n')) |nl| s = s[0..nl];
+                if (s.len > 160) s = s[0..160];
+                return s;
+            }
+        }.go;
+        // Zig 0.15 removed std.json.stringify — the ledger is fixed-shape, so
+        // the writer is hand-rolled (escaping the two free-text fields: case
+        // name, first-line reason).
+        const jsonEscape = struct {
+            fn go(out: *std.ArrayListUnmanaged(u8), g: std.mem.Allocator, s: []const u8) void {
+                out.append(g, '"') catch {};
+                for (s) |ch| {
+                    switch (ch) {
+                        '"' => out.appendSlice(g, "\\\"") catch {},
+                        '\\' => out.appendSlice(g, "\\\\") catch {},
+                        '\n' => out.appendSlice(g, "\\n") catch {},
+                        '\r' => out.appendSlice(g, "\\r") catch {},
+                        '\t' => out.appendSlice(g, "\\t") catch {},
+                        else => out.append(g, ch) catch {},
+                    }
+                }
+                out.append(g, '"') catch {};
+            }
+        }.go;
+        var ledger_out = std.ArrayListUnmanaged(u8){};
+        const run_ts = std.fmt.allocPrint(a, "{d}", .{std.time.timestamp()}) catch "0";
+        ledger_out.appendSlice(a, "{\n  \"schema\": 1,\n  \"run_ts\": ") catch {};
+        ledger_out.appendSlice(a, run_ts) catch {};
+        ledger_out.appendSlice(a, ",\n  \"cases\": {") catch {};
+        var first_case = true;
+        for (outcomes.items) |o| {
+            if (!first_case) ledger_out.appendSlice(a, ",") catch {};
+            first_case = false;
+            ledger_out.appendSlice(a, "\n    ") catch {};
+            jsonEscape(&ledger_out, a, o.name);
+            ledger_out.appendSlice(a, ": {\"verdict\": ") catch {};
+            jsonEscape(&ledger_out, a, if (o.passed) "passed" else "failed");
+            ledger_out.appendSlice(a, ", \"reason\": ") catch {};
+            jsonEscape(&ledger_out, a, firstLine(o.reason));
+            ledger_out.appendSlice(a, "}") catch {};
+        }
+        ledger_out.appendSlice(a, "\n  }\n}\n") catch {};
+        std.fs.cwd().makePath(".koru-regressions") catch {};
+        std.fs.cwd().writeFile(.{ .sub_path = ".koru-regressions/latest.json.tmp", .data = ledger_out.items }) catch {};
+        std.fs.cwd().rename(".koru-regressions/latest.json.tmp", ledger_path) catch {};
+    }
+
+    // A red board is a red gate: exit nonzero so `koruc suite.k test` can be
+    // CI's honest verdict. Regression detection is the reporting surface.
+    if (failed > 0) std.process.exit(1);
 }
 
 // ============================================================================
@@ -223,6 +449,8 @@ const std = @import("std");
     var stage: Stage = .backend;
     var leaks_allowed = false;
     var pins = std.ArrayListUnmanaged(Pin){};
+    var expects = std.ArrayListUnmanaged([]const u8){};
+    var expects_not = std.ArrayListUnmanaged([]const u8){};
 
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |raw| {
@@ -260,6 +488,15 @@ const std = @import("std");
                 substr = std.mem.trim(u8, after[1..], " \t");
             }
             pins.append(allocator, .{ .id = id, .substr = substr }) catch return .{ .failed = "out of memory" };
+        } else if (std.mem.startsWith(u8, d, "expect-not:")) {
+            // Order matters: expect-not must be checked before expect.
+            const substr = std.mem.trim(u8, d["expect-not:".len..], " \t");
+            if (substr.len == 0) return .{ .failed = "//~ expect-not: needs a substring — an empty not-assertion is a label that lies" };
+            expects_not.append(allocator, substr) catch return .{ .failed = "out of memory" };
+        } else if (std.mem.startsWith(u8, d, "expect:")) {
+            const substr = std.mem.trim(u8, d["expect:".len..], " \t");
+            if (substr.len == 0) return .{ .failed = "//~ expect: needs a substring — an empty assertion matches everything" };
+            expects.append(allocator, substr) catch return .{ .failed = "out of memory" };
         } else if (std.mem.startsWith(u8, d, "leaks:")) {
             const rest = std.mem.trim(u8, d["leaks:".len..], " \t");
             if (!std.mem.startsWith(u8, rest, "allow"))
@@ -281,6 +518,8 @@ const std = @import("std");
         return .{ .failed = "unpinned negative — //~ compile_fail requires at least one //~ error[KORUnnn] pin (an unpinned negative is itself a failure)" };
     if (kind == .run and pins.items.len > 0)
         return .{ .failed = "//~ error[…] pins on a //~ run case — pins only score compile failures" };
+    if (kind == .compile_fail and (expects.items.len > 0 or expects_not.items.len > 0))
+        return .{ .failed = "//~ expect / expect-not pins score produced-program output — a compile_fail case has no produced program; pin its diagnostics with //~ error[…] instead" };
 
     // Two leak surfaces, two detections:
     //   - koruc's own compile-phase leaks: the Zig GPA report line
@@ -371,6 +610,23 @@ const std = @import("std");
     }
     if (!leaks_allowed and hasLeak(ran.stderr))
         return .{ .failed = std.fmt.allocPrint(allocator, "exit 0 but memory leaked — the leak gate overrides pass\n{s}", .{std.mem.trim(u8, ran.stderr, " \t\r\n")}) catch "memory leaked — the leak gate overrides pass" };
+
+    // Output pins — the program's assertions. koru's print.ln emits a raw
+    // write to fd 1 (stdout) and eprint.ln to fd 2, so the honest assertion
+    // surface is BOTH streams combined — pins must match what a human sees on
+    // the terminal, regardless of which fd the program picked. Substring
+    // matching (lenient, Rust-style): the exact-output snapshot + autoupdate
+    // land together in v2.
+    for (expects.items) |substr| {
+        if (std.mem.indexOf(u8, ran.stdout, substr) == null and
+            std.mem.indexOf(u8, ran.stderr, substr) == null)
+            return .{ .failed = std.fmt.allocPrint(allocator, "missing expected output: '{s}'\n--- actual program stdout ---\n{s}\n--- actual program stderr ---\n{s}", .{ substr, std.mem.trim(u8, ran.stdout, " \t\r\n"), std.mem.trim(u8, ran.stderr, " \t\r\n") }) catch "missing expected output" };
+    }
+    for (expects_not.items) |substr| {
+        if (std.mem.indexOf(u8, ran.stdout, substr) != null or
+            std.mem.indexOf(u8, ran.stderr, substr) != null)
+            return .{ .failed = std.fmt.allocPrint(allocator, "unexpected output: '{s}' (expect-not violated)\n--- actual program stdout ---\n{s}\n--- actual program stderr ---\n{s}", .{ substr, std.mem.trim(u8, ran.stdout, " \t\r\n"), std.mem.trim(u8, ran.stderr, " \t\r\n") }) catch "unexpected output" };
+    }
     return .{ .passed = .{} };
 }
 

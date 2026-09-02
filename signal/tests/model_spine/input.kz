@@ -1,4 +1,5 @@
 //~ run
+//~ expect: PASS: signal model spine
 //
 // Host pin for the Breath authoring spine (ports + init).
 // Full spine — const, tick block, unit labels on carried slots — lives in

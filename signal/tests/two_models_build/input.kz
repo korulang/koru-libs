@@ -1,4 +1,5 @@
 //~ run
+//~ expect: PASS: C3 two-model build
 //
 // C3 pin: program naming Breath and Floor links both signal_breath and signal_floor.
 

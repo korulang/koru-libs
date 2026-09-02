@@ -1,4 +1,5 @@
 //~ run
+//~ expect: PASS: two-model registry
 //
 // F3 pin: two named models share the registry — Breath and Floor tick
 // independently without cross-contaminating state.

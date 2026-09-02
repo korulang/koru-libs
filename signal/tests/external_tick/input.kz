@@ -1,4 +1,5 @@
 //~ run
+//~ expect: PASS: koru/signal external tick matches breath oracle
 //
 // External-clock pin: caller loops synthetic pass_rate snapshots and ticks
 // koru/signal(Breath) each step. Matches breath_harness / codegen oracle:

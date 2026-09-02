@@ -1,4 +1,5 @@
 //~ run
+//~ expect: reference + init ok
 //
 // A3 pin: bare reference ~koru/signal(Breath) registers the model (compile-time
 // default transform → register.model at runtime).

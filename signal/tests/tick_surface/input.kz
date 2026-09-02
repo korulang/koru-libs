@@ -1,4 +1,5 @@
 //~ run
+//~ expect: tick alarm=
 //
 // A2 pin: store-parallel tick(Breath, pass_rate: r) after init(Breath).
 

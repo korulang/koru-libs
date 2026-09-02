@@ -1,4 +1,5 @@
 //~ run
+//~ expect: hello hello hello world world world
 
 // POSITIVE: one-shot compress then one-shot decompress.
 // Proves the migrated whole-buffer API still round-trips.
