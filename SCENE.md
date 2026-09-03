@@ -78,11 +78,11 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 - **The composition bed.** Prove leaves hold when wired — 
   `COMPOSITION_CHALLENGE.md` + `challenges/composition/CATALOG.md`. Active
   composition **pager** (viewport + paginator). Same sealed-contestant format.
-- **The compiler-surface bed.** Stress the language's own surface until it
-  breaks in Koru terms — `FUZZ_CHALLENGE.md` + `challenges/fuzz/CATALOG.md`.
-  Every refusal must be a Koru diagnostic that is true about the source it
-  names; every accepted shape is a census row. Seeded by the void-consumer
-  corner (2026-09-02).
+- **The compiler-surface bed.** Stress the language's own surface until the
+  emitted artifact is pristine — `FUZZ_CHALLENGE.md` + `challenges/fuzz/CATALOG.md`.
+  The gate: refusal before emission, or an artifact that compiles clean and
+  runs correctly. Koru-level refusal is ideal, never the gate. Seeded by the
+  void-consumer corner (2026-09-02).
 
 ## What it says NO to (rejected on sight)
 

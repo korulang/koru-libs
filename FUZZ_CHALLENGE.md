@@ -2,70 +2,69 @@
 challenge: fuzz
 kind: generator
 status: standing
-yields: one pinned compiler wall — a koru regression refusing a shape the toolchain can't yet refuse in its own terms
+yields: one pristine-emission wall — a shape that makes the toolchain emit garbage, or a refusal that happens after emission instead of before it
 catalog: challenges/fuzz/CATALOG.md
 family: compiler-surface
 created: 2026-09-02
 ---
 
-# FUZZ_CHALLENGE — stress the language surface until it breaks in Koru terms
+# FUZZ_CHALLENGE — hunt the emissions that aren't pristine
 
 A **replayable generator**, not a task and not a backlog. You run it from zero,
-it hands back one **pinned compiler wall** — plus its census rows — and it is
-never used up.
+it hands back one **wall** — a shape whose treatment by the toolchain is not
+pristine — plus its census rows, and it is never used up.
 
 **Singular contestant is the default.** One sealed contestant per replay;
 variance accumulates across replays, not inside a fleet.
 
-## Purpose — explicit, and it is NOT a prettier todo
+## The product is the pristine binary — the diagnostic is the messenger
 
-COMPONENT and COMPOSITION stress the **vaxis substrate**. This generator stresses
-the substrate every package sits on — the parser / checker / emitter surface
-itself. Two deliverables, in order of importance:
+We are not making a language for humans. We are making a language for
+**pristine binaries**. The toolchain's contract: for every program, it either
+refuses **before emitting**, or it emits an artifact that compiles clean and
+runs correctly. Anything else is a wall.
 
-1. **Make the toolchain's refusals honest.** Every refusal must be a Koru
-   diagnostic that is true about the source it names. A raw Zig error, a panic,
-   a crash, or a claim the source contradicts is a wall.
-2. **Census the language surface.** Every generated shape is either
-   accepted-and-cataloged (with its runtime behavior pinned) or
-   refused-and-pinned (a koru regression). No silent unmeasured corners.
-
-A pinned hole beats a demo that compiled by dodging. That rule is the family's;
-the fuzz family just applies it to the language instead of the widget.
+- **PRIMARY — pristine emission.** A generated program that makes the compiler
+  emit garbage Zig, a wrong binary, a crashing binary, a leaking binary, or a
+  binary that answers wrong = **wall**. The wall is the deliverable. It is
+  acceptable — required — to dig into the emitter to clear it.
+- **SECONDARY — Koru-level refusal.** Ideally a refusal carries a Koru
+  diagnostic. A clean refusal via a raw Zig error is tolerated — the refusal
+  happened before emission, the artifact never existed. Improving the
+  diagnostic is polish, never the gate. We are not grading the messenger.
 
 ## Why it exists now — the void-consumer corner (2026-09-02)
 
-The `|>` / `=>` / `->` arm space was probed by hand and produced three hygiene
-failures a shape-fuzzer with three cheap properties would have caught in
-minutes:
+The `|>` / `=>` / `->` arm space was probed by hand and produced **two
+emissions of garbage**: `=> void-sink()` and `=> err _` made koruc emit
+`backend_output_emitted.zig` that did not compile ("expected ',' after
+initializer", "'_' used as an identifier"). Invalid programs, correct outcome
+(no binary shipped) — but the emitted artifact was garbage, and the refusal
+should have happened before emission ever ran. Both now refuse at parse
+(koru 210_213, 210_214; chip 194ca102).
 
-- `=> void-sink()` and `=> err _` were refused only by the **emitted Zig**
-  ("expected ',' after initializer", "'_' used as an identifier") — no Koru
-  diagnostic at all.
-- `| ok v |> void-sink()` was refused with "unused binding 'v'" while `v`
-  appears in the source — a diagnostic that lies about its own file.
+The generator exists so the NEXT garbage emission is found by the replay, not
+by a long session.
 
-All three are now fixed and pinned (koru 210_211-217, 220_029; compiler chips
-194ca102, 018922c8, 944d9cc9). The fuzz family exists so the NEXT corner is
-found by the generator, not by a long session.
+## The check — the artifact is the oracle
 
-## The three properties — the check is cheap, the oracle is the source
+For every generated program, run the pipeline and grade the artifact:
 
-1. **Refusal hygiene.** If koruc refuses, stderr must carry `error[KORUnnn]`
-   (or a declared Koru error code). Raw Zig errors, panics, crashes = wall.
-2. **Diagnostic truthfulness.** A diagnostic's claim must be consistent with
-   the source it names — "unused binding 'v'" where `v` appears in the file is
-   provably wrong from the generated source alone. No semantic oracle needed:
-   the oracle is the program the fuzzer just wrote.
-3. **Acceptance census.** A shape that compiles is a catalog row, not silence.
-   Its runtime behavior gets pinned (exit code, output) or it is floated as
-   needing a ruling.
+1. **Pristine emission (the gate).** Either the compiler refused before
+   emission, or the emitted artifact compiles clean and the binary runs
+   correctly — right output, exit 0, no leaks, no crashes, no UB. Any garbage
+   or wrong artifact = wall.
+2. **Refusal cleanliness (secondary, ideal-not-required).** Refusals ideally
+   carry `error[KORUnnn]` and say something true about the source. A clean
+   raw-zig refusal is a census row, not a wall; a refusal with a lying message
+   is a polish note, not a gate.
 
 ## The replay loop
 
-shape grammar → generate one program → `koruc` → check the three properties →
-**wall** (pin a koru regression, float the finding, ship nothing fake) or
-**catalog row** (accepted, with behavior). One sealed contestant per replay.
+shape grammar → generate one program → run the pipeline → grade the artifact →
+**wall** (pin a koru regression, float the finding, dig into the emitter as
+needed) or **census row** (pristine: accepted with behavior pinned, or refused
+cleanly before emission).
 
 ### Shape grammar (v1 — the arm/chain space)
 
@@ -82,23 +81,25 @@ Seeded by the void-consumer corner; widen one axis per cleared replay.
 
 The koru/regressions runner reserves the fire-off seam in its design doc:
 "can fire off external engines (mutation / AST-rewrite fuzzing) as jobs." The
-generator is that engine: it emits programs; the runner scores the properties.
+generator is that engine: it emits programs; the runner grades the artifacts.
 
 ## The honest boundary — what fuzzing cannot find
 
 - **Design gaps that refuse consistently.** F3 (nested-form propagation,
   pinned 220_029) — the compiler refuses every spelling with KORU022. A fuzzer
-  sees a stable refusal, not a defect; finding it required the pyramid post's
-  design intent. Design review's, not the fuzzer's.
+  sees a stable, clean refusal — no artifact ever exists, which under this
+  doctrine is *correct behavior*. Finding it required the design intent.
+  Design review's, not the fuzzer's.
 - **Designed-diagnostic pre-emption.** A chip that changes a known shape's
-  refusal from its intended code (KORU102 → PARSE003) is invisible to hygiene
-  checks. Catching it needs a designed-diagnostic registry pinning known shapes
-  to their intended refusals — a registry, not a fuzzer.
+  refusal code is invisible to artifact grading. Catching it needs a
+  designed-diagnostic registry — a registry, not a fuzzer.
 
-The division is the point: the fuzzer makes the cheap surface airtight so the
-expensive review only sees what only it can see.
+The division is the point: the fuzzer keeps the emitted artifacts pristine, so
+design review sees only what only it can see.
 
 ## Yield law
 
-One pinned wall per replay; a replay that finds no wall still writes its census
-rows. The catalog is the long-running artifact; the walls are the deliverable.
+One wall per replay — a shape that made the toolchain emit something
+non-pristine, pinned as a koru regression and cleared in the emitter. A replay
+that finds no wall still writes its census rows. A pinned hole beats a demo
+that compiled by dodging.
