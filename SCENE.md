@@ -78,6 +78,11 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 - **The composition bed.** Prove leaves hold when wired — 
   `COMPOSITION_CHALLENGE.md` + `challenges/composition/CATALOG.md`. Active
   composition **pager** (viewport + paginator). Same sealed-contestant format.
+- **The compiler-surface bed.** Stress the language's own surface until it
+  breaks in Koru terms — `FUZZ_CHALLENGE.md` + `challenges/fuzz/CATALOG.md`.
+  Every refusal must be a Koru diagnostic that is true about the source it
+  names; every accepted shape is a census row. Seeded by the void-consumer
+  corner (2026-09-02).
 
 ## What it says NO to (rejected on sight)
 
@@ -93,6 +98,10 @@ feeling. A walk **names the bed it's walking**. Standing beds:
 
 ## Tending log
 
+- 2026-09-02 · **FUZZ_CHALLENGE planted** — the language surface gets a
+  generator beside LIFT and the widget/composition beds: refusal hygiene,
+  diagnostic truthfulness, acceptance census. Brief: `FUZZ_CHALLENGE.md`;
+  catalog: `challenges/fuzz/CATALOG.md`. Seeded by the void-consumer corner.
 - 2026-07-24 · **pager Bridge cataloged** — first COMPOSITION clear; active → **menu**.
 - 2026-07-24 · **COMPOSITION_CHALLENGE planted** — leaf queue exhausted; new
   organ asks whether catalog tags compose. Active = **pager**. Brief:
