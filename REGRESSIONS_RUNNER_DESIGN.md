@@ -264,6 +264,25 @@ expectation is now machine-checked, so it can't drift into a doc-lie.
   intentional escape-hatch gap, not new — noted because the runner deliberately
   surfaces koruc's stderr verbatim on failure, so this leak is now user-visible
   in the board output too.
+- **F3 — the choke's propagation is point-free-only; the nested (arrow) form
+  has none.** Choking is real and green in the point-free shape
+  (210_151/152/153/197/198/199, 220_025; dogfooded in `koru_std/compiler.kz`):
+  tor + `|>` chain + a single dedented `| failed f => failed f` re-raise
+  choke + one consumer at the call site — verified end-to-end this session
+  (compiles, runs, catches). The semantics that make it cohere: `=>` returns
+  one of the EVENT's branches (a void event can never satisfy it —
+  `| failed f => print.ln(f)` is INVALID BY DESIGN; the valid consumer is the
+  continuation `| failed f |> print.ln(f)`). Pinned: 210_211 (KORU100 — the
+  parser accepts the invalid shape structurally and stumbles in replication)
+  and 210_212 (PARSE003 — the parse-level refusal, the right category).
+  The gap: in a NESTED chain, neither the base `|>` continuation nor the base
+  `=>` re-raise claims the inner stages' branches (KORU022, even wrapped in a
+  tor whose declared branch gives the re-raise a target). The gzip corpus
+  chain is nested — `deflate.finish`'s `done` carries a record
+  (`{ d, data }`) while `push`'s input is `d`, so the name-pun cannot thread
+  it point-free — and its five-level `err` tail is unavoidable today. Pinned:
+  220_029. Paths: make the deflate stages point-free-able (library shape), or
+  implement nested propagation.
 
 ### Aspiration — piggyback concurrent runs (Lars, 2026-07-17)
 
