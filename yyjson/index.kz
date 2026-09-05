@@ -264,16 +264,23 @@ pub const Entry = struct {
 // loud `wrong-type` branch (yyjson's raw accessors return 0/NULL on
 // mismatch; we refuse to expose that footgun directly).
 // ============================================================================
-
+// as.string COPIES out of the doc arena (610_007, ruled 2026-09-05): the old
+// shape handed back a borrow (`p[0..len]`) that the caller's `close` freed
+// underneath — kopium hole 3, silent blank data, exit 0. The copy carries
+// the shared `allocated!` obligation (the `read-file` idiom, proven
+// cross-module), discharged by `std/io:free`; the caller uses the string
+// and frees it. Fresh labels do NOT travel: a `copied!` minted here
+// mismatches (`koru.yyjson:copied` vs consumer-homed) at every foreign
+// call site, so the copy joins the one existing heap-buffer label.
 ~pub tor as.string { doc: *Doc<open>, v: *Value }
-| ok string
+| ok string<std.io:allocated!>
 | wrong-type
-
 ~proc as.string|zig {
     _ = doc;
     if (c.yyjson_get_str(v)) |p| {
         const len = c.yyjson_get_len(v);
-        return .{ .ok = p[0..len] };
+        const buf = koru_allocator().dupe(u8, p[0..len]) catch @panic("yyjson: OOM copying string");
+        return .{ .ok = buf };
     }
     return .{ .wrong_type = .{} };
 }
