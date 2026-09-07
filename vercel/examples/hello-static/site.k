@@ -14,4 +14,6 @@ vercel:site {
     bake_env: [],
     alias: null,
     verify: [],
+    handler_branches: [],
+    handler_imports: [],
 }

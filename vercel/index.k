@@ -116,6 +116,12 @@ body-for -> ""
 //             `verify` fetch their proofs from
 // - verify:   paths that must answer HTTP 200 with a REAL page after `deploy` —
 //             a response equal to the shell is a failed publish, not a success
+// - handler_branches: site-authored continuation lines for a custom router head
+//             (the GENERIC escape hatch for site-owned API routes — the library
+//             never names a site's endpoints). When non-empty the handler is
+//             `orisha:router(req)` + these branches + the static-router fallthrough.
+// - handler_imports: modules the reactor entry must import for the branches to
+//             resolve (site-local modules, via the generated koru.json `site` path)
 [comptime|norun] pub tor site {
     name: string,
     root: string,
@@ -128,20 +134,6 @@ body-for -> ""
     bake_env: []string,
     alias: ?string,
     verify: []string,
-    pixie: ?bool = false,
+    handler_branches: []string,
+    handler_imports: []string,
 }
-
-// ============================================================================
-// API-VOICE — a transform that inlines the pixie-voice endpoint into a router
-// branch (mirrors orisha:static-router's mechanism). Declared HERE so the
-// library owns the transform; the compiler collects transforms program-wide,
-// and the emitted inline code runs in the branch scope and RETURNS a response.
-// ============================================================================
-// Usage in a handler:
-//   ! [POST /api/pixie-voice] req |> vercel:api-voice(name: "site")
-[comptime|transform|pre] pub tor api-voice {
-    invocation: *const Invocation,
-    item: *const Item,
-    program: *const Program,
-    allocator: std.mem.Allocator,
-} -> SiteResult
