@@ -23,7 +23,17 @@ const DeployConfig = struct {
     bake_env: [][]const u8 = &.{},
     alias: ?[]const u8 = null,
     verify: [][]const u8 = &.{},
-    pixie: bool = false,
+    /// Site-declared continuation lines for a custom router head. When
+    /// non-empty, the generated handler is `orisha:router(req)` + these
+    /// branches (verbatim) + the static-router fallthrough. This is the
+    /// GENERIC escape hatch for site-owned API routes — the library knows
+    /// nothing about what the branches do; the site's own module declares
+    /// the events they target.
+    handler_branches: [][]const u8 = &.{},
+    /// Modules the reactor entry must import for `handler_branches` to
+    /// resolve — site-local modules (e.g. `site/site-voice`), resolved
+    /// against the generated koru.json's `site` path (the deploy cwd).
+    handler_imports: [][]const u8 = &.{},
 };
 
 fn stripQ(s: []const u8) []const u8 {
@@ -178,11 +188,15 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
     var bake = std.ArrayList([]const u8){};
     var bake_env = std.ArrayList([]const u8){};
     var verify_paths = std.ArrayList([]const u8){};
+    var handler_branches = std.ArrayList([]const u8){};
+    var handler_imports = std.ArrayList([]const u8){};
     defer routes.deinit(allocator);
     defer dynamic.deinit(allocator);
     defer bake.deinit(allocator);
     defer bake_env.deinit(allocator);
     defer verify_paths.deinit(allocator);
+    defer handler_branches.deinit(allocator);
+    defer handler_imports.deinit(allocator);
 
     const flows = ast.allFlows(std.heap.page_allocator, program);
     defer std.heap.page_allocator.free(flows);
@@ -242,8 +256,14 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
                     const parsed = parseStringArray(allocator, arg.value);
                     defer allocator.free(parsed);
                     for (parsed) |r| verify_paths.append(allocator, r) catch {};
-                } else if (std.mem.eql(u8, arg.name, "pixie")) {
-                    cfg.pixie = std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "true");
+                } else if (std.mem.eql(u8, arg.name, "handler_branches")) {
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |r| handler_branches.append(allocator, r) catch {};
+                } else if (std.mem.eql(u8, arg.name, "handler_imports")) {
+                    const parsed = parseStringArray(allocator, arg.value);
+                    defer allocator.free(parsed);
+                    for (parsed) |r| handler_imports.append(allocator, r) catch {};
                 }
             }
         }
@@ -253,6 +273,8 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
     cfg.bake = bake.toOwnedSlice(allocator) catch &.{};
     cfg.bake_env = bake_env.toOwnedSlice(allocator) catch &.{};
     cfg.verify = verify_paths.toOwnedSlice(allocator) catch &.{};
+    cfg.handler_branches = handler_branches.toOwnedSlice(allocator) catch &.{};
+    cfg.handler_imports = handler_imports.toOwnedSlice(allocator) catch &.{};
     return cfg;
 }
 
@@ -420,6 +442,31 @@ fn runVerify(a: std.mem.Allocator, cfg: DeployConfig, extra: []const []const u8)
     return true;
 }
 
+/// Compose the reactor's handler from the site surface. A plain site gets the
+/// static router; a site that declares `handler_branches` gets a router head
+/// with its branches (verbatim) and the static-router fallthrough. The
+/// branches are the SITE's own continuation lines — the library never names a
+/// site's endpoints (that was the pixie-voice leak: korulang.org's private
+/// voice route lived in this library; site-owned API routes now live in the
+/// site's own modules, injected through this generic seam).
+fn buildHandlerLine(a: std.mem.Allocator, cfg: DeployConfig) ?[]const u8 {
+    const S = @import("std");
+    if (cfg.handler_branches.len == 0) {
+        return S.fmt.allocPrint(a, "~orisha:handler = orisha:static-router(name: \"{s}\")", .{ cfg.name }) catch null;
+    }
+    var hb = std.ArrayList(u8){};
+    defer hb.deinit(a);
+    hb.appendSlice(a, "~orisha:handler = orisha:router(req)") catch return null;
+    for (cfg.handler_branches) |br| {
+        hb.append(a, '\n') catch return null;
+        hb.appendSlice(a, br) catch return null;
+    }
+    const tail = S.fmt.allocPrint(a, "\n! [*] req |> orisha:static-router(name: \"{s}\")", .{ cfg.name }) catch return null;
+    defer a.free(tail);
+    hb.appendSlice(a, tail) catch return null;
+    return hb.toOwnedSlice(a) catch null;
+}
+
 // ============================================================================
 // BUILD — generate the reactor, compile it, stage the deploy dir. Shared by the
 // `build` and `deploy` commands.
@@ -495,23 +542,33 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     };
     const e = S.mem.indexOf(u8, reactor_src, end) orelse return false;
     const static_line = S.fmt.allocPrint(a, "~orisha:static(name: \"{s}\", root: \"{s}\")", .{ cfg.name, root_abs }) catch return false;
-    const handler_line = if (cfg.pixie)
-        S.fmt.allocPrint(a, "~orisha:handler = orisha:router(req)\n! [POST /api/pixie-voice] req |> vercel:api-voice(name: \"{s}\")\n! [*] req |> orisha:static-router(name: \"{s}\")", .{ cfg.name, cfg.name }) catch return false
-    else
-        S.fmt.allocPrint(a, "~orisha:handler = orisha:static-router(name: \"{s}\")", .{ cfg.name }) catch return false;
-    const site_block = S.fmt.allocPrint(a, "{s}\n{s}\n{s}\n{s}\n", .{ begin, static_line, handler_line, end }) catch return false;
+    const handler_line = buildHandlerLine(a, cfg) orelse return false;
+    // Site modules the handler branches target — imported into the reactor
+    // entry so the branch invocations resolve. The library never names them;
+    // the site declares them (handler_imports) and they resolve through the
+    // generated koru.json's `site` path below.
+    var imports_buf = std.ArrayList(u8){};
+    defer imports_buf.deinit(a);
+    for (cfg.handler_imports) |imp| {
+        imports_buf.appendSlice(a, "~import ") catch return false;
+        imports_buf.appendSlice(a, imp) catch return false;
+        imports_buf.append(a, '\n') catch return false;
+    }
+    const site_block = S.fmt.allocPrint(a, "{s}\n{s}{s}\n{s}\n{s}\n", .{ begin, imports_buf.items, static_line, handler_line, end }) catch return false;
     const main_src = S.mem.concat(a, u8, &.{ reactor_src[0..s], site_block, reactor_src[e + end.len ..] }) catch return false;
     const main_file = wjoin(a, &.{ build_dir, "main.kz" });
     if (!wwrite(main_file, main_src)) return false;
     S.debug.print("  wrote reactor entry {s}\n", .{main_file});
 
-    // ---- 2. koru.json with std/orisha/vercel paths for the reactor build ----
+    // ---- 2. koru.json with std/orisha/vercel paths for the reactor build.
+    //         `site` maps the deploy cwd — the site's own root — so
+    //         site-local handler modules (`site/site-voice`) resolve.
     const std_dir = modulePath(program, "std") orelse "";
     const orisha_dir = modulePath(program, "orisha") orelse "";
     const koru_json = S.fmt.allocPrint(a,
-        \\{{ "name": "{s}", "paths": {{ "std": "{s}", "orisha": "{s}", "vercel": "{s}" }} }}
+        \\{{ "name": "{s}", "paths": {{ "std": "{s}", "orisha": "{s}", "vercel": "{s}", "site": "{s}" }} }}
         \\
-    , .{ cfg.name, std_dir, orisha_dir, dir }) catch return false;
+    , .{ cfg.name, std_dir, orisha_dir, dir, cwd_path }) catch return false;
     if (!wwrite(wjoin(a, &.{ build_dir, "koru.json" }), koru_json)) return false;
 
     // ---- 3. Compile the reactor ----
@@ -637,91 +694,4 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     const S = @import("std");
     const cfg = readDeployConfig(S.heap.page_allocator, program);
     if (!runVerify(S.heap.page_allocator, cfg, argv)) S.process.exit(1);
-}
-
-
-// ============================================================================
-// TRANSFORM: api-voice — inline the pixie-voice endpoint into a router branch.
-// Mirrors orisha:static-router's top-level replacement: build the inline dispatch,
-// set it as the flow's inline_body with @pass_ran, and return `.replacement` —
-// the runner places it into the holding branch whether the site is root or
-// nested (the nested-position bug is why `whole_program` is NOT used here).
-// ============================================================================
-~proc api-voice|zig {
-    const ast_mod = @import("ast");
-
-    const flow = if (item.* == .flow)
-        &item.flow
-    else
-        return .{};
-
-    for (flow.inv().annotations) |ann| {
-        if (std.mem.startsWith(u8, ann, "@pass_ran")) {
-            return .{};
-        }
-    }
-
-    var site_name: []const u8 = "site";
-    for (invocation.args) |arg| {
-        if (std.mem.eql(u8, arg.name, "name")) {
-            site_name = stripQ(arg.value);
-            break;
-        }
-    }
-
-    // Inline body: the pixie-voice response, built in the branch scope (req bound).
-    // Production logic only: parse the reminders array, hash each with the
-    // client-identical JS hashText, keep the ones whose mp3 is baked (present in
-    // the generated routes table — no sockets, no outbound calls), return JSON.
-    const inline_body_str =
-        \\//@koru:inline_stmt
-        \\    const _routes = @import("generated/site_routes.zig");
-        \\    const _bdy: []const u8 = if (req.body) |b| b else "";
-        \\    var _voices_out: [2048]u8 = undefined;
-        \\    var _used: usize = 0;
-        \\    var _total: usize = 0;
-        \\    var _cached: usize = 0;
-        \\    const _open = std.mem.indexOfScalar(u8, _bdy, '[') orelse 0;
-        \\    var _i: usize = _open + 1;
-        \\    while (_i < _bdy.len) : (_i += 1) {
-        \\        if (_bdy[_i] != '"') continue;
-        \\        const _close = std.mem.indexOfPos(u8, _bdy, _i + 1, "\"") orelse break;
-        \\        const _rem = _bdy[_i + 1 .. _close];
-        \\        _total += 1;
-        \\        var _h: u32 = 0;
-        \\        for (_rem) |_c| _h = (_h << 5) -% _h +% _c;
-        \\        const _abs: u32 = @intCast(@abs(@as(i32, @bitCast(_h))));
-        \\        var _hbuf: [24]u8 = undefined;
-        \\        const _hhex = std.fmt.bufPrint(&_hbuf, "{x}", .{_abs}) catch unreachable;
-        \\        var _urlbuf: [128]u8 = undefined;
-        \\        const _url = std.fmt.bufPrint(&_urlbuf, "/sounds/pixie/{s}.mp3", .{_hhex}) catch unreachable;
-        \\        if (_routes.lookup("GET", _url) != null) {
-        \\            _cached += 1;
-        \\            if (_used > 0) { _voices_out[_used] = ','; _used += 1; }
-        \\            const _pair = std.fmt.bufPrint(_voices_out[_used..], "\"{s}\":\"{s}\"", .{ _hhex, _url }) catch break;
-        \\            _used += _pair.len;
-        \\        }
-        \\        _i = _close;
-        \\    }
-        \\    const _wanted: []const u8 = _voices_out[0.._used];
-        \\    const _json = std.fmt.bufPrint(&main_module.api_resp_buf, "{{\"voices\":{{{s}}},\"generated\":0,\"cached\":{d},\"total\":{d},\"missing\":{d}}}", .{ _wanted, _cached, _total, _total -% _cached }) catch unreachable;
-        \\    return .{ .status = 200, .body = _json, .content_type = "application/json" };
-        ;
-
-    const new_inv_annotations = allocator.alloc([]const u8, flow.inv().annotations.len + 1) catch unreachable;
-    for (flow.inv().annotations, 0..) |ann, j| new_inv_annotations[j] = ann;
-    new_inv_annotations[flow.inv().annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
-
-    const new_invocation = ast_mod.Invocation{
-        .path = flow.inv().path,
-        .args = flow.inv().args,
-        .annotations = new_inv_annotations,
-    };
-    const empty_conts = allocator.alloc(ast_mod.Continuation, 0) catch unreachable;
-
-    var transformed_flow = flow.*;
-    transformed_flow.body = ast_mod.rootSite(new_invocation, empty_conts, flow.location);
-    transformed_flow.inline_body = inline_body_str;
-
-    return .{ .replacement = ast_mod.Item{ .flow = transformed_flow } };
 }

@@ -58,7 +58,7 @@ function parseRawResponse(buffer) {
 
 async function answerFromReactor(wasm, req, target, body) {
   // The reactor parses method, Host, If-None-Match, and body — forward all of
-  // them so a POST handler (e.g. /api/pixie-voice) actually gets its request.
+  // them so a site-declared POST handler (handler_branches) actually gets its request.
   const host = req.headers.host ?? "localhost";
   const inm = req.headers["if-none-match"];
   const lines = [`${req.method ?? "GET"} ${target} HTTP/1.1`, `Host: ${host}`];
