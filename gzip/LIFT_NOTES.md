@@ -221,15 +221,15 @@ placement:
   beyond "no runtime tax was added over a hand-written streaming loop."
 
 - **Correctness**: Two misuses are uncompilable. An unfed stream cannot finish:
-  `tests/deflate_finish_without_push.kz` fails with
+  `tests/deflate_finish_without_push.k` fails with
   `error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed' but got
   'libs.gzip:open!' for argument 'd'` (plus a second line naming the fix:
   `Call: libs.gzip:deflate.push`). A finished stream cannot be reused:
-  `tests/deflate_use_after_finish.kz` fails with
+  `tests/deflate_use_after_finish.k` fails with
   `expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!'`.
-  Round-trip correctness is shown by `tests/stream_roundtrip.kz`
+  Round-trip correctness is shown by `tests/stream_roundtrip.k`
   (streaming-compress → decompress recovers the original text),
-  `tests/deflate_empty_via_push.kz` (the `push("")` escape hatch round-trips
+  `tests/deflate_empty_via_push.k` (the `push("")` escape hatch round-trips
   the empty string), and `tests/oneshot_roundtrip.kz`.
 
 - **Resource safety**: The **ordering / use-after-free** dimension is enforced
@@ -287,22 +287,22 @@ placement:
 $ koruc --check gzip/index.kz
 ✓ Shape checking passed
 
-$ koruc run gzip/tests/stream_roundtrip.kz
+$ koruc run gzip/tests/stream_roundtrip.k
 The quick brown fox. The quick brown fox.
 
 $ koruc run gzip/tests/oneshot_roundtrip.kz
 hello hello hello world world world
 
-$ koruc build gzip/tests/deflate_finish_without_push.kz
+$ koruc build gzip/tests/deflate_finish_without_push.k
 error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed' but got 'libs.gzip:open!' for argument 'd'
 error[KORU030]: Resource 'd' carries obligation <open!> was not discharged. Call: libs.gzip:deflate.push
 ✗ Backend execution failed          # open-but-never-fed — the empty stream is uncompilable
 
-$ koruc build gzip/tests/deflate_use_after_finish.kz
+$ koruc build gzip/tests/deflate_use_after_finish.k
 error[KORU030]: Phantom state mismatch: expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
 error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call: libs.gzip:deflate.release
 ✗ Backend execution failed          # no executable built — the use-after-free is uncompilable
 
-$ koruc run gzip/tests/deflate_empty_via_push.kz
+$ koruc run gzip/tests/deflate_empty_via_push.k
                                     # one blank line — empty gzip round-trips via push("")
 ```

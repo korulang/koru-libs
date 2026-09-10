@@ -1,7 +1,7 @@
-~import koru/regressions
+import koru/regressions
 
-~koru/regressions:compile-fail(stage: backend)
-~koru/regressions:error(id: "KORU030", msg: "Phantom state mismatch")
+koru/regressions:compile-fail(stage: backend)
+koru/regressions:error(id: "KORU030", msg: "Phantom state mismatch")
 
 // NEGATIVE (must FAIL to compile): use-after-free of a finished stream.
 //
@@ -18,18 +18,23 @@
 //
 // This is the proof that the streaming obligations actually bite. If this file
 // ever compiles, the resource-safety pillar has regressed.
+//
+// The chain is POINT-FREE — one dedented `| err` arm claims the error branch at
+// every stage. It used to be a five-handler pyramid; it collapsed once gzip's
+// stages carried the handle as their lone survivor (finish -> *Deflater<done!>)
+// and release reported `| bytes | err` instead of a bare return.
 
-~import libs/gzip
-~import std/io
+import libs/gzip
+import std/io
 
-~libs/gzip:deflate.init(level: .fast)
-| ok d |> libs/gzip:deflate.push(d, chunk: "real chunk")
-    | ok d1 |> libs/gzip:deflate.finish(d: d1)
-        | done r |> libs/gzip:deflate.push(r.d, chunk: "use after free")
-            | ok d2 |> libs/gzip:deflate.finish(d: d2)
-                | done r2 |> libs/gzip:deflate.release(r2.d, r2.data): _ |> std/io:print.ln("should never get here")
-                | err e |> std/io:print.ln(e)
-            | err e |> std/io:print.ln(e)
-        | err e |> std/io:print.ln(e)
-    | err e |> std/io:print.ln(e)
-| err e |> std/io:print.ln(e)
+pub tor use-after-finish { }
+| bytes string
+| err string
+
+use-after-finish = libs/gzip:deflate.init(level: .fast)
+  |> libs/gzip:deflate.push(chunk: "real chunk")
+  |> libs/gzip:deflate.finish
+  |> libs/gzip:deflate.push(chunk: "use after free")
+  |> libs/gzip:deflate.finish
+  |> libs/gzip:deflate.release
+| err e => err e

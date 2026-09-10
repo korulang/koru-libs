@@ -3,7 +3,7 @@
   "file": "gzip/tests/roundtrip.kz"
 }
 ~koru/regressions:case(gzip use-after-finish) {
-  "file": "gzip/tests/deflate_use_after_finish.kz"
+  "file": "gzip/tests/deflate_use_after_finish.k"
 }
 ~koru/regressions:run = koru/regressions:run.default(dir, base, allocator)
 | passed => failed "OVERRIDDEN (default said pass)"

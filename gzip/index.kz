@@ -275,9 +275,9 @@ fn levelToZlib(level: ?Level) c_int {
 // Because `finish` also transitions the handle to <done!>, calling `push`
 // (which requires <!open|!fed>) on a finished stream is likewise a COMPILE
 // ERROR — a use-after-free the type system catches before the program ever
-// runs. See tests/deflate_use_after_finish.kz.
+// runs. See tests/deflate_use_after_finish.k.
 
-const Deflater = struct {
+pub const Deflater = struct {
     strm: c.z_stream,
     out: std.ArrayList(u8),
 };
@@ -331,7 +331,7 @@ const Deflater = struct {
 }
 
 ~pub tor deflate.finish { d: *Deflater<!fed> }
-| done { d: *Deflater<done!>, data: string }
+| done *Deflater<done!>
 | err string
 
 ~proc deflate.finish|zig {
@@ -352,22 +352,31 @@ const Deflater = struct {
         }
     }
     _ = c.deflateEnd(&d.strm);
-    // `data` is borrowed from the Deflater's buffer; it stays valid until
-    // `deflate.release`, which is the only event that accepts <!done>.
-    return .{ .done = .{ .d = d, .data = d.out.items } };
+    // The handle IS the survivor: `done` carries it forward and `release`
+    // reads its `out` buffer, so there is no parallel `data` field to keep
+    // in sync — the compressed bytes have exactly one home.
+    return .{ .done = d };
 }
 
 // Discharge the <done!> obligation: copy the compressed bytes out into
 // caller-owned memory, then free the Deflater and its internal buffer.
-// After this call `data` (borrowed) is gone but `bytes` (owned) is yours.
-~pub tor deflate.release { d: *Deflater<!done>, data: string } -> string
+// The bytes come from the handle's own `out` buffer — the same one `finish`
+// left them in — so release needs nothing but the handle. Two branches, so it
+// composes as a chain stage: `bytes` is the survivor, `err` the honest OOM.
+~pub tor deflate.release { d: *Deflater<!done> }
+| bytes string
+| err string
 
 ~proc deflate.release|zig {
     const a = std.heap.page_allocator;
-    // Fail loudly: OOM while copying already-allocated bytes is a broken
-    // invariant, not a recoverable condition. No silent empty-slice fallback.
-    const owned = a.dupe(u8, data) catch @panic("gzip: out of memory copying compressed bytes in deflate.release");
+    const owned = a.dupe(u8, d.out.items) catch {
+        // OOM copying already-allocated bytes is the one failure here. Discharge
+        // the handle regardless (no leak), and report honestly rather than panic.
+        d.out.deinit(a);
+        std.heap.page_allocator.destroy(d);
+        return .{ .err = "gzip: out of memory copying compressed bytes in deflate.release" };
+    };
     d.out.deinit(a);
     std.heap.page_allocator.destroy(d);
-    return owned;
+    return .{ .bytes = owned };
 }

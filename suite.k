@@ -4,9 +4,12 @@
 //
 // A case: an `expr` label + a JSON `source` block (the flag.declare idiom).
 // This is a RUNNER — cases point at standalone koru test programs; nothing here
-// touches the koru toolchain. Expectations live INLINE in each test file as
-// `//~` directives (run / compile_fail(stage) / error[…] pins / leaks: allow);
-// the suite stays pure composition. "kind" here is retired and rejected.
+// touches the koru toolchain. Expectations live INLINE in each test file, in
+// one of two adjacent spellings: declared norun markers collected from the
+// test's own AST (koru/regressions:run() / :compile-fail(stage:) / :error(…) /
+// :expect(…) / :leaks-allow(…); bare in a pure `.k`, `~`-prefixed in a host-
+// embedded `.kz`/`.kjs`), or `//~` comment directives. A file uses one, never
+// both. The suite stays pure composition. "kind" here is retired and rejected.
 
 import koru/regressions
 
@@ -19,7 +22,7 @@ koru/regressions:case(gzip one-shot round-trip) {
 }
 
 koru/regressions:case(gzip use-after-finish is rejected) {
-  "file": "gzip/tests/deflate_use_after_finish.kz",
+  "file": "gzip/tests/deflate_use_after_finish.k",
   "category": ["c-libs", "smoke"],
   "tags": ["phantom-obligations"]
 }
@@ -49,7 +52,7 @@ koru/regressions:case(signal reference surface) {
 }
 
 koru/regressions:case(signal tick before init) {
-  "file": "signal/tests/tick_before_init/input.kz",
+  "file": "signal/tests/tick_before_init/input.k",
   "category": ["c-libs", "signal"],
   "tags": ["signal-processing", "error-path"]
 }

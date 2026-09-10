@@ -1,23 +1,21 @@
-// POSITIVE: streaming compress (chunk-by-chunk) then one-shot decompress.
-// Proves the streaming Deflater produces valid gzip AND that the phantom
-// obligation lifecycle (init -> push -> finish -> release) discharges cleanly.
-//
-// Expected output: the exact original text, recovered after a full round-trip.
-
 ~import libs/gzip
 ~import std/io
 
-~libs/gzip:deflate.init(level: .best)
-| ok d |> libs/gzip:deflate.push(d, chunk: "The quick brown fox. ")
-    | ok d2 |> libs/gzip:deflate.push(d: d2, chunk: "The quick brown fox. ")
-        | ok d3 |> libs/gzip:deflate.finish(d: d3)
-            | done r |> libs/gzip:deflate.release(r.d, r.data)
-                | bytes gz |> libs/gzip:decompress(data: gz, allocator: std.heap.page_allocator)
-                    | decompressed orig |> std/io:print.ln(orig)
-                    | error e |> std/io:print.ln(e)
-            | err e |> std/io:print.ln(e)
-        | err e |> std/io:print.ln(e)
-    | err e |> std/io:print.ln(e)
+~pub tor stream-roundtrip { }
+| decompressed string
+| err string
+
+~stream-roundtrip = libs/gzip:deflate.init(level: .best)
+  |> libs/gzip:deflate.push(chunk: "The quick brown fox. ")
+  |> libs/gzip:deflate.push(chunk: "The quick brown fox. ")
+  |> libs/gzip:deflate.finish
+  |> libs/gzip:deflate.release
+  |> libs/gzip:decompress(allocator: std.heap.page_allocator)
+| err e => err e
+| error e => err e
+
+~stream-roundtrip()
+| decompressed orig |> std/io:print.ln(orig)
 | err e |> std/io:print.ln(e)
 
 const std = @import("std");

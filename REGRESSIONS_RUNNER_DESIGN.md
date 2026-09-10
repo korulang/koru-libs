@@ -219,7 +219,7 @@ autoupdate Carbon-trivial: *write the diagnostic line into the file as-is*.
   parses but isn't enforced is a label that lies (no-fallbacks). `backends:` and
   `@marker` are rejected with teaching until their enforcement lands.
 
-### Real example — gzip/tests/deflate_use_after_finish.kz (annotated, in tree)
+### Real example — gzip/tests/deflate_use_after_finish.k (annotated, in tree)
 
 ```koru
 //~ compile_fail(backend)

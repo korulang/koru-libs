@@ -9,7 +9,7 @@
 //
 // This proves the gate costs the honest program nothing: only the accidental
 // bring-up-and-discard is caught. The pair is the block-device twin of gzip's
-// deflate_finish_without_push.kz / deflate_empty_via_push.kz.
+// deflate_finish_without_push.k / deflate_empty_via_push.k.
 //
 // Compiles clean through the emit pass; needs a unikernel to run (see
 // boot_lifecycle.kz).

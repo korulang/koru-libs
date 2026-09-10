@@ -139,7 +139,7 @@ error[KORU030]: Resource 'd' <hashing!> was not discharged. Call one of: final.b
 
 # gzip
 
-## gzip — tests/deflate_finish_without_push.kz
+## gzip — tests/deflate_finish_without_push.k
 
 ```koru
 // NEGATIVE (must FAIL to compile): finish a stream that was never fed.
@@ -161,7 +161,7 @@ error[KORU030]: Resource 'd' <hashing!> was not discharged. Call one of: final.b
 //
 // If you genuinely want an empty gzip stream, that intent is expressible —
 // `push("")` reaches <fed!> and produces valid empty-payload gzip framing.
-// See tests/deflate_empty_via_push.kz. What this rejects is the SILENT no-op.
+// See tests/deflate_empty_via_push.k. What this rejects is the SILENT no-op.
 //
 // EXPECTED: error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed'
 //           but got 'libs.gzip:open!' for argument 'd'
@@ -188,7 +188,7 @@ error[KORU030]: Resource 'd' carries obligation <open!> was not discharged. Call
 
 ---
 
-## gzip — tests/deflate_use_after_finish.kz
+## gzip — tests/deflate_use_after_finish.k
 
 ```koru
 // NEGATIVE (must FAIL to compile): use-after-free of a finished stream.
@@ -199,7 +199,7 @@ error[KORU030]: Resource 'd' carries obligation <open!> was not discharged. Call
 // checker rejects this at compile time.
 //
 // Note we push a real chunk BEFORE finishing — that is what reaches the <fed!>
-// state finish now demands (see deflate_finish_without_push.kz for the
+// state finish now demands (see deflate_finish_without_push.k for the
 // unfed case). This test isolates the use-after-free specifically.
 //
 // EXPECTED: error[KORU030]: Phantom state mismatch: expected
