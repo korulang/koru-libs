@@ -75,6 +75,22 @@ const SizeData = struct {
     height: u16,
 };
 
+// A mouse event — cell coords plus button/type/mods, delivered only to apps
+// that bind `! mouse` (capture is opt-in: it displaces native terminal text
+// selection, so run enables it only when the arm exists, tick-style).
+// `button` is libvaxis Mouse.Button as u8 (wheel_up=64, wheel_down=65,
+// wheel_right=66, wheel_left=67; left/middle/right/none = 0/1/2/3);
+// `kind` is Mouse.Type as u8 (press=0, release=1, motion=2, drag=3).
+const MouseData = struct {
+    col: i16,
+    row: i16,
+    button: u8,
+    kind: u8,
+    shift: bool,
+    alt: bool,
+    ctrl: bool,
+};
+
 // A text style — a reusable value (option B). Boolean attrs + packed RGB
 // colors (0 = terminal default; otherwise 0xRRGGBB → libvaxis Color.rgb).
 // Maps onto libvaxis Cell.Style (ul / underline style still deferred).
@@ -126,10 +142,85 @@ var tty_buffer: [4096]u8 = undefined;
 // clear() (a full-redraw's "new frame" boundary).
 var text_arena: std.heap.ArenaAllocator = undefined;
 
-// Internal event type for vaxis loop
+// Shared text geometry behind the wrap-aware surfaces — ONE reflow impl for
+// wrap-lines (the public transform) and scrollview (the component), ONE
+// slice-paint for scrollview and viewport. Byte-width, not grapheme-aware:
+// break at the last space inside the window, hard-break long words, consume
+// the space so no row leads with a blank cell.
+const textops = struct {
+    fn reflow(arena: std.mem.Allocator, content: []const u8, w: usize) []const u8 {
+        var out = std.ArrayList(u8).initCapacity(arena, content.len + 8) catch unreachable;
+        var lines = std.mem.splitScalar(u8, content, '\n');
+        var first = true;
+        while (lines.next()) |line| {
+            var rest = line;
+            while (true) {
+                if (rest.len <= w) {
+                    if (!first) out.append(arena, '\n') catch unreachable;
+                    out.appendSlice(arena, rest) catch unreachable;
+                    first = false;
+                    break;
+                }
+                const cut = std.mem.lastIndexOfScalar(u8, rest[0..w], ' ') orelse w;
+                if (!first) out.append(arena, '\n') catch unreachable;
+                out.appendSlice(arena, rest[0..cut]) catch unreachable;
+                first = false;
+                rest = rest[cut..];
+                while (rest.len > 0 and rest[0] == ' ') rest = rest[1..];
+                if (rest.len == 0) break;
+            }
+        }
+        return out.items;
+    }
+
+    // Paint the visible slice of newline-delimited content — one 1-row child
+    // per visible line, hard-clip at the right edge, offset clamped to
+    // [0, count-1] (the last row can scroll to the top, less/vim max-scroll).
+    fn paintSlice(arena: std.mem.Allocator, win: libvaxis.Window, content: []const u8, offset: i64) void {
+        const w: u16 = win.width;
+        const h: u16 = win.height;
+        if (w == 0 or h == 0) return;
+
+        var src: []const u8 = content;
+        while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
+        if (src.len == 0) return;
+
+        var lines = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
+        var it = std.mem.splitScalar(u8, src, '\n');
+        while (it.next()) |l| lines.append(arena, l) catch unreachable;
+        const count: u16 = @intCast(lines.items.len);
+        if (count == 0) return;
+
+        var off: i64 = offset;
+        if (off < 0) off = 0;
+        if (off > @as(i64, @intCast(count)) - 1) off = @as(i64, @intCast(count)) - 1;
+        const first: u16 = @intCast(off);
+
+        var r: u16 = 0;
+        while (r < h) : (r += 1) {
+            const idx: u16 = first + r;
+            if (idx >= count) break;
+            const line = lines.items[idx];
+            if (line.len == 0) continue;
+            const owned = arena.dupe(u8, line) catch line;
+            const lchild = win.child(.{
+                .x_off = 0,
+                .y_off = r,
+                .width = w,
+                .height = 1,
+            });
+            _ = lchild.printSegment(.{ .text = owned }, .{});
+        }
+    }
+};
+
+// Internal event type for vaxis loop. `mouse` must be present for Loop to
+// post mouse events at all (it gates on @hasField) — and it only matters
+// once run() enables capture, which is opt-in via the `! mouse` arm.
 const VaxisEvent = union(enum) {
     key_press: libvaxis.Key,
     winsize: libvaxis.Winsize,
+    mouse: libvaxis.Mouse,
     focus_in,
     focus_out,
 };
@@ -156,6 +247,7 @@ const VaxisEvent = union(enum) {
 ~pub tor run { title: string }
 ! ?draw koru/vaxis:Window
 ! ?key koru/vaxis:KeyData
+! ?mouse koru/vaxis:MouseData
 ! ?resize koru/vaxis:SizeData
 ! ?focus-in
 ! ?focus-out
@@ -187,6 +279,13 @@ const VaxisEvent = union(enum) {
 
     $mod.vx.enterAltScreen($mod.tty.writer()) catch {};
     $mod.vx.queryTerminal($mod.tty.writer(), 1 * std.time.ns_per_s) catch {};
+
+    // Mouse capture is opt-in: only apps that bind `! mouse` pay for it —
+    // capture displaces native terminal text selection, so an unbound app
+    // keeps the terminal's defaults. Presence-gated like `! tick`.
+    if (@hasDecl(__H, "mouse")) {
+        $mod.vx.setMouseMode($mod.tty.writer(), true) catch {};
+    }
 
     // Wait for initial resize so the window has dimensions before any
     // render call. Don't fire `! resize` yet — we'll do that as the first
@@ -234,7 +333,12 @@ const VaxisEvent = union(enum) {
         fn call(ev: $mod.VaxisEvent) void {
             switch (ev) {
                 .key_press => |k| {
-                    if (k.codepoint > 0x3000 or k.codepoint == 0) return;
+                    // Functional keys (arrows=57350..57353, pgup/pgdn=
+                    // 57354/57355, …) ride codepoint, not ch — the old
+                    // >0x3000 drop made them unreachable. ch stays 0 for
+                    // anything without text, so `when k.ch == …` arms
+                    // still only see typeable keys.
+                    if (k.codepoint == 0) return;
                     // Prefer libvaxis `text` (what the terminal typed — Shift/
                     // Caps aware). Fall back to shifted_codepoint, then the
                     // base codepoint. Old path used only codepoint → lowercase
@@ -272,6 +376,20 @@ const VaxisEvent = union(enum) {
                         });
                         draw($mod.vx.window());
                         $mod.vx.render($mod.tty.writer()) catch {};
+                    }
+                },
+                .mouse => |m| {
+                    if (@hasDecl(__H, "mouse")) {
+                        mouse(.{
+                            .col = m.col,
+                            .row = m.row,
+                            .button = @intFromEnum(m.button),
+                            .kind = @intFromEnum(m.type),
+                            .shift = m.mods.shift,
+                            .alt = m.mods.alt,
+                            .ctrl = m.mods.ctrl,
+                        });
+                        repaint();
                     }
                 },
                 .focus_in => {
@@ -1126,46 +1244,7 @@ const VaxisEvent = union(enum) {
 
 ~proc viewport|zig {
     if (!$mod.is_initialized) return;
-
-    const arena = $mod.text_arena.allocator();
-    const w: u16 = win.width;
-    const h: u16 = win.height;
-    if (w == 0 or h == 0) return;
-
-    // Trim trailing newlines so splitScalar yields exactly the content lines.
-    var src: []const u8 = content;
-    while (src.len > 0 and src[src.len - 1] == '\n') src = src[0 .. src.len - 1];
-    if (src.len == 0) return;
-
-    // Split into arena-owned line slices (same shape as list).
-    var lines = std.ArrayList([]const u8).initCapacity(arena, 8) catch unreachable;
-    var it = std.mem.splitScalar(u8, src, '\n');
-    while (it.next()) |l| lines.append(arena, l) catch unreachable;
-    const count: u16 = @intCast(lines.items.len);
-    if (count == 0) return;
-
-    // Clamp offset into [0, count-1].
-    var off: i64 = offset;
-    if (off < 0) off = 0;
-    if (off > @as(i64, @intCast(count)) - 1) off = @as(i64, @intCast(count)) - 1;
-    const first: u16 = @intCast(off);
-
-    // Paint the visible slice — one 1-row child per line (hard-clip, no wrap).
-    var r: u16 = 0;
-    while (r < h) : (r += 1) {
-        const idx: u16 = first + r;
-        if (idx >= count) break;
-        const line = lines.items[idx];
-        if (line.len == 0) continue;
-        const owned = arena.dupe(u8, line) catch line;
-        const lchild = win.child(.{
-            .x_off = 0,
-            .y_off = r,
-            .width = w,
-            .height = 1,
-        });
-        _ = lchild.printSegment(.{ .text = owned }, .{});
-    }
+    $mod.textops.paintSlice($mod.text_arena.allocator(), win, content, offset);
 }
 
 // Soft-wrap as a TEXT transform, not a viewport mode. Reflows newline-delimited
@@ -1183,30 +1262,23 @@ const VaxisEvent = union(enum) {
 
 ~proc wrap-lines|zig {
     if (width < 1) return content;
-    const w: usize = @intCast(width);
+    return $mod.textops.reflow($mod.text_arena.allocator(), content, @intCast(width));
+}
+
+// The wrap-aware scrollable view — the control viewport is not. scrollview
+// reflows `content` at ITS OWN win.width and paints the visible slice in
+// visual rows, so the host's `offset` prop is denominated in the same rows
+// the host counted with wrap-lines (same reflow impl — textops.reflow).
+// Scroll state still lives in the HOST store (the prop rail can't hold
+// widget-owned state — the documented gap); this component just makes the
+// paint self-measuring: no width prop, no host-side pre-wrap, no drift.
+~pub tor scrollview { win: koru/vaxis:Window, content: string, offset: i64 }
+
+~proc scrollview|zig {
+    if (!$mod.is_initialized) return;
     const arena = $mod.text_arena.allocator();
-    var out = std.ArrayList(u8).initCapacity(arena, content.len + 8) catch unreachable;
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var first = true;
-    while (lines.next()) |line| {
-        var rest = line;
-        while (true) {
-            if (rest.len <= w) {
-                if (!first) out.append(arena, '\n') catch unreachable;
-                out.appendSlice(arena, rest) catch unreachable;
-                first = false;
-                break;
-            }
-            const cut = std.mem.lastIndexOfScalar(u8, rest[0..w], ' ') orelse w;
-            if (!first) out.append(arena, '\n') catch unreachable;
-            out.appendSlice(arena, rest[0..cut]) catch unreachable;
-            first = false;
-            rest = rest[cut..];
-            while (rest.len > 0 and rest[0] == ' ') rest = rest[1..];
-            if (rest.len == 0) break;
-        }
-    }
-    return out.items;
+    const wrapped = $mod.textops.reflow(arena, content, win.width);
+    $mod.textops.paintSlice(arena, win, wrapped, offset);
 }
 
 // Charm-class paginator — pagination STATUS CHROME (COMPONENT paginator).
@@ -3395,7 +3467,7 @@ const VaxisEvent = union(enum) {
                 el_nest.append(a, null) catch unreachable;
             }
 
-    // Builtin meter/spinner/textinput/list/viewport/paginator/help/table/textarea/
+    // Builtin meter/spinner/textinput/list/viewport/scrollview/paginator/help/table/textarea/
     // timer/stopwatch/filepicker/pulse tags resolve to koru/vaxis events (not
     // consumer-module components). wa_qual path.
     const childQual = struct {
@@ -3405,6 +3477,7 @@ const VaxisEvent = union(enum) {
             if (std.mem.eql(u8, name, "text-input")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "list")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "viewport")) return waq orelse "koru/vaxis";
+            if (std.mem.eql(u8, name, "scrollview")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "paginator")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "help")) return waq orelse "koru/vaxis";
             if (std.mem.eql(u8, name, "table")) return waq orelse "koru/vaxis";
