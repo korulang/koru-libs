@@ -1,0 +1,8 @@
+name: bug-fix
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a defect was removed, not a belief revised — the code now does what a
+      pin or caller already claimed it did
+route: surface
