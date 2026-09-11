@@ -15,6 +15,6 @@ std/store:watch(counter)
 ! clicks c |> std/io:print.ln("clicked {{ c:d }} times")
 
 koru/vaxis:run(title: "counter")
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key _ |> std/store:stored { counter.clicks: counter.clicks + 1 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! key-raw _ |> std/store:stored { counter.clicks: counter.clicks + 1 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

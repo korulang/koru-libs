@@ -7,5 +7,5 @@ koru/vaxis:run(title: "demo")
 | err e |> std/io:print.ln("fail")
 
 koru/vaxis(demo)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("nope")

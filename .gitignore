@@ -23,6 +23,7 @@ build_output.zig
 build.zig
 build_backend.zig
 compiler_env.zig
+compiler_env.json
 program.ast.json
 
 # Agent worktrees (live git worktrees, not source)

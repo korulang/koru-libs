@@ -13,16 +13,14 @@ const test_data = "Hello, World! This is a test of gzip compression. " ++
 
 // Test compression
 ~koru/gzip:compress-bytes(data: test_data, allocator: std.heap.page_allocator)
-| ok c |>
-    std/io:print.ln("Compression successful!")
-    |> report-stats(compressed: c.data)
-| error |>
-    std/io:print.ln("Compression failed")
+| ok c |> std/io:print.ln("Compression successful!")
+    |> report-stats(compressed: c)
+| error e |> std/io:print.ln("Compression failed: {{ e:s }}")
 
 // Report compression stats
-~tor report-stats { compressed: []const u8 }
+~tor report-stats { compressed: string }
 
-~proc report-stats {
+~proc report-stats|zig {
     std.debug.print("Original: {} bytes\n", .{test_data.len});
     std.debug.print("Compressed: {} bytes\n", .{compressed.len});
     const ratio = @as(f64, @floatFromInt(compressed.len)) / @as(f64, @floatFromInt(test_data.len)) * 100.0;

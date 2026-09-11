@@ -35,5 +35,5 @@ koru/vaxis:component(app) {
 koru/vaxis:run(title: "spinner")
 ! draw w |> app(win: w, spin.ms)
 ! tick ms |> std/store:stored { spin.ms: ms }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

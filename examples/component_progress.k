@@ -31,6 +31,6 @@ koru/vaxis:component(app) {
 
 koru/vaxis:run(title: "progress-bar")
 ! draw w |> app(win: w, meter.value, max: 100)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == ' ' |> std/store:stored { meter.value: meter.value + 10 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == ' ' |> std/store:stored { meter.value: meter.value + 10 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

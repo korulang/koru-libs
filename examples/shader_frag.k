@@ -16,5 +16,5 @@ koru/vaxis:shader(soft) {
 koru/vaxis:run(title: "soft")
 ! draw w |> soft(win: w, t: ui.ms)
 ! tick ms |> std/store:stored { ui.ms: ms }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("soft failed: {{ e:s }}")

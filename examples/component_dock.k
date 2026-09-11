@@ -45,5 +45,5 @@ koru/vaxis:component(app) {
 
 koru/vaxis:run(title: "dock")
 ! draw w |> app(win: w)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

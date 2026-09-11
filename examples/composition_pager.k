@@ -55,7 +55,7 @@ koru/vaxis:component(pager) {
 koru/vaxis:run(title: "pager")
 ! draw w |> pager(win: w, book.offset, book.page, book.total,
     content: "PAGE ONE\n========\n\nA pager is two halves wired together.\nThe viewport shows one screen of a long\ndocument; the rows beneath are paginator\nchrome — Charm's status-only marker, in\nboth Dots and Arabic modes at once.\nOne store owns the page number. Press l:\nthis header, the visible lines, and both\nfooters jump in lockstep — shared state\ndriving two catalog leaves at once.\nPAGE TWO\n========\n\nThe viewport is honest about height. It\npaints only the rows its window holds and\nhard-clips long lines at the right edge\ninstead of re-flowing them, so columns\nstay still while you read. The host sees\nthe page index, not the window height, so\neach flip moves the offset by exactly\ntwelve lines — one fixed slice per page,\nclamped at both ends by the key guards.\nPAGE THREE\n==========\n\nTwo paginator modes, one source of truth.\nDots light the current page pink; Arabic\nprints N/M from the same store field, so\nthey can never disagree. That is the\ncomposition claim: leaves keep their own\npaint and chrome; the host keeps only\nthe numbers. This is the last page —\npress h to climb back through the deck\nand watch all three rows move together.")
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == 'l' and book.page < book.total - 1 |> std/store:stored { book.page: book.page + 1, book.offset: book.offset + 12 }
-! key k when k.ch == 'h' and book.page > 0 |> std/store:stored { book.page: book.page - 1, book.offset: book.offset - 12 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'l' and book.page < book.total - 1 |> std/store:stored { book.page: book.page + 1, book.offset: book.offset + 12 }
+! char k when k.ch == 'h' and book.page > 0 |> std/store:stored { book.page: book.page - 1, book.offset: book.offset - 12 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

@@ -58,7 +58,7 @@ koru/vaxis:run(title: "list")
     title:    "What do you want for dinner?",
     items:    "Ramen\nTomato Soup\nHamburgers\nCheeseburgers\nCurrywurst\nOkonomiyaki\nPasta\nFillet Mignon\nCaviar\nJust Wine\nTacos\nSushi\nPizza\nPho\nBibimbap\nPad Thai\nGyoza\nCroissant\nPaella\nFalafel\nBiryani\nSchnitzel\nEmpanadas\nKimchi Jjigae\nJollof Rice\nPierogi\nShakshuka\nMapo Tofu",
     list.selected)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == 'j' and list.selected < list.count - 1 |> std/store:stored { list.selected: list.selected + 1 }
-! key k when k.ch == 'k' and list.selected > 0 |> std/store:stored { list.selected: list.selected - 1 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'j' and list.selected < list.count - 1 |> std/store:stored { list.selected: list.selected + 1 }
+! char k when k.ch == 'k' and list.selected > 0 |> std/store:stored { list.selected: list.selected - 1 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

@@ -9,11 +9,15 @@
 //   ~import koru/vaxis
 //
 //   ~koru/vaxis:run(title: "Hello")
-//   ! ready |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.") |> koru/vaxis:render()
-//   ! key k when k.ch == 'q' |> koru/vaxis:quit()
-//   ! resize _ |> koru/vaxis:render()
+//   ! draw _ |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
+//   ! char k when k.ch == 'q' |> koru/vaxis:quit()
 //   | done _ |> _
 //   | err e |> _
+//
+//   draw refires on every damage event and run auto-renders — no explicit
+//   render() calls. Input arrives decoded: ! char for text, ! up / ! enter /
+//   ! escape … for named keys, ! wheel-up / ! press … for the mouse, with
+//   ! key-raw / ! mouse-raw as the taps.
 //
 // MODULE-SCOPE REACH-BACK ($mod.):
 //   `run` is an effect-branch event, so its |zig body is SPLICED into the
@@ -76,11 +80,13 @@ const SizeData = struct {
 };
 
 // A mouse event — cell coords plus button/type/mods, delivered only to apps
-// that bind `! mouse` (capture is opt-in: it displaces native terminal text
-// selection, so run enables it only when the arm exists, tick-style).
+// that bind a mouse arm (capture is opt-in: it displaces native terminal
+// text selection, so run enables it only when a mouse arm exists).
 // `button` is libvaxis Mouse.Button as u8 (wheel_up=64, wheel_down=65,
 // wheel_right=66, wheel_left=67; left/middle/right/none = 0/1/2/3);
 // `kind` is Mouse.Type as u8 (press=0, release=1, motion=2, drag=3).
+// Consumers bind the semantic arms (`! wheel-up`, `! press`, …) — the
+// numbers surface only through `! mouse-raw` / `mouse-decode`.
 const MouseData = struct {
     col: i16,
     row: i16,
@@ -141,6 +147,12 @@ var tty_buffer: [4096]u8 = undefined;
 // the copy — the lifetime tension is vaxis's to own, not the caller's. Reset on
 // clear() (a full-redraw's "new frame" boundary).
 var text_arena: std.heap.ArenaAllocator = undefined;
+
+// Bracketed-paste assembly. While in_paste holds, the keystroke burst between
+// CSI 200/201 is paste CONTENT — it never reaches the key arms; on paste_end
+// the accumulated bytes fire `! paste` as one string.
+var in_paste: bool = false;
+var paste_buf: std.ArrayList(u8) = .{};
 
 // Shared text geometry behind the wrap-aware surfaces — ONE reflow impl for
 // wrap-lines (the public transform) and scrollview (the component), ONE
@@ -214,13 +226,17 @@ const textops = struct {
     }
 };
 
-// Internal event type for vaxis loop. `mouse` must be present for Loop to
-// post mouse events at all (it gates on @hasField) — and it only matters
-// once run() enables capture, which is opt-in via the `! mouse` arm.
+// Internal event type for vaxis loop. Fields must be present for Loop to
+// post the events at all (it gates on @hasField) — `mouse` only matters
+// once run() enables capture, which is opt-in via the mouse arms; the
+// paste markers feed run's paste assembly, they are not consumer arms.
 const VaxisEvent = union(enum) {
     key_press: libvaxis.Key,
     winsize: libvaxis.Winsize,
     mouse: libvaxis.Mouse,
+    mouse_leave,
+    paste_start,
+    paste_end,
     focus_in,
     focus_out,
 };
@@ -229,16 +245,42 @@ const VaxisEvent = union(enum) {
 // THE MAIN EVENT: run
 // ============================================================================
 //
-// Effect branches:
-//   ! ?draw Window     — mount + damage redraw (retained view)
-//   ! ?key KeyData     — every key press
-//   ! ?resize SizeData — every terminal resize (including initial)
-//   ! ?focus-in        — terminal got focus (optional)
-//   ! ?focus-out       — terminal lost focus (optional)
-//   ! ?tick i64        — animation frame pulse; payload = monotonic ms.
-//                        Optional: omitting keeps blocking nextEvent (no
-//                        timer wake tax). Installing `! tick` switches to
-//                        tryEvent + ~60 Hz ticks (Charm spinner / spring).
+// Effect branches — the wire arrives DECODED. Terminal encodings (kitty
+// codepoints, SGR button numbers, control-byte aliases) are classified in
+// `run`'s dispatcher; consumers bind semantic arms, and mods still ride the
+// payload for `when e.mods.ctrl` refinements.
+//
+//   ! ?draw Window      — mount + damage redraw (retained view)
+//   ! ?resize SizeData  — every terminal resize (including initial)
+//   ! ?tick i64         — animation frame pulse; payload = monotonic ms.
+//                         Optional: omitting keeps blocking nextEvent (no
+//                         timer wake tax). Installing `! tick` switches to
+//                         tryEvent + ~60 Hz ticks (Charm spinner / spring).
+//   ! ?focus-in/out     — terminal focus (optional)
+//
+//   Keyboard — one key press fires key-raw (the tap) then exactly ONE arm:
+//   ! ?key-raw KeyData  — every key press, before classification
+//   ! ?char KeyData     — printable text (k.ch ascii, k.codepoint unicode)
+//   ! ?ctrl KeyData     — ctrl+letter, BOTH spellings normalized to the
+//                         letter byte: kitty 'u'+ctrl and legacy 0x15 both
+//                         arrive as `k.ch == 'u'`
+//   ! ?enter/escape/backspace/tab KeyData — 13/27/8|127/9. ^H (8) maps to
+//                         backspace: the universal TUI convention.
+//   ! ?up/down/left/right KeyData         — kitty 57350..57353
+//   ! ?page-up/page-down/home/end KeyData — 57354..57357
+//   ! ?insert/delete KeyData              — 57348/57349
+//   ! ?f1..f12 KeyData                    — 57364..57375
+//   ! ?paste string       — bracketed paste, whole blob. run assembles the
+//                         keystroke burst between the markers; enabling the
+//                         arm turns the mode on (setBracketedPaste).
+//
+//   Mouse — capture is opt-in; binding ANY mouse arm enables it (it
+//   displaces native text selection). mouse-raw is a tap, not a fallback:
+//   bound alongside a semantic arm, both fire.
+//   ! ?mouse-raw MouseData    — every mouse event, before classification
+//   ! ?wheel-up/down/left/right MouseData — buttons 64..67
+//   ! ?press/release/motion/drag MouseData — kinds 0/1/2/3
+//   ! ?mouse-leave            — pointer left the window
 //
 // Terminals:
 //   | done             — clean exit
@@ -246,8 +288,46 @@ const VaxisEvent = union(enum) {
 
 ~pub tor run { title: string }
 ! ?draw koru/vaxis:Window
-! ?key koru/vaxis:KeyData
-! ?mouse koru/vaxis:MouseData
+! ?key-raw koru/vaxis:KeyData
+! ?char koru/vaxis:KeyData
+! ?ctrl koru/vaxis:KeyData
+! ?enter koru/vaxis:KeyData
+! ?escape koru/vaxis:KeyData
+! ?backspace koru/vaxis:KeyData
+! ?tab koru/vaxis:KeyData
+! ?insert koru/vaxis:KeyData
+! ?delete koru/vaxis:KeyData
+! ?left koru/vaxis:KeyData
+! ?right koru/vaxis:KeyData
+! ?up koru/vaxis:KeyData
+! ?down koru/vaxis:KeyData
+! ?page-up koru/vaxis:KeyData
+! ?page-down koru/vaxis:KeyData
+! ?home koru/vaxis:KeyData
+! ?end koru/vaxis:KeyData
+! ?f1 koru/vaxis:KeyData
+! ?f2 koru/vaxis:KeyData
+! ?f3 koru/vaxis:KeyData
+! ?f4 koru/vaxis:KeyData
+! ?f5 koru/vaxis:KeyData
+! ?f6 koru/vaxis:KeyData
+! ?f7 koru/vaxis:KeyData
+! ?f8 koru/vaxis:KeyData
+! ?f9 koru/vaxis:KeyData
+! ?f10 koru/vaxis:KeyData
+! ?f11 koru/vaxis:KeyData
+! ?f12 koru/vaxis:KeyData
+! ?paste string
+! ?mouse-raw koru/vaxis:MouseData
+! ?wheel-up koru/vaxis:MouseData
+! ?wheel-down koru/vaxis:MouseData
+! ?wheel-left koru/vaxis:MouseData
+! ?wheel-right koru/vaxis:MouseData
+! ?press koru/vaxis:MouseData
+! ?release koru/vaxis:MouseData
+! ?motion koru/vaxis:MouseData
+! ?drag koru/vaxis:MouseData
+! ?mouse-leave
 ! ?resize koru/vaxis:SizeData
 ! ?focus-in
 ! ?focus-out
@@ -280,11 +360,20 @@ const VaxisEvent = union(enum) {
     $mod.vx.enterAltScreen($mod.tty.writer()) catch {};
     $mod.vx.queryTerminal($mod.tty.writer(), 1 * std.time.ns_per_s) catch {};
 
-    // Mouse capture is opt-in: only apps that bind `! mouse` pay for it —
+    // Mouse capture is opt-in: only apps that bind a mouse arm pay for it —
     // capture displaces native terminal text selection, so an unbound app
-    // keeps the terminal's defaults. Presence-gated like `! tick`.
-    if (@hasDecl(__H, "mouse")) {
+    // keeps the terminal's defaults. Presence-gated like `! tick`; ANY arm
+    // of the family turns it on.
+    const wants_mouse = @hasDecl(__H, "mouse-raw") or @hasDecl(__H, "wheel-up") or @hasDecl(__H, "wheel-down") or @hasDecl(__H, "wheel-left") or @hasDecl(__H, "wheel-right") or @hasDecl(__H, "press") or @hasDecl(__H, "release") or @hasDecl(__H, "motion") or @hasDecl(__H, "drag") or @hasDecl(__H, "mouse-leave");
+    if (wants_mouse) {
         $mod.vx.setMouseMode($mod.tty.writer(), true) catch {};
+    }
+
+    // Bracketed paste is opt-in the same way: an app that binds `! paste`
+    // asks the terminal to wrap pasted text in CSI 200/201 markers, which is
+    // what lets the dispatcher assemble the burst into one event.
+    if (@hasDecl(__H, "paste")) {
+        $mod.vx.setBracketedPaste($mod.tty.writer(), true) catch {};
     }
 
     // Wait for initial resize so the window has dimensions before any
@@ -333,12 +422,22 @@ const VaxisEvent = union(enum) {
         fn call(ev: $mod.VaxisEvent) void {
             switch (ev) {
                 .key_press => |k| {
-                    // Functional keys (arrows=57350..57353, pgup/pgdn=
-                    // 57354/57355, …) ride codepoint, not ch — the old
-                    // >0x3000 drop made them unreachable. ch stays 0 for
-                    // anything without text, so `when k.ch == …` arms
-                    // still only see typeable keys.
                     if (k.codepoint == 0) return;
+                    // Paste assembly wins over everything: between CSI 200/201
+                    // the bytes are paste CONTENT, not key presses — no arm
+                    // fires, the burst accumulates for `! paste`.
+                    if ($mod.in_paste) {
+                        if (k.text) |t| {
+                            $mod.paste_buf.appendSlice($mod.alloc, t) catch {};
+                        } else if (k.codepoint == 13 or k.codepoint == 10) {
+                            $mod.paste_buf.append($mod.alloc, '\n') catch {};
+                        } else if (k.codepoint >= 32 and k.codepoint < 0x110000) {
+                            var ub: [4]u8 = undefined;
+                            const n = std.unicode.utf8Encode(@intCast(k.codepoint), &ub) catch 0;
+                            $mod.paste_buf.appendSlice($mod.alloc, ub[0..n]) catch {};
+                        }
+                        return;
+                    }
                     // Prefer libvaxis `text` (what the terminal typed — Shift/
                     // Caps aware). Fall back to shifted_codepoint, then the
                     // base codepoint. Old path used only codepoint → lowercase
@@ -353,7 +452,7 @@ const VaxisEvent = union(enum) {
                         if (k.codepoint > 0 and k.codepoint < 128) break :blk @intCast(k.codepoint);
                         break :blk 0;
                     };
-                    key(.{
+                    const kd: $mod.KeyData = .{
                         .codepoint = k.codepoint,
                         .ch = ch_val,
                         .mods = .{
@@ -362,7 +461,58 @@ const VaxisEvent = union(enum) {
                             .shift = k.mods.shift,
                             .super_key = k.mods.super,
                         },
-                    });
+                    };
+                    key_raw(kd);
+                    // Classification — exactly one semantic arm per press.
+                    // Functional range first (kitty PUA), then the named
+                    // control bytes, then ctrl+letter in BOTH spellings
+                    // (kitty mod+letter and legacy 0x01-0x1A normalize to the
+                    // letter byte), then printable text. Anything left over
+                    // (f13+, keypad, media, modifier presses) reaches only
+                    // key-raw.
+                    if (k.codepoint >= $mod.libvaxis.Key.insert) {
+                        switch (k.codepoint) {
+                            $mod.libvaxis.Key.insert => insert(kd),
+                            $mod.libvaxis.Key.delete => delete(kd),
+                            $mod.libvaxis.Key.left => left(kd),
+                            $mod.libvaxis.Key.right => right(kd),
+                            $mod.libvaxis.Key.up => up(kd),
+                            $mod.libvaxis.Key.down => down(kd),
+                            $mod.libvaxis.Key.page_up => page_up(kd),
+                            $mod.libvaxis.Key.page_down => page_down(kd),
+                            $mod.libvaxis.Key.home => home(kd),
+                            $mod.libvaxis.Key.end => end(kd),
+                            $mod.libvaxis.Key.f1 => f1(kd),
+                            $mod.libvaxis.Key.f2 => f2(kd),
+                            $mod.libvaxis.Key.f3 => f3(kd),
+                            $mod.libvaxis.Key.f4 => f4(kd),
+                            $mod.libvaxis.Key.f5 => f5(kd),
+                            $mod.libvaxis.Key.f6 => f6(kd),
+                            $mod.libvaxis.Key.f7 => f7(kd),
+                            $mod.libvaxis.Key.f8 => f8(kd),
+                            $mod.libvaxis.Key.f9 => f9(kd),
+                            $mod.libvaxis.Key.f10 => f10(kd),
+                            $mod.libvaxis.Key.f11 => f11(kd),
+                            $mod.libvaxis.Key.f12 => f12(kd),
+                            else => {},
+                        }
+                    } else if (k.codepoint == 13) {
+                        enter(kd);
+                    } else if (k.codepoint == 27) {
+                        escape(kd);
+                    } else if (k.codepoint == 9) {
+                        tab(kd);
+                    } else if (k.codepoint == 8 or k.codepoint == 127) {
+                        backspace(kd);
+                    } else if (kd.mods.ctrl and kd.ch >= 'a' and kd.ch <= 'z') {
+                        ctrl(kd);
+                    } else if (k.codepoint >= 1 and k.codepoint <= 26) {
+                        var ckd = kd;
+                        ckd.ch = @intCast(k.codepoint + 'a' - 1);
+                        ctrl(ckd);
+                    } else if (k.codepoint >= 32) {
+                        char(kd);
+                    }
                     repaint();
                 },
                 .winsize => |ws| {
@@ -379,18 +529,46 @@ const VaxisEvent = union(enum) {
                     }
                 },
                 .mouse => |m| {
-                    if (@hasDecl(__H, "mouse")) {
-                        mouse(.{
-                            .col = m.col,
-                            .row = m.row,
-                            .button = @intFromEnum(m.button),
-                            .kind = @intFromEnum(m.type),
-                            .shift = m.mods.shift,
-                            .alt = m.mods.alt,
-                            .ctrl = m.mods.ctrl,
-                        });
-                        repaint();
+                    const md: $mod.MouseData = .{
+                        .col = m.col,
+                        .row = m.row,
+                        .button = @intFromEnum(m.button),
+                        .kind = @intFromEnum(m.type),
+                        .shift = m.mods.shift,
+                        .alt = m.mods.alt,
+                        .ctrl = m.mods.ctrl,
+                    };
+                    // mouse-raw is a tap: bound alongside a semantic arm,
+                    // both fire. Wheel buttons (64..67) win over kind —
+                    // terminals report wheel as press.
+                    mouse_raw(md);
+                    if (md.button >= 64) {
+                        switch (md.button) {
+                            64 => wheel_up(md),
+                            65 => wheel_down(md),
+                            66 => wheel_right(md),
+                            else => wheel_left(md),
+                        }
+                    } else switch (md.kind) {
+                        0 => press(md),
+                        1 => release(md),
+                        2 => motion(md),
+                        else => drag(md),
                     }
+                    repaint();
+                },
+                .mouse_leave => {
+                    mouse_leave();
+                    repaint();
+                },
+                .paste_start => {
+                    $mod.in_paste = true;
+                    $mod.paste_buf.clearRetainingCapacity();
+                },
+                .paste_end => {
+                    $mod.in_paste = false;
+                    paste($mod.paste_buf.items);
+                    repaint();
                 },
                 .focus_in => {
                     focus_in();
@@ -437,6 +615,7 @@ const VaxisEvent = union(enum) {
     $mod.vx.deinit($mod.alloc, $mod.tty.writer());
     $mod.tty.deinit();
     $mod.text_arena.deinit();
+    $mod.paste_buf.deinit($mod.alloc);
     $mod.is_initialized = false;
 
     return .{ .done = .{} };
@@ -473,6 +652,41 @@ const VaxisEvent = union(enum) {
         // last frame's text. Reclaim the frame arena for the redraw's writes.
         _ = $mod.text_arena.reset(.retain_capacity);
     }
+}
+
+// Decode a raw `! mouse` payload into named happenings — the library's answer
+// to `m.kind == 0 and m.button == 64` folklore. Every branch is optional:
+// handle the wheel and a press fires silently into the void (355_009), the
+// same presence-gated stance `run`'s own arms take. The payload stays the
+// raw MouseData, so `when e.button == 0` guards still pick left/right and
+// col/row/mods ride along. Wheel buttons (64..67) win over kind — terminals
+// report wheel as press. Per-tag `when` arms still need a bare else arm
+// (KORU050): `| wheel-up _ when …` then `| wheel-up _ |> …`.
+~pub tor mouse-decode { m: koru/vaxis:MouseData }
+| ?wheel-up koru/vaxis:MouseData
+| ?wheel-down koru/vaxis:MouseData
+| ?wheel-left koru/vaxis:MouseData
+| ?wheel-right koru/vaxis:MouseData
+| ?press koru/vaxis:MouseData
+| ?release koru/vaxis:MouseData
+| ?motion koru/vaxis:MouseData
+| ?drag koru/vaxis:MouseData
+
+~proc mouse-decode|zig {
+    if (m.button >= 64) {
+        return switch (m.button) {
+            64 => .{ .wheel_up = m },
+            65 => .{ .wheel_down = m },
+            66 => .{ .wheel_right = m },
+            else => .{ .wheel_left = m },
+        };
+    }
+    return switch (m.kind) {
+        0 => .{ .press = m },
+        1 => .{ .release = m },
+        3 => .{ .drag = m },
+        else => .{ .motion = m },
+    };
 }
 
 // Write text at position.

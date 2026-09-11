@@ -68,7 +68,7 @@ koru/vaxis:component(app) {
 
 koru/vaxis:run(title: "paginator")
 ! draw w |> app(win: w, pager.page, pager.total)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == 'l' and pager.page < pager.total - 1 |> std/store:stored { pager.page: pager.page + 1 }
-! key k when k.ch == 'h' and pager.page > 0 |> std/store:stored { pager.page: pager.page - 1 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'l' and pager.page < pager.total - 1 |> std/store:stored { pager.page: pager.page + 1 }
+! char k when k.ch == 'h' and pager.page > 0 |> std/store:stored { pager.page: pager.page - 1 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

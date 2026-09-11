@@ -50,10 +50,10 @@ koru/vaxis:run(title: "timer")
 ! tick ms when tmr.last == 0 |> std/store:stored { tmr.last: ms }
 ! tick ms when tmr.running == 1 and tmr.remaining > 0 and tmr.last > 0 |> std/store:stored { tmr.remaining: tmr.remaining - (ms - tmr.last), tmr.last: ms }
 ! tick ms when tmr.last > 0 |> std/store:stored { tmr.last: ms }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == ' ' and tmr.running == 1 |> std/store:stored { tmr.running: 0 }
-! key k when k.ch == ' ' and tmr.running == 0 |> std/store:stored { tmr.running: 1 }
-! key k when k.ch == 's' and tmr.running == 1 |> std/store:stored { tmr.running: 0 }
-! key k when k.ch == 's' and tmr.running == 0 |> std/store:stored { tmr.running: 1 }
-! key k when k.ch == 'r' |> std/store:stored { tmr.remaining: 15000 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == ' ' and tmr.running == 1 |> std/store:stored { tmr.running: 0 }
+! char k when k.ch == ' ' and tmr.running == 0 |> std/store:stored { tmr.running: 1 }
+! char k when k.ch == 's' and tmr.running == 1 |> std/store:stored { tmr.running: 0 }
+! char k when k.ch == 's' and tmr.running == 0 |> std/store:stored { tmr.running: 1 }
+! char k when k.ch == 'r' |> std/store:stored { tmr.remaining: 15000 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

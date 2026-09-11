@@ -29,8 +29,8 @@ koru/vaxis:run(title: "counter")
 ! draw _ |> koru/vaxis:write-at(x: 2, y: 2, text: "k = up   j = down   r = reset   q = quit")
     |> koru/vaxis:write-at(x: 2, y: 4, text: "value: 0")
     |> koru/vaxis:render()
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == 'k' |> std/store:stored { counter.value: counter.value + 1 }
-! key k when k.ch == 'j' |> std/store:stored { counter.value: counter.value - 1 }
-! key k when k.ch == 'r' |> std/store:stored { counter.value: 0 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'k' |> std/store:stored { counter.value: counter.value + 1 }
+! char k when k.ch == 'j' |> std/store:stored { counter.value: counter.value - 1 }
+! char k when k.ch == 'r' |> std/store:stored { counter.value: 0 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

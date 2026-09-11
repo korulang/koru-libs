@@ -55,13 +55,13 @@ koru/vaxis:run(title: "viewport")
 ! draw w |> app(win: w,
     content: "The Viewport\n============\n\nA viewport is the simplest honest widget: a window onto\ncontent that does not fit. Everything else in a pager —\nthe title, the scroll position, the key hints — is chrome\naround this one idea: paint the slice, skip the rest.\n\n 1. The store owns the offset.\n 2. The widget owns the paint.\n 3. The keys mutate state, never pixels.\n\nThat separation is the whole design. When j bumps the\noffset, the next draw hands the viewport a new number and\nthe visible slice moves down one line. Nothing scrolls;\nthe world is repainted from state, every frame, and it is\nfast because the widget touches only the rows it shows.\n\nScrolling\n---------\n\nj or k moves one line. d and u jump half a page. g goes\nhome; G rides to the end — the last line parked at the\ntop of the window, the way less and vim leave it.\n\nLines longer than the window clip at the right edge rather than wrapping, which keeps columns honest and scanning calm — this line is deliberately long to prove it.\n\nClipping is not a compromise. Hard edges are what make a\nterminal feel solid: text never re-flows under your eyes,\nnever shifts a column while you read. Soft-wrap is a real\nfeature and it is deferred, not faked.\n\nThe End of the Content\n----------------------\n\nYou are near the bottom now. Past this point the window\nsimply runs out of lines to show, and the empty rows stay\nempty — no tildes, no filler, just the quiet edge of the\ncontent, which is the terminal's version of a margin.\n\n            · fin ·",
     scroll.y, line: scroll.y + 1, scroll.count)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == 'j' and scroll.y < scroll.count - 1 |> std/store:stored { scroll.y: scroll.y + 1 }
-! key k when k.ch == 'k' and scroll.y > 0 |> std/store:stored { scroll.y: scroll.y - 1 }
-! key k when k.ch == 'd' and scroll.y < scroll.count - 12 |> std/store:stored { scroll.y: scroll.y + 12 }
-! key k when k.ch == 'd' and scroll.y >= scroll.count - 12 and scroll.y < scroll.count - 1 |> std/store:stored { scroll.y: scroll.count - 1 }
-! key k when k.ch == 'u' and scroll.y >= 12 |> std/store:stored { scroll.y: scroll.y - 12 }
-! key k when k.ch == 'u' and scroll.y > 0 and scroll.y < 12 |> std/store:stored { scroll.y: 0 }
-! key k when k.ch == 'g' and scroll.y > 0 |> std/store:stored { scroll.y: 0 }
-! key k when k.ch == 'G' and scroll.y < scroll.count - 1 |> std/store:stored { scroll.y: scroll.count - 1 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'j' and scroll.y < scroll.count - 1 |> std/store:stored { scroll.y: scroll.y + 1 }
+! char k when k.ch == 'k' and scroll.y > 0 |> std/store:stored { scroll.y: scroll.y - 1 }
+! char k when k.ch == 'd' and scroll.y < scroll.count - 12 |> std/store:stored { scroll.y: scroll.y + 12 }
+! char k when k.ch == 'd' and scroll.y >= scroll.count - 12 and scroll.y < scroll.count - 1 |> std/store:stored { scroll.y: scroll.count - 1 }
+! char k when k.ch == 'u' and scroll.y >= 12 |> std/store:stored { scroll.y: scroll.y - 12 }
+! char k when k.ch == 'u' and scroll.y > 0 and scroll.y < 12 |> std/store:stored { scroll.y: 0 }
+! char k when k.ch == 'g' and scroll.y > 0 |> std/store:stored { scroll.y: 0 }
+! char k when k.ch == 'G' and scroll.y < scroll.count - 1 |> std/store:stored { scroll.y: scroll.count - 1 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

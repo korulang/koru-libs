@@ -14,5 +14,5 @@ koru/vaxis:run(title: "pulse")
 ! draw w |> koru/vaxis:pulse(win: w, t: ui.ms)
     |> koru/vaxis:write-at(x: 2, y: 0, text: "pulse — q quits")
 ! tick ms |> std/store:stored { ui.ms: ms }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("pulse failed: {{ e:s }}")

@@ -30,5 +30,5 @@ koru/vaxis:run(title: "list")
                 | out-of-bounds |> _
             | done |> koru/vaxis:render() |> std/list:free(xs)
     | err _ |> _
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

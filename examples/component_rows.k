@@ -30,5 +30,5 @@ koru/vaxis:run(title: "component rows")
     |> koru/vaxis:box(x: 2, y: 3, w: 30, h: 1, border: false): r2
     |> todo(win: r2, label: "ship the layout engine")
     |> koru/vaxis:render()
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

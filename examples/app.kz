@@ -8,13 +8,10 @@
 
 // Simple sqlite3 test
 ~koru/sqlite3:open(path: ":memory:")
-| db d |>
-    koru/sqlite3:exec(conn: d.conn, sql: "CREATE TABLE test (id INTEGER, name TEXT)")
-    | ok c1 |>
-        koru/sqlite3:exec(conn: c1.conn, sql: "INSERT INTO test VALUES (1, 'hello')")
-        | ok c2 |>
-            koru/sqlite3:close(conn: c2.conn)
-            | closed |> std/io:print.ln("sqlite3 works!")
-        | err _ |> std/io:print.ln("Insert failed")
-    | err _ |> std/io:print.ln("Create table failed")
-| err _ |> std/io:print.ln("Open failed")
+| db d |> koru/sqlite3:exec(conn: d, sql: "CREATE TABLE test (id INTEGER, name TEXT)")
+    | ok |> koru/sqlite3:exec(conn: d, sql: "INSERT INTO test VALUES (1, 'hello')")
+        | ok |> koru/sqlite3:close(conn: d)
+            |> std/io:print.ln("sqlite3 works!")
+        | err e |> std/io:print.ln("Insert failed: {{ e.msg:s }}")
+    | err e |> std/io:print.ln("Create table failed: {{ e.msg:s }}")
+| err e |> std/io:print.ln("Open failed: {{ e.msg:s }}")

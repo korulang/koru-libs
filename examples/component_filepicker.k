@@ -64,16 +64,16 @@ koru/vaxis:run(title: "filepicker")
         path:    "~/charm/documents",
         entries: "D\t..\nF\tresume.pdf\nF\tbudget.xlsx\nF\tnotes.md\nF\tcover-letter.md",
         fp.selected)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == 'j' and fp.dir == 0 and fp.selected < 5 |> std/store:stored { fp.selected: fp.selected + 1 }
-! key k when k.ch == 'j' and fp.dir == 1 and fp.selected < 4 |> std/store:stored { fp.selected: fp.selected + 1 }
-! key k when k.ch == 'k' and fp.selected > 0 |> std/store:stored { fp.selected: fp.selected - 1 }
-! key k when k.ch == 'g' and fp.selected > 0 |> std/store:stored { fp.selected: 0 }
-! key k when k.ch == 'G' and fp.dir == 0 and fp.selected < 5 |> std/store:stored { fp.selected: 5 }
-! key k when k.ch == 'G' and fp.dir == 1 and fp.selected < 4 |> std/store:stored { fp.selected: 4 }
-! key k when k.ch == 'l' and fp.dir == 0 and fp.selected == 0 |> std/store:stored { fp.dir: 1 }
-! key k when k.ch == 13 and fp.dir == 0 and fp.selected == 0 |> std/store:stored { fp.dir: 1 }
-! key k when k.ch == 'l' and fp.dir == 1 and fp.selected == 0 |> std/store:stored { fp.dir: 0 }
-! key k when k.ch == 13 and fp.dir == 1 and fp.selected == 0 |> std/store:stored { fp.dir: 0 }
-! key k when k.ch == 'h' and fp.dir == 1 |> std/store:stored { fp.dir: 0 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'j' and fp.dir == 0 and fp.selected < 5 |> std/store:stored { fp.selected: fp.selected + 1 }
+! char k when k.ch == 'j' and fp.dir == 1 and fp.selected < 4 |> std/store:stored { fp.selected: fp.selected + 1 }
+! char k when k.ch == 'k' and fp.selected > 0 |> std/store:stored { fp.selected: fp.selected - 1 }
+! char k when k.ch == 'g' and fp.selected > 0 |> std/store:stored { fp.selected: 0 }
+! char k when k.ch == 'G' and fp.dir == 0 and fp.selected < 5 |> std/store:stored { fp.selected: 5 }
+! char k when k.ch == 'G' and fp.dir == 1 and fp.selected < 4 |> std/store:stored { fp.selected: 4 }
+! char k when k.ch == 'l' and fp.dir == 0 and fp.selected == 0 |> std/store:stored { fp.dir: 1 }
+! enter _ when fp.dir == 0 and fp.selected == 0 |> std/store:stored { fp.dir: 1 }
+! char k when k.ch == 'l' and fp.dir == 1 and fp.selected == 0 |> std/store:stored { fp.dir: 0 }
+! enter _ when fp.dir == 1 and fp.selected == 0 |> std/store:stored { fp.dir: 0 }
+! char k when k.ch == 'h' and fp.dir == 1 |> std/store:stored { fp.dir: 0 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

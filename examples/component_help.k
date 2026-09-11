@@ -56,7 +56,7 @@ koru/vaxis:run(title: "help")
 ! draw w |> app(win: w,
     bindings: "↑/k:up\n↓/j:down\n←/h:prev page\n→/l:next page\ng:go to start\nG:go to end\n/:filter\n?:toggle help\nq:quit",
     help.show)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == '?' and help.show == 0 |> std/store:stored { help.show: 1 }
-! key k when k.ch == '?' and help.show == 1 |> std/store:stored { help.show: 0 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == '?' and help.show == 0 |> std/store:stored { help.show: 1 }
+! char k when k.ch == '?' and help.show == 1 |> std/store:stored { help.show: 0 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

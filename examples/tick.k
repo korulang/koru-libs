@@ -19,5 +19,5 @@ koru/vaxis:component(hud) {
 koru/vaxis:run(title: "tick-probe")
 ! draw w |> hud(win: w, spin.frame)
 ! tick _ |> std/store:stored { spin.frame: spin.frame + 1 }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

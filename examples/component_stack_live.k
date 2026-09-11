@@ -27,13 +27,13 @@ std/string:from-page(text: "buy milk")
         | ok b |> std/string:take(s: b): label
             |> std/store:insert(todos) { label, done: 0 }
                 | row _ |> _
+        | err _ |> _
 | err _ |> _
 
 koru/vaxis:run(title: "stack live")
 ! draw w |> koru/vaxis:stack(parent: w): panel
     |> std/store:query(todos)
-    ! query { entity.label } |> std/string:read(s: label): text
-        |> koru/vaxis:stack-row(stack: panel): rw
-        |> std/fmt:ln("{{ text:s }}"): line |> todo-row(win: rw, line.text)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+    ! query t |> koru/vaxis:stack-row(stack: panel): rw
+        |> std/fmt:ln("{{ t.label:S }}"): line |> todo-row(win: rw, line.text)
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

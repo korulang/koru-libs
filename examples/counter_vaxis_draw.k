@@ -20,6 +20,6 @@ std/store:watch(counter)
 
 koru/vaxis:run(title: "counter")
 ! draw _ |> koru/vaxis:write-at(x: 2, y: 2, text: "Press any key to count. q to quit.") |> koru/vaxis:render()
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key _ |> std/store:stored { counter.clicks: counter.clicks + 1 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! key-raw _ |> std/store:stored { counter.clicks: counter.clicks + 1 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

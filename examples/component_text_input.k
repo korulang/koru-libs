@@ -17,11 +17,12 @@
 
 import std/io
 import std/string
+import std/fmt
 import std/store
 import koru/vaxis
 
 std/store:new(clock) { ms: 0[i64] }
-std/store:new(buf, capacity: 2) { text: *std/string:String<instance!> }
+std/store:new(buf, capacity: 2) { *std/string:String<instance!> }
 
 koru/vaxis:component(hint) {
     <text>type to edit  |  backspace  |  esc quit</text>
@@ -38,33 +39,20 @@ koru/vaxis:component(app) {
 std/string:from-page(text: "")
 | ok a |> std/string:take(s: a): text |> std/store:insert(buf) { text }
     | row _ |> _
-    | full f |> std/string:free(s: f.text)
+    | full f |> std/string:free(s: f)
 | err _ |> _
 
 koru/vaxis:run(title: "text-input")
 ! draw w |> koru/vaxis:sub(parent: w, x: 0, y: 0, w: 0, h: 0): root
     |> std/store:query(buf)
-    ! query { buf: entity.text } |> std/string:read(s: buf): value
-        |> app(win: root, value, clock.ms)
+    ! query d |> std/fmt:ln("{{ d:S }}"): value
+        |> app(win: root, value: value.text, clock.ms)
 ! tick ms |> std/store:stored { clock.ms: ms }
-! key k when k.ch == 27 |> koru/vaxis:quit()
-! key k when k.ch == 127 |> std/store:take(buf[0])
-    | item d |> std/string:pop-char(s: d.text) |> std/store:insert(buf) { d.text }
-        | row _ |> _
-        | full f |> std/string:free(s: f.text)
-    | empty |> _
-! key k when k.ch == 8 |> std/store:take(buf[0])
-    | item d |> std/string:pop-char(s: d.text) |> std/store:insert(buf) { d.text }
-        | row _ |> _
-        | full f |> std/string:free(s: f.text)
-    | empty |> _
-! key k when k.ch >= 32 and k.ch < 127 |> std/store:take(buf[0])
-    | item d |> std/string:append-char(s: d.text, k.ch)
-        | ok |> std/store:insert(buf) { d.text }
-            | row _ |> _
-            | full f |> std/string:free(s: f.text)
-        | err _ |> std/store:insert(buf) { d.text }
-            | row _ |> _
-            | full f |> std/string:free(s: f.text)
-    | empty |> _
+! escape _ |> koru/vaxis:quit()
+! backspace _ |> std/store:query(buf)
+    ! query d |> std/string:pop-char(s: d)
+! char k when k.ch >= 32 and k.ch < 127 |> std/store:query(buf)
+    ! query d |> std/string:append-char(s: d, k.ch)
+        | ok |> _
+        | err _ |> _
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

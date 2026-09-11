@@ -49,10 +49,10 @@ koru/vaxis:run(title: "stopwatch")
 ! tick ms when sw.last == 0 |> std/store:stored { sw.last: ms }
 ! tick ms when sw.running == 1 and sw.last > 0 |> std/store:stored { sw.elapsed: sw.elapsed + (ms - sw.last), sw.last: ms }
 ! tick ms when sw.last > 0 |> std/store:stored { sw.last: ms }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
-! key k when k.ch == ' ' and sw.running == 1 |> std/store:stored { sw.running: 0 }
-! key k when k.ch == ' ' and sw.running == 0 |> std/store:stored { sw.running: 1 }
-! key k when k.ch == 's' and sw.running == 1 |> std/store:stored { sw.running: 0 }
-! key k when k.ch == 's' and sw.running == 0 |> std/store:stored { sw.running: 1 }
-! key k when k.ch == 'r' |> std/store:stored { sw.elapsed: 0 }
+! char k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == ' ' and sw.running == 1 |> std/store:stored { sw.running: 0 }
+! char k when k.ch == ' ' and sw.running == 0 |> std/store:stored { sw.running: 1 }
+! char k when k.ch == 's' and sw.running == 1 |> std/store:stored { sw.running: 0 }
+! char k when k.ch == 's' and sw.running == 0 |> std/store:stored { sw.running: 1 }
+! char k when k.ch == 'r' |> std/store:stored { sw.elapsed: 0 }
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

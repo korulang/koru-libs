@@ -2,4 +2,4 @@
 import koru/vaxis
 
 koru/vaxis(orphan)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()

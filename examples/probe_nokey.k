@@ -1,4 +1,4 @@
 import koru/vaxis
 koru/vaxis:run(title: "t")
-! ready |> koru/vaxis:render()
+! draw _ |> koru/vaxis:render()
 | err _ |> koru/vaxis:quit()

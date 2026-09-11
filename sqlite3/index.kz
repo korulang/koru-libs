@@ -132,6 +132,225 @@ pub const Statement = struct {
 ~proc release.row|zig { _ = &stmt; }
 
 // ============================================================================
+// default — the module's voice: `libs/sqlite3 { SQL }`
+// ============================================================================
+// The default-event rule rewrites a bare `libs/sqlite3 { ... }` call to
+// `libs/sqlite3:default { ... }` — but only at flow-root position today
+// (koru gap: the rewrite doesn't recurse into continuations). The explicit
+// `:default` spelling works everywhere now.
+//
+// Semantics: per-row iteration. `! row` fires once per result row (the row
+// handle is a scoped borrow, auto-released at the row-body boundary); the
+// statement is finalized exactly once. `{{name:hint}}` interpolation binds
+// scope variables — :d = int64, :f = float64, :s = text (default).
+//
+//   libs/sqlite3:default(conn: d) { SELECT id, name FROM users }
+//   ! row r |> libs/sqlite3:col.int(stmt: r, index: 0): id |> ...
+//   | done d2 |> libs/sqlite3:close(conn: d2)
+//   | err e |> libs/sqlite3:close(e.conn)
+
+~[comptime|transform]pub tor default {
+    source: Source,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+// Runtime impl event for shape-checking (never actually runs - inline code does)
+~[norun]pub tor default.impl { conn: *Connection<!opened> }
+! row *Statement<row!>
+| done *Connection<opened!>
+| err { conn: *Connection<opened!>, code: i32, msg: string }
+
+~proc default|zig {
+    const ast = @import("ast");
+
+    if (item.* != .flow) @panic("default transform: containing item is not a flow - walker dispatch contract broken");
+    const flow = &item.flow;
+
+    const sql_text = source.text;
+
+    var conn_var: []const u8 = "conn";
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "conn")) {
+            conn_var = arg.value;
+            break;
+        }
+    }
+
+    // Parse {{var:type}} interpolations → ? placeholders + bind list
+    var sql_buf = std.ArrayList(u8).initCapacity(allocator, sql_text.len) catch unreachable;
+    var bindings: [64]struct { name: []const u8, type_hint: u8 } = undefined;
+    var binding_count: usize = 0;
+
+    var i: usize = 0;
+    while (i < sql_text.len) {
+        if (i + 1 < sql_text.len and sql_text[i] == '{' and sql_text[i + 1] == '{') {
+            var start = i + 2;
+            while (start < sql_text.len and (sql_text[start] == ' ' or sql_text[start] == '\t')) : (start += 1) {}
+
+            var end = start;
+            while (end < sql_text.len and !(end + 1 < sql_text.len and sql_text[end] == '}' and sql_text[end + 1] == '}')) {
+                end += 1;
+            }
+
+            if (end >= sql_text.len) {
+                sql_buf.append(allocator, sql_text[i]) catch unreachable;
+                i += 1;
+                continue;
+            }
+
+            var trim_end = end;
+            while (trim_end > start and (sql_text[trim_end - 1] == ' ' or sql_text[trim_end - 1] == '\t')) : (trim_end -= 1) {}
+
+            const binding_str = sql_text[start..trim_end];
+            var colon_pos: ?usize = null;
+            for (binding_str, 0..) |ch, j| {
+                if (ch == ':') {
+                    colon_pos = j;
+                    break;
+                }
+            }
+
+            if (colon_pos) |cp| {
+                bindings[binding_count] = .{
+                    .name = binding_str[0..cp],
+                    .type_hint = if (cp + 1 < binding_str.len) binding_str[cp + 1] else 's',
+                };
+            } else {
+                bindings[binding_count] = .{ .name = binding_str, .type_hint = 's' };
+            }
+            binding_count += 1;
+            sql_buf.append(allocator, '?') catch unreachable;
+
+            i = end + 2;
+        } else {
+            sql_buf.append(allocator, sql_text[i]) catch unreachable;
+            i += 1;
+        }
+    }
+
+    // Emitted in the consumer's frame — see the `query` transform for why the
+    // module path is computed rather than spelled.
+    const codegen_utils = @import("codegen_utils");
+    const mod_path = codegen_utils.buildKoruModulePath(
+        allocator,
+        invocation.path.module_qualifier orelse "libs.sqlite3",
+    ) catch unreachable;
+
+    var code_buf = std.ArrayList(u8).initCapacity(allocator, 2048) catch unreachable;
+    code_buf.appendSlice(allocator, "blk: {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").") catch unreachable;
+    code_buf.appendSlice(allocator, mod_path) catch unreachable;
+    code_buf.appendSlice(allocator, ";\n    const c = __sqlite3.c;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const Result = union(enum) { done: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ".handle, \"") catch unreachable;
+    for (sql_buf.items) |ch| {
+        switch (ch) {
+            '"' => code_buf.appendSlice(allocator, "\\\"") catch unreachable,
+            '\\' => code_buf.appendSlice(allocator, "\\\\") catch unreachable,
+            '\n' => code_buf.appendSlice(allocator, "\\n") catch unreachable,
+            '\r' => code_buf.appendSlice(allocator, "\\r") catch unreachable,
+            '\t' => code_buf.appendSlice(allocator, "\\t") catch unreachable,
+            else => code_buf.append(allocator, ch) catch unreachable,
+        }
+    }
+    code_buf.appendSlice(allocator, "\", -1, &stmt_handle, null);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    if (rc != c.SQLITE_OK) {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ", .code = rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
+
+    // Bind interpolated scope variables
+    for (bindings[0..binding_count], 0..) |binding, idx| {
+        const bind_idx = idx + 1;
+        code_buf.appendSlice(allocator, "    _ = c.sqlite3_bind_") catch unreachable;
+        switch (binding.type_hint) {
+            'd' => code_buf.appendSlice(allocator, "int64(stmt_handle, ") catch unreachable,
+            'f' => code_buf.appendSlice(allocator, "double(stmt_handle, ") catch unreachable,
+            else => code_buf.appendSlice(allocator, "text(stmt_handle, ") catch unreachable,
+        }
+        code_buf.appendSlice(allocator, std.fmt.allocPrint(allocator, "{d}", .{bind_idx}) catch unreachable) catch unreachable;
+        code_buf.appendSlice(allocator, ", ") catch unreachable;
+        code_buf.appendSlice(allocator, binding.name) catch unreachable;
+        if (binding.type_hint == 's') {
+            code_buf.appendSlice(allocator, ".ptr, @intCast(") catch unreachable;
+            code_buf.appendSlice(allocator, binding.name) catch unreachable;
+            code_buf.appendSlice(allocator, ".len), c.SQLITE_STATIC);\n") catch unreachable;
+        } else {
+            code_buf.appendSlice(allocator, ");\n") catch unreachable;
+        }
+    }
+
+    // Per-row iteration: `row(&__row)` is the `! row` effect splice point —
+    // the branch body inlines here once per SQLITE_ROW. The statement is
+    // finalized exactly once, by us — the user never finalizes.
+    code_buf.appendSlice(allocator, "    var __row = __sqlite3.Statement{ .handle = stmt_handle };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    var __rc = c.sqlite3_step(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    while (__rc == c.SQLITE_ROW) : (__rc = c.sqlite3_step(stmt_handle)) {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        row(&__row);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    if (__rc != c.SQLITE_DONE) {\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, ", .code = __rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    break :blk @as(Result, .{ .done = ") catch unreachable;
+    code_buf.appendSlice(allocator, conn_var) catch unreachable;
+    code_buf.appendSlice(allocator, " });\n") catch unreachable;
+    code_buf.appendSlice(allocator, "}") catch unreachable;
+
+    const inline_code = code_buf.items;
+
+    const impl_segments = allocator.alloc([]const u8, 2) catch unreachable;
+    impl_segments[0] = allocator.dupe(u8, "default") catch unreachable;
+    impl_segments[1] = allocator.dupe(u8, "impl") catch unreachable;
+    const impl_path = ast.DottedPath{
+        .module_qualifier = invocation.path.module_qualifier,
+        .segments = impl_segments,
+    };
+
+    const new_inv_annotations = allocator.alloc([]const u8, invocation.annotations.len + 1) catch unreachable;
+    for (invocation.annotations, 0..) |ann, idx| {
+        new_inv_annotations[idx] = ann;
+    }
+    new_inv_annotations[invocation.annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
+
+    const new_args = allocator.alloc(ast.Arg, 1) catch unreachable;
+    for (invocation.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "conn")) {
+            new_args[0] = arg;
+            break;
+        }
+    }
+
+    const new_invocation = ast.Invocation{
+        .path = impl_path,
+        .args = new_args,
+        .annotations = new_inv_annotations,
+        .inline_body = inline_code,
+        .inserted_by_tap = invocation.inserted_by_tap,
+        .from_opaque_tap = invocation.from_opaque_tap,
+    };
+
+    var new_flow = flow.*;
+    new_flow.body = ast.rootSite(new_invocation, flow.body.continuations, flow.location);
+    return .{ .replacement = ast.Item{ .flow = new_flow } };
+}
+
+// ============================================================================
 // Parameterized Query - Compile-time SQL with type-safe bindings
 // ============================================================================
 // Usage:
@@ -162,17 +381,12 @@ pub const Statement = struct {
 
 ~proc query|zig {
     const ast = @import("ast");
-    const ast_functional = @import("ast_functional");
 
-    // Get the flow from the item
-    const flow = if (item.* == .flow)
-        &item.flow
-    else
-        return .{};
-
-    // CRITICAL: Use pointer comparison to identify if this is the top-level query
-    // The `invocation` parameter tells us EXACTLY which query is being transformed
-    const is_top_level = (invocation == flow.inv());
+    // The walker hands transforms the containing item of the matched
+    // invocation; a query invocation always lives in a flow. A non-flow
+    // item means the dispatch contract broke upstream — crash loudly.
+    if (item.* != .flow) @panic("query transform: containing item is not a flow - walker dispatch contract broken");
+    const flow = &item.flow;
 
     const sql_text = source.text;
 
@@ -249,13 +463,25 @@ pub const Statement = struct {
     // Build inline Zig code
     var code_buf = std.ArrayList(u8).initCapacity(allocator, 2048) catch unreachable;
 
+    // The inline body is emitted in the CONSUMER's frame, where this module's
+    // bare names don't exist. `$mod.` is not rewritten inside inline_body, so
+    // compute the declaring module's emitted path ourselves — the same
+    // `koru_`-prefix rule the emitter applies (`libs.sqlite3` →
+    // `koru_libs.koru_sqlite3`), keyed off how the site invoked us.
+    const codegen_utils = @import("codegen_utils");
+    const mod_path = codegen_utils.buildKoruModulePath(
+        allocator,
+        invocation.path.module_qualifier orelse "libs.sqlite3",
+    ) catch unreachable;
+
     // Header: declare stmt and prepare
     // Use labeled block with break :blk for return values (since this runs as an expression)
     // Use the library's existing c import to avoid type mismatches
     code_buf.appendSlice(allocator, "blk: {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const c = @import(\"root\").koru_libs.sqlite3.c;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").koru_libs.sqlite3;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: struct { conn: *__sqlite3.Connection, stmt: *__sqlite3.Statement }, empty: struct { conn: *__sqlite3.Connection }, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").") catch unreachable;
+    code_buf.appendSlice(allocator, mod_path) catch unreachable;
+    code_buf.appendSlice(allocator, ";\n    const c = __sqlite3.c;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: struct { conn: *__sqlite3.Connection, stmt: *__sqlite3.Statement }, empty: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
     code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
     code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
@@ -295,8 +521,7 @@ pub const Statement = struct {
             else => code_buf.appendSlice(allocator, "text(stmt_handle, ") catch unreachable,
         }
 
-        // Add index (1-9 for simplicity)
-        code_buf.append(allocator, '0' + @as(u8, @intCast(bind_idx))) catch unreachable;
+        code_buf.appendSlice(allocator, std.fmt.allocPrint(allocator, "{d}", .{bind_idx}) catch unreachable) catch unreachable;
         code_buf.appendSlice(allocator, ", ") catch unreachable;
         code_buf.appendSlice(allocator, binding.name) catch unreachable;
 
@@ -312,16 +537,16 @@ pub const Statement = struct {
     // Step and return
     code_buf.appendSlice(allocator, "    const step_rc = c.sqlite3_step(stmt_handle);\n") catch unreachable;
     code_buf.appendSlice(allocator, "    if (step_rc == c.SQLITE_ROW) {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        const s = @import(\"std\").heap.page_allocator.create(@import(\"root\").koru_libs.sqlite3.Statement) catch unreachable;\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        const s = @import(\"std\").heap.page_allocator.create(__sqlite3.Statement) catch unreachable;\n") catch unreachable;
     code_buf.appendSlice(allocator, "        s.* = .{ .handle = stmt_handle };\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .row = .{ .conn = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
     code_buf.appendSlice(allocator, ", .stmt = s } });\n") catch unreachable;
     code_buf.appendSlice(allocator, "    } else if (step_rc == c.SQLITE_DONE) {\n") catch unreachable;
     code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .empty = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .empty = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, " } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, " });\n") catch unreachable;
     code_buf.appendSlice(allocator, "    } else {\n") catch unreachable;
     code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
@@ -364,195 +589,21 @@ pub const Statement = struct {
         .path = impl_path,
         .args = new_args,
         .annotations = new_inv_annotations,
+        .inline_body = inline_code,
         .inserted_by_tap = invocation.inserted_by_tap,
         .from_opaque_tap = invocation.from_opaque_tap,
     };
 
-    if (is_top_level) {
-        // =====================================================================
-        // TOP-LEVEL CASE: Query is the flow's direct invocation
-        // Create a new flow with query.impl invocation and inline_body
-        // =====================================================================
-        const transformed_flow = ast.Flow{
-            .body = ast.rootSite(new_invocation, flow.body.continuations, flow.location),
-            .annotations = flow.annotations,
-            .pre_label = flow.pre_label,
-            .super_shape = flow.super_shape,
-            .inline_body = inline_code,
-            .is_pure = flow.is_pure,
-            .is_transitively_pure = flow.is_transitively_pure,
-            .location = flow.location,
-            .module = flow.module,
-        };
-
-        const new_item = ast.Item{ .flow = transformed_flow };
-
-        const maybe_new_program = ast_functional.replaceFlowRecursive(allocator, program, flow, new_item) catch unreachable;
-        if (maybe_new_program) |new_program| {
-            const result = allocator.create(ast.Program) catch unreachable;
-            result.* = new_program;
-            return .{ .whole_program = result };
-        }
-        std.debug.print("ERROR: ~query transform (top-level) failed - flow not found\n", .{});
-        @panic("query transform: flow not found");
-    } else {
-        // =====================================================================
-        // NESTED CASE: Query is inside a continuation pipeline
-        // Find the path to the invocation and replace with inline_code node
-        // =====================================================================
-
-        // Helper to find path to this specific invocation
-        const SearchResult = struct {
-            path: []const usize,
-            parent_cont: *const ast.Continuation,
-        };
-
-        const findInvocationRecursive = struct {
-            fn search(
-                alloc: std.mem.Allocator,
-                continuations: []const ast.Continuation,
-                current_path: []const usize,
-                target_inv: *const ast.Invocation,
-            ) ?SearchResult {
-                for (continuations, 0..) |*cont, cont_idx| {
-                    var path = alloc.alloc(usize, current_path.len + 1) catch return null;
-                    @memcpy(path[0..current_path.len], current_path);
-                    path[current_path.len] = cont_idx;
-
-                    // Check if this continuation's node is the target invocation
-                    if (cont.node) |*node| {
-                        if (node.* == .invocation) {
-                            if (&node.invocation == target_inv) {
-                                return SearchResult{
-                                    .path = path,
-                                    .parent_cont = cont,
-                                };
-                            }
-                        }
-                    }
-
-                    // Recurse into nested continuations
-                    if (search(alloc, cont.continuations, path, target_inv)) |result| {
-                        return result;
-                    }
-
-                    alloc.free(path);
-                }
-                return null;
-            }
-        }.search;
-
-        const empty_path = &[_]usize{};
-        const search_result = findInvocationRecursive(allocator, flow.body.continuations, empty_path, invocation) orelse {
-            std.debug.print("[QUERY TRANSFORM] WARNING: Could not find query invocation in continuations\n", .{});
-            @panic("query transform: nested invocation not found");
-        };
-
-        // Create a switch_result node with NamedBranch entries for each result variant
-        // The user's continuations become the branch bodies
-
-        // Find row/empty/err continuations from the parent
-        var row_cont: ?*const ast.Continuation = null;
-        var empty_cont: ?*const ast.Continuation = null;
-        var err_cont: ?*const ast.Continuation = null;
-
-        for (search_result.parent_cont.continuations) |*cont| {
-            if (std.mem.eql(u8, cont.branch, "row")) {
-                row_cont = cont;
-            } else if (std.mem.eql(u8, cont.branch, "empty")) {
-                empty_cont = cont;
-            } else if (std.mem.eql(u8, cont.branch, "err")) {
-                err_cont = cont;
-            }
-        }
-
-        // Count how many branches we have
-        var branch_count: usize = 0;
-        if (row_cont != null) branch_count += 1;
-        if (empty_cont != null) branch_count += 1;
-        if (err_cont != null) branch_count += 1;
-
-        // Build NamedBranch array
-        const branches = allocator.alloc(ast.NamedBranch, branch_count) catch unreachable;
-        var branch_idx: usize = 0;
-
-        if (row_cont) |rc| {
-            const body = allocator.alloc(ast.Continuation, 1) catch unreachable;
-            body[0] = rc.*;
-            branches[branch_idx] = .{
-                .name = "row",
-                .body = body,
-                .binding = rc.binding,
-            };
-            branch_idx += 1;
-        }
-
-        if (empty_cont) |ec| {
-            const body = allocator.alloc(ast.Continuation, 1) catch unreachable;
-            body[0] = ec.*;
-            branches[branch_idx] = .{
-                .name = "empty",
-                .body = body,
-                .binding = ec.binding,
-            };
-            branch_idx += 1;
-        }
-
-        if (err_cont) |erc| {
-            const body = allocator.alloc(ast.Continuation, 1) catch unreachable;
-            body[0] = erc.*;
-            branches[branch_idx] = .{
-                .name = "err",
-                .body = body,
-                .binding = erc.binding,
-            };
-            branch_idx += 1;
-        }
-
-        // Create switch_result node
-        const switch_node = ast.Node{ .switch_result = .{
-            .expression = inline_code,
-            .branches = branches,
-        } };
-
-        // Replace the invocation node at the path with the switch_result node
-        var modified_flow = ast_functional.replacePipelineStepAtPath(
-            allocator,
-            flow,
-            search_result.path,
-            0, // step_idx
-            switch_node,
-        ) catch unreachable;
-
-        // Filter out the row/empty/err continuations from the parent - they're now inside switch_result
-        const keepNotQueryBranch = struct {
-            fn check(branch: []const u8) bool {
-                return !std.mem.eql(u8, branch, "row") and
-                       !std.mem.eql(u8, branch, "empty") and
-                       !std.mem.eql(u8, branch, "err");
-            }
-        }.check;
-
-        modified_flow = ast_functional.filterNestedContinuationsAtPath(
-            allocator,
-            &modified_flow,
-            search_result.path,
-            &keepNotQueryBranch,
-        ) catch unreachable;
-
-        // Create the new item
-        const new_item = ast.Item{ .flow = modified_flow };
-
-        // Replace in program
-        const maybe_new_program = ast_functional.replaceFlowRecursive(allocator, program, flow, new_item) catch unreachable;
-        if (maybe_new_program) |new_program| {
-            const result = allocator.create(ast.Program) catch unreachable;
-            result.* = new_program;
-            return .{ .whole_program = result };
-        }
-        std.debug.print("ERROR: ~query transform (nested) failed - flow not found in program\n", .{});
-        @panic("query transform: flow not found");
-    }
+    // Site-local write-back: the runner owns ALL placement. The replacement
+    // flow's body is a fresh root site wrapping the query.impl invocation —
+    // which carries inline_body (the canonical Invocation slot, honored at
+    // both flow-root and nested-continuation emission) — and the site's own
+    // continuations ride along unchanged as its branches. Root site: the
+    // whole Item is swapped for this one. Nested: the runner splices the
+    // invocation node + children into the holding continuation.
+    var new_flow = flow.*;
+    new_flow.body = ast.rootSite(new_invocation, flow.body.continuations, flow.location);
+    return .{ .replacement = ast.Item{ .flow = new_flow } };
 }
 
 // Get next row from statement

@@ -14,4 +14,4 @@ koru/vaxis:run(title: "demo")
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")
 
 koru/vaxis(demo)
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()

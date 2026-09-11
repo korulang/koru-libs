@@ -16,5 +16,5 @@ koru/vaxis:run(title: "view chain")
     <text>second line</text>
     <text>third line</text>
 }
-! key k when k.ch == 'q' |> koru/vaxis:quit()
+! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")
