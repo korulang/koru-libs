@@ -1168,6 +1168,47 @@ const VaxisEvent = union(enum) {
     }
 }
 
+// Soft-wrap as a TEXT transform, not a viewport mode. Reflows newline-delimited
+// content to a display width: every source line becomes one or more rows of at
+// most `width` bytes, broken at the last space inside the window when one is
+// there, hard-broken when it is not; the space is consumed, never painted as a
+// row's first cell. The viewport stays bubbles-honest (hard-clip of rows) —
+// the host wraps, then paints and counts THE SAME STRING, so the scroll offset
+// it owns is denominated in visual rows and cannot drift from the paint.
+// `width < 1` hands the content back untouched — that IS what an unsized or
+// zero-width window shows. The result rides the frame text arena: consume it
+// inside the calling flow (count it, paint it), never store it. Byte-width,
+// not grapheme-aware — same honesty level as list's item widths.
+~pub tor wrap-lines { content: string, width: i64 } -> string
+
+~proc wrap-lines|zig {
+    if (width < 1) return content;
+    const w: usize = @intCast(width);
+    const arena = $mod.text_arena.allocator();
+    var out = std.ArrayList(u8).initCapacity(arena, content.len + 8) catch unreachable;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        var rest = line;
+        while (true) {
+            if (rest.len <= w) {
+                if (!first) out.append(arena, '\n') catch unreachable;
+                out.appendSlice(arena, rest) catch unreachable;
+                first = false;
+                break;
+            }
+            const cut = std.mem.lastIndexOfScalar(u8, rest[0..w], ' ') orelse w;
+            if (!first) out.append(arena, '\n') catch unreachable;
+            out.appendSlice(arena, rest[0..cut]) catch unreachable;
+            first = false;
+            rest = rest[cut..];
+            while (rest.len > 0 and rest[0] == ' ') rest = rest[1..];
+            if (rest.len == 0) break;
+        }
+    }
+    return out.items;
+}
+
 // Charm-class paginator — pagination STATUS CHROME (COMPONENT paginator).
 // Charm's own note: this widget does NOT render page content; it paints the
 // page indicator and does the page math. Two display modes matching bubbles/
