@@ -1,0 +1,21 @@
+import koru/regressions
+
+koru/regressions:run()
+koru/regressions:expect(text: "shape + init ok")
+//
+// D1 pin: koru/signal:shape(Breath) { … } is norun metadata (kernel-parallel).
+// Shape declares ports only; carried state uses name[type] in the tick block.
+
+import koru/signal
+import std/io
+
+koru/signal:shape(Breath) {
+    pass_rate[percent]
+    drawdown[percent]
+    alarm[1]
+    surprise[1]
+}
+
+koru/signal:init(Breath)
+| ok |> std/io:print.ln("shape + init ok")
+| err e |> std/io:print.ln("init failed: {{ e:s }}")

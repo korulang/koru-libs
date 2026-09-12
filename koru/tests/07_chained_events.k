@@ -1,0 +1,2 @@
+// Test: Chained void events
+print(text: "PA") |> print(text: "SS") |> println(text: ": chained events work")

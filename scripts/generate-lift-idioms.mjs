@@ -69,7 +69,7 @@ function collectNegatives(pkg) {
       if (e.isDirectory()) {
         if (e.name === '.zig-cache' || e.name.startsWith('.')) continue;
         walk(full);
-      } else if (e.name.endsWith('.kz')) {
+      } else if (e.name.endsWith('.kz') || e.name.endsWith('.k')) {
         const source = fs.readFileSync(full, 'utf-8');
         const rel = path.relative(path.join(ROOT, pkg), full);
         if (isNegative(rel, source)) out.push({ full, rel, source });

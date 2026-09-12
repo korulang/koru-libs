@@ -1,0 +1,16 @@
+// Inspect the first event: ask its kind and try to read it as a scalar, then
+// finish. Exercises the `kind` and `scalar` accessors, which thread the live
+// cursor so you can inspect-then-discharge. The first event of any document is
+// STREAM-START (non-scalar), so this deterministically takes `scalar`'s `other`.
+
+import libs/yaml
+import std/io
+
+libs/yaml:open(input: "hello")
+| ok p |> libs/yaml:begin(parser: p)
+    | at c |> libs/yaml:kind(cur: c): name |> libs/yaml:scalar(cur: c)
+        | value v |> std/io:print.ln("scalar {{ name:s }} = {{ v:s }}") |> libs/yaml:finish(cur: c)
+        | other |> std/io:print.ln("kind = {{ name:s }} (non-scalar)") |> libs/yaml:finish(cur: c)
+    | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty stream")
+    | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error")
+| err e |> std/io:print.ln("open error: {{ e:s }}")

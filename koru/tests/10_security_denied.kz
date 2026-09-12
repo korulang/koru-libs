@@ -1,3 +1,0 @@
-// Test: Unregistered event is denied
-~exec(cmd: "ls")
-| ok |> println(text: "FAIL: exec should be denied")

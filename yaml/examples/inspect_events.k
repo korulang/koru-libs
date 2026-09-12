@@ -1,0 +1,25 @@
+// Example: open a YAML document and name its first few events.
+//
+// Run:  koruc run yaml/examples/inspect_events.kz
+//
+// libyaml is a STREAMING parser: it hands you one event at a time (stream-start,
+// document-start, mapping-start, scalar, ...). This edition fuses the parser and
+// its current event into a single `Cursor<live!>` obligation — you thread that
+// one handle with `advance`, and the compiler guarantees every event is deleted
+// and the parser closed. Forget a step and it will not build.
+
+import libs/yaml
+import std/io
+
+libs/yaml:open(input: "name: Ada\nrole: pioneer\n")
+| ok p |> libs/yaml:begin(parser: p)
+    | at c |> libs/yaml:kind(cur: c): n1 |> std/io:print.ln("event 1: {{ n1:s }}") |> libs/yaml:advance(cur: c)
+        | at c2 |> libs/yaml:kind(cur: c2): n2 |> std/io:print.ln("event 2: {{ n2:s }}") |> libs/yaml:advance(cur: c2)
+            | at c3 |> libs/yaml:kind(cur: c3): n3 |> std/io:print.ln("event 3: {{ n3:s }}") |> libs/yaml:finish(cur: c3) |> std/io:print.ln("(cursor finished: event deleted, parser closed)")
+            | eof e3 |> libs/yaml:close(parser: e3) |> std/io:print.ln("stream ended")
+            | err x3 |> libs/yaml:close(parser: x3) |> std/io:print.ln("parse error")
+        | eof e2 |> libs/yaml:close(parser: e2) |> std/io:print.ln("stream ended")
+        | err x2 |> libs/yaml:close(parser: x2) |> std/io:print.ln("parse error")
+    | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty document")
+    | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error at start")
+| err e |> std/io:print.ln("could not open: {{ e:s }}")

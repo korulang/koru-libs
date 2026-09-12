@@ -1,0 +1,2 @@
+// Test: Void event chaining
+println(text: "testing") |> println(text: "PASS: void chaining works")

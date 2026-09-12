@@ -12,8 +12,8 @@ echo "  Koru Interpreter Test Suite"
 echo "================================"
 echo ""
 
-for f in tests/*.kz; do
-  name=$(basename "$f" .kz)
+for f in tests/*.k; do
+  name=$(basename "$f" .k)
   printf "%-30s " "$name"
 
   output=$("$KORU" "$f" 2>&1)

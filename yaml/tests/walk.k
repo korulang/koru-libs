@@ -1,0 +1,21 @@
+// Straight-line walk: begin, then advance through the first few events, naming
+// each, then finish. Every step threads the single `live!` cursor obligation —
+// no event can be leaked. (The unbounded `#loop` form is the natural shape but
+// is currently blocked by a compiler bug in cross-module obligations across a
+// back-edge — see tests/frontier/loop_held_across_crossmodule.kz.)
+
+import libs/yaml
+import std/io
+
+libs/yaml:open(input: "name: Ada")
+| ok p |> libs/yaml:begin(parser: p)
+    | at c |> libs/yaml:kind(cur: c): n1 |> std/io:print.ln("1: {{ n1:s }}") |> libs/yaml:advance(cur: c)
+        | at c2 |> libs/yaml:kind(cur: c2): n2 |> std/io:print.ln("2: {{ n2:s }}") |> libs/yaml:advance(cur: c2)
+            | at c3 |> libs/yaml:kind(cur: c3): n3 |> std/io:print.ln("3: {{ n3:s }}") |> libs/yaml:finish(cur: c3) |> std/io:print.ln("-- finished --")
+            | eof e3 |> libs/yaml:close(parser: e3) |> std/io:print.ln("eof@3")
+            | err x3 |> libs/yaml:close(parser: x3) |> std/io:print.ln("err@3")
+        | eof e2 |> libs/yaml:close(parser: e2) |> std/io:print.ln("eof@2")
+        | err x2 |> libs/yaml:close(parser: x2) |> std/io:print.ln("err@2")
+    | eof pp |> libs/yaml:close(parser: pp) |> std/io:print.ln("empty stream")
+    | err ep |> libs/yaml:close(parser: ep) |> std/io:print.ln("parse error")
+| err e |> std/io:print.ln("open error: {{ e:s }}")

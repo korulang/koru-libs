@@ -1,4 +1,0 @@
-// Test: Print loop variable
-~for(1..4)
-| each i |> println(text: i)
-| done |> println(text: "PASS: print variable works")

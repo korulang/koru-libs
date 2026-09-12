@@ -1,0 +1,24 @@
+// NEGATIVE TEST — must NOT compile.
+//
+// `shutdown` transitions the connection out of the <open> state and into
+// <closing>. `write` requires <!open>. So writing after shutdown is a phantom
+// STATE mismatch the compiler rejects — "write after close_notify" can never
+// ship. (Contrast the sqlite3/curl-style obligation footguns: this one is a
+// STATE wall, not a leak wall.)
+//
+// Reproduce (use `run`, not `--check`: `--check` only shape-checks and passes
+// this clean — phantom STATE mismatches surface in the full pipeline):
+//   koruc run openssl/tests/negative/write_after_shutdown.kz
+//     -> error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open'
+//        but got 'koru.openssl:closing!' for argument 'conn'
+
+import koru/openssl
+import std/io
+
+koru/openssl:connect(host: "example.com", port: 443)
+| ok conn |> koru/openssl:shutdown(conn)
+    | ok s |> koru/openssl:write(conn: s, data: "this must not compile")
+        | ok w |> koru/openssl:close(w.conn)
+        | err e |> koru/openssl:close(e.conn)
+    | err e |> koru/openssl:close(e.conn)
+| err e |> std/io:print.ln("connect err: {{ e.msg:s }}")

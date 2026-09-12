@@ -10,10 +10,10 @@
 # This is the standing check that replaces reading. It asserts the two things
 # that can be asserted without QEMU and without inventing golden files:
 #
-#   1. every boot_*.kz still BUILDS — all the way through emission, not just
+#   1. every boot_*.{k,kz} still BUILDS — all the way through emission, not just
 #      `--check`, because shape-checking does not walk the obligation flow and
 #      passes programs the full build rejects;
-#   2. every negative_*.kz still FAILS to build — a wall that stops biting is
+#   2. every negative_*.{k,kz} still FAILS to build — a wall that stops biting is
 #      a silent regression, and silence is what makes it dangerous.
 #
 # Deliberately NOT here: booting under QEMU. That needs kraft, a network fetch
@@ -129,9 +129,9 @@ for d in unikraft/*/; do
     [ -d "$d/tests" ] || continue
     echo "$lift"
     shopt -s nullglob
-    for t in "$d"tests/boot_*.kz;     do build_expecting "$t" ok    "$lift/$(basename "$t")"; done
-    for t in "$d"tests/negative_*.kz; do build_expecting "$t" error "$lift/$(basename "$t")"; done
-    for t in "$d"tests/negative/*.kz; do build_expecting "$t" error "$lift/$(basename "$t")"; done
+    for t in "$d"tests/boot_*.k "$d"tests/boot_*.kz;     do build_expecting "$t" ok    "$lift/$(basename "$t")"; done
+    for t in "$d"tests/negative_*.k "$d"tests/negative_*.kz; do build_expecting "$t" error "$lift/$(basename "$t")"; done
+    for t in "$d"tests/negative/*.k "$d"tests/negative/*.kz; do build_expecting "$t" error "$lift/$(basename "$t")"; done
     shopt -u nullglob
     echo
 done

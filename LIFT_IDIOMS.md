@@ -4,24 +4,27 @@
 
 This is the receipts half of the catalog: where `koru-by-example` (in the compiler repo) shows core-language *what-to-do*, this shows the resource-safety *what-you-cannot-do* that only the lifts, wrapping real C resources, can demonstrate. A footgun that stops being rejected is a regression — the generator flags it and fails.
 
-**12 uncompilable footguns** across **8 lifts**, each rejected at compile time by `koruc build`.
+**21 uncompilable footguns** across **11 lifts**, each rejected at compile time by `koruc build`.
 
 ## Contents
 
 - **ai** — 1 footgun
 - **curl** — 1 footgun
 - **evp** — 1 footgun
-- **gzip** — 2 footguns
+- **gzip** — 1 footgun
 - **openssl** — 2 footguns
 - **pcre2** — 2 footguns
 - **pq** — 1 footgun
+- **raylib** — 3 footguns
+- **sse** — 2 footguns
 - **yaml** — 2 footguns
+- **yyjson** — 5 footguns
 
 ---
 
 # ai
 
-## ai — tests/negative/forgotten_free.kz
+## ai — tests/negative/forgotten_free.k
 
 ```koru
 // NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
@@ -35,28 +38,27 @@ This is the receipts half of the catalog: where `koru-by-example` (in the compil
 //
 //   koruc run ai/tests/negative/forgotten_free.kz --auto-discharge=disable
 //   -> error[KORU030]: Resource 'req' <built!> was not discharged. Call: koru.ai:free.request
-~import koru/ai
-~import koru/curl
-~import std/io
+import koru/ai
+import koru/curl
+import std/io
 
-~koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null)
-| built req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "x-api-key", .value = "k" } })
+koru/ai:request.anthropic(model: "claude-sonnet-4-20250514", prompt: "hi", system: null, max_tokens: 8, allocator: null): req |> koru/curl:post.with-headers(req.url, req.body, headers: &.{ .{ .name = "x-api-key", .value = "k" } })
     | ok resp |> std/io:print.ln("status {{ resp.status:d }}") |> koru/curl:close(resp)
     | err e |> std/io:print.ln("err")
 ```
 
-**Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
+**Rejected at compile time (`koruc build`):**
 
 ```
-error[KORU030]: Resource 'req' carries obligation <built!> was not discharged. Call: koru.ai:free.request
-error[KORU030]: Resource 'req' carries obligation <built!> was not discharged. Call: koru.ai:free.request
+error[KORU116]: redundant phantom qualifier: bare '<open>' already scopes to the base type's module 'koru/curl' — drop the qualifier
+error[KORU116]: redundant phantom qualifier: bare '<open>' already scopes to the base type's module 'koru/curl' — drop the qualifier
 ```
 
 ---
 
 # curl
 
-## curl — tests/negative/forgotten_close.kz
+## curl — tests/negative/forgotten_close.k
 
 ```koru
 // NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
@@ -84,9 +86,9 @@ error[KORU030]: Resource 'req' carries obligation <built!> was not discharged. C
 //
 //   error[KORU030]: Resource '_' <open!> was not discharged. Call: koru.curl:close
 
-~import koru/curl
+import koru/curl
 
-~koru/curl:get(url: "https://httpbin.org/get")
+koru/curl:get(url: "https://httpbin.org/get")
 | ok _ |> _
 | err _ |> _
 ```
@@ -94,15 +96,15 @@ error[KORU030]: Resource 'req' carries obligation <built!> was not discharged. C
 **Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
 
 ```
-error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call: koru.curl:close
-error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call: koru.curl:close
+error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call one of: koru.curl:close
+error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call one of: koru.curl:close
 ```
 
 ---
 
 # evp
 
-## evp — tests/negative/forget_finalize.kz
+## evp — tests/negative/forget_finalize.k
 
 ```koru
 // NEGATIVE TEST — this file MUST NOT COMPILE.
@@ -121,124 +123,80 @@ error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call
 // Run it to see the obligation bite (expected to FAIL):
 //   koruc run evp/tests/negative/forget_finalize.kz
 
-~import libs/evp
-~import std/io
+import libs/evp
+import std/io
 
-~libs/evp:sha256.init()
-| ctx d |> libs/evp:update(d, bytes: "abc") |> std/io:print.ln("BUG: reached here without finalizing d")
+libs/evp:sha256.init(): d |> libs/evp:update(d, bytes: "abc") |> std/io:print.ln("BUG: reached here without finalizing d")
 ```
 
 **Rejected at compile time (`koruc build`):**
 
 ```
-error[KORU030]: Resource 'd' <hashing!> was not discharged. Call one of: final.bytes, final.hex
-error[KORU030]: Resource 'd' <hashing!> was not discharged. Call one of: final.bytes, final.hex
+error[KORU030]: Resource 'd' obligation <hashing!> was not discharged. Call one of: final.bytes, final.hex
+error[KORU030]: Resource 'd' obligation <hashing!> was not discharged. Call one of: final.bytes, final.hex
 ```
 
 ---
 
 # gzip
 
-## gzip — tests/deflate_finish_without_push.k
-
-```koru
-// NEGATIVE (must FAIL to compile): finish a stream that was never fed.
-//
-// This is gzip's asymmetric barrier — the streaming twin of the transaction
-// showcase's "empty transaction" rejection (koru
-// tests/regression/900_EXAMPLES_SHOWCASE/910_LANGUAGE_SHOOTOUT/
-// 2104_09_empty_transaction). There, `commit` accepts only <!active>, and the
-// active state is reachable only through `exec`, so `begin -> commit` (an empty
-// BEGIN; COMMIT;) is a compile error. Here, `deflate.finish` accepts only
-// <!fed>, and the fed state is reachable only through `deflate.push`, so
-// `init -> finish` (open a Deflater, immediately close it, never feed a byte)
-// is a compile error.
-//
-// The point: RAII / Rust's Drop guarantees the resource is CLEANED UP, but it
-// cannot force the resource to be USED. The phantom obligation forces both.
-// Allocating a Deflater and throwing it away without compressing anything is
-// meaningless, and the type system says so before the program ever runs.
-//
-// If you genuinely want an empty gzip stream, that intent is expressible —
-// `push("")` reaches <fed!> and produces valid empty-payload gzip framing.
-// See tests/deflate_empty_via_push.k. What this rejects is the SILENT no-op.
-//
-// EXPECTED: error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed'
-//           but got 'libs.gzip:open!' for argument 'd'
-
-~import libs/gzip
-~import std/io
-
-~libs/gzip:deflate.init(level: .fast)
-| ok d |> libs/gzip:deflate.finish(d)
-    | done r |> libs/gzip:deflate.release(r.d, r.data)
-        | bytes _ |> std/io:print.ln("should never get here")
-    | err e |> std/io:print.ln(e)
-| err e |> std/io:print.ln(e)
-```
-
-**Rejected at compile time (`koruc build`):**
-
-```
-error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed' but got 'libs.gzip:open!' for argument 'd'
-error[KORU030]: Resource 'd' carries obligation <open!> was not discharged. Call: libs.gzip:deflate.push
-error[KORU030]: Phantom state mismatch: expected 'libs.gzip:fed' but got 'libs.gzip:open!' for argument 'd'
-error[KORU030]: Resource 'd' carries obligation <open!> was not discharged. Call: libs.gzip:deflate.push
-```
-
----
-
 ## gzip — tests/deflate_use_after_finish.k
 
 ```koru
+import koru/regressions
+
+koru/regressions:compile-fail(stage: backend)
+koru/regressions:error(id: "KORU030", msg: "Phantom state mismatch")
+
 // NEGATIVE (must FAIL to compile): use-after-free of a finished stream.
 //
 // `deflate.finish` transitions the Deflater from <fed!> to <done!>. Pushing
 // to it afterwards (deflate.push requires <!open|!fed>) is a use-after-free:
 // the zlib z_stream has already had deflateEnd() called on it. The phantom
-// checker rejects this at compile time.
+// checker rejects this at compile time — the declared expectations above are
+// the machine-checked contract (they replaced the old prose EXPECTED: note,
+// which could drift into a doc-lie).
 //
 // Note we push a real chunk BEFORE finishing — that is what reaches the <fed!>
-// state finish now demands (see deflate_finish_without_push.k for the
+// state finish now demands (see deflate_finish_without_push.kz for the
 // unfed case). This test isolates the use-after-free specifically.
-//
-// EXPECTED: error[KORU030]: Phantom state mismatch: expected
-//           '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
 //
 // This is the proof that the streaming obligations actually bite. If this file
 // ever compiles, the resource-safety pillar has regressed.
+//
+// The chain is POINT-FREE — one dedented `| err` arm claims the error branch at
+// every stage. It used to be a five-handler pyramid; it collapsed once gzip's
+// stages carried the handle as their lone survivor (finish -> *Deflater<done!>)
+// and release reported `| bytes | err` instead of a bare return.
 
-~import libs/gzip
-~import std/io
+import libs/gzip
+import std/io
 
-~libs/gzip:deflate.init(level: .fast)
-| ok d |> libs/gzip:deflate.push(d, chunk: "real chunk")
-    | ok d1 |> libs/gzip:deflate.finish(d: d1)
-        | done r |> libs/gzip:deflate.push(r.d, chunk: "use after free")
-            | ok d2 |> libs/gzip:deflate.finish(d: d2)
-                | done r2 |> libs/gzip:deflate.release(r2.d, r2.data)
-                    | bytes _ |> std/io:print.ln("should never get here")
-                | err e |> std/io:print.ln(e)
-            | err e |> std/io:print.ln(e)
-        | err e |> std/io:print.ln(e)
-    | err e |> std/io:print.ln(e)
-| err e |> std/io:print.ln(e)
+pub tor use-after-finish { }
+| bytes string
+| err string
+
+use-after-finish = libs/gzip:deflate.init(level: .fast)
+  |> libs/gzip:deflate.push(chunk: "real chunk")
+  |> libs/gzip:deflate.finish
+  |> libs/gzip:deflate.push(chunk: "use after free")
+  |> libs/gzip:deflate.finish
+  |> libs/gzip:deflate.release
+| err e => err e
 ```
 
 **Rejected at compile time (`koruc build`):**
 
 ```
 error[KORU030]: Phantom state mismatch: expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
-error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call: libs.gzip:deflate.release
 error[KORU030]: Phantom state mismatch: expected '!libs.gzip:open|!libs.gzip:fed' but got 'libs.gzip:done!' for argument 'd'
-error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call: libs.gzip:deflate.release
 ```
 
 ---
 
 # openssl
 
-## openssl — tests/negative/forgotten_close.kz
+## openssl — tests/negative/forgotten_close.k
 
 ```koru
 // NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
@@ -256,9 +214,9 @@ error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call
 //   koruc run openssl/tests/negative/forgotten_close.kz --auto-discharge=disable
 //     -> error[KORU030]: Resource '_' <open!> was not discharged. Call: koru.openssl:close
 
-~import koru/openssl
+import koru/openssl
 
-~koru/openssl:connect(host: "example.com", port: 443)
+koru/openssl:connect(host: "example.com", port: 443)
 | ok _ |> _
 | err _ |> _
 ```
@@ -266,13 +224,13 @@ error[KORU030]: Resource 'd' carries obligation <done!> was not discharged. Call
 **Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
 
 ```
-error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call one of: koru.openssl:close, koru.openssl:read, koru.openssl:shutdown, koru.openssl:write
-error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call one of: koru.openssl:close, koru.openssl:read, koru.openssl:shutdown, koru.openssl:write
+error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call one of: koru.openssl:close, koru.openssl:shutdown
+error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call one of: koru.openssl:close, koru.openssl:shutdown
 ```
 
 ---
 
-## openssl — tests/negative/write_after_shutdown.kz
+## openssl — tests/negative/write_after_shutdown.k
 
 ```koru
 // NEGATIVE TEST — must NOT compile.
@@ -283,14 +241,16 @@ error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call
 // ship. (Contrast the sqlite3/curl-style obligation footguns: this one is a
 // STATE wall, not a leak wall.)
 //
-// Reproduce:
-//   koruc --check openssl/tests/negative/write_after_shutdown.kz
-//     -> error: phantom state mismatch on `conn` (write wants <open>, has <closing>)
+// Reproduce (use `run`, not `--check`: `--check` only shape-checks and passes
+// this clean — phantom STATE mismatches surface in the full pipeline):
+//   koruc run openssl/tests/negative/write_after_shutdown.kz
+//     -> error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open'
+//        but got 'koru.openssl:closing!' for argument 'conn'
 
-~import koru/openssl
-~import std/io
+import koru/openssl
+import std/io
 
-~koru/openssl:connect(host: "example.com", port: 443)
+koru/openssl:connect(host: "example.com", port: 443)
 | ok conn |> koru/openssl:shutdown(conn)
     | ok s |> koru/openssl:write(conn: s, data: "this must not compile")
         | ok w |> koru/openssl:close(w.conn)
@@ -303,16 +263,14 @@ error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call
 
 ```
 error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open' but got 'koru.openssl:closing!' for argument 'conn'
-error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. No tor accepts <!closing>.
 error[KORU030]: Phantom state mismatch: expected 'koru.openssl:open' but got 'koru.openssl:closing!' for argument 'conn'
-error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. No tor accepts <!closing>.
 ```
 
 ---
 
 # pcre2
 
-## pcre2 — tests/negative_forgotten_free.kz
+## pcre2 — tests/negative_forgotten_free.k
 
 ```koru
 // NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
@@ -335,9 +293,9 @@ error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. N
 //   koruc run   pcre2/tests/negative_forgotten_free.kz --auto-discharge=disable    # FAILS:
 //     error[KORU030]: Resource '_' <compiled!> was not discharged. Call: libs.pcre2:free
 
-~import libs/pcre2
+import libs/pcre2
 
-~libs/pcre2:compile(pattern: "\\w+")
+libs/pcre2:compile(pattern: "\\w+")
 | ok _ |> _
 | err _ |> _
 ```
@@ -345,13 +303,13 @@ error[KORU030]: Resource 's' carries obligation <closing!> was not discharged. N
 **Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
 
 ```
-error[KORU030]: Resource '_' carries obligation <compiled!> was not discharged. Call: libs.pcre2:free
-error[KORU030]: Resource '_' carries obligation <compiled!> was not discharged. Call: libs.pcre2:free
+error[KORU030]: Resource '_' carries obligation <compiled!> was not discharged. Call one of: libs.pcre2:free
+error[KORU030]: Resource '_' carries obligation <compiled!> was not discharged. Call one of: libs.pcre2:free
 ```
 
 ---
 
-## pcre2 — tests/negative_use_after_free.kz
+## pcre2 — tests/negative_use_after_free.k
 
 ```koru
 // NEGATIVE TEST — this file must NOT compile.
@@ -374,10 +332,10 @@ error[KORU030]: Resource '_' carries obligation <compiled!> was not discharged. 
 //   error[KORU030]: Use-after-discharge: binding 're' was already
 //   discharged and cannot be used
 
-~import libs/pcre2
-~import std/io
+import libs/pcre2
+import std/io
 
-~libs/pcre2:compile(pattern: "\\d+")
+libs/pcre2:compile(pattern: "\\d+")
 | ok re |> libs/pcre2:free(re) |> libs/pcre2:find.all(re, subject: "123")
     ! match _ |> _
     | done |> libs/pcre2:free(re)
@@ -396,7 +354,7 @@ error[KORU030]: Use-after-discharge: binding 're' was already discharged and can
 
 # pq
 
-## pq — tests/negative_use_after_disconnect.kz
+## pq — tests/negative_use_after_disconnect.k
 
 ```koru
 // NEGATIVE TEST — this file must NOT compile.
@@ -420,10 +378,10 @@ error[KORU030]: Use-after-discharge: binding 're' was already discharged and can
 //   error[KORU030]: Use-after-discharge: binding 'conn' was already
 //   discharged and cannot be used
 
-~import koru/pq
-~import std/io
+import koru/pq
+import std/io
 
-~koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
+koru/pq:connect(conninfo: "host=localhost port=5432 dbname=korutest user=koru password=koru")
 | ok conn |> koru/pq:disconnect(conn) |> koru/pq:exec(conn, sql: "SELECT 1")
     | ok |> _
     | err e |> std/io:print.ln("exec failed: {{ e:s }}")
@@ -439,9 +397,191 @@ error[KORU030]: Use-after-discharge: binding 'conn' was already discharged and c
 
 ---
 
+# raylib
+
+## raylib — tests/negative/forget_close.k
+
+```koru
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// It opens a window, runs frames, and never calls window.close. In raw
+// raylib C that leaks the window / GL context. In Koru the window can NEVER
+// leak, in either mode:
+//
+//   - Default: auto-discharge sees exactly ONE discharger for <active!>
+//     (window.close) and inserts it at flow end — the program compiles and
+//     the window is closed for you.
+//   - Strict:  koruc run raylib/tests/negative/forget_close.k --auto-discharge=disable
+//     -> KORU030 naming libs.raylib:window.close
+//
+// (Contrast open_never_used.k: an <opened!> window that never rendered has
+// NO discharge path and fails in BOTH modes — the asymmetric model.)
+//
+// (Same convention as ai/tests/negative/forgotten_free.kz. Contrast evp's
+// forget_finalize.kz, which fails even under defaults: <hashing!> has TWO
+// dischargers — final.hex / final.bytes — so auto-discharge cannot pick.)
+
+import libs/raylib
+import std/io
+
+libs/raylib:window.open.hidden(width: 320, height: 200, title: "leak")
+| win w |> libs/raylib:frames(win: w, count: 1)
+    ! frame f |> libs/raylib:color(r: 0, g: 0, b: 0): black |> libs/raylib:draw.clear(f, col: black)
+    | done w2 |> std/io:print.ln("BUG: reached here without closing w2")
+| err e |> std/io:print.ln("init failed: {{ e:s }}")
+```
+
+**Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
+
+```
+error[KORU030]: Resource 'f' carries obligation <frame!> was not discharged. Call one of: libs.raylib:release.frame
+error[KORU030]: Resource 'w2' carries obligation <active!> was not discharged. Call one of: libs.raylib:frames, libs.raylib:window.close
+error[KORU030]: Resource 'f' carries obligation <frame!> was not discharged. Call one of: libs.raylib:release.frame
+error[KORU030]: Resource 'w2' carries obligation <active!> was not discharged. Call one of: libs.raylib:frames, libs.raylib:window.close
+```
+
+---
+
+## raylib — tests/negative/forget_unload.k
+
+```koru
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// A texture is generated and drawn but never unloaded — in raw raylib that
+// is a silent VRAM leak. Here <loaded!> is symmetric (see index.kz texture
+// section for why the asymmetric model does not fit textures):
+//
+//   - Default: auto-discharge inserts the unique discharger texture.unload.
+//   - Strict:  koruc run raylib/tests/negative/forget_unload.k --auto-discharge=disable
+//     -> KORU030 naming libs.raylib:texture.unload
+
+import libs/raylib
+import std/io
+
+libs/raylib:window.open.hidden(width: 320, height: 200, title: "leak vram")
+| win w |> libs/raylib:color(r: 0, g: 255, b: 0): green |> libs/raylib:texture.gen.color(win: w, width: 4, height: 4, col: green)
+    | tex t |> libs/raylib:frames(win: w, count: 1)
+        ! frame f |> libs/raylib:draw.texture(f, tex: t, x: 0, y: 0, tint: green)
+        | done w2 |> libs/raylib:window.close(win: w2) |> std/io:print.ln("BUG: reached here without unloading t")
+    | err e |> libs/raylib:window.activate(win: w): wx |> libs/raylib:window.close(win: wx) |> std/io:print.ln("texture failed: {{ e:s }}")
+| err e2 |> std/io:print.ln("init failed: {{ e2:s }}")
+```
+
+**Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
+
+```
+error[KORU030]: Resource 'f' carries obligation <frame!> was not discharged. Call one of: libs.raylib:release.frame
+error[KORU030]: Resource 't' carries obligation <loaded!> was not discharged. Call one of: libs.raylib:texture.unload
+error[KORU030]: Resource 't' carries obligation <loaded!> was not discharged. Call one of: libs.raylib:texture.unload
+error[KORU030]: Resource 'f' carries obligation <frame!> was not discharged. Call one of: libs.raylib:release.frame
+error[KORU030]: Resource 't' carries obligation <loaded!> was not discharged. Call one of: libs.raylib:texture.unload
+error[KORU030]: Resource 't' carries obligation <loaded!> was not discharged. Call one of: libs.raylib:texture.unload
+```
+
+---
+
+## raylib — tests/negative/open_never_used.k
+
+```koru
+// NEGATIVE TEST — must NOT compile, in BOTH modes (no --auto-discharge flag
+// needed). The asymmetric-model payoff:
+//
+// The window is opened and never rendered. <opened!> has NO disposer
+// (window.close accepts only <!active>) and the auto-discharge walk cannot
+// route through `frames` (it takes a `count` param) — so allocate-without-use
+// is a KORU030 compile error, not a silent RAII autodrop.
+//
+//   koruc run raylib/tests/negative/open_never_used.k
+//   -> error[KORU030]: obligation <opened!> not discharged
+//
+// Canonical pattern: koru tests/regression/336_OBLIGATION_MATRIX/db.kz
+// (connected -> active -> close).
+
+import libs/raylib
+import std/io
+
+libs/raylib:window.open.hidden(width: 320, height: 200, title: "never used")
+| win w |> std/io:print.ln("BUG: opened a window and never rendered to it")
+| err e |> std/io:print.ln("init failed: {{ e:s }}")
+```
+
+**Rejected at compile time (`koruc build`):**
+
+```
+error[KORU030]: Resource 'w' obligation <opened!> was not discharged. Call one of: frames, window.activate
+error[KORU030]: Resource 'w' obligation <opened!> was not discharged. Call one of: frames, window.activate
+```
+
+---
+
+# sse
+
+## sse — tests/negative_feed_after_close.k
+
+```koru
+// NEGATIVE TEST — this file must NOT compile.
+//
+// `feed` takes `s: *Stream<framing>` — a BORROW of the live obligation.
+// Once `close` has discharged it, presenting the same binding again is a
+// use-after-free of the stream's buffer, and the phantom checker rejects
+// it at compile time (the same class as yyjson's use-after-close).
+//
+// Reproduce:
+//   koruc run sse/tests/negative_feed_after_close.kz
+//   EXPECT: CONTAINS Use-after-discharge
+
+import koru/sse
+
+koru/sse:new(): s
+|> koru/sse:close(s)
+|> koru/sse:feed(s, bytes: "data: too late\n")
+! data _ |> _
+| ok |> _
+```
+
+**Rejected at compile time (`koruc build`):**
+
+```
+error[KORU030]: Use-after-discharge: binding 's' was already discharged and cannot be used
+error[KORU030]: Use-after-discharge: binding 's' was already discharged and cannot be used
+```
+
+---
+
+## sse — tests/negative_forgotten_close.k
+
+```koru
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// `koru/sse:new` mints `framing!`: the stream MUST reach `koru/sse:close`
+// or its buffer leaks. Under default settings auto-discharge inserts the
+// close (the same convenience curl/yyjson/pcre2 lean on); disabled, the
+// obligation is laid bare and the build fails loudly.
+//
+// Reproduce:
+//   koruc run sse/tests/negative_forgotten_close.kz --auto-discharge=disable
+//   EXPECT: CONTAINS KORU030
+
+import koru/sse
+
+koru/sse:new(): s
+|> koru/sse:feed(s, bytes: "data: x\n")
+! data _ |> _
+| ok |> _
+```
+
+**Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
+
+```
+error[KORU030]: Resource 's' carries obligation <framing!> was not discharged. Call one of: koru.sse:close
+error[KORU030]: Resource 's' carries obligation <framing!> was not discharged. Call one of: koru.sse:close
+```
+
+---
+
 # yaml
 
-## yaml — tests/negative/forgotten_close.kz
+## yaml — tests/negative/forgotten_close.k
 
 ```koru
 // NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
@@ -454,9 +594,9 @@ error[KORU030]: Use-after-discharge: binding 'conn' was already discharged and c
 //   -> error[KORU030]: Resource '_' <open!> was not discharged.
 //                      Call one of: libs.yaml:begin, libs.yaml:close, ...
 
-~import libs/yaml
+import libs/yaml
 
-~libs/yaml:open(input: "x: 1")
+libs/yaml:open(input: "x: 1")
 | ok _ |> _
 | err _ |> _
 ```
@@ -470,12 +610,12 @@ error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call
 
 ---
 
-## yaml — tests/negative/forgotten_finish.kz
+## yaml — tests/negative/forgotten_finish.k
 
 ```koru
-~import libs/yaml
-~import std/io
-~libs/yaml:open(input: "x: 1")
+import libs/yaml
+import std/io
+libs/yaml:open(input: "x: 1")
 | ok p |> libs/yaml:begin(parser: p)
     | at c |> std/io:print.ln("got a cursor, but never finish/advance it")
     | eof pp |> libs/yaml:close(parser: pp)
@@ -488,6 +628,192 @@ error[KORU030]: Resource '_' carries obligation <open!> was not discharged. Call
 ```
 error[KORU030]: Resource 'c' carries obligation <live!> was not discharged. Call one of: libs.yaml:finish, libs.yaml:advance
 error[KORU030]: Resource 'c' carries obligation <live!> was not discharged. Call one of: libs.yaml:finish, libs.yaml:advance
+```
+
+---
+
+# yyjson
+
+## yyjson — tests/negative_forgotten_build_close.k
+
+```koru
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// `koru/yyjson:build` mints the write-side `open!` obligation: the mutable
+// doc MUST be handed back to `koru/yyjson:build.close`, or the whole
+// yyjson_mut_doc arena leaks. Same shape, same flag, same reasoning as
+// negative_forgotten_close.kz on the read side — see that file's header for
+// why the default auto-discharge pass hides this and why the flag is what
+// lays the obligation bare.
+//
+// Reproduce:
+//   koruc tests/negative_forgotten_build_close.kz --auto-discharge=disable   # FAILS:
+//     error[KORU030]: Resource 'doc' carries obligation <open!> was not discharged. Call: koru.yyjson:build.close
+
+import koru/yyjson
+import std/io
+
+koru/yyjson:build(): doc |> koru/yyjson:new.object(doc): root_n |> koru/yyjson:root.set(doc, v: root_n) |> std/io:print.ln("built a doc and walked away")
+```
+
+**Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
+
+```
+error[KORU030]: Resource 'doc' carries obligation <open!> was not discharged. Call one of: koru.yyjson:build.close
+error[KORU030]: Resource 'doc' carries obligation <open!> was not discharged. Call one of: koru.yyjson:build.close
+```
+
+---
+
+## yyjson — tests/negative_forgotten_close.k
+
+```koru
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// A `koru/yyjson:parse` success carries the `open!` obligation: the parsed
+// doc MUST be handed back to `koru/yyjson:close`, or the yyjson arena leaks.
+//
+// By default the compiler's auto-discharge pass is clever enough to insert
+// the missing `koru/yyjson:close` for you when it can trace the binding to
+// its single legal disposer (the same convenience curl/pcre2/evp lean on).
+// So under DEFAULT settings this file compiles — auto-discharge plugs the
+// leak. Disable that safety net (`--auto-discharge=disable`, the same flag
+// used across this catalog for this exact class of test) and the obligation
+// tracking is laid bare: the doc is bound to `_` and dropped, no disposer
+// runs, and the build fails loudly instead of leaking.
+//
+// Reproduce:
+//   koruc --check yyjson/tests/negative_forgotten_close.kz --auto-discharge=disable  # passes shape check
+//   koruc run   yyjson/tests/negative_forgotten_close.kz --auto-discharge=disable    # FAILS:
+//     error[KORU030]: Resource '_' <open!> was not discharged. Call: koru.yyjson:close
+
+import koru/yyjson
+
+koru/yyjson:parse(text: "{}")
+| ok _ |> _
+| err _ |> _
+```
+
+**Rejected at compile time (`koruc build`):**
+
+```
+error[KORU040]: Unknown module 'std.io' in phantom type annotation 'std.io:allocated!' (event: as). Module not imported.
+error[KORU040]: Unknown module 'std.io' in phantom type annotation 'std.io:allocated!' (event: as). Module not imported.
+```
+
+---
+
+## yyjson — tests/negative_forgotten_render_free.k
+
+```koru
+// NEGATIVE TEST — must NOT compile with --auto-discharge=disable.
+//
+// This is the SECOND obligation, and the one the write lift exists to make
+// unforgettable. `koru/yyjson:render` hands back a buffer yyjson allocated
+// with libc's malloc — NOT out of the doc's arena — so closing the builder
+// does not free it. In C this is the classic yyjson write-path leak: you
+// call `yyjson_mut_doc_free` and feel finished, and the rendered string
+// leaks on every request forever.
+//
+// Here the doc IS closed correctly and the rendered string is NOT freed, so
+// the only thing the build can be complaining about is the string. That is
+// the point of this file: it isolates the leak the read side has no
+// equivalent of.
+//
+// Reproduce:
+//   koruc tests/negative_forgotten_render_free.kz --auto-discharge=disable   # FAILS:
+//     error[KORU030]: Resource 'body' carries obligation <rendered!> was not discharged. Call: koru.yyjson:render.free
+
+import koru/yyjson
+import std/io
+
+koru/yyjson:build(): doc |> koru/yyjson:new.object(doc): root_n |> koru/yyjson:root.set(doc, v: root_n) |> koru/yyjson:render(doc)
+| ok body |> std/io:print.ln("{{ body:s }}") |> koru/yyjson:build.close(doc)
+| err e |> std/io:print.ln("render failed: {{ e.msg:s }}") |> koru/yyjson:build.close(doc)
+```
+
+**Rejected at compile time (`koruc build … --auto-discharge=disable`):** *(a forgotten-discharge/leak footgun — compiles by default because auto-discharge inserts the disposer for you; the safety net off lays the obligation bare)*
+
+```
+error[KORU030]: Resource 'body' carries obligation <rendered!> was not discharged. Call one of: koru.yyjson:render.free
+error[KORU030]: Resource 'body' carries obligation <rendered!> was not discharged. Call one of: koru.yyjson:render.free
+```
+
+---
+
+## yyjson — tests/negative_use_after_build_close.k
+
+```koru
+// NEGATIVE TEST — this file must NOT compile.
+//
+// The write-side mirror of negative_use_after_close.kz. Every write tor that
+// touches a node (`new.*`, `object.set`, `array.push`, `root.set`, `render`)
+// requires `doc: *Builder<open>` — a BORROW of the live obligation, not
+// documentation — so once `build.close` has discharged it, presenting that
+// same binding again is a use-after-free of the mutable arena every `*Node`
+// was allocated out of.
+//
+// This is the claim index.kz's write-side header makes ("the compiler will
+// not let you present it once `build.close` has discharged the obligation").
+// This file is what makes that a fact rather than a comment.
+//
+// Reproduce:
+//   koruc tests/negative_use_after_build_close.kz
+//   EXPECT: CONTAINS Use-after-discharge
+
+import koru/yyjson
+import std/io
+
+koru/yyjson:build(): doc |> koru/yyjson:build.close(doc) |> koru/yyjson:new.object(doc): _ |> std/io:print.ln("should never get here")
+```
+
+**Rejected at compile time (`koruc build`):**
+
+```
+error[KORU030]: Use-after-discharge: binding 'doc' was already discharged and cannot be used
+error[KORU030]: Use-after-discharge: binding 'doc' was already discharged and cannot be used
+```
+
+---
+
+## yyjson — tests/negative_use_after_close.k
+
+```koru
+// NEGATIVE TEST — this file must NOT compile.
+//
+// Misuse: calling koru/yyjson:root on a *Doc after its <open!> obligation has
+// already been discharged by koru/yyjson:close. Every reader in this package
+// (root, object.get, array.get, array.each, object.each, as.*) requires
+// `doc: *Doc<open>` — a BORROW of the live obligation, not just documentation
+// — so once `close` has discharged it, presenting that same binding again is
+// a use-after-free of the doc's arena (every yyjson_val in the tree was
+// allocated out of memory `close` just freed). The phantom checker must
+// catch this at compile time, exactly the class of bug (analogous to
+// sqlite3/pq's use-after-close/use-after-disconnect) the obligation exists to
+// make impossible.
+//
+// Grounded in the same shape as the koru-libs pq lift's own negative test
+// (pq/tests/negative_use_after_disconnect.kz) and the koru compiler's own
+// regression test for this class of bug:
+//   tests/regression/300_ADVANCED_FEATURES/330_PHANTOM_TYPES/330_007_use_after_disposal/input.kz
+//
+// Reproduce:
+//   koruc run yyjson/tests/negative_use_after_close.kz
+//   EXPECT: CONTAINS Use-after-discharge
+
+import koru/yyjson
+import std/io
+
+koru/yyjson:parse(text: "{}")
+| ok doc |> koru/yyjson:close(doc) |> koru/yyjson:root(doc): _ |> std/io:print.ln("should never get here")
+| err _ |> _
+```
+
+**Rejected at compile time (`koruc build`):**
+
+```
+error[KORU030]: Use-after-discharge: binding 'doc' was already discharged and cannot be used
+error[KORU030]: Use-after-discharge: binding 'doc' was already discharged and cannot be used
 ```
 
 ---

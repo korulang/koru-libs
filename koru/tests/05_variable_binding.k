@@ -1,0 +1,2 @@
+// Test: Multiple void event chain
+println(text: "hello") |> println(text: "world") |> println(text: "PASS: multiple chain works")

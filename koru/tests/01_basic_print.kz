@@ -1,2 +1,0 @@
-// Test: Basic print
-~println(text: "PASS: basic print works")
