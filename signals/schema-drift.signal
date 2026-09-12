@@ -1,0 +1,6 @@
+name: schema-drift
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a registry-facing declaration no longer describes the artifact it labels — the artifact is fine, the metadata lies. Distinct from correction (a held belief repudiated): here the thing itself was never wrong, only what the schema said about it. First fired 2026-09-12 — FUZZ_CHALLENGE declared kind: generator with a ledger file as catalog; its output had always drained into koru's suite, which is the frame definition.
