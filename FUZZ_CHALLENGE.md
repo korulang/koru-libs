@@ -1,18 +1,21 @@
 ---
 challenge: fuzz
-kind: generator
+kind: frame
 status: standing
 yields: one pristine-emission wall — a shape that makes the toolchain emit garbage, or a refusal that happens after emission instead of before it
-catalog: challenges/fuzz/CATALOG.md
 family: compiler-surface
 created: 2026-09-02
 ---
 
 # FUZZ_CHALLENGE — hunt the emissions that aren't pristine
 
-A **replayable generator**, not a task and not a backlog. You run it from zero,
-it hands back one **wall** — a shape whose treatment by the toolchain is not
-pristine — plus its census rows, and it is never used up.
+A standing **generative frame**, not a task and not a backlog — its output
+drains into the koru codebase as pins and fixes; it accumulates no artifact
+catalog here. You run it from zero, it hands back one **wall** — a shape whose
+treatment by the toolchain is not pristine — plus its census rows, and it is
+never used up. **Self-ground first:** read `challenges/fuzz/CATALOG.md` — the
+ledger of cleared corners and census rows — and generate from a slice of the
+shape grammar no prior replay has cleared.
 
 **Singular contestant is the default.** One sealed contestant per replay;
 variance accumulates across replays, not inside a fleet.
