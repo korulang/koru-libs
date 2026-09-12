@@ -30,7 +30,9 @@ body lives in one store:
 
 Physics: fixed DT=1/120, gravity 1000 px/s², thrust 1000/3000 px/s²
 (oracle values), impulse + Baumgarte correction, inside-box least-axis
-exit for deep penetration.
+exit for deep penetration, and a restitution velocity threshold (vn <
+100 → inelastic — without it a walking-pace graze on the e=10.5 flinger
+still launched at 10.5x).
 
 ## What it forced out of the toolchain
 
@@ -57,6 +59,10 @@ Every one of these landed as a `koru` commit, not a library dodge:
   heterogeneous shape sets.
 - `pairwise` is serial N²/2; no broadphase, no deterministic-reduction
   contract yet. 256-body cap is the current comfort zone.
+- No CCD — contact is discrete overlap per tick. A flinger slam can push
+  the ball past ~50 px/tick and it can skip through the 10px kill-strip
+  without registering. Swept narrowphase (or velocity-scaled substeps)
+  is a real engine gap, not yet expressible per-substep.
 - No `dt` from the frame loop — physics runs fixed-step; rendering and
   sim are locked 1:1. `libs/raylib:frames` should hand `! frame` a dt.
 - Raw scan codes for input (`key: 262`) — decoded key names are the

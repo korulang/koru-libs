@@ -124,7 +124,11 @@ tick = std/kernel:init(bodies) {}
                             const rvy = k.vy - k.other.vy;
                             const vn = rvx * nx + rvy * ny;
                             if (vn < 0.0) {
-                                const e = @max(k.e, k.other.e);
+                                // Restitution threshold (Box2D's velocityThreshold):
+                                // sub-threshold impacts are inelastic — a grazing
+                                // touch on a flinger must not launch at 10.5x.
+                                var e = @max(k.e, k.other.e);
+                                if (0.0 - vn < 100.0) { e = 0.0; }
                                 const jn = 0.0 - (1.0 + e) * vn / im;
                                 k.vx += jn * nx * k.inv_mass;
                                 k.vy += jn * ny * k.inv_mass;
@@ -226,6 +230,15 @@ pub tor teleport { x: f64, y: f64 }
 teleport = std/store:query(bodies)
     ! query e when e.kind == 0.0
         |> std/store:stored { e.x: x, e.y: y, e.vx: 0.0, e.vy: 0.0, e.dead: 0.0, e.hit: 0.0 }
+
+// Place AND launch — the graze/fling test door. `teleport` can't express an
+// incoming velocity, and a restitution threshold can only be observed by
+// arriving at a contact with a known vn.
+pub tor launch { x: f64, y: f64, vx: f64, vy: f64 }
+
+launch = std/store:query(bodies)
+    ! query e when e.kind == 0.0
+        |> std/store:stored { e.x: x, e.y: y, e.vx: vx, e.vy: vy, e.dead: 0.0, e.hit: 0.0 }
 
 // End-of-run receipt: every body row, then the game row.
 pub tor dump { }
