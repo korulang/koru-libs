@@ -1,0 +1,20 @@
+// Test: the FULL bare door — `libs/sqlite3 { SELECT ... }` with no conn: arg.
+// The transform reads its site's scope (item.flow.site_of → scopeAtSite),
+// finds the one live *Connection<opened> binding, and threads it — plus
+// synthesizes the conn: arg so the phantom checker still sees the consume.
+
+~import libs/sqlite3
+~import std/io
+
+~libs/sqlite3:open(path: ":memory:")
+| db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE t (id INTEGER, name TEXT)")
+    | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO t VALUES (1, 'alice'), (2, 'bob')")
+        | ok |> libs/sqlite3 {
+                SELECT name FROM t ORDER BY id
+            }
+            ! row r |> libs/sqlite3:col.text(stmt: r, index: 0): name |> std/io:print.ln("row: {{ name:s }}")
+            | done d4 |> libs/sqlite3:close(conn: d4) |> std/io:print.ln("done")
+            | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("err: {{ e.msg:s }}")
+        | err e2 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("insert err: {{ e2.msg:s }}")
+    | err e3 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("create err: {{ e3.msg:s }}")
+| err _ |> std/io:print.ln("Open error")

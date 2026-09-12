@@ -36,6 +36,32 @@ pub const Statement = struct {
     handle: ?*c.sqlite3_stmt,
 };
 
+/// Generic value binder for `{{...}}` interpolation — the transforms emit
+/// `bindValue(stmt, n, expr)` and Zig's type system picks the SQLite bind,
+/// so `{{uid}}` needs no `:d`/`:s` hint. ints → int64, floats → double,
+/// bool → int, optional/null → NULL, text → bind_text with TRANSIENT
+/// (interpolated temporaries may not outlive the statement).
+pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
+    const T = @TypeOf(value);
+    switch (@typeInfo(T)) {
+        .comptime_int, .int => return c.sqlite3_bind_int64(stmt, index, @intCast(value)),
+        .comptime_float, .float => return c.sqlite3_bind_double(stmt, index, @floatCast(value)),
+        .bool => return c.sqlite3_bind_int(stmt, index, @intFromBool(value)),
+        .null => return c.sqlite3_bind_null(stmt, index),
+        .optional => {
+            if (value) |v| return bindValue(stmt, index, v);
+            return c.sqlite3_bind_null(stmt, index);
+        },
+        .pointer => |p| {
+            const is_text = p.child == u8 or (@typeInfo(p.child) == .array and @typeInfo(p.child).array.child == u8);
+            if (!is_text) @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)");
+            const s8: []const u8 = value;
+            return c.sqlite3_bind_text(stmt, index, s8.ptr, @intCast(s8.len), c.SQLITE_TRANSIENT);
+        },
+        else => @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)"),
+    }
+}
+
 // ============================================================================
 // Connection Management
 // ============================================================================
@@ -128,8 +154,10 @@ pub const Statement = struct {
 // release `<row!>` at each row-body boundary; the user never calls it. Its
 // existence is what lets the phantom checker prove the row borrow is scoped —
 // escape it (capture past the row body) and the build fails with KORU030.
-~pub tor release.row { stmt: *Statement<!row> }
-~proc release.row|zig { _ = &stmt; }
+// Pure Koru impl: consume the `<row!>` obligation, hand back the dead `<row>`
+// borrow (carries no obligation — a bare borrow is a free alias).
+~pub tor release.row { row: *Statement<!row> } -> *Statement<row>
+~release.row -> row
 
 // ============================================================================
 // default — the module's voice: `libs/sqlite3 { SQL }`
@@ -157,11 +185,19 @@ pub const Statement = struct {
     allocator: std.mem.Allocator
 } -> SiteResult
 
-// Runtime impl event for shape-checking (never actually runs - inline code does)
-~[norun]pub tor default.impl { conn: *Connection<!opened> }
-! row *Statement<row!>
+// Runtime impl event for shape-checking (never actually runs - inline code
+// does). The proc body is unreachable by construction but must exist: an
+// event without a proc emits no handler, and its decl is dropped from the
+// emitted program — the emitter's effect-branch lookup then misses `! row`.
+~pub tor default.impl { conn: *Connection<!opened> }
+! ?row *Statement<row!>
 | done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: string }
+
+~proc default.impl|zig {
+    _ = conn;
+    unreachable;
+}
 
 ~proc default|zig {
     const ast = @import("ast");
@@ -172,10 +208,40 @@ pub const Statement = struct {
     const sql_text = source.text;
 
     var conn_var: []const u8 = "conn";
+    var have_conn_arg = false;
     for (invocation.args) |arg| {
         if (std.mem.eql(u8, arg.name, "conn")) {
             conn_var = arg.value;
+            have_conn_arg = true;
             break;
+        }
+    }
+    if (!have_conn_arg) {
+        // Auto-conn: `libs/sqlite3 { SQL }` with no conn: reads its site's
+        // enclosing scope (item.flow.site_of — the runner's back-pointer into
+        // the real program) for the one live `*Connection<opened>` binding.
+        const emitter_helpers = @import("emitter_helpers");
+        var found: ?[]const u8 = null;
+        var found_count: usize = 0;
+        if (item.* == .flow) {
+            if (item.flow.site_of) |site| {
+                const scope = emitter_helpers.scopeAtSite(allocator, program.items, site) catch unreachable;
+                for (scope) |b| {
+                    // Scope types carry the phantom: "*Connection<opened!>"
+                    // is a live obligation ("<!opened>" would be consumed).
+                    if (std.mem.indexOf(u8, b.type, "*Connection<opened") != null) {
+                        found = b.value_ref;
+                        found_count += 1;
+                    }
+                }
+            }
+        }
+        if (found_count == 1) {
+            conn_var = found.?;
+        } else if (found_count > 1) {
+            @panic("libs/sqlite3 { } without conn: is ambiguous - more than one *Connection<opened> in scope; name it with conn:");
+        } else {
+            @panic("libs/sqlite3 { } without conn: has no *Connection<opened> in scope - open one first (| db d), or pass conn: explicitly");
         }
     }
 
@@ -239,16 +305,59 @@ pub const Statement = struct {
         invocation.path.module_qualifier orelse "libs.sqlite3",
     ) catch unreachable;
 
+    // Locate the site's branches by index — __koru_inline_<idx>(arg) splices an
+    // effect-branch body in-scope (payload arg bound to the branch's name);
+    // __koru_continue_<idx> runs a terminal body inline. Both resolve via
+    // emitInlineCodeResolvingSplices regardless of whether the emitter's
+    // decl lookup finds default.impl — the markers are the mechanism.
+    var row_idx: ?usize = null;
+    var done_idx: ?usize = null;
+    var err_idx: ?usize = null;
+    var done_binding: ?[]const u8 = null;
+    var err_binding: ?[]const u8 = null;
+    for (flow.body.continuations, 0..) |*cont, ci| {
+        if (std.mem.eql(u8, cont.branch, "row")) {
+            row_idx = ci;
+        } else if (std.mem.eql(u8, cont.branch, "done")) {
+            done_idx = ci;
+            done_binding = cont.binding;
+        } else if (std.mem.eql(u8, cont.branch, "err")) {
+            err_idx = ci;
+            err_binding = cont.binding;
+        }
+    }
+
+    const px = std.fmt.allocPrint(allocator, "_{d}_{d}", .{ flow.location.line, flow.location.column }) catch unreachable;
+    const MSG = std.fmt.allocPrint(allocator, "__msg{s}", .{px}) catch unreachable;
+    const err_branch = struct {
+        fn emit(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, conn: []const u8, code_expr: []const u8, msg_name: []const u8, binding: ?[]const u8, idx: usize) void {
+            buf.appendSlice(alloc, "        { ") catch unreachable;
+            if (binding) |b| {
+                if (!std.mem.eql(u8, b, "_")) {
+                    const w2 = buf.writer(alloc);
+                    w2.print("const {s} = .{{ .conn = {s}, .code = {s}, .msg = @import(\"std\").mem.span({s}) }}; ", .{ b, conn, code_expr, msg_name }) catch unreachable;
+                }
+            }
+            buf.appendSlice(alloc, "__koru_continue_") catch unreachable;
+            buf.appendSlice(alloc, std.fmt.allocPrint(alloc, "{d}", .{idx}) catch unreachable) catch unreachable;
+            buf.appendSlice(alloc, " }\n") catch unreachable;
+        }
+    }.emit;
+
+    // Site-unique suffix on every emitted local: Zig forbids shadowing even
+    // across nested blocks, so two `default` sites in one scope (chained under
+    // `| done`, or nested inside `! row`) would collide on `__sqlite3`, `c`,
+    // `stmt_handle`… without it. Same technique as the emitter's own
+    // `__koru_dst_{line}_{col}`.
+    const SQ = std.fmt.allocPrint(allocator, "__sq{s}", .{px}) catch unreachable;
+    const C = std.fmt.allocPrint(allocator, "__c{s}", .{px}) catch unreachable;
+    const STMT = std.fmt.allocPrint(allocator, "__stmt{s}", .{px}) catch unreachable;
+    const RC = std.fmt.allocPrint(allocator, "__rc{s}", .{px}) catch unreachable;
+    const ROW = std.fmt.allocPrint(allocator, "__row{s}", .{px}) catch unreachable;
+
     var code_buf = std.ArrayList(u8).initCapacity(allocator, 2048) catch unreachable;
-    code_buf.appendSlice(allocator, "blk: {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").") catch unreachable;
-    code_buf.appendSlice(allocator, mod_path) catch unreachable;
-    code_buf.appendSlice(allocator, ";\n    const c = __sqlite3.c;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const Result = union(enum) { done: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ".handle, \"") catch unreachable;
+    const w = code_buf.writer(allocator);
+    w.print("//@koru:inline_stmt\n{{\n    const {s} = @import(\"root\").{s};\n    const {s} = {s}.c;\n    var {s}: ?*{s}.sqlite3_stmt = null;\n    const {s}_prep = {s}.sqlite3_prepare_v2({s}.handle, \"", .{ SQ, mod_path, C, SQ, STMT, C, RC, C, conn_var }) catch unreachable;
     for (sql_buf.items) |ch| {
         switch (ch) {
             '"' => code_buf.appendSlice(allocator, "\\\"") catch unreachable,
@@ -259,58 +368,44 @@ pub const Statement = struct {
             else => code_buf.append(allocator, ch) catch unreachable,
         }
     }
-    code_buf.appendSlice(allocator, "\", -1, &stmt_handle, null);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    if (rc != c.SQLITE_OK) {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ", .code = rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
+    w.print("\", -1, &{s}, null);\n    if ({s}_prep != {s}.SQLITE_OK) {{\n        const {s} = {s}.sqlite3_errmsg({s}.handle);\n", .{ STMT, RC, C, MSG, C, conn_var }) catch unreachable;
+    if (err_idx) |ei| {
+        err_branch(&code_buf, allocator, conn_var, std.fmt.allocPrint(allocator, "{s}_prep", .{RC}) catch unreachable, MSG, err_binding, ei);
+    }
+    code_buf.appendSlice(allocator, "    } else {\n") catch unreachable;
 
-    // Bind interpolated scope variables
+    // Bind interpolated scope values — bindValue picks the sqlite3_bind_* by
+    // the value's own type, so `{{uid}}` needs no hint (legacy `:d`/`:f`/`:s`
+    // suffixes are still parsed but ignored).
     for (bindings[0..binding_count], 0..) |binding, idx| {
-        const bind_idx = idx + 1;
-        code_buf.appendSlice(allocator, "    _ = c.sqlite3_bind_") catch unreachable;
-        switch (binding.type_hint) {
-            'd' => code_buf.appendSlice(allocator, "int64(stmt_handle, ") catch unreachable,
-            'f' => code_buf.appendSlice(allocator, "double(stmt_handle, ") catch unreachable,
-            else => code_buf.appendSlice(allocator, "text(stmt_handle, ") catch unreachable,
-        }
-        code_buf.appendSlice(allocator, std.fmt.allocPrint(allocator, "{d}", .{bind_idx}) catch unreachable) catch unreachable;
-        code_buf.appendSlice(allocator, ", ") catch unreachable;
-        code_buf.appendSlice(allocator, binding.name) catch unreachable;
-        if (binding.type_hint == 's') {
-            code_buf.appendSlice(allocator, ".ptr, @intCast(") catch unreachable;
-            code_buf.appendSlice(allocator, binding.name) catch unreachable;
-            code_buf.appendSlice(allocator, ".len), c.SQLITE_STATIC);\n") catch unreachable;
-        } else {
-            code_buf.appendSlice(allocator, ");\n") catch unreachable;
-        }
+        w.print("        _ = {s}.bindValue({s}, {d}, {s});\n", .{ SQ, STMT, idx + 1, binding.name }) catch unreachable;
     }
 
-    // Per-row iteration: `row(&__row)` is the `! row` effect splice point —
-    // the branch body inlines here once per SQLITE_ROW. The statement is
-    // finalized exactly once, by us — the user never finalizes.
-    code_buf.appendSlice(allocator, "    var __row = __sqlite3.Statement{ .handle = stmt_handle };\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    var __rc = c.sqlite3_step(stmt_handle);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    while (__rc == c.SQLITE_ROW) : (__rc = c.sqlite3_step(stmt_handle)) {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        row(&__row);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    if (__rc != c.SQLITE_DONE) {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ", .code = __rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    }\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    break :blk @as(Result, .{ .done = ") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, " });\n") catch unreachable;
-    code_buf.appendSlice(allocator, "}") catch unreachable;
+    // Per-row iteration: the ! row body splices at the marker once per
+    // SQLITE_ROW. The statement is finalized exactly once, by us — the user
+    // never finalizes. No `! row` branch → statement semantics (exec): rows
+    // are stepped through and dropped.
+    w.print("        var {s} = {s}.sqlite3_step({s});\n", .{ RC, C, STMT }) catch unreachable;
+    if (row_idx) |ri| {
+        w.print("        var {s} = {s}.Statement{{ .handle = {s} }};\n        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{\n            __koru_inline_{d}(&{s})\n        }}\n", .{ ROW, SQ, STMT, RC, C, RC, C, STMT, ri, ROW }) catch unreachable;
+    } else {
+        w.print("        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{}}\n", .{ RC, C, RC, C, STMT }) catch unreachable;
+    }
+    w.print("        _ = {s}.sqlite3_finalize({s});\n        if ({s} != {s}.SQLITE_DONE) {{\n            const {s} = {s}.sqlite3_errmsg({s}.handle);\n", .{ C, STMT, RC, C, MSG, C, conn_var }) catch unreachable;
+    if (err_idx) |ei| {
+        err_branch(&code_buf, allocator, conn_var, RC, MSG, err_binding, ei);
+    }
+    code_buf.appendSlice(allocator, "        } else {\n") catch unreachable;
+    if (done_idx) |di| {
+        code_buf.appendSlice(allocator, "            { ") catch unreachable;
+        if (done_binding) |b| {
+            if (!std.mem.eql(u8, b, "_")) {
+                w.print("const {s} = {s}; ", .{ b, conn_var }) catch unreachable;
+            }
+        }
+        w.print("__koru_continue_{d} }}\n", .{di}) catch unreachable;
+    }
+    code_buf.appendSlice(allocator, "        }\n    }\n}\n") catch unreachable;
 
     const inline_code = code_buf.items;
 
@@ -329,6 +424,10 @@ pub const Statement = struct {
     new_inv_annotations[invocation.annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
 
     const new_args = allocator.alloc(ast.Arg, 1) catch unreachable;
+    // Auto-conn synthesizes the arg so the REWRITTEN site carries the consume
+    // — the phantom checker only sees declared args, and without this the
+    // connection would stay "live" after the impl ate it.
+    new_args[0] = ast.Arg{ .name = "conn", .value = conn_var };
     for (invocation.args) |arg| {
         if (std.mem.eql(u8, arg.name, "conn")) {
             new_args[0] = arg;
@@ -375,7 +474,7 @@ pub const Statement = struct {
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
 ~[norun]pub tor query.impl { conn: *Connection<!opened> }
-| row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
+| row { conn: *Connection<opened!>, stmt: *Statement<prepared!>, row: *Statement<row!> }
 | empty *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: string }
 
@@ -392,10 +491,39 @@ pub const Statement = struct {
 
     // Get conn variable name from the SPECIFIC invocation's args (not flow.invocation!)
     var conn_var: []const u8 = "conn";
+    var have_conn_arg = false;
     for (invocation.args) |arg| {
         if (std.mem.eql(u8, arg.name, "conn")) {
             conn_var = arg.value;
+            have_conn_arg = true;
             break;
+        }
+    }
+    if (!have_conn_arg) {
+        // Auto-conn — same rule as `default`: the one *Connection<opened> in
+        // the site's enclosing scope (item.flow.site_of).
+        const emitter_helpers = @import("emitter_helpers");
+        var found: ?[]const u8 = null;
+        var found_count: usize = 0;
+        if (item.* == .flow) {
+            if (item.flow.site_of) |site| {
+                const scope = emitter_helpers.scopeAtSite(allocator, program.items, site) catch unreachable;
+                for (scope) |b| {
+                    // Scope types carry the phantom: "*Connection<opened!>"
+                    // is a live obligation ("<!opened>" would be consumed).
+                    if (std.mem.indexOf(u8, b.type, "*Connection<opened") != null) {
+                        found = b.value_ref;
+                        found_count += 1;
+                    }
+                }
+            }
+        }
+        if (found_count == 1) {
+            conn_var = found.?;
+        } else if (found_count > 1) {
+            @panic("libs/sqlite3:query without conn: is ambiguous - more than one *Connection<opened> in scope; name it with conn:");
+        } else {
+            @panic("libs/sqlite3:query without conn: has no *Connection<opened> in scope - open one first (| db d), or pass conn: explicitly");
         }
     }
 
@@ -481,7 +609,7 @@ pub const Statement = struct {
     code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").") catch unreachable;
     code_buf.appendSlice(allocator, mod_path) catch unreachable;
     code_buf.appendSlice(allocator, ";\n    const c = __sqlite3.c;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: struct { conn: *__sqlite3.Connection, stmt: *__sqlite3.Statement }, empty: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: struct { conn: *__sqlite3.Connection, stmt: *__sqlite3.Statement, row: *__sqlite3.Statement }, empty: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
     code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
     code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
@@ -509,29 +637,10 @@ pub const Statement = struct {
     code_buf.appendSlice(allocator, ", .code = rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
     code_buf.appendSlice(allocator, "    }\n") catch unreachable;
 
-    // Generate bind calls
+    // Generate bind calls — bindValue dispatches on the value's own type,
+    // so scope values interpolate hint-free (`{{uid}}`, not `{{uid:d}}`).
     for (bindings[0..binding_count], 0..) |binding, idx| {
-        const bind_idx = idx + 1; // SQLite bindings are 1-indexed
-
-        code_buf.appendSlice(allocator, "    _ = c.sqlite3_bind_") catch unreachable;
-
-        switch (binding.type_hint) {
-            'd' => code_buf.appendSlice(allocator, "int64(stmt_handle, ") catch unreachable,
-            'f' => code_buf.appendSlice(allocator, "double(stmt_handle, ") catch unreachable,
-            else => code_buf.appendSlice(allocator, "text(stmt_handle, ") catch unreachable,
-        }
-
-        code_buf.appendSlice(allocator, std.fmt.allocPrint(allocator, "{d}", .{bind_idx}) catch unreachable) catch unreachable;
-        code_buf.appendSlice(allocator, ", ") catch unreachable;
-        code_buf.appendSlice(allocator, binding.name) catch unreachable;
-
-        if (binding.type_hint == 's') {
-            code_buf.appendSlice(allocator, ".ptr, @intCast(") catch unreachable;
-            code_buf.appendSlice(allocator, binding.name) catch unreachable;
-            code_buf.appendSlice(allocator, ".len), c.SQLITE_STATIC);\n") catch unreachable;
-        } else {
-            code_buf.appendSlice(allocator, ");\n") catch unreachable;
-        }
+        code_buf.writer(allocator).print("    _ = __sqlite3.bindValue(stmt_handle, {d}, {s});\n", .{ idx + 1, binding.name }) catch unreachable;
     }
 
     // Step and return
@@ -541,7 +650,7 @@ pub const Statement = struct {
     code_buf.appendSlice(allocator, "        s.* = .{ .handle = stmt_handle };\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .row = .{ .conn = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ", .stmt = s } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, ", .stmt = s, .row = s } });\n") catch unreachable;
     code_buf.appendSlice(allocator, "    } else if (step_rc == c.SQLITE_DONE) {\n") catch unreachable;
     code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .empty = ") catch unreachable;
@@ -578,6 +687,10 @@ pub const Statement = struct {
 
     // Keep only conn arg for the impl event
     const new_args = allocator.alloc(ast.Arg, 1) catch unreachable;
+    // Auto-conn synthesizes the arg so the REWRITTEN site carries the consume
+    // — the phantom checker only sees declared args, and without this the
+    // connection would stay "live" after the impl ate it.
+    new_args[0] = ast.Arg{ .name = "conn", .value = conn_var };
     for (invocation.args) |arg| {
         if (std.mem.eql(u8, arg.name, "conn")) {
             new_args[0] = arg;
@@ -606,16 +719,20 @@ pub const Statement = struct {
     return .{ .replacement = ast.Item{ .flow = new_flow } };
 }
 
-// Get next row from statement
-~pub tor next { conn: *Connection<!opened>, stmt: *Statement<!prepared> }
-| row { conn: *Connection<opened!>, stmt: *Statement<prepared!> }
+// Get next row from statement. `stmt` is the statement's lifetime handle
+// (still needs finalize); `row` is the live row borrow — stepping consumes
+// it (the step IS the release). `| row` re-issues both on the same object:
+// `col.*` borrows `row`, `next`/`finalize.stmt` consume `stmt`.
+~pub tor next { conn: *Connection<!opened>, stmt: *Statement<!prepared>, row: *Statement<!row> }
+| row { conn: *Connection<opened!>, stmt: *Statement<prepared!>, row: *Statement<row!> }
 | done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: string }
 
 ~proc next|zig {
+    _ = &row;
     const rc = c.sqlite3_step(stmt.handle);
     if (rc == c.SQLITE_ROW) {
-        return .{ .row = .{ .conn = conn, .stmt = stmt } };
+        return .{ .row = .{ .conn = conn, .stmt = stmt, .row = stmt } };
     } else if (rc == c.SQLITE_DONE) {
         _ = c.sqlite3_finalize(stmt.handle);
         std.heap.page_allocator.destroy(stmt);
