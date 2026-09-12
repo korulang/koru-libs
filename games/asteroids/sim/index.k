@@ -115,6 +115,10 @@ pub tor bullet-vel { dx: f32, dy: f32, rotation: f32 } -> { dx: f32, dy: f32 }
 
 bullet-vel -> { dx: dx + @sin(rotation) * BULLET_SPEED, dy: dy - @cos(rotation) * BULLET_SPEED }
 
+pub tor bullet-life {} -> f32
+
+bullet-life -> BULLET_LIFETIME
+
 // ── Asteroids ───────────────────────────────────────────────────────────────
 // Split: the two children keep the parent's velocity rotated by ±42 deg, each
 // speed-scaled 1.00..1.24 from the draw so the pair diverges.

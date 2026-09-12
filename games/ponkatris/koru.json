@@ -1,0 +1,13 @@
+{
+  "name": "ponkatris",
+  "version": "0.1.0",
+  "libs": {
+    "raylib": "../../raylib",
+    "store": "../../../../koru/koru_std/store",
+    "kernel": "../../../../koru/koru_std/kernel"
+  },
+  "paths": {
+    "libs": "../..",
+    "sim": "./sim"
+  }
+}

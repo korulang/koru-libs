@@ -85,7 +85,11 @@ pub const Frame = struct {
 | err string
 
 ~proc window.open|zig {
-    c.InitWindow(width, height, title.ptr);
+    var tbuf: [256]u8 = undefined;
+    const tn = @min(title.len, tbuf.len - 1);
+    @memcpy(tbuf[0..tn], title[0..tn]);
+    tbuf[tn] = 0;
+    c.InitWindow(width, height, @as([*:0]const u8, @ptrCast(&tbuf)));
     if (!c.IsWindowReady()) {
         return .{ .err = "raylib: window failed to initialize" };
     }
@@ -101,8 +105,12 @@ pub const Frame = struct {
 | err string
 
 ~proc window.open.hidden|zig {
+    var tbuf: [256]u8 = undefined;
+    const tn = @min(title.len, tbuf.len - 1);
+    @memcpy(tbuf[0..tn], title[0..tn]);
+    tbuf[tn] = 0;
     c.SetConfigFlags(c.FLAG_WINDOW_HIDDEN);
-    c.InitWindow(width, height, title.ptr);
+    c.InitWindow(width, height, @as([*:0]const u8, @ptrCast(&tbuf)));
     if (!c.IsWindowReady()) {
         return .{ .err = "raylib: hidden window failed to initialize" };
     }
@@ -138,10 +146,7 @@ pub const Frame = struct {
 // through non-void transitions, or this guarantee dies — record kept with
 // the queued koru batch.)
 ~pub tor window.activate { win: *Window<!opened> } -> *Window<active!>
-
-~proc window.activate|zig {
-    return win;
-}
+~window.activate -> win
 
 ~pub tor window.close { win: *Window<!active> }
 
@@ -277,7 +282,11 @@ fn mintTexture(t: c.Texture2D) *Texture {
 
 ~proc texture.load|zig {
     _ = &win;
-    const t = c.LoadTexture(path.ptr);
+    var pbuf: [1024]u8 = undefined;
+    const pn = @min(path.len, pbuf.len - 1);
+    @memcpy(pbuf[0..pn], path[0..pn]);
+    pbuf[pn] = 0;
+    const t = c.LoadTexture(@as([*:0]const u8, @ptrCast(&pbuf)));
     if (!c.IsTextureValid(t)) {
         return .{ .err = "raylib: texture failed to load (missing file or bad format)" };
     }
@@ -321,7 +330,11 @@ fn mintTexture(t: c.Texture2D) *Texture {
 
 ~proc draw.text|zig {
     _ = &f;
-    c.DrawText(text.ptr, x, y, size, col);
+    var buf: [1024]u8 = undefined;
+    const n = @min(text.len, buf.len - 1);
+    @memcpy(buf[0..n], text[0..n]);
+    buf[n] = 0;
+    c.DrawText(@as([*:0]const u8, @ptrCast(&buf)), x, y, size, col);
 }
 
 // Vector drawing — the float primitives. Asteroids is drawn as outlines:

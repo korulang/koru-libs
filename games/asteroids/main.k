@@ -1,18 +1,13 @@
-// main.k — Koru Asteroids, slice two: the field is alive.
+// main.k — Koru Asteroids, slice three: the field fires.
 //
-// Ship (rotate/thrust/drag/wrap) + three asteroids that drift at constant
-// velocity and wrap. Every rule lives in sim.k, bound here per frame (tor
-// calls are not expressions, KORU104). State is grids; no conditional
-// writes yet (the surface doesn't prove them — bullets/impacts are the next
-// pass).
-//
-// Claim: 900 no-input frames leave the ship exactly centered and the
-// asteroids exactly where constant-velocity + wrap puts them. The close-out
-// prints every position — the run itself is the receipt. Numbers in the
-// prints are deterministic (`:f` rounded), so humans can eyeball drift.
+// Ship + three wrapping rocks stay on grids. Bullets live in a store:
+// insert on space, stripe moves them, take when lifetime hits 0, query
+// under ! frame paints them. Color is constructed inside the query arm
+// (an outer Color bind is emitted unqualified on the qbody input).
 
 import std/io
 import std/grid
+import std/store
 import libs/raylib
 import sim
 
@@ -34,12 +29,31 @@ std/grid:new(ship, size: 1) {
     vx: 0.0[f32], vy: 0.0[f32], rotation: 0.0[f32]
 }
 
+std/store:new(bullets, capacity: 64) { x: f32, y: f32, dx: f32, dy: f32, t: f32 }
+
+[name(fly)]std/store:rule(bullets)
+! row b |> sim:bullet-tick(b.x, b.y, b.dx, b.dy, b.t, dt: 0.016666): bt
+    |> sim:wrap-x(bt.x, width: 800.0): nx
+    |> sim:wrap-y(bt.y, height: 600.0): ny
+    |> std/store:stored { b.x: nx }
+    |> std/store:stored { b.y: ny }
+    |> std/store:stored { b.t: bt.t }
+
+[name(expire)|depends_on(fly)]std/store:rule(bullets)
+! row b when b.t <= 0.0 |> std/store:take(bullets[b])
+    | item _ |> _
+
+tor paint-shots { f: *libs/raylib:Frame<frame> }
+paint-shots = std/store:query(bullets)
+    ! query b |> libs/raylib:color(r: 235, g: 235, b: 250): shot |> libs/raylib:draw.circle(f, b.x, b.y, r: 2.0, col: shot)
+
 libs/raylib:window.open(width: 800, height: 600, title: "koru asteroids")
 | win w |> libs/raylib:window.fps(win: w, fps: 60) |> libs/raylib:frames(win: w, count: 900)
     ! frame f
         |> libs/raylib:input.key.down(key: 263): left_held
         |> libs/raylib:input.key.down(key: 262): right_held
         |> libs/raylib:input.key.down(key: 87): thrusting
+        |> libs/raylib:input.key.pressed(key: 32): firing
         |> sim:thrust-dx(vx: ship[0].vx, rotation: ship[0].rotation, thrusting, dt: 0.016666): tvx
         |> sim:drag-x(vx: tvx, dt: 0.016666): dvx
         |> sim:thrust-dy(vy: ship[0].vy, rotation: ship[0].rotation, thrusting, dt: 0.016666): tvy
@@ -60,6 +74,14 @@ libs/raylib:window.open(width: 800, height: 600, title: "koru asteroids")
         |> std/grid:stored { astro[0].x: a0x, astro[0].y: a0y }
         |> std/grid:stored { astro[1].x: a1x, astro[1].y: a1y }
         |> std/grid:stored { astro[2].x: a2x, astro[2].y: a2y }
+        |> if(firing)
+            | then |> sim:nose(x: ship[0].x, y: ship[0].y, rotation: ship[0].rotation): n
+                |> sim:bullet-vel(dx: ship[0].vx, dy: ship[0].vy, rotation: ship[0].rotation): v
+                |> sim:bullet-life(): life
+                |> std/store:insert(bullets) { n.x, n.y, v.dx, v.dy, t: life }
+                    | row _ |> _
+                    | full |> _
+        |> std/store:stripe(bullets)
         |> libs/raylib:color(r: 8, g: 10, b: 16): bg
         |> libs/raylib:color(r: 235, g: 235, b: 250): white
         |> libs/raylib:draw.clear(f, col: bg)
@@ -67,5 +89,6 @@ libs/raylib:window.open(width: 800, height: 600, title: "koru asteroids")
         |> libs/raylib:draw.circle.lines(f, x: @as(i32, @intFromFloat(a0x)), y: @as(i32, @intFromFloat(a0y)), astro[0].r, col: white)
         |> libs/raylib:draw.circle.lines(f, x: @as(i32, @intFromFloat(a1x)), y: @as(i32, @intFromFloat(a1y)), astro[1].r, col: white)
         |> libs/raylib:draw.circle.lines(f, x: @as(i32, @intFromFloat(a2x)), y: @as(i32, @intFromFloat(a2y)), astro[2].r, col: white)
+        |> paint-shots(f)
     | done w2 |> libs/raylib:window.close(win: w2) |> std/io:print.ln("900 frames: ship {{ ship[0].x:f }},{{ ship[0].y:f }} | a0 {{ astro[0].x:f }},{{ astro[0].y:f }} | a1 {{ astro[1].x:f }},{{ astro[1].y:f }} | a2 {{ astro[2].x:f }},{{ astro[2].y:f }}")
 | err e |> std/io:print.ln("asteroids init failed: {{ e:s }}")

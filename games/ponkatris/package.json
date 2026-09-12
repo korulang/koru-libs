@@ -1,0 +1,7 @@
+{
+  "name": "@korulang/ponkatris",
+  "version": "0.1.0",
+  "description": "Ponkatris on raylib for Koru — store+kernel native physics slice",
+  "license": "MIT",
+  "koru": { "entry": "main.k", "requires": { "system": ["raylib"] } }
+}
