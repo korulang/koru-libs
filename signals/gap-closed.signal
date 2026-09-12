@@ -1,0 +1,9 @@
+name: gap-closed
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a named gap is gone — the toolchain now covers what a gap list,
+      pinned test, or catalog entry said it could not do; the work item
+      closed, not just the code changed
+route: surface
