@@ -5,10 +5,10 @@ ported from `~/src/ponkatris_arcade` (Bevy 0.12 + bevy_xpbd_2d, ~5k
 lines) onto `std/store` + `std/kernel` + `libs/raylib`. No C physics —
 the collision engine is Koru.
 
-The shipped level is the oracle's own `pacman.txt` — a pacman maze:
-49 walls, 249 crystals (247 dots + the big stacked `LastCrystal` r=45
-pair), the marble spawning in the central cross. Zero gravity,
-four-way thrust, count-up stopwatch — a timed clear.
+The shipped level remakes the feel of the oracle's first level — a
+pacman maze: 49 walls, 249 crystals (corridor dots + the big stacked
+`LastCrystal` r=45 pair), the marble spawning in the central cross.
+Zero gravity, four-way thrust, count-up stopwatch — a timed clear.
 
 ## Layout
 
@@ -16,8 +16,9 @@ four-way thrust, count-up stopwatch — a timed clear.
   `game` store holds score/elapsed/flags/spawn. `kernel:self`
   integrates, `kernel:pairwise` resolves contacts, rules are
   query-arm tors. No scene lives here — sim is level-agnostic.
-- `level/pacman.k` — the real maze, generated from the oracle's
-  proprietary `level_data` strings (`levels/pacman.txt` @2b933b1).
+- `level/pacman.k` — the first level remade for feel from the oracle's
+  proprietary `level_data` strings (`levels/pacman.txt` @2b933b1);
+  hand-editable level data, not a locked port.
   `spawn()` seeds bodies + game row; `spawn-crystals(pressed:)` re-seeds
   the dots on restart.
 - `level/test.k` — the toy scene (one flinger, one crystal, one
@@ -105,7 +106,7 @@ Every one of these landed as a `koru` commit, not a library dodge:
   grammar question, not a bug.
 - Camera: none — the level fits one screen. The oracle's camera-follow
   is out of slice scope.
-- Audio, particles, level JSON, ghost replays, the editor: all out of
+- Audio, particles, the level backend + editor, ghost replays: all out of
   slice scope; each is a future replay.
 
 ## Run

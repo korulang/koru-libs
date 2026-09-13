@@ -1,11 +1,12 @@
-// pacman.k — the original Ponkatris level, ported from the oracle's
-// proprietary `level_data` format (levels/pacman.txt @2b933b1). It's a
+// pacman.k — the first level, remade for feel from the oracle's
+// proprietary `level_data` strings (levels/pacman.txt @2b933b1). It's a
 // pacman maze — crystals in the corridors, player spawn in the central
 // cross. World: 0 0 → zero gravity; Movement: 1000s → four-way thrust;
 // Props: Wall 0 MIN → walls are dead (e=0). Bevy is y-up, we are
 // y-down: y negated, level translated +290/+140 into a 620x680 window.
 //
-// This file is generated data — edit the oracle, not the coordinates.
+// Started life generated; it's hand-editable level data now — feel over
+// fidelity.
 
 import std/store
 import sim
