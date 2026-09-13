@@ -15,7 +15,7 @@ import std/store
 import std/fmt
 import libs/raylib
 import sim
-import level/pacman
+import level/cross
 
 // Paint every body, keyed on kind: one query flow per class, each with a
 // guarded `! query` arm (the one-arm-per-flow shape the store grammar gives).
@@ -61,9 +61,9 @@ paint-end-won = std/store:query(game)
         |> std/fmt:ln("CLEAR in {{ g.elapsed:d }}s — R to restart"): l
         |> libs/raylib:draw.text(f, l.text, x: 190, y: 320, size: 30, col)
 
-level/pacman:spawn()
+level/cross:spawn()
 
-libs/raylib:window.open(width: 620, height: 680, title: "koru ponkatris — pacman")
+libs/raylib:window.open(width: 620, height: 680, title: "koru ponkatris — cross")
 | win w |> libs/raylib:window.fps(win: w, fps: 120) |> libs/raylib:frames(win: w, count: 7200)
     ! frame f
         |> libs/raylib:input.key.down(key: 263): left_held
@@ -85,7 +85,7 @@ libs/raylib:window.open(width: 620, height: 680, title: "koru ponkatris — pacm
         |> sim:respawn()
         |> sim:stopwatch()
         |> sim:reset(pressed: r_pressed)
-        |> level/pacman:spawn-crystals(pressed: r_pressed)
+        |> level/cross:spawn-crystals(pressed: r_pressed)
         |> sim:reset-ball(pressed: r_pressed)
         |> sim:reset-game(pressed: r_pressed)
         |> libs/raylib:color(r: 8, g: 10, b: 16): bg
@@ -93,7 +93,7 @@ libs/raylib:window.open(width: 620, height: 680, title: "koru ponkatris — pacm
         |> libs/raylib:color(r: 255, g: 140, b: 60): bump_col
         |> libs/raylib:color(r: 90, g: 90, b: 110): wall_col
         |> libs/raylib:color(r: 120, g: 255, b: 160): crys_col
-        |> libs/raylib:color(r: 255, g: 60, b: 80): kill_col
+        |> libs/raylib:color(r: 255, g: 80, b: 170): kill_col
         |> libs/raylib:color(r: 235, g: 235, b: 245): hud_col
         |> libs/raylib:draw.clear(f, col: bg)
         |> paint-ball(f, col: ball_col)

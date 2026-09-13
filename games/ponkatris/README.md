@@ -5,10 +5,12 @@ ported from `~/src/ponkatris_arcade` (Bevy 0.12 + bevy_xpbd_2d, ~5k
 lines) onto `std/store` + `std/kernel` + `libs/raylib`. No C physics —
 the collision engine is Koru.
 
-The shipped level remakes the feel of the oracle's first level — a
-pacman maze: 49 walls, 249 crystals (corridor dots + the big stacked
-`LastCrystal` r=45 pair), the marble spawning in the central cross.
-Zero gravity, four-way thrust, count-up stopwatch — a timed clear.
+The shipped level remakes the feel of the oracle's first level — two
+crossed pink kill-bars (one horizontal, one diagonal, staircased from
+axis-aligned boxes) gating a field of 66 dots, marble spawning
+bottom-center. Zero gravity, four-way thrust, count-up stopwatch — a
+timed clear. `level/pacman.k` survives as an alternate: the oracle's
+own `pacman.txt` maze, 249 crystals.
 
 ## Layout
 
@@ -16,21 +18,24 @@ Zero gravity, four-way thrust, count-up stopwatch — a timed clear.
   `game` store holds score/elapsed/flags/spawn. `kernel:self`
   integrates, `kernel:pairwise` resolves contacts, rules are
   query-arm tors. No scene lives here — sim is level-agnostic.
-- `level/pacman.k` — the first level remade for feel from the oracle's
+- `level/cross.k` — the shipped level: crossed kill-bars, dot field.
+- `level/pacman.k` — alternate level, remade for feel from the oracle's
   proprietary `level_data` strings (`levels/pacman.txt` @2b933b1);
   hand-editable level data, not a locked port.
-  `spawn()` seeds bodies + game row; `spawn-crystals(pressed:)` re-seeds
-  the dots on restart.
+  Levels expose `spawn()` to seed bodies + game row and
+  `spawn-crystals(pressed:)` to re-seed dots on restart.
 - `level/test.k` — the toy scene (one flinger, one crystal, one
   kill-strip, gravity) that the headless tests drive.
-- `main.k` — the shell. Calls `level/pacman:spawn()`, then window,
+- `main.k` — the shell. Calls `level/cross:spawn()`, then window,
   frame loop, WASD/arrow input, kind-keyed paint tors, HUD text,
   R to restart.
 - `tests/smoke.k` — headless rung: settle + collect + respawn + win +
   stopwatch count-up/freeze, verified by `dump`/`dump-game` receipts.
 - `tests/physics.k` — restitution threshold: settle, graze (inelastic),
   slam (flings).
-- `tests/pacman.k` — the real level headless: 298 bodies spawn,
+- `tests/cross.k` — the shipped level headless: spawn, zero-g hold,
+  kill-bar death + respawn, big-crystal collect.
+- `tests/pacman.k` — the alternate level headless: 298 bodies spawn,
   zero-g drift check, wall-stop containment, dot + stacked-crystal
   collect.
 - `tests/bisect*.k` — standalone compiler-stress repros (own stores,
