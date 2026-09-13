@@ -312,6 +312,17 @@ fn mintTexture(t: c.Texture2D) *Texture {
     c.DrawRectangle(x, y, w, h, col);
 }
 
+// A rotated rect at float center — DrawRectanglePro with a center pivot.
+// The crystal diamonds are squares spun 45 degrees.
+~pub tor draw.rect.rot { f: *Frame<frame>, x: f32, y: f32, w: f32, h: f32, deg: f32, col: Color }
+
+~proc draw.rect.rot|zig {
+    _ = &f;
+    const rec = c.Rectangle{ .x = x, .y = y, .width = w, .height = h };
+    const origin = c.Vector2{ .x = w / 2.0, .y = h / 2.0 };
+    c.DrawRectanglePro(rec, origin, deg, col);
+}
+
 ~pub tor draw.texture { f: *Frame<frame>, tex: *Texture<loaded>, x: i32, y: i32, tint: Color }
 
 ~proc draw.texture|zig {

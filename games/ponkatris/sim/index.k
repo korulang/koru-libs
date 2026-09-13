@@ -4,10 +4,12 @@
 // `kernel:pairwise` resolves contacts. kind discriminates the union:
 //   0 ball (dynamic circle) · 1 bumper (static circle, e=10.5 — a flinger)
 //   2 wall (static box) · 3 crystal (sensor circle) · 4 killzone (sensor box)
+//   5 diamond (solid circle — the oracle's Crystal: contact marks `hit`,
+//   impulse applies, `collect` takes it)
 // Sensors set `hit` on themselves and `dead` on the other body; no impulse.
 // Fixed DT=1/120 — one tick per rendered frame.
 // Gravity is per-body (`gx`,`gy` columns): the level format's `World:` line
-// carries it, and pacman is a zero-g maze, not a faller.
+// carries it — pacman is a zero-g maze, rubicon a gravity level.
 // The sim owns no scene — a `level/` module inserts the world.
 
 import std/io
@@ -52,10 +54,10 @@ tick = std/kernel:init(bodies) {}
             } |> std/kernel:pairwise {
                 const im = k.inv_mass + k.other.inv_mass;
                 if (im > 0.0) {
-                    // circles: ball, bumper, crystal-sensor. boxes: wall,
-                    // killzone-sensor.
-                    const kCirc = k.kind < 1.5 or (k.kind > 2.5 and k.kind < 3.5);
-                    const oCirc = k.other.kind < 1.5 or (k.other.kind > 2.5 and k.other.kind < 3.5);
+                    // circles: ball, bumper, crystal-sensor, solid diamond.
+                    // boxes: wall, killzone-sensor.
+                    const kCirc = k.kind < 1.5 or (k.kind > 2.5 and k.kind < 3.5) or (k.kind > 4.5 and k.kind < 5.5);
+                    const oCirc = k.other.kind < 1.5 or (k.other.kind > 2.5 and k.other.kind < 3.5) or (k.other.kind > 4.5 and k.other.kind < 5.5);
                     var nx: f64 = 0.0;
                     var ny: f64 = 0.0;
                     var pen: f64 = 0.0;
@@ -114,13 +116,17 @@ tick = std/kernel:init(bodies) {}
                         }
                     }
                     if (pen > 0.0) {
-                        const sensor = (k.kind > 2.5) or (k.other.kind > 2.5);
+                        // solid diamonds report contact AND take impulse —
+                        // they are the oracle's Crystal, not a sensor.
+                        if (k.kind > 4.5 and k.kind < 5.5) { k.hit = 1.0; }
+                        if (k.other.kind > 4.5 and k.other.kind < 5.5) { k.other.hit = 1.0; }
+                        const sensor = (k.kind > 2.5 and k.kind < 4.5) or (k.other.kind > 2.5 and k.other.kind < 4.5);
                         if (sensor) {
-                            if (k.kind > 2.5) {
+                            if (k.kind > 2.5 and k.kind < 4.5) {
                                 k.hit = 1.0;
                                 if (k.kind > 3.5) { k.other.dead = 1.0; }
                             }
-                            if (k.other.kind > 2.5) {
+                            if (k.other.kind > 2.5 and k.other.kind < 4.5) {
                                 k.other.hit = 1.0;
                                 if (k.other.kind > 3.5) { k.dead = 1.0; }
                             }
@@ -162,14 +168,15 @@ thrust = std/store:query(bodies)
         }
 
 // Rules — each tor is one query arm (the one-arm-per-flow shape). The frame
-// loop calls collect/respawn/countdown after tick; reset* is the R-key path.
+// loop calls collect/respawn/stopwatch after tick; reset* is the R-key path.
 
-// A crystal that took a sensor hit is taken; the item continuation bumps
-// score and flips `won` when the level's total is reached.
+// A crystal that took a sensor hit — or a solid diamond that took a
+// contact — is taken; the item continuation bumps score and flips `won`
+// when the level's total is reached.
 pub tor collect { }
 
 collect = std/store:query(bodies)
-    ! query e when e.kind == 3.0 and e.hit == 1.0
+    ! query e when (e.kind == 3.0 or e.kind == 5.0) and e.hit == 1.0
         |> std/store:take(bodies[e])
             | item _ |> bump-score()
 
@@ -207,7 +214,7 @@ stopwatch = std/store:query(game)
 pub tor reset { pressed: bool }
 
 reset = std/store:query(bodies)
-    ! query e when pressed and e.kind == 3.0
+    ! query e when pressed and (e.kind == 3.0 or e.kind == 5.0)
         |> std/store:take(bodies[e])
             | item _ |> _
 

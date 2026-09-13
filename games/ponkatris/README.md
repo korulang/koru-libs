@@ -5,12 +5,13 @@ ported from `~/src/ponkatris_arcade` (Bevy 0.12 + bevy_xpbd_2d, ~5k
 lines) onto `std/store` + `std/kernel` + `libs/raylib`. No C physics —
 the collision engine is Koru.
 
-The shipped level remakes the feel of the oracle's first level — two
-crossed pink kill-bars (one horizontal, one diagonal, staircased from
-axis-aligned boxes) gating a field of 66 dots, marble spawning
-bottom-center. Zero gravity, four-way thrust, count-up stopwatch — a
-timed clear. `level/pacman.k` survives as an alternate: the oracle's
-own `pacman.txt` maze, 249 crystals.
+The shipped level IS the oracle's first level — "Crossing the
+rubicon" (ponkatris_astro `src/content/levels/2023-12-04.md`): the
+marble drops into a bouncy X of two pink bars (500x25 at +/-45deg,
+Restitution 1.0 — the cross is bounceable) and must Boost (up-thrust
+3000, 3x lateral) out of the pockets to collect four solid diamond
+crystals. Gravity on, kill floor below, count-up stopwatch — a timed
+clear. `level/pacman.k` and `level/cross.k` survive as alternates.
 
 ## Layout
 
@@ -18,24 +19,28 @@ own `pacman.txt` maze, 249 crystals.
   `game` store holds score/elapsed/flags/spawn. `kernel:self`
   integrates, `kernel:pairwise` resolves contacts, rules are
   query-arm tors. No scene lives here — sim is level-agnostic.
-- `level/cross.k` — the shipped level: crossed kill-bars, dot field.
+- `level/rubicon.k` — the shipped level: the bouncy X, four diamonds,
+  gravity, kill floor. Real data, lifted from the astro site's
+  content collection.
 - `level/pacman.k` — alternate level, remade for feel from the oracle's
-  proprietary `level_data` strings (`levels/pacman.txt` @2b933b1);
-  hand-editable level data, not a locked port.
+  proprietary `level_data` strings (`levels/pacman.txt` @2b933b1).
+- `level/cross.k` — alternate level, the earlier crossed-bars guess.
   Levels expose `spawn()` to seed bodies + game row and
   `spawn-crystals(pressed:)` to re-seed dots on restart.
 - `level/test.k` — the toy scene (one flinger, one crystal, one
   kill-strip, gravity) that the headless tests drive.
-- `main.k` — the shell. Calls `level/cross:spawn()`, then window,
+- `main.k` — the shell. Calls `level/rubicon:spawn()`, then window,
   frame loop, WASD/arrow input, kind-keyed paint tors, HUD text,
   R to restart.
 - `tests/smoke.k` — headless rung: settle + collect + respawn + win +
   stopwatch count-up/freeze, verified by `dump`/`dump-game` receipts.
 - `tests/physics.k` — restitution threshold: settle, graze (inelastic),
   slam (flings).
-- `tests/cross.k` — the shipped level headless: spawn, zero-g hold,
-  kill-bar death + respawn, big-crystal collect.
-- `tests/pacman.k` — the alternate level headless: 298 bodies spawn,
+- `tests/rubicon.k` — the shipped level headless: gravity drop
+  collects the top diamond mid-fall (score 1/4), rests on the X at
+  y~418, killfloor death + respawn, Boost climbs.
+- `tests/cross.k` — the crossed-bars guess level headless.
+- `tests/pacman.k` — the pacman alternate headless: 298 bodies spawn,
   zero-g drift check, wall-stop containment, dot + stacked-crystal
   collect.
 - `tests/bisect*.k` — standalone compiler-stress repros (own stores,
@@ -51,8 +56,9 @@ body lives in one store:
 | 0 | circle, dynamic | the marble |
 | 1 | circle, static, e=10.5 | flinger bumper (test level only) |
 | 2 | box, static | wall |
-| 3 | circle, sensor | crystal (taken on hit) |
+| 3 | circle, sensor | dot crystal (taken on hit) |
 | 4 | box, sensor | killzone (dead → respawn) |
+| 5 | circle, solid | diamond (bounce + collect — the oracle's Crystal) |
 
 Physics: fixed DT=1/120, per-body gravity (`gx`/`gy` columns — the
 pacman level is `World: 0 0`), per-body linear damping (`damp` — the
@@ -61,9 +67,10 @@ Baumgarte correction, inside-box least-axis exit for deep penetration,
 and a restitution velocity threshold (vn < 100 → inelastic — without it
 a walking-pace graze on the e=10.5 flinger still launched at 10.5x).
 
-Movement comes from the level's `Movement: 1000 1000 1000 1000` —
-`main.k` turns held keys into per-tick deltas (`1000 × DT = 8.3333`)
-and `sim:thrust` adds them to velocity.
+Movement comes from the level's Movement defaults — rubicon declares
+none, so the oracle's `1000/1000/3000/0` applies: lateral nudge, a 3x
+up-Boost, no down (gravity owns that). `main.k` turns held keys into
+per-tick deltas and `sim:thrust` adds them to velocity.
 
 ## What it forced out of the toolchain
 
