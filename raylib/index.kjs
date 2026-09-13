@@ -1,0 +1,226 @@
+// @korulang/raylib — BROWSER facet (|js): the same tors, a Canvas2D host.
+//
+// The .kz sibling owns the contract — tors, phantom lifecycle, docs. This file
+// supplies the JavaScript proc bodies and module state selected by --lang=js.
+//
+// THE BROWSER READING OF THE CONTRACT:
+//   window.open    — a <canvas> sized to the request, appended to the host
+//                    page (`#koru-mount` if present, else document.body). The
+//                    Window token carries {canvas, ctx}; the page is the window.
+//   window.fps     — remembered on the token; `frames` paces to it.
+//   frames         — an INTERVAL pump at the requested rate, driving the
+//                    `! frame` arm once per tick. The synchronous Zig loop has
+//                    no browser spelling: `| done` fires when the pump is
+//                    INSTALLED, not when count frames have run (the arm's
+//                    teardown must therefore tolerate running first — ponkatris
+//                    dumps read fine). count still bounds the pump.
+//   window.close   — a no-op: the window is the page, and the page's lifecycle
+//                    belongs to the tab, not the program.
+//   input          — polling semantics preserved: `down` is a held-state set,
+//                    `pressed` an edge set cleared after every pumped frame.
+//                    Keys are RAYLIB CODES at the seam (key: 263 = LEFT) —
+//                    __ray_keycode translates KeyboardEvent.code, so a program
+//                    written against the |zig lift needs no re-keying.
+//   draw.*         — Canvas2D calls against the frame's ctx. Begin/EndDrawing
+//                    have no analogue: the browser owns compositing, so the
+//                    frame token is plumbing only.
+//   texture.*      — NOT LIFTED. Image loading is async in a page; the tors
+//                    stay refused on this target rather than fake a sync load.
+//
+// Everything below runs in the page's global scope: the emitted file is a
+// plain script (see emitJsHostLines — host lines splice verbatim at the top
+// of the output).
+
+// ---- module state -----------------------------------------------------------
+
+const __ray = {
+    canvas: null,
+    ctx: null,
+    down: new Set(),     // raylib codes currently held
+    pressed: new Set(),  // raylib codes that went down since the last frame
+    keys_installed: false,
+    timer: null,
+};
+
+// Reachable for cleanup — a host page tearing the game down (SPA unmount)
+// clears `window.__ray.timer` and removes `__ray.canvas`. Guarded so a bare
+// `node output_emitted.js` (no DOM at all) still evaluates.
+if (typeof window !== "undefined") window.__ray = __ray;
+
+// KeyboardEvent.code -> raylib key code. Letters and digits compute from the
+// code name (KeyA..KeyZ = 65..90, Digit0..9 = 48..57 — both ASCII-ordered);
+// the table covers everything else.
+const __ray_keymap = {
+    ArrowLeft: 263, ArrowRight: 262, ArrowUp: 265, ArrowDown: 264,
+    Space: 32, Enter: 257, Escape: 256, Tab: 258, Backspace: 259,
+    ShiftLeft: 340, ControlLeft: 341, AltLeft: 342,
+    ShiftRight: 344, ControlRight: 345, AltRight: 346,
+    Apostrophe: 39, Comma: 44, Minus: 45, Period: 46, Slash: 47,
+    Semicolon: 59, Equal: 61, BracketLeft: 91, Backslash: 92,
+    BracketRight: 93, Backquote: 96, CapsLock: 280,
+};
+
+function __ray_keycode(e) {
+    const c = e.code;
+    if (c.startsWith("Key")) return c.charCodeAt(3);
+    if (c.startsWith("Digit")) return 48 + Number(c[5]);
+    return __ray_keymap[c] !== undefined ? __ray_keymap[c] : null;
+}
+
+function __ray_install_keys() {
+    if (__ray.keys_installed) return;
+    __ray.keys_installed = true;
+    window.addEventListener("keydown", function (e) {
+        const code = __ray_keycode(e);
+        if (code === null) return;
+        if (!__ray.down.has(code)) __ray.pressed.add(code);
+        __ray.down.add(code);
+        // Arrows/space/tab scroll or re-focus the page — the game owns them.
+        if ((code >= 262 && code <= 265) || code === 32 || code === 258) e.preventDefault();
+    });
+    window.addEventListener("keyup", function (e) {
+        const code = __ray_keycode(e);
+        if (code !== null) __ray.down.delete(code);
+    });
+    // A blurred page must not report keys still held.
+    window.addEventListener("blur", function () { __ray.down.clear(); });
+}
+
+function __ray_css(col) {
+    const a = col.a === undefined ? 255 : col.a;
+    return "rgba(" + col.r + "," + col.g + "," + col.b + "," + (a / 255) + ")";
+}
+
+// ---- window lifecycle ---------------------------------------------------------
+
+~proc window.open|js {
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.style.display = "block";
+    const mount = document.getElementById("koru-mount") || document.body;
+    mount.appendChild(canvas);
+    const ctx = canvas.getContext("2d");
+    __ray.canvas = canvas;
+    __ray.ctx = ctx;
+    __ray_install_keys();
+    const w = { _token: 0, canvas: canvas, ctx: ctx };
+    return { tag: "win", win: w };
+}
+
+~proc window.open.hidden|js {
+    // No DOM attachment — the drawing surface exists, nothing is shown.
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    __ray.canvas = canvas;
+    __ray.ctx = ctx;
+    const w = { _token: 0, canvas: canvas, ctx: ctx };
+    return { tag: "win", win: w };
+}
+
+~proc window.fps|js {
+    win.__fps = fps;
+}
+
+~proc window.close|js {
+    // The window IS the page; its lifecycle belongs to the tab. Removing the
+    // canvas here would also break the |js reading of `frames` (whose `| done`
+    // fires when the pump installs, before the last frame), so close is a
+    // no-op on this host.
+    void win;
+}
+
+~proc frames|js {
+    const __f = { _token: 0, canvas: $mod.__ray.canvas, ctx: $mod.__ray.ctx };
+    const __ms = 1000.0 / (win.__fps || 60);
+    let __i = 0;
+    $mod.__ray.timer = setInterval(function () {
+        if (__i >= count) {
+            clearInterval($mod.__ray.timer);
+            return;
+        }
+        __i += 1;
+        frame(__f);
+        $mod.__ray.pressed.clear();
+    }, __ms);
+    return { tag: "done", done: win };
+}
+
+~proc release.frame|js { void f; }
+
+// ---- input --------------------------------------------------------------------
+
+~proc input.key.down|js {
+    return __ray.down.has(key);
+}
+
+~proc input.key.pressed|js {
+    return __ray.pressed.has(key);
+}
+
+// ---- drawing --------------------------------------------------------------------
+
+~proc color|js {
+    return { r: r, g: g, b: b, a: 255 };
+}
+
+~proc draw.clear|js {
+    f.ctx.fillStyle = __ray_css(col);
+    f.ctx.fillRect(0, 0, f.canvas.width, f.canvas.height);
+}
+
+~proc draw.circle|js {
+    f.ctx.fillStyle = __ray_css(col);
+    f.ctx.beginPath();
+    f.ctx.arc(x, y, r, 0, Math.PI * 2);
+    f.ctx.fill();
+}
+
+~proc draw.circle.lines|js {
+    f.ctx.strokeStyle = __ray_css(col);
+    f.ctx.beginPath();
+    f.ctx.arc(x, y, r, 0, Math.PI * 2);
+    f.ctx.stroke();
+}
+
+~proc draw.rect|js {
+    f.ctx.fillStyle = __ray_css(col);
+    f.ctx.fillRect(x, y, w, h);
+}
+
+~proc draw.rect.rot|js {
+    f.ctx.save();
+    f.ctx.translate(x, y);
+    f.ctx.rotate(deg * Math.PI / 180);
+    f.ctx.fillStyle = __ray_css(col);
+    f.ctx.fillRect(-w / 2, -h / 2, w, h);
+    f.ctx.restore();
+}
+
+~proc draw.line|js {
+    f.ctx.strokeStyle = __ray_css(col);
+    f.ctx.lineWidth = thickness;
+    f.ctx.beginPath();
+    f.ctx.moveTo(x1, y1);
+    f.ctx.lineTo(x2, y2);
+    f.ctx.stroke();
+}
+
+~proc draw.triangle.lines|js {
+    f.ctx.strokeStyle = __ray_css(col);
+    f.ctx.beginPath();
+    f.ctx.moveTo(x1, y1);
+    f.ctx.lineTo(x2, y2);
+    f.ctx.lineTo(x3, y3);
+    f.ctx.closePath();
+    f.ctx.stroke();
+}
+
+~proc draw.text|js {
+    f.ctx.fillStyle = __ray_css(col);
+    f.ctx.font = size + "px monospace";
+    // raylib's y is the TOP of the text; canvas fillText y is the baseline.
+    f.ctx.fillText(text, x, y + size);
+}
