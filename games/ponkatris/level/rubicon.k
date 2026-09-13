@@ -3,7 +3,8 @@
 //   Player: 0 200
 //   Crystal: 150 0 / 0 0 / 0 -150 / -150 0      (four solid diamonds)
 //   Wall: 0 -50 500 25 -45 / +45                (the crossed pink bars)
-//   KillZone: 0 -700 5000 250                   (the death floor)
+//   KillZone: 0 -700 5000 250                   (oracle death floor — here
+//   a bouncy wall instead: no camera, so a fallen marble must stay in play)
 // No World/Movement lines -> oracle defaults: gravity -1000 (y-up),
 // Movement 1000/1000/3000/0 — up-Boost is the lesson of this level.
 // Bevy y-up -> screen y-down: sx = x + 310, sy = 390 - y.
@@ -23,7 +24,7 @@ spawn = std/store:insert(bodies) { x: 310.0, y: 190.0, vx: 0.0, vy: 0.0, inv_mas
     |> std/store:insert(bodies) { x: 310.0, y: 8.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 0.0, hw: 302.0, hh: 8.0, e: 1.0, hit: 0.0, dead: 0.0 }
     |> std/store:insert(bodies) { x: 8.0, y: 340.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 0.0, hw: 8.0, hh: 330.0, e: 1.0, hit: 0.0, dead: 0.0 }
     |> std/store:insert(bodies) { x: 612.0, y: 340.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 0.0, hw: 8.0, hh: 330.0, e: 1.0, hit: 0.0, dead: 0.0 }
-    |> std/store:insert(bodies) { x: 310.0, y: 665.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 4.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 0.0, hw: 310.0, hh: 15.0, e: 0.0, hit: 0.0, dead: 0.0 }
+    |> std/store:insert(bodies) { x: 310.0, y: 665.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 0.0, hw: 310.0, hh: 15.0, e: 1.0, hit: 0.0, dead: 0.0 }
     |> std/store:insert(bodies) { x: 140.3, y: 609.7, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 1.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 14.0, hw: 0.0, hh: 0.0, e: 1.0, hit: 0.0, dead: 0.0 }
     |> std/store:insert(bodies) { x: 140.3, y: 270.3, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 1.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 14.0, hw: 0.0, hh: 0.0, e: 1.0, hit: 0.0, dead: 0.0 }
     |> std/store:insert(bodies) { x: 161.5, y: 588.5, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 1.0, gx: 0.0, gy: 0.0, damp: 0.0, radius: 14.0, hw: 0.0, hh: 0.0, e: 1.0, hit: 0.0, dead: 0.0 }

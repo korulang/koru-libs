@@ -57,14 +57,14 @@ paint-diamond = std/store:query(bodies)
 tor paint-hud { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 
 paint-hud = std/store:query(game)
-    ! query g |> std/fmt:ln("{{ g.elapsed:d }}s   {{ g.score:d }}/{{ g.total:d }}"): l
+    ! query g |> std/fmt:ln("{{ g.elapsed:d:.4 }}s   {{ g.score:d }}/{{ g.total:d }}"): l
         |> libs/raylib:draw.text(f, l.text, x: 16, y: 12, size: 24, col)
 
 tor paint-end-won { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 
 paint-end-won = std/store:query(game)
     ! query g when g.won == 1.0
-        |> std/fmt:ln("CLEAR in {{ g.elapsed:d }}s — R to restart"): l
+        |> std/fmt:ln("CLEAR in {{ g.elapsed:d:.4 }}s — R to restart"): l
         |> libs/raylib:draw.text(f, l.text, x: 190, y: 320, size: 30, col)
 
 level/rubicon:spawn()
