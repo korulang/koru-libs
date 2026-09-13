@@ -348,6 +348,17 @@ fn mintTexture(t: c.Texture2D) *Texture {
     c.DrawText(@as([*:0]const u8, @ptrCast(&buf)), x, y, size, col);
 }
 
+// A live integer on the canvas — the score/lives HUD form. `draw.text` takes
+// a cooked string; formatting a number is host work, so the facet owns it.
+~pub tor draw.int { f: *Frame<frame>, n: i32, x: i32, y: i32, size: i32, col: Color }
+
+~proc draw.int|zig {
+    _ = &f;
+    var buf: [32]u8 = undefined;
+    const s = std.fmt.bufPrintZ(&buf, "{d}", .{n}) catch unreachable;
+    c.DrawText(@as([*:0]const u8, @ptrCast(s)), x, y, size, col);
+}
+
 // Vector drawing — the float primitives. Asteroids is drawn as outlines:
 // triangles (ship), circles (asteroids), dots (bullets), all sub-pixel. These
 // stay true to raylib's float surface (DrawLineEx / DrawTriangleLines /

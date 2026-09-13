@@ -224,3 +224,9 @@ function __ray_css(col) {
     // raylib's y is the TOP of the text; canvas fillText y is the baseline.
     f.ctx.fillText(text, x, y + size);
 }
+
+~proc draw.int|js {
+    f.ctx.fillStyle = __ray_css(col);
+    f.ctx.font = size + "px monospace";
+    f.ctx.fillText(String(Math.trunc(n)), x, y + size);
+}
