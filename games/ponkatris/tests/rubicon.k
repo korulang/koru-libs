@@ -2,11 +2,11 @@
 // bouncy X, four solid diamonds.
 //
 // 1. spawn: ball at (310,190), gravity on. It falls straight down,
-//    through the top diamond at (310,390) — solid collect: bounce +
+//    through the top diamond at (310,330) — solid collect: bounce +
 //    take, score 1/4 — and comes to rest on the X's center circle
-//    (~y 418 = center 440 - bumper r 14 - ball r 8).
-// 2. the bottom is a bouncy wall, not a killzone — teleporting to the
-//    floor must NOT kill: ball lands and lives.
+//    (~y 358 = center 380 - bumper r 14 - ball r 8).
+// 2. no floor — teleporting below the window drops the marble onto the
+//    off-screen kill strip at y 720: dead, then respawned to spawn.
 // 3. up-Boost: 3000 px/s2 vs gravity 1000 — the ball climbs.
 
 import std/io
@@ -23,11 +23,12 @@ for(0..600)
 sim:dump()
 sim:dump-game()
 
-// 2. floor is bounceable, not deadly — land, verify alive
-sim:teleport(x: 310.0, y: 640.0)
-for(0..120)
-! each _ |> sim:tick()
+// 2. no floor — drop out of the window, die on the strip, respawn
+sim:teleport(x: 310.0, y: 690.0)
+for(0..240)
+! each _ |> sim:tick() |> sim:respawn()
 sim:dump()
+sim:dump-game()
 
 // 3. Boost: 240 ticks of up-thrust should lift the marble off the X
 for(0..240)
