@@ -5,12 +5,17 @@
 // frame at fixed DT=1/120. Painting is a set of guarded `! query` arms over
 // sim's `bodies` store — cross-module store access is plain: the query names
 // the store, codegen resolves it to koru_sim's scope.
+//
+// The level module seeds the world at import-init (its spawn() flow runs
+// before this file's flows). Movement deltas here are the level's
+// `Movement: 1000 1000 1000 1000` (px/s²) × DT.
 
 import std/io
 import std/store
 import std/fmt
 import libs/raylib
 import sim
+import level/pacman
 
 // Paint every body, keyed on kind: one query flow per class, each with a
 // guarded `! query` arm (the one-arm-per-flow shape the store grammar gives).
@@ -32,9 +37,10 @@ paint-wall = std/store:query(bodies)
     ! query e when e.kind == 2.0
         |> libs/raylib:draw.rect(f, x: @as(i32, @intFromFloat(e.x - e.hw)), y: @as(i32, @intFromFloat(e.y - e.hh)), w: @as(i32, @intFromFloat(e.hw * 2.0)), h: @as(i32, @intFromFloat(e.hh * 2.0)), col)
 
+// crystals are sensor circles now (the oracle's SensorCrystal x y r)
 paint-crystal = std/store:query(bodies)
     ! query e when e.kind == 3.0
-        |> libs/raylib:draw.rect(f, x: @as(i32, @intFromFloat(e.x - e.hw)), y: @as(i32, @intFromFloat(e.y - e.hh)), w: @as(i32, @intFromFloat(e.hw * 2.0)), h: @as(i32, @intFromFloat(e.hh * 2.0)), col)
+        |> libs/raylib:draw.circle(f, x: @as(f32, @floatCast(e.x)), y: @as(f32, @floatCast(e.y)), r: @as(f32, @floatCast(e.radius)), col)
 
 paint-killzone = std/store:query(bodies)
     ! query e when e.kind == 4.0
@@ -45,38 +51,41 @@ paint-killzone = std/store:query(bodies)
 tor paint-hud { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 
 paint-hud = std/store:query(game)
-    ! query g |> std/fmt:ln("t {{ g.tleft:f }}   {{ g.score:d }}/{{ g.total:d }}"): l
+    ! query g |> std/fmt:ln("{{ g.elapsed:d }}s   {{ g.score:d }}/{{ g.total:d }}"): l
         |> libs/raylib:draw.text(f, l.text, x: 16, y: 12, size: 24, col)
 
 tor paint-end-won { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 
 paint-end-won = std/store:query(game)
     ! query g when g.won == 1.0
-        |> libs/raylib:draw.text(f, text: "CLEAR — R to restart", x: 250, y: 280, size: 30, col)
+        |> std/fmt:ln("CLEAR in {{ g.elapsed:d }}s — R to restart"): l
+        |> libs/raylib:draw.text(f, l.text, x: 190, y: 320, size: 30, col)
 
-tor paint-end-over { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
+level/pacman:spawn()
 
-paint-end-over = std/store:query(game)
-    ! query g when g.over == 1.0 and g.won == 0.0
-        |> libs/raylib:draw.text(f, text: "TIME UP — R to restart", x: 240, y: 280, size: 30, col)
-
-libs/raylib:window.open(width: 800, height: 600, title: "koru ponkatris")
+libs/raylib:window.open(width: 620, height: 680, title: "koru ponkatris — pacman")
 | win w |> libs/raylib:window.fps(win: w, fps: 120) |> libs/raylib:frames(win: w, count: 7200)
     ! frame f
         |> libs/raylib:input.key.down(key: 263): left_held
         |> libs/raylib:input.key.down(key: 262): right_held
         |> libs/raylib:input.key.down(key: 265): up_held
+        |> libs/raylib:input.key.down(key: 264): down_held
         |> libs/raylib:input.key.down(key: 65): a_held
         |> libs/raylib:input.key.down(key: 68): d_held
         |> libs/raylib:input.key.down(key: 87): w_held
+        |> libs/raylib:input.key.down(key: 83): s_held
         |> libs/raylib:input.key.pressed(key: 82): r_pressed
-        |> sim:thrust(left: left_held or a_held, right: right_held or d_held, up: up_held or w_held)
+        |> sim:thrust(
+            left: (if (left_held or a_held) @as(f64, 8.3333) else @as(f64, 0.0)),
+            right: (if (right_held or d_held) @as(f64, 8.3333) else @as(f64, 0.0)),
+            up: (if (up_held or w_held) @as(f64, 8.3333) else @as(f64, 0.0)),
+            down: (if (down_held or s_held) @as(f64, 8.3333) else @as(f64, 0.0)))
         |> sim:tick()
         |> sim:collect()
         |> sim:respawn()
-        |> sim:countdown()
+        |> sim:stopwatch()
         |> sim:reset(pressed: r_pressed)
-        |> sim:reset-spawn(pressed: r_pressed)
+        |> level/pacman:spawn-crystals(pressed: r_pressed)
         |> sim:reset-ball(pressed: r_pressed)
         |> sim:reset-game(pressed: r_pressed)
         |> libs/raylib:color(r: 8, g: 10, b: 16): bg
@@ -94,7 +103,6 @@ libs/raylib:window.open(width: 800, height: 600, title: "koru ponkatris")
         |> paint-killzone(f, col: kill_col)
         |> paint-hud(f, col: hud_col)
         |> paint-end-won(f, col: crys_col)
-        |> paint-end-over(f, col: kill_col)
     | done w2 |> libs/raylib:window.close(win: w2)
         |> sim:dump()
         |> sim:dump-game()

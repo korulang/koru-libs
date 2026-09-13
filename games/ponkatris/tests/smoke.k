@@ -5,6 +5,15 @@
 //    Teleport onto the killzone → dead flips, respawn returns it to spawn.
 
 import sim
+import level/test
+
+level/test:spawn()
+
+// stopwatch counts up while live: 120 calls x 1/120s = 1.0s elapsed
+for(0..120)
+! each _ |> sim:stopwatch()
+
+sim:dump-game()
 
 for(0..1200)
 ! each _ |> sim:tick()
@@ -24,4 +33,13 @@ sim:tick()
 sim:respawn()
 
 sim:dump()
+sim:dump-game()
+
+// stopwatch: counts up while live, frozen once won — the `won` flag is
+// already set above, so elapsed must stay pinned at whatever it reached
+// before the win. Drive it before the win too: not yet possible here
+// (score flips on collect), so just prove the freeze.
+for(0..10)
+! each _ |> sim:stopwatch()
+
 sim:dump-game()

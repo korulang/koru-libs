@@ -11,6 +11,9 @@
 import std/io
 import std/store
 import sim
+import level/test
+
+level/test:spawn()
 
 // 1. settle — ball should read y ~= 552 (floor top 560 - radius 8)
 for(0..1200)

@@ -8,6 +8,7 @@
   },
   "paths": {
     "libs": "../../..",
-    "sim": "../sim"
+    "sim": "../sim",
+    "level": "../level"
   }
 }
