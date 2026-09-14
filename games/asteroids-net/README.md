@@ -6,8 +6,11 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
     koruc build server.k   # authoritative server on :7777, unbounded ticks
     koruc build client.k   # raylib client — WASD/arrows, space to fire
     koruc run   bot.k      # scripted headless client (the smoke test)
-    koruc build driver.k   # thrusting probe (isolation pair, below)
+    koruc build driver.k   # thrusting probe + loss oracle (isolation pair, below)
     koruc build watcher.k  # parked probe — asserts ITS ship never moved
+    ./test.sh              # the whole probe, self-contained (~15s): builds
+                           # all three, spawns its own server, asserts both
+                           # oracles, exits nonzero on any red
 
 ## Shape
 
