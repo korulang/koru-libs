@@ -7,18 +7,18 @@ import std/kernel
 
 std/store:new(bodies, capacity: 256) {
     x: f64, y: f64, vx: f64, vy: f64,
-    inv_mass: f64, kind: f64,
+    inv_mass: f64, kind: i32,
     radius: f64, hw: f64, hh: f64, e: f64,
-    hit: f64, dead: f64
+    hit: i32, dead: i32
 }
 
-std/store:insert(bodies) { x: 120.0, y: 60.0, vx: 0.0, vy: 0.0, inv_mass: 1.0, kind: 0.0, radius: 8.0, hw: 0.0, hh: 0.0, e: 0.7, hit: 0.0, dead: 0.0 }
-std/store:insert(bodies) { x: 400.0, y: 580.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, radius: 0.0, hw: 380.0, hh: 20.0, e: 0.8, hit: 0.0, dead: 0.0 }
-std/store:insert(bodies) { x: 10.0, y: 300.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, radius: 0.0, hw: 10.0, hh: 300.0, e: 0.5, hit: 0.0, dead: 0.0 }
-std/store:insert(bodies) { x: 790.0, y: 300.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2.0, radius: 0.0, hw: 10.0, hh: 300.0, e: 0.5, hit: 0.0, dead: 0.0 }
-std/store:insert(bodies) { x: 550.0, y: 380.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 1.0, radius: 40.0, hw: 0.0, hh: 0.0, e: 10.5, hit: 0.0, dead: 0.0 }
-std/store:insert(bodies) { x: 250.0, y: 500.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 3.0, radius: 0.0, hw: 12.0, hh: 12.0, e: 0.0, hit: 0.0, dead: 0.0 }
-std/store:insert(bodies) { x: 680.0, y: 555.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 4.0, radius: 0.0, hw: 60.0, hh: 5.0, e: 0.0, hit: 0.0, dead: 0.0 }
+std/store:insert(bodies) { x: 120.0, y: 60.0, vx: 0.0, vy: 0.0, inv_mass: 1.0, kind: 0, radius: 8.0, hw: 0.0, hh: 0.0, e: 0.7, hit: 0, dead: 0 }
+std/store:insert(bodies) { x: 400.0, y: 580.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2, radius: 0.0, hw: 380.0, hh: 20.0, e: 0.8, hit: 0, dead: 0 }
+std/store:insert(bodies) { x: 10.0, y: 300.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2, radius: 0.0, hw: 10.0, hh: 300.0, e: 0.5, hit: 0, dead: 0 }
+std/store:insert(bodies) { x: 790.0, y: 300.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 2, radius: 0.0, hw: 10.0, hh: 300.0, e: 0.5, hit: 0, dead: 0 }
+std/store:insert(bodies) { x: 550.0, y: 380.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 1, radius: 40.0, hw: 0.0, hh: 0.0, e: 10.5, hit: 0, dead: 0 }
+std/store:insert(bodies) { x: 250.0, y: 500.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 3, radius: 0.0, hw: 12.0, hh: 12.0, e: 0.0, hit: 0, dead: 0 }
+std/store:insert(bodies) { x: 680.0, y: 555.0, vx: 0.0, vy: 0.0, inv_mass: 0.0, kind: 4, radius: 0.0, hw: 60.0, hh: 5.0, e: 0.0, hit: 0, dead: 0 }
 
 tor tick { }
 
@@ -124,7 +124,7 @@ tick = std/kernel:init(bodies) {}
 tor thrust { }
 
 thrust = std/store:query(bodies)
-    ! query e when e.kind == 0.0
+    ! query e when e.kind == 0
         |> std/store:stored {
             e.vx: e.vx + 0.0,
             e.vy: e.vy - 0.0
@@ -133,42 +133,42 @@ thrust = std/store:query(bodies)
 tor sweep { }
 
 sweep = std/store:query(bodies)
-    ! query e when e.kind == 4.0
+    ! query e when e.kind == 4
         |> std/store:stored { e.hit: e.hit }
 
 for(0..1200)
 ! each _ |> thrust() |> tick() |> sweep()
 
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("t1200 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
+! query r when r.kind == 0 |> std/io:print.ln("t1200 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
 
 for(0..1200)
 ! each _ |> thrust() |> tick() |> sweep()
 
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("t2400 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
+! query r when r.kind == 0 |> std/io:print.ln("t2400 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
 
 for(0..1200)
 ! each _ |> thrust() |> tick() |> sweep()
 
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("t3600 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
+! query r when r.kind == 0 |> std/io:print.ln("t3600 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
 
 for(0..1200)
 ! each _ |> thrust() |> tick() |> sweep()
 
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("t4800 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
+! query r when r.kind == 0 |> std/io:print.ln("t4800 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
 
 for(0..1200)
 ! each _ |> thrust() |> tick() |> sweep()
 
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("t6000 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
+! query r when r.kind == 0 |> std/io:print.ln("t6000 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
 
 for(0..1200)
 ! each _ |> thrust() |> tick() |> sweep()
 
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("t7200 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
+! query r when r.kind == 0 |> std/io:print.ln("t7200 ball x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }} hit {{ r.hit:d }} dead {{ r.dead:d }}")
 

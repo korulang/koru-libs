@@ -27,11 +27,11 @@ sim:launch(x: 550.0, y: 331.5, vx: 0.0, vy: 0.0)
 for(0..120)
 ! each _ |> sim:tick()
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("graze x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }}")
+! query r when r.kind == 0 |> std/io:print.ln("graze x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }}")
 
 // 3. slam — same contact, vn 600 > 100 → full 10.5x fling back upward
 sim:launch(x: 550.0, y: 331.5, vx: 0.0, vy: 600.0)
 for(0..30)
 ! each _ |> sim:tick()
 std/store:query(bodies)
-! query r when r.kind == 0.0 |> std/io:print.ln("slam  x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }}")
+! query r when r.kind == 0 |> std/io:print.ln("slam  x {{ r.x:f }} y {{ r.y:f }} vx {{ r.vx:f }} vy {{ r.vy:f }}")

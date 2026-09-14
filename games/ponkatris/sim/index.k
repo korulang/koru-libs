@@ -18,9 +18,9 @@ import std/kernel
 
 std/store:new(bodies, capacity: 512) {
     x: f64, y: f64, vx: f64, vy: f64,
-    inv_mass: f64, kind: f64, gx: f64, gy: f64, damp: f64,
+    inv_mass: f64, kind: i32, gx: f64, gy: f64, damp: f64,
     radius: f64, hw: f64, hh: f64, e: f64,
-    hit: f64, dead: f64
+    hit: i32, dead: i32
 }
 
 // The game state is a second store, one row: score vs the level's crystal
@@ -29,8 +29,17 @@ std/store:new(bodies, capacity: 512) {
 // — rules are `stored` writes like every other mutation in the engine.
 // The level inserts the row: `total` is the level's crystal count.
 std/store:new(game, capacity: 4) {
-    score: f64, total: f64, elapsed: f64, over: f64, won: f64,
+    score: i32, total: i32, elapsed: f64, over: i32, won: i32,
     spawn_x: f64, spawn_y: f64
+}
+
+const {
+    KIND_BALL: 0[i32]
+    KIND_BUMPER: 1[i32]
+    KIND_WALL: 2[i32]
+    KIND_CRYSTAL: 3[i32]
+    KIND_KILLZONE: 4[i32]
+    KIND_DIAMOND: 5[i32]
 }
 
 // One physics tick: integrate, then resolve every contact pair.
@@ -50,14 +59,14 @@ tick = std/kernel:init(bodies) {}
                     k.x += k.vx * DT;
                     k.y += k.vy * DT;
                 }
-                k.hit = 0.0;
+                k.hit = 0;
             } |> std/kernel:pairwise {
                 const im = k.inv_mass + k.other.inv_mass;
                 if (im > 0.0) {
                     // circles: ball, bumper, crystal-sensor, solid diamond.
                     // boxes: wall, killzone-sensor.
-                    const kCirc = k.kind < 1.5 or (k.kind > 2.5 and k.kind < 3.5) or (k.kind > 4.5 and k.kind < 5.5);
-                    const oCirc = k.other.kind < 1.5 or (k.other.kind > 2.5 and k.other.kind < 3.5) or (k.other.kind > 4.5 and k.other.kind < 5.5);
+                    const kCirc = k.kind <= 1 or k.kind == 3 or k.kind == 5;
+                    const oCirc = k.other.kind <= 1 or k.other.kind == 3 or k.other.kind == 5;
                     var nx: f64 = 0.0;
                     var ny: f64 = 0.0;
                     var pen: f64 = 0.0;
@@ -118,17 +127,17 @@ tick = std/kernel:init(bodies) {}
                     if (pen > 0.0) {
                         // solid diamonds report contact AND take impulse —
                         // they are the oracle's Crystal, not a sensor.
-                        if (k.kind > 4.5 and k.kind < 5.5) { k.hit = 1.0; }
-                        if (k.other.kind > 4.5 and k.other.kind < 5.5) { k.other.hit = 1.0; }
-                        const sensor = (k.kind > 2.5 and k.kind < 4.5) or (k.other.kind > 2.5 and k.other.kind < 4.5);
+                        if (k.kind == 5) { k.hit = 1; }
+                        if (k.other.kind == 5) { k.other.hit = 1; }
+                        const sensor = (k.kind == 3 or k.kind == 4) or (k.other.kind == 3 or k.other.kind == 4);
                         if (sensor) {
-                            if (k.kind > 2.5 and k.kind < 4.5) {
-                                k.hit = 1.0;
-                                if (k.kind > 3.5) { k.other.dead = 1.0; }
+                            if (k.kind == 3 or k.kind == 4) {
+                                k.hit = 1;
+                                if (k.kind == 4) { k.other.dead = 1; }
                             }
-                            if (k.other.kind > 2.5 and k.other.kind < 4.5) {
-                                k.other.hit = 1.0;
-                                if (k.other.kind > 3.5) { k.dead = 1.0; }
+                            if (k.other.kind == 3 or k.other.kind == 4) {
+                                k.other.hit = 1;
+                                if (k.other.kind == 4) { k.dead = 1; }
                             }
                         } else {
                             const rvx = k.vx - k.other.vx;
@@ -161,7 +170,7 @@ tick = std/kernel:init(bodies) {}
 pub tor thrust { left: f64, right: f64, up: f64, down: f64 }
 
 thrust = std/store:query(bodies)
-    ! query e when e.kind == 0.0
+    ! query e when e.kind == KIND_BALL
         |> std/store:stored {
             e.vx: e.vx + right - left,
             e.vy: e.vy + down - up
@@ -176,7 +185,7 @@ thrust = std/store:query(bodies)
 pub tor collect { }
 
 collect = std/store:query(bodies)
-    ! query e when (e.kind == 3.0 or e.kind == 5.0) and e.hit == 1.0
+    ! query e when (e.kind == KIND_CRYSTAL or e.kind == KIND_DIAMOND) and e.hit == 1
         |> std/store:take(bodies[e])
             | item _ |> bump-score()
 
@@ -184,8 +193,8 @@ pub tor bump-score { }
 
 bump-score = std/store:query(game)
     ! query g |> std/store:stored {
-        g.score: g.score + 1.0,
-        g.won: (if (g.score + 1.0 >= g.total) @as(f64, 1.0) else g.won)
+        g.score: g.score + 1,
+        g.won: (if (g.score + 1 >= g.total) 1 else g.won)
     }
 
 // A dead ball (killzone) returns to the level's spawn point with cleared
@@ -198,14 +207,14 @@ respawn = std/store:query(game)
 pub tor respawn-at { spawn_x: f64, spawn_y: f64 }
 
 respawn-at = std/store:query(bodies)
-    ! query e when e.kind == 0.0 and e.dead == 1.0
-        |> std/store:stored { e.x: spawn_x, e.y: spawn_y, e.vx: 0.0, e.vy: 0.0, e.dead: 0.0, e.hit: 0.0 }
+    ! query e when e.kind == KIND_BALL and e.dead == 1
+        |> std/store:stored { e.x: spawn_x, e.y: spawn_y, e.vx: 0.0, e.vy: 0.0, e.dead: 0, e.hit: 0 }
 
 // Timed run: the clock counts UP while the game is live. `won` freezes it.
 pub tor stopwatch { }
 
 stopwatch = std/store:query(game)
-    ! query g when g.over == 0.0 and g.won == 0.0
+    ! query g when g.over == 0 and g.won == 0
         |> std/store:stored { g.elapsed: g.elapsed + 0.008333333333333333 }
 
 // Restart: take any remaining crystals (the level re-seeds them — its
@@ -214,7 +223,7 @@ stopwatch = std/store:query(game)
 pub tor reset { pressed: bool }
 
 reset = std/store:query(bodies)
-    ! query e when pressed and (e.kind == 3.0 or e.kind == 5.0)
+    ! query e when pressed and (e.kind == KIND_CRYSTAL or e.kind == KIND_DIAMOND)
         |> std/store:take(bodies[e])
             | item _ |> _
 
@@ -226,14 +235,14 @@ reset-ball = std/store:query(game)
 pub tor reset-ball-at { spawn_x: f64, spawn_y: f64 }
 
 reset-ball-at = std/store:query(bodies)
-    ! query e when e.kind == 0.0
-        |> std/store:stored { e.x: spawn_x, e.y: spawn_y, e.vx: 0.0, e.vy: 0.0, e.dead: 0.0, e.hit: 0.0 }
+    ! query e when e.kind == KIND_BALL
+        |> std/store:stored { e.x: spawn_x, e.y: spawn_y, e.vx: 0.0, e.vy: 0.0, e.dead: 0, e.hit: 0 }
 
 pub tor reset-game { pressed: bool }
 
 reset-game = std/store:query(game)
     ! query g when pressed
-        |> std/store:stored { g.score: 0.0, g.elapsed: 0.0, g.over: 0.0, g.won: 0.0 }
+        |> std/store:stored { g.score: 0, g.elapsed: 0.0, g.over: 0, g.won: 0 }
 
 // Place the ball directly — the test/debug door. Headless runs can't press
 // keys; teleport + tick + the rules tors exercise collect/respawn paths
@@ -241,8 +250,8 @@ reset-game = std/store:query(game)
 pub tor teleport { x: f64, y: f64 }
 
 teleport = std/store:query(bodies)
-    ! query e when e.kind == 0.0
-        |> std/store:stored { e.x: x, e.y: y, e.vx: 0.0, e.vy: 0.0, e.dead: 0.0, e.hit: 0.0 }
+    ! query e when e.kind == KIND_BALL
+        |> std/store:stored { e.x: x, e.y: y, e.vx: 0.0, e.vy: 0.0, e.dead: 0, e.hit: 0 }
 
 // Place AND launch — the graze/fling test door. `teleport` can't express an
 // incoming velocity, and a restitution threshold can only be observed by
@@ -250,8 +259,8 @@ teleport = std/store:query(bodies)
 pub tor launch { x: f64, y: f64, vx: f64, vy: f64 }
 
 launch = std/store:query(bodies)
-    ! query e when e.kind == 0.0
-        |> std/store:stored { e.x: x, e.y: y, e.vx: vx, e.vy: vy, e.dead: 0.0, e.hit: 0.0 }
+    ! query e when e.kind == KIND_BALL
+        |> std/store:stored { e.x: x, e.y: y, e.vx: vx, e.vy: vy, e.dead: 0, e.hit: 0 }
 
 // End-of-run receipt: every body row, then the game row.
 pub tor dump { }

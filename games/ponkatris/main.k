@@ -27,29 +27,29 @@ tor paint-killzone { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 tor paint-diamond { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 
 paint-ball = std/store:query(bodies)
-    ! query e when e.kind == 0.0
+    ! query e when e.kind == 0
         |> libs/raylib:draw.circle(f, x: @as(f32, @floatCast(e.x)), y: @as(f32, @floatCast(e.y)), r: @as(f32, @floatCast(e.radius)), col)
 
 paint-bumper = std/store:query(bodies)
-    ! query e when e.kind == 1.0
+    ! query e when e.kind == 1
         |> libs/raylib:draw.circle(f, x: @as(f32, @floatCast(e.x)), y: @as(f32, @floatCast(e.y)), r: @as(f32, @floatCast(e.radius)), col)
 
 paint-wall = std/store:query(bodies)
-    ! query e when e.kind == 2.0
+    ! query e when e.kind == 2
         |> libs/raylib:draw.rect(f, x: @as(i32, @intFromFloat(e.x - e.hw)), y: @as(i32, @intFromFloat(e.y - e.hh)), w: @as(i32, @intFromFloat(e.hw * 2.0)), h: @as(i32, @intFromFloat(e.hh * 2.0)), col)
 
 // crystals are sensor circles now (the oracle's SensorCrystal x y r)
 paint-crystal = std/store:query(bodies)
-    ! query e when e.kind == 3.0
+    ! query e when e.kind == 3
         |> libs/raylib:draw.circle(f, x: @as(f32, @floatCast(e.x)), y: @as(f32, @floatCast(e.y)), r: @as(f32, @floatCast(e.radius)), col)
 
 paint-killzone = std/store:query(bodies)
-    ! query e when e.kind == 4.0
+    ! query e when e.kind == 4
         |> libs/raylib:draw.rect(f, x: @as(i32, @intFromFloat(e.x - e.hw)), y: @as(i32, @intFromFloat(e.y - e.hh)), w: @as(i32, @intFromFloat(e.hw * 2.0)), h: @as(i32, @intFromFloat(e.hh * 2.0)), col)
 
 // solid diamonds: a square spun 45 degrees, center pivot
 paint-diamond = std/store:query(bodies)
-    ! query e when e.kind == 5.0
+    ! query e when e.kind == 5
         |> libs/raylib:draw.rect.rot(f, x: @as(f32, @floatCast(e.x)), y: @as(f32, @floatCast(e.y)), w: @as(f32, 17.0), h: @as(f32, 17.0), deg: @as(f32, 45.0), col)
 
 // HUD: the game row formatted through std/fmt, drawn via the bounded text
@@ -63,7 +63,7 @@ paint-hud = std/store:query(game)
 tor paint-end-won { f: *libs/raylib:Frame<frame>, col: libs/raylib:Color }
 
 paint-end-won = std/store:query(game)
-    ! query g when g.won == 1.0
+    ! query g when g.won == 1
         |> std/fmt:ln("CLEAR in {{ g.elapsed:d:.4 }}s — R to restart"): l
         |> libs/raylib:draw.text(f, l.text, x: 190, y: 320, size: 30, col)
 
