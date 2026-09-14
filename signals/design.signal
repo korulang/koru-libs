@@ -1,0 +1,11 @@
+name: design
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a shape decision was taken where several honest shapes existed —
+      not a bug fix (nothing was wrong before) and not a gap closing
+      (nothing was missing before). The commit message should name the
+      alternatives considered; the signal exists so "why is it shaped
+      this way" has a discoverable answer later.
+route: surface
