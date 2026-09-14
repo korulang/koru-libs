@@ -37,7 +37,7 @@ handle = libs/udp:packet.data(p): d
     |> libs/udp:packet.key(p): k
     |> wire:input.decode(d): inp
     |> if (inp.ok)
-        | then |> sim:drive(key: k, tick: t, inp.left, inp.right, thrusting: inp.thrust, firing: inp.fire)
+        | then |> sim:drive(key: k, tick: t, seq: @as(f32, @floatFromInt(inp.seq)), inp.left, inp.right, thrusting: inp.thrust, firing: inp.fire)
             |> std/grid:stored { tally[0].pkts: tally[0].pkts + 1 }
         | else |> _
 
@@ -54,7 +54,7 @@ fill-trailer = std/store:query(game)
 tor send-all { sn: *wire:Snap<open>, s: *libs/udp:Socket<bound> }
 
 send-all = std/store:query(players)
-    ! query p |> wire:snap.send(s: sn, sock: s, p.key, you: p.pid)
+    ! query p |> wire:snap.send(s: sn, sock: s, p.key, you: p.pid, indrop: p.drops)
         |> std/grid:stored { tally[0].sent: tally[0].sent + 1 }
 
 // One snapshot, built once, fanned out per session row. The interest

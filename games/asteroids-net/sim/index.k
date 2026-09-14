@@ -30,7 +30,8 @@ std/store:new(bodies, capacity: 128) {
 }
 
 std/store:new(players, capacity: 16) {
-    pid: f32, key: i64, rt: f32, waiting: f32, last: f32
+    pid: f32, key: i64, rt: f32, waiting: f32, last: f32,
+    lseq: f32, drops: f32
 }
 
 std/store:new(game, capacity: 2) {
@@ -41,7 +42,7 @@ std/store:new(game, capacity: 2) {
 // The sim's answer slot for "which pid owns this key" — a query arm can
 // write a grid cell but can't return a scalar, so find-or-join flows park
 // the result here and the chain reads it back.
-std/grid:new(lookup, size: 1) { pid: 0.0[f32] }
+std/grid:new(lookup, size: 1) { pid: 0.0[f32], fresh: 0.0[f32] }
 
 const {
     SCREEN_WIDTH: 800
@@ -446,7 +447,10 @@ spawn-tick = std/store:query(game)
 // ── sessions ────────────────────────────────────────────────────────────
 // The server's whole input path: one packet → one drive() call. The key is
 // udp's packet.key fold (addr<<16|port); an unknown key joins (session row
-// + ship spawn ghosting), a known key touches last and steers its ship.
+// + ship spawn ghosting), a known key touches last. seq is the client's
+// tick: seq > lseq is fresh input — the gap counts into drops (inputs the
+// server never saw); seq <= lseq is a dup/reorder — liveness only, never
+// re-applied.
 
 // Chain head for drive: a flow can't open on grid:stored, so the per-call
 // lookup reset seeds through a value. (A `| none` arm on query would make
@@ -458,24 +462,29 @@ fresh-pid -> 0.0
 // A ! query arm is terminal inside a flow — nothing chains after it at the
 // outer level — so drive is two tors: find/touch (the sweep), then the
 // join-if + input application.
-tor find-touch { key: i64, tick: f32 }
+tor find-touch { key: i64, tick: f32, seq: f32 }
 
 find-touch = fresh-pid(): fp
-    |> std/grid:stored { lookup[0].pid: fp }
+    |> std/grid:stored { lookup[0].pid: fp, lookup[0].fresh: 0.0 }
     |> std/store:query(players)
         ! query p when p.key == key
             |> std/grid:stored { lookup[0].pid: p.pid }
-            |> std/store:stored { p.last: tick }
+            |> if (seq > p.lseq)
+                | then |> std/grid:stored { lookup[0].fresh: 1.0 }
+                    |> std/store:stored { p.last: tick, p.drops: p.drops + seq - p.lseq - 1.0, p.lseq: seq }
+                | else |> std/store:stored { p.last: tick }
 
-pub tor drive { key: i64, tick: f32, left: bool, right: bool, thrusting: bool, firing: bool }
+pub tor drive { key: i64, tick: f32, seq: f32, left: bool, right: bool, thrusting: bool, firing: bool }
 
-drive = find-touch(key, tick)
+drive = find-touch(key, tick, seq)
     |> if (lookup[0].pid == 0.0)
-        | then |> spawn-player(key, tick)
+        | then |> spawn-player(key, tick, seq)
             |> control(lookup[0].pid, left, right, thrusting)
             |> fire(lookup[0].pid, pressed: firing)
-        | else |> control(lookup[0].pid, left, right, thrusting)
-            |> fire(lookup[0].pid, pressed: firing)
+        | else |> if (lookup[0].fresh == 1.0)
+            | then |> control(lookup[0].pid, left, right, thrusting)
+                |> fire(lookup[0].pid, pressed: firing)
+            | else |> _
 
 // Spawn spots fan out on a 4×2 midline grid by pid — deterministic, spread
 // enough that two joining ships don't overlap.
@@ -483,11 +492,11 @@ pub tor spawn-spot { pid: f32 } -> { x: f32, y: f32 }
 
 spawn-spot -> { x: 80.0 + @mod(pid, 4.0) * 213.0, y: 80.0 + @mod(@floor(pid / 4.0), 2.0) * 440.0 }
 
-tor spawn-player { key: i64, tick: f32 }
+tor spawn-player { key: i64, tick: f32, seq: f32 }
 
 spawn-player = std/store:query(game)
     ! query g |> std/grid:stored { lookup[0].pid: g.nextpid }
-        |> std/store:insert(players) { pid: g.nextpid, key, rt: 0.0, waiting: 0.0, last: tick }
+        |> std/store:insert(players) { pid: g.nextpid, key, rt: 0.0, waiting: 0.0, last: tick, lseq: seq, drops: 0.0 }
         |> spawn-ship(pid: g.nextpid)
         |> std/store:stored { g.nextpid: g.nextpid + 1.0 }
 
@@ -534,4 +543,4 @@ dump-game = std/store:query(game)
 pub tor dump-players { }
 
 dump-players = std/store:query(players)
-    ! query p |> std/io:print.ln("player pid {{ p.pid:d }} key {{ p.key:d }} last {{ p.last:d }} rt {{ p.rt:f }} waiting {{ p.waiting:d }}")
+    ! query p |> std/io:print.ln("player pid {{ p.pid:d }} key {{ p.key:d }} last {{ p.last:d }} rt {{ p.rt:f }} waiting {{ p.waiting:d }} drops {{ p.drops:d }}")

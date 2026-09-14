@@ -40,7 +40,7 @@ drain = libs/udp:packets(sock: s, max: 8)
 libs/udp:bind(port: 0)
 | bound s |> std/io:print.ln("bot up")
     |> for(0..100)
-        ! each t |> wire:input.encode(left: false, right: false, thrust: t >= 10 and t < 70, fire: t == 40): pkt
+        ! each t |> wire:input.encode(seq: @as(i32, @intCast(t)), left: false, right: false, thrust: t >= 10 and t < 70, fire: t == 40): pkt
             |> libs/udp:send.ip(sock: s, ip: "127.0.0.1", port: 7777, data: pkt)
             | sent |> drain(s)
             | err e |> std/io:print.ln("send err {{ e:s }}")

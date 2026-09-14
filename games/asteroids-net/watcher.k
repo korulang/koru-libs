@@ -48,10 +48,12 @@ observe = wire:snap.count(d): n
                 | else |> _
 
 // Zero-flag input IS the keepalive: every packet runs sim:drive, which
-// touches p.last. Branched send, so it lives boxed in a tor.
-tor keepalive { s: *libs/udp:Socket<bound> }
+// touches p.last. seq is the client tick — a 30-tick keepalive cadence
+// reads as a 29-input gap in indrop, honest for a listen-mostly client.
+// Branched send, so it lives boxed in a tor.
+tor keepalive { s: *libs/udp:Socket<bound>, t: i64 }
 
-keepalive = wire:input.encode(left: false, right: false, thrust: false, fire: false): pkt
+keepalive = wire:input.encode(seq: @as(i32, @intCast(t)), left: false, right: false, thrust: false, fire: false): pkt
     |> libs/udp:send.ip(sock: s, ip: "127.0.0.1", port: 7777, data: pkt)
     | sent |> _
     | err e |> std/io:print.ln("ka err {{ e:s }}")
@@ -75,12 +77,12 @@ report = clock:ticks(count: 16)
 // hold it open for the whole ~6s observation window.
 libs/udp:bind(port: 0)
 | bound s |> std/io:print.ln("watcher up")
-    |> wire:input.encode(left: false, right: false, thrust: false, fire: false): pkt
+    |> wire:input.encode(seq: 0, left: false, right: false, thrust: false, fire: false): pkt
         |> libs/udp:send.ip(sock: s, ip: "127.0.0.1", port: 7777, data: pkt)
         | sent |> clock:ticks(count: 360)
             ! each t |> drain(s) |> std/time:sleep-ms(ms: 16)
                 |> if (@mod(t, 30) == 0)
-                    | then |> keepalive(s)
+                    | then |> keepalive(s, t: @as(i64, @intCast(t)))
                     | else |> _
             | done |> report()
                 |> std/io:print.ln("watcher: {{ rep[0].snaps:d }} snaps, pid {{ rep[0].me:d }} — {{ rep[0].myparked:d }} mine-parked, {{ rep[0].still:d }} parked, {{ rep[0].driving:d }} driving")

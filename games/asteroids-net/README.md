@@ -19,11 +19,13 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
 - `sim` — the single-player rules + `owner` column, a `players` session
   store keyed by `packet.key`, find-or-join `drive`, stale sweep that
   takes the session row AND its ship.
-- `wire` — fixed-layout big-endian codec: `KAI1` input flags up,
-  `KAS2` full-state snapshots down (tick u32 · count u16 · `you` u8
-  join-ack · pad · 28B entities · score/wave trailer). `you` is patched
-  per-recipient in `snap.send` — the client's answer to "which ship is
-  mine", no handshake datagram needed.
+- `wire` — fixed-layout big-endian codec: `KAI2` sequenced input flags
+  up (seq u32 = client tick · flags u8), `KAS3` full-state snapshots
+  down (tick u32 · count u16 · `you` u8 join-ack · `indrop` u16 · pad ·
+  28B entities · score/wave trailer). `you`/`indrop` are patched
+  per-recipient in `snap.send` — the fan-out loop is the return channel
+  for "what the server believes about YOUR session": which ship is
+  yours, and how many of your inputs never arrived.
 - `server.k` — drain → drive → tick → sweep → broadcast, ~60Hz, heartbeat
   receipts every 600 ticks.
 - `client.k` — input flags up every frame; snapshots clear+refill a `view`
@@ -36,7 +38,9 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
   every send runs `sim:drive`, which touches `p.last`), parks, and
   listens. Watcher learns its pid from `you` and asserts its OWN ship
   never moved while the driver's did — a cross-owner input leak fails
-  the first half.
+  the first half. Driver doubles as the loss oracle: it withholds ticks
+  140–144 outright, opening a real 5-packet seq gap, then asserts the
+  server measured exactly 5 via `snap.indrop`.
 
 ## Measured (first two-process smoke)
 
@@ -69,6 +73,16 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
   for the whole ~6s window (353 snaps vs ~91 silent). Watcher exits
   clean (the join-time double-free is gone — koru `166190187`).
 
+## Measured (input-loss telemetry, KAI2/KAS3)
+
+- Driver withholds ticks 140–144 (a real gap, not a flag): server counts
+  `drops += 5` at the next seq, echoes it per-recipient as `indrop`.
+  Driver: `359 snaps, last count 6, indrop 5` → `LOSS-ORACLE: PASS`.
+- Same run: `watcher: 356 snaps, pid 2 — 1 mine-parked, 1 parked,
+  1 driving` → `ISOLATION: PASS`.
+- Semantics: `seq > lseq` is fresh input (gap → `drops`, apply); `seq <=
+  lseq` is dup/reorder — liveness touch only, never re-applied.
+
 ## Compiler contours this slice surfaced
 
 - Branch arms ARE the continuation — a branched call ends its enclosing
@@ -94,8 +108,9 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
 
 ## Gap list (the next slices)
 
-- No reliability: no sequence numbers, acks, or resend — input loss is
-  silent. Snapshot rate is the only liveness signal.
+- Reliability is measured, not repaired: input seq gaps count into
+  `indrop` and dup/reorder is detected — but there are no acks, no
+  resend, and no client-side response to `indrop > 0`.
 - Full-state snapshots only — no delta compression, no interest
   management (server sends everyone the whole field).
 - No client-side prediction or interpolation — input latency shows raw.

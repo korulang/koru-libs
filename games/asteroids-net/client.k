@@ -28,7 +28,7 @@ std/store:new(view, capacity: 128) {
     seed: i32, kind: f32, dead: f32, owner: f32
 }
 
-std/grid:new(hud, size: 1) { score: 0.0[f32], wave: 0.0[f32], me: 0.0[f32] }
+std/grid:new(hud, size: 1) { score: 0.0[f32], wave: 0.0[f32], me: 0.0[f32], iseq: 0.0[f32], indrop: 0.0[f32] }
 
 // One datagram → the whole view. clear+refill is the honest v0 — delta
 // snapshots are the next slice (SERVER_CHALLENGE.md).
@@ -45,7 +45,8 @@ apply = wire:snap.count(d): n
     |> wire:snap.score(d): sc
     |> wire:snap.wave(d): wv
     |> wire:snap.you(d): me
-    |> std/grid:stored { hud[0].score: sc, hud[0].wave: wv, hud[0].me: me }
+    |> wire:snap.indrop(d): dr
+    |> std/grid:stored { hud[0].score: sc, hud[0].wave: wv, hud[0].me: me, hud[0].indrop: dr }
     |> if (n > 0)
         | then |> refill(d, n)
         | else |> _
@@ -93,6 +94,8 @@ paint-hud = libs/raylib:color(r: 140, g: 140, b: 160): dim
     |> libs/raylib:draw.int(f, n: @as(i32, @intFromFloat(hud[0].score)), x: 76, y: 10, size: 18, col: dim)
     |> libs/raylib:draw.text(f, text: "wave", x: 160, y: 10, size: 18, col: dim)
     |> libs/raylib:draw.int(f, n: @as(i32, @intFromFloat(hud[0].wave)), x: 220, y: 10, size: 18, col: dim)
+    |> libs/raylib:draw.text(f, text: "in-loss", x: 280, y: 10, size: 18, col: dim)
+    |> libs/raylib:draw.int(f, n: @as(i32, @intFromFloat(hud[0].indrop)), x: 368, y: 10, size: 18, col: dim)
 
 libs/udp:bind(port: 0)
 | bound s |> libs/raylib:window.open(width: 800, height: 600, title: "koru asteroids-net")
@@ -105,7 +108,8 @@ libs/udp:bind(port: 0)
             |> sim:either(a: kl, b: ka): left_held
             |> sim:either(a: kr, b: kd): right_held
             |> sim:either(a: ku, b: kw): thrusting
-            |> wire:input.encode(left: left_held, right: right_held, thrust: thrusting, fire: firing): pkt
+            |> std/grid:stored { hud[0].iseq: hud[0].iseq + 1.0 }
+            |> wire:input.encode(seq: @as(i32, @intFromFloat(hud[0].iseq)), left: left_held, right: right_held, thrust: thrusting, fire: firing): pkt
             |> push-input(s, pkt)
             |> libs/udp:packets(sock: s, max: 8)
                 ! packet p |> libs/udp:packet.data(p): d |> apply(d)

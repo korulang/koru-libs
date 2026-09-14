@@ -2,14 +2,18 @@
 // binary, big-endian, no delta compression (that's slice 2's job — see
 // SERVER_CHALLENGE.md). All sizes named so the next reader can diff the wire.
 //
-//   input    C→S  "KAI1" | flags u8          (bit0 left ·1 right ·2 thrust ·3 fire)
-//   snapshot S→C  "KAS2" | tick u32 | count u16 | you u8 | pad u8 | count×entity | score f32 | wave f32
+//   input    C→S  "KAI2" | seq u32 | flags u8  (bit0 left ·1 right ·2 thrust ·3 fire)
+//   snapshot S→C  "KAS3" | tick u32 | count u16 | you u8 | indrop u16 | pad u8 | count×entity | score f32 | wave f32
 //   entity        x y rot r inv f32 (20B) | seed i32 | kind dead owner pad u8 (4B) = 28B
 //
 // `you` is the join-ack: snap.send patches it per-recipient with that
 // session's pid, so every client learns which entity it owns without a
-// dedicated handshake datagram. The trailer lands after the entity run;
-// the client finds it at 12 + count×28 — count is the index.
+// dedicated handshake datagram. `indrop` is the same per-recipient stamp:
+// the session's cumulative input-gap count — seq is the client's tick, so
+// a jump in seq means inputs the server never saw (loss and under-send
+// are indistinguishable on UDP — both are "inputs that didn't arrive").
+// The trailer lands after the entity run; the client finds it at
+// 14 + count×28 — count is the index.
 //
 // Snap is the build-side accumulator: begin mints <open!>, entity/trailer
 // append, send emits one datagram per player row, free consumes. A Snap
@@ -26,32 +30,33 @@ pub const Snap = struct {
 };
 
 const ENT: usize = 28;
-const HDR: usize = 12;
+const HDR: usize = 14;
 
 // ── input (client → server) ─────────────────────────────────────────────
 
-~pub tor input.encode { left: bool, right: bool, thrust: bool, fire: bool } -> string
+~pub tor input.encode { seq: i32, left: bool, right: bool, thrust: bool, fire: bool } -> string
 
 ~proc input.encode|zig {
-    const b = std.heap.page_allocator.alloc(u8, 5) catch @panic("wire: OOM");
-    b[0] = 'K'; b[1] = 'A'; b[2] = 'I'; b[3] = '1';
+    const b = std.heap.page_allocator.alloc(u8, 9) catch @panic("wire: OOM");
+    b[0] = 'K'; b[1] = 'A'; b[2] = 'I'; b[3] = '2';
+    std.mem.writeInt(u32, b[4..8], @bitCast(seq), .big);
     var f: u8 = 0;
     if (left) f |= 1;
     if (right) f |= 2;
     if (thrust) f |= 4;
     if (fire) f |= 8;
-    b[4] = f;
-    return b[0..5];
+    b[8] = f;
+    return b[0..9];
 }
 
-~pub tor input.decode { d: string } -> { ok: bool, left: bool, right: bool, thrust: bool, fire: bool }
+~pub tor input.decode { d: string } -> { ok: bool, seq: i32, left: bool, right: bool, thrust: bool, fire: bool }
 
 ~proc input.decode|zig {
-    if (d.len < 5 or !std.mem.eql(u8, d[0..4], "KAI1")) {
-        return .{ .ok = false, .left = false, .right = false, .thrust = false, .fire = false };
+    if (d.len < 9 or !std.mem.eql(u8, d[0..4], "KAI2")) {
+        return .{ .ok = false, .seq = 0, .left = false, .right = false, .thrust = false, .fire = false };
     }
-    const f = d[4];
-    return .{ .ok = true, .left = (f & 1) != 0, .right = (f & 2) != 0, .thrust = (f & 4) != 0, .fire = (f & 8) != 0 };
+    const f = d[8];
+    return .{ .ok = true, .seq = @bitCast(std.mem.readInt(u32, d[4..8], .big)), .left = (f & 1) != 0, .right = (f & 2) != 0, .thrust = (f & 4) != 0, .fire = (f & 8) != 0 };
 }
 
 // ── snapshot build (server side) ────────────────────────────────────────
@@ -61,10 +66,10 @@ const HDR: usize = 12;
 ~proc snap.begin|zig {
     const s = std.heap.page_allocator.create(Snap) catch @panic("wire: OOM");
     s.* = .{ .buf = undefined, .n = HDR, .count = 0 };
-    s.buf[0] = 'K'; s.buf[1] = 'A'; s.buf[2] = 'S'; s.buf[3] = '2';
+    s.buf[0] = 'K'; s.buf[1] = 'A'; s.buf[2] = 'S'; s.buf[3] = '3';
     std.mem.writeInt(u32, s.buf[4..8], @bitCast(tick), .big);
     s.buf[8] = 0; s.buf[9] = 0; // count patched in send
-    s.buf[10] = 0; s.buf[11] = 0; // `you` patched per-recipient in send, pad stays 0
+    s.buf[10] = 0; s.buf[11] = 0; s.buf[12] = 0; s.buf[13] = 0; // you + indrop patched per-recipient in send, pad stays 0
     return s;
 }
 
@@ -98,13 +103,15 @@ const HDR: usize = 12;
 
 // One datagram to the client behind `key` (udp's addr<<16|port fold). The
 // count field is patched first — it was reserved at begin — then `you`,
-// the join-ack: this datagram's recipient owns pid `you`. sendto failure
-// is a lost datagram: UDP-honest, no branch.
-~pub tor snap.send { s: *Snap<open>, sock: *libs/udp:Socket<bound>, key: i64, you: f32 }
+// the join-ack: this datagram's recipient owns pid `you`; and `indrop`,
+// that session's measured input-gap count. sendto failure is a lost
+// datagram: UDP-honest, no branch.
+~pub tor snap.send { s: *Snap<open>, sock: *libs/udp:Socket<bound>, key: i64, you: f32, indrop: f32 }
 
 ~proc snap.send|zig {
     std.mem.writeInt(u16, s.buf[8..10], s.count, .big);
     s.buf[10] = @intFromFloat(you);
+    std.mem.writeInt(u16, s.buf[11..13], @intFromFloat(@min(indrop, 65535.0)), .big);
     var ab: [4]u8 = undefined;
     std.mem.writeInt(u32, &ab, @as(u32, @intCast(@as(u64, @bitCast(key)) >> 16)), .big);
     const dest = std.net.Address.initIp4(ab, @as(u16, @intCast(@as(u64, @bitCast(key)) & 0xFFFF)));
@@ -122,7 +129,7 @@ const HDR: usize = 12;
 ~pub tor snap.count { d: string } -> i32
 
 ~proc snap.count|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS3")) return 0;
     return std.mem.readInt(u16, d[8..10], .big);
 }
 
@@ -158,15 +165,24 @@ const HDR: usize = 12;
 ~pub tor snap.you { d: string } -> f32
 
 ~proc snap.you|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0.0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS3")) return 0.0;
     return @floatFromInt(d[10]);
 }
 
-// The game trailer sits right after the entity run: offset 12 + count×28.
+// The recipient's measured input-gap count — how many client inputs the
+// server never saw for this session, cumulative since join.
+~pub tor snap.indrop { d: string } -> f32
+
+~proc snap.indrop|zig {
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS3")) return 0.0;
+    return @floatFromInt(std.mem.readInt(u16, d[11..13], .big));
+}
+
+// The game trailer sits right after the entity run: offset 14 + count×28.
 ~pub tor snap.score { d: string } -> f32
 
 ~proc snap.score|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0.0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS3")) return 0.0;
     const off = HDR + @as(usize, std.mem.readInt(u16, d[8..10], .big)) * ENT;
     if (off + 4 > d.len) return 0.0;
     return @bitCast(std.mem.readInt(u32, d[off..][0..4], .big));
@@ -175,7 +191,7 @@ const HDR: usize = 12;
 ~pub tor snap.wave { d: string } -> f32
 
 ~proc snap.wave|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0.0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS3")) return 0.0;
     const off = HDR + @as(usize, std.mem.readInt(u16, d[8..10], .big)) * ENT;
     if (off + 8 > d.len) return 0.0;
     return @bitCast(std.mem.readInt(u32, d[off + 4 ..][0..4], .big));
