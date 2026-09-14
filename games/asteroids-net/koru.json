@@ -1,0 +1,15 @@
+{
+  "name": "asteroids-net",
+  "version": "0.1.0",
+  "libs": {
+    "raylib": "../../raylib",
+    "udp": "../../udp",
+    "store": "../../../../koru/koru_std/store"
+  },
+  "paths": {
+    "libs": "../..",
+    "sim": "./sim",
+    "wire": "./wire",
+    "clock": "./clock"
+  }
+}

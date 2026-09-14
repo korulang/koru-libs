@@ -1,0 +1,198 @@
+// @korulang/udp — nonblocking UDP datagrams for Koru (v0: IPv4, posix sockets)
+//
+// Raw datagrams behind phantom obligations. The footguns this compiles away:
+//
+//   1. There is no unbound-socket state AT ALL. `bind` is the only mint: a
+//      *Socket exists only once it owns a port, which is the earliest a UDP
+//      socket can do anything anyway (even sendto wants a local port).
+//   2. `close` consumes <!bound> — send-after-close is not expressible, and a
+//      forgotten close is auto-healed or a KORU030, same as raylib's window.
+//   3. `packets` drains the nonblocking fd up to `max` datagrams, firing
+//      `! packet` once each. The *Packet<packet!> handle is a scoped borrow:
+//      it aliases the shared recv buffer, valid only inside the branch body
+//      (same shape as raylib's *Frame<frame>, which the engine brackets).
+//   4. packet.key folds (ipv4, port) into an i64 session key — the column a
+//      server keys per-client state on. send.key consumes the same fold, so
+//      a client row needs one column, not three.
+//
+// The socket is nonblocking by construction (O_NONBLOCK at bind): recv hits
+// WouldBlock, which the drain reads as | done. This is the poll-shaped v0 —
+// the deadline/evented recv is the named gap (kqueue exists over in Orisha's
+// pump and wants porting into a socket-source tor someday).
+
+~import std/build
+~import std/deps
+
+~std/build:requires {
+    exe.linkLibC();
+}
+
+const std = @import("std");
+const posix = std.posix;
+
+// The bound socket. The fd is the whole state — the phantom is the contract.
+pub const Socket = struct {
+    fd: posix.fd_t,
+};
+
+// One datagram in flight. Aliases nothing — owns its recv buffer; the borrow
+// is scoped to the ! packet branch by release.packet below. `src` is kept
+// raw so reply can sendto without reconstructing byte order.
+pub const Packet = struct {
+    buf: [8192]u8,
+    n: usize,
+    src: std.net.Address,
+    addr: u32, // host-order ipv4
+    port: u16, // host-order
+    key: i64,  // addr << 16 | port, host order
+};
+
+// ============================================================================
+// Lifecycle — the symmetric model: bound -> closed.
+// ============================================================================
+
+// Bind an IPv4 datagram socket on 0.0.0.0:port, nonblocking. port 0 asks the
+// OS for an ephemeral port — read it back with socket.port.
+~pub tor bind { port: u16 }
+| bound *Socket<bound!>
+| err string
+
+~proc bind|zig {
+    // SOCK.NONBLOCK is filtered and applied by posix.socket itself — the
+    // portable spelling (darwin's O is a bitfield, fcntl flags differ).
+    const fd = posix.socket(posix.AF.INET, posix.SOCK.DGRAM | posix.SOCK.NONBLOCK, 0) catch {
+        return .{ .err = "udp: socket() failed" };
+    };
+    const local = std.net.Address.parseIp4("0.0.0.0", port) catch {
+        posix.close(fd);
+        return .{ .err = "udp: bad port" };
+    };
+    posix.bind(fd, &local.any, local.getOsSockLen()) catch {
+        posix.close(fd);
+        return .{ .err = "udp: bind() failed — port in use?" };
+    };
+    const s = std.heap.page_allocator.create(Socket) catch @panic("udp: OOM allocating Socket");
+    s.* = Socket{ .fd = fd };
+    return .{ .bound = s };
+}
+
+// The ephemeral port the OS picked (getsockname) — for bind(port: 0).
+~pub tor socket.port { sock: *Socket<bound> } -> u16
+
+~proc socket.port|zig {
+    var a: std.net.Address = undefined;
+    var len: posix.socklen_t = @sizeOf(posix.sockaddr);
+    posix.getsockname(sock.fd, &a.any, &len) catch return 0;
+    return a.getPort();
+}
+
+// Branchless: a datagram close cannot meaningfully fail, and a `| err` arm
+// here would only fork the obligation graph (a second socket's close nested
+// behind it leaves the first undisposed — measured, KORU030).
+~pub tor close { sock: *Socket<!bound> }
+~proc close|zig {
+    posix.close(sock.fd);
+    std.heap.page_allocator.destroy(sock);
+}
+
+// ============================================================================
+// Receiving — the drain. `packets` is the source combinator (the `! packet`
+// sibling of raylib's `! frame`): fire once per datagram currently queued,
+// stop at `max` or at WouldBlock, whichever first.
+// ============================================================================
+
+~pub tor packets { sock: *Socket<bound>, max: i32 }
+! packet *Packet<packet!>
+| done
+| err string
+
+~proc packets|zig {
+    // Effect-branch proc: inlines into the consumer's frame, so module names
+    // go through $mod. (koru 400_155) — never bare.
+    var __p = $mod.Packet{ .buf = undefined, .n = 0, .src = undefined, .addr = 0, .port = 0, .key = 0 };
+    var __i: i32 = 0;
+    while (__i < max) : (__i += 1) {
+        var src: $mod.std.net.Address = undefined;
+        var slen: $mod.posix.socklen_t = @sizeOf($mod.posix.sockaddr);
+        const n = $mod.posix.recvfrom(sock.fd, &__p.buf, 0, &src.any, &slen) catch |e| {
+            if (e == error.WouldBlock) break;
+            return .{ .err = "udp: recvfrom failed" };
+        };
+        __p.n = n;
+        __p.src = src;
+        __p.addr = $mod.std.mem.bigToNative(u32, src.in.sa.addr);
+        __p.port = src.getPort();
+        __p.key = @as(i64, @intCast((@as(u64, __p.addr) << 16) | @as(u64, __p.port)));
+        packet(&__p);
+    }
+    return .{ .done = .{} };
+}
+
+// The datagram's payload as a byte string — valid only inside the branch.
+~pub tor packet.data { p: *Packet<packet> } -> string
+~proc packet.data|zig { return p.buf[0..p.n]; }
+
+// Session key: addr << 16 | port. One i64 column keys a clients store.
+~pub tor packet.key { p: *Packet<packet> } -> i64
+~proc packet.key|zig { return p.key; }
+
+// Sender's ipv4 + port, host order — for logging/dedup, not for send.to
+// (which wants them; send.key wants the fold instead).
+~pub tor packet.addr { p: *Packet<packet> } -> u32
+~proc packet.addr|zig { return p.addr; }
+
+~pub tor packet.port { p: *Packet<packet> } -> u16
+~proc packet.port|zig { return p.port; }
+
+// No-op consumer of the per-packet borrow — auto-inserted at the branch
+// boundary, user never calls it. Mirror of raylib's release.frame.
+~pub tor release.packet { p: *Packet<!packet> }
+~proc release.packet|zig { _ = &p; }
+
+// ============================================================================
+// Sending — three spellings of the destination: dotted ip for clients dialing
+// a server, addr+port for rows that stored them, key for rows that stored the
+// packet.key fold.
+// ============================================================================
+
+~pub tor send.ip { sock: *Socket<bound>, ip: string, port: u16, data: string }
+| sent
+| err string
+
+~proc send.ip|zig {
+    const dest = std.net.Address.parseIp4(ip, port) catch {
+        return .{ .err = "udp: bad ip" };
+    };
+    _ = posix.sendto(sock.fd, data, 0, &dest.any, dest.getOsSockLen()) catch {
+        return .{ .err = "udp: sendto failed" };
+    };
+    return .{ .sent = .{} };
+}
+
+~pub tor send.to { sock: *Socket<bound>, addr: u32, port: u16, data: string }
+| sent
+| err string
+
+~proc send.to|zig {
+    var ab: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ab, addr, .big);
+    const dest = std.net.Address.initIp4(ab, port);
+    _ = posix.sendto(sock.fd, data, 0, &dest.any, dest.getOsSockLen()) catch {
+        return .{ .err = "udp: sendto failed" };
+    };
+    return .{ .sent = .{} };
+}
+
+~pub tor send.key { sock: *Socket<bound>, key: i64, data: string }
+| sent
+| err string
+
+~proc send.key|zig {
+    var ab: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ab, @as(u32, @intCast(@as(u64, @bitCast(key)) >> 16)), .big);
+    const dest = std.net.Address.initIp4(ab, @as(u16, @intCast(@as(u64, @bitCast(key)) & 0xFFFF)));
+    _ = posix.sendto(sock.fd, data, 0, &dest.any, dest.getOsSockLen()) catch {
+        return .{ .err = "udp: sendto failed" };
+    };
+    return .{ .sent = .{} };
+}

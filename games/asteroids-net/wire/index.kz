@@ -1,0 +1,167 @@
+// wire — asteroids-net's packet codec. v0 is deliberately dumb: fixed-layout
+// binary, big-endian, no delta compression (that's slice 2's job — see
+// SERVER_CHALLENGE.md). All sizes named so the next reader can diff the wire.
+//
+//   input    C→S  "KAI1" | flags u8          (bit0 left ·1 right ·2 thrust ·3 fire)
+//   snapshot S→C  "KAS1" | tick u32 | count u16 | count×entity | score f32 | wave f32
+//   entity        x y rot r inv f32 (20B) | seed i32 | kind dead owner pad u8 (4B) = 28B
+//
+// The trailer lands after the entity run; the client finds it at
+// 10 + count×28 — count is the index.
+//
+// Snap is the build-side accumulator: begin mints <open!>, entity/trailer
+// append, send emits one datagram per player row, free consumes. A Snap
+// that never frees is KORU030 — same obligation shape as the socket.
+
+~import libs/udp
+
+const std = @import("std");
+
+pub const Snap = struct {
+    buf: [8192]u8,
+    n: usize,
+    count: u16,
+};
+
+const ENT: usize = 28;
+const HDR: usize = 10;
+
+// ── input (client → server) ─────────────────────────────────────────────
+
+~pub tor input.encode { left: bool, right: bool, thrust: bool, fire: bool } -> string
+
+~proc input.encode|zig {
+    const b = std.heap.page_allocator.alloc(u8, 5) catch @panic("wire: OOM");
+    b[0] = 'K'; b[1] = 'A'; b[2] = 'I'; b[3] = '1';
+    var f: u8 = 0;
+    if (left) f |= 1;
+    if (right) f |= 2;
+    if (thrust) f |= 4;
+    if (fire) f |= 8;
+    b[4] = f;
+    return b[0..5];
+}
+
+~pub tor input.decode { d: string } -> { ok: bool, left: bool, right: bool, thrust: bool, fire: bool }
+
+~proc input.decode|zig {
+    if (d.len < 5 or !std.mem.eql(u8, d[0..4], "KAI1")) {
+        return .{ .ok = false, .left = false, .right = false, .thrust = false, .fire = false };
+    }
+    const f = d[4];
+    return .{ .ok = true, .left = (f & 1) != 0, .right = (f & 2) != 0, .thrust = (f & 4) != 0, .fire = (f & 8) != 0 };
+}
+
+// ── snapshot build (server side) ────────────────────────────────────────
+
+~pub tor snap.begin { tick: i32 } -> *Snap<open!>
+
+~proc snap.begin|zig {
+    const s = std.heap.page_allocator.create(Snap) catch @panic("wire: OOM");
+    s.* = .{ .buf = undefined, .n = HDR, .count = 0 };
+    s.buf[0] = 'K'; s.buf[1] = 'A'; s.buf[2] = 'S'; s.buf[3] = '1';
+    std.mem.writeInt(u32, s.buf[4..8], @bitCast(tick), .big);
+    s.buf[8] = 0; s.buf[9] = 0; // count patched in send
+    return s;
+}
+
+~pub tor snap.entity { s: *Snap<open>, x: f32, y: f32, rot: f32, r: f32, inv: f32, seed: i32, kind: f32, dead: f32, owner: f32 }
+
+~proc snap.entity|zig {
+    if (s.n + ENT > s.buf.len) return;
+    const o = s.buf[s.n..];
+    std.mem.writeInt(u32, o[0..4], @bitCast(x), .big);
+    std.mem.writeInt(u32, o[4..8], @bitCast(y), .big);
+    std.mem.writeInt(u32, o[8..12], @bitCast(rot), .big);
+    std.mem.writeInt(u32, o[12..16], @bitCast(r), .big);
+    std.mem.writeInt(u32, o[16..20], @bitCast(inv), .big);
+    std.mem.writeInt(i32, o[20..24], seed, .big);
+    o[24] = @intFromFloat(kind);
+    o[25] = @intFromFloat(dead);
+    o[26] = @intFromFloat(owner);
+    o[27] = 0;
+    s.n += ENT;
+    s.count += 1;
+}
+
+~pub tor snap.trailer { s: *Snap<open>, score: f32, wave: f32 }
+
+~proc snap.trailer|zig {
+    if (s.n + 8 > s.buf.len) return;
+    std.mem.writeInt(u32, s.buf[s.n..][0..4], @bitCast(score), .big);
+    std.mem.writeInt(u32, s.buf[s.n + 4 ..][0..4], @bitCast(wave), .big);
+    s.n += 8;
+}
+
+// One datagram to the client behind `key` (udp's addr<<16|port fold). The
+// count field is patched first — it was reserved at begin. sendto failure
+// is a lost datagram: UDP-honest, no branch.
+~pub tor snap.send { s: *Snap<open>, sock: *libs/udp:Socket<bound>, key: i64 }
+
+~proc snap.send|zig {
+    std.mem.writeInt(u16, s.buf[8..10], s.count, .big);
+    var ab: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ab, @as(u32, @intCast(@as(u64, @bitCast(key)) >> 16)), .big);
+    const dest = std.net.Address.initIp4(ab, @as(u16, @intCast(@as(u64, @bitCast(key)) & 0xFFFF)));
+    _ = std.posix.sendto(sock.fd, s.buf[0..s.n], 0, &dest.any, dest.getOsSockLen()) catch return;
+}
+
+~pub tor snap.free { s: *Snap<!open> }
+
+~proc snap.free|zig {
+    std.heap.page_allocator.destroy(s);
+}
+
+// ── snapshot read (client side) ─────────────────────────────────────────
+
+~pub tor snap.count { d: string } -> i32
+
+~proc snap.count|zig {
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS1")) return 0;
+    return std.mem.readInt(u16, d[8..10], .big);
+}
+
+~pub tor snap.tick { d: string } -> i32
+
+~proc snap.tick|zig {
+    if (d.len < HDR) return 0;
+    return @bitCast(std.mem.readInt(u32, d[4..8], .big));
+}
+
+~pub tor snap.ent { d: string, i: i32 } -> { x: f32, y: f32, rot: f32, r: f32, inv: f32, seed: i32, kind: f32, dead: f32, owner: f32 }
+
+~proc snap.ent|zig {
+    const off = HDR + @as(usize, @intCast(i)) * ENT;
+    if (off + ENT > d.len) return .{ .x = 0, .y = 0, .rot = 0, .r = 0, .inv = 0, .seed = 0, .kind = 0, .dead = 1, .owner = 0 };
+    const o = d[off..];
+    return .{
+        .x = @bitCast(std.mem.readInt(u32, o[0..4], .big)),
+        .y = @bitCast(std.mem.readInt(u32, o[4..8], .big)),
+        .rot = @bitCast(std.mem.readInt(u32, o[8..12], .big)),
+        .r = @bitCast(std.mem.readInt(u32, o[12..16], .big)),
+        .inv = @bitCast(std.mem.readInt(u32, o[16..20], .big)),
+        .seed = std.mem.readInt(i32, o[20..24], .big),
+        .kind = @floatFromInt(o[24]),
+        .dead = @floatFromInt(o[25]),
+        .owner = @floatFromInt(o[26]),
+    };
+}
+
+// The game trailer sits right after the entity run: offset 10 + count×28.
+~pub tor snap.score { d: string } -> f32
+
+~proc snap.score|zig {
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS1")) return 0.0;
+    const off = HDR + @as(usize, std.mem.readInt(u16, d[8..10], .big)) * ENT;
+    if (off + 4 > d.len) return 0.0;
+    return @bitCast(std.mem.readInt(u32, d[off..][0..4], .big));
+}
+
+~pub tor snap.wave { d: string } -> f32
+
+~proc snap.wave|zig {
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS1")) return 0.0;
+    const off = HDR + @as(usize, std.mem.readInt(u16, d[8..10], .big)) * ENT;
+    if (off + 8 > d.len) return 0.0;
+    return @bitCast(std.mem.readInt(u32, d[off + 4 ..][0..4], .big));
+}

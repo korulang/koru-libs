@@ -1,0 +1,27 @@
+// index.kz — clock: the headless heartbeat. `for(0..N)` can't say "until
+// killed" — a bounded range IS the arbitrary stop. This is the raylib
+// `frames` idiom for a server loop: `count` is optional so tests halt,
+// unbounded by default so the game doesn't.
+//
+// Pacing stays with the consumer (std/time:sleep-ms in the ! each arm) —
+// a test wants full-speed ticks, not wall-clock rate.
+//
+// Gap note: this is std/control:loop or std/time:ticks shaped — an
+// unbounded iteration primitive wants a stdlib home; it lives here until
+// the surface ruling lands in koru.
+
+~pub tor ticks { count: ?i64 }
+! each i64
+| done
+
+~proc ticks|zig {
+    // Effect-branch proc: inlines into the consumer's frame — __-prefixed
+    // locals (inlined scope). Optional bound: null runs until killed.
+    // Params arrive as their literal type — @as coerces into the optional.
+    const __cap = @as(?i64, count);
+    var __i: i64 = 0;
+    while (__cap == null or __i < __cap.?) : (__i += 1) {
+        each(__i);
+    }
+    return .{ .done = .{} };
+}

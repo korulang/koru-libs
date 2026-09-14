@@ -1,0 +1,9 @@
+{
+  "name": "asteroids-net-tests",
+  "version": "0.1.0",
+  "paths": {
+    "libs": "../../..",
+    "sim": "../sim",
+    "wire": "../wire"
+  }
+}

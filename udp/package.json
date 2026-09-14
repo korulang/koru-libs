@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/udp",
+  "version": "0.0.1",
+  "description": "Nonblocking UDP datagrams for Koru with phantom socket obligations",
+  "keywords": ["koru", "korulang", "udp", "udp", "sockets", "networking", "zig", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/udp"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": []
+    }
+  }
+}

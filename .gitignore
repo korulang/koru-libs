@@ -56,3 +56,7 @@ yarn-error.log*
 
 # Regression runner ledger (runtime state, regenerated every run)
 .koru-regressions/
+
+# asteroids-net local run artifacts
+ames/asteroids-net/*.bin
+games/asteroids-net/*.log

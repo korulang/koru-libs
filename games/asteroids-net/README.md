@@ -1,0 +1,82 @@
+# asteroids-net — authoritative UDP Asteroids
+
+The first `SERVER_CHALLENGE.md` replay: the asteroids sim forked for N
+players over real datagrams. Three programs share `sim/` + `wire/`:
+
+    koruc build server.k   # authoritative server on :7777, unbounded ticks
+    koruc build client.k   # raylib client — WASD/arrows, space to fire
+    koruc run   bot.k      # scripted headless client (the smoke test)
+
+## Shape
+
+- `udp` — nonblocking POSIX datagrams, `*Socket<bound>` phantom lifecycle,
+  `packets` drain effect. No C deps.
+- `clock` — `ticks { count: ?i64 }`: the raylib `frames` optional-count
+  idiom for a headless loop. Unbounded by default; a server runs until
+  killed. (Wants a `std/time:ticks` or `std/control:loop` home.)
+- `sim` — the single-player rules + `owner` column, a `players` session
+  store keyed by `packet.key`, find-or-join `drive`, stale sweep that
+  takes the session row AND its ship.
+- `wire` — fixed-layout big-endian codec: `KAI1` input flags up,
+  `KAS1` full-state snapshots down (tick u32 · count u16 · 28B entities ·
+  score/wave trailer).
+- `server.k` — drain → drive → tick → sweep → broadcast, ~60Hz, heartbeat
+  receipts every 600 ticks.
+- `client.k` — input flags up every frame; snapshots clear+refill a `view`
+  store and paint it. No client-side prediction — the window IS the
+  server's authoritative state.
+- `bot.k` — 100 input packets, 120 silent ticks; proves join, remote
+  thrust, replication, and stale removal without a display.
+
+## Measured (first two-process smoke)
+
+- bot: 190 snapshots, ship drifted (63,572) → (589,387) under remote thrust
+- server: exactly 100 pkts in, `nextpid 2`, player dump empty at end —
+  the sweep took session + ship
+- raylib client live: 271 pkts in / 239 snaps out on the first run
+
+## Measured (three-way live run)
+
+- One human raylib client + two concurrent bots on one unbounded server:
+  `nextpid 4`, both bots saw identical world views (`last count 9` = 6
+  rocks + 3 ships), both ships flew the scripted path, heartbeat showed
+  only the human's row after the bots' 90-tick silence swept them.
+- 12k+ input pkts / 10k+ snaps over a 4-minute session — the loop doesn't
+  degrade with uptime.
+- NOT yet pinned: strict owner-isolation needs asymmetric inputs — two
+  identical scripts can't distinguish "each drove its own ship" from
+  "inputs applied to all ships" (thrust is idempotent per tick). The
+  staggered-start variant (offset bot B so its thrust window lands in A's
+  silence) is the honest version of that test.
+
+## Compiler contours this slice surfaced
+
+- Branch arms ARE the continuation — a branched call ends its enclosing
+  flow (box it in a tor, e.g. `push-input`, to keep a chain linear).
+- Terminal `! query` / `|> if` end flows — split find-or-join into
+  `find-touch` + `drive`; move unconditional reads before the branch.
+- Proc-body `__`-locals were NOT hygienic — nested `packets`/`ticks`
+  collided on `__i`, std/io's print helper `__f` collided with raylib's
+  `__f`. Fixed in koru (`__x` → `__x_s{N}` per splice site, pin 400_192).
+- `for` index is usize-like — declare loop-index params `usize`, not i64.
+- `~import std` in a `.kz` pulls the whole umbrella including the
+  unparseable `ccp_aspirational.kz` — import narrowly (`std/build` etc).
+- A branched call's `| err` arm can't `std/io:print` inside raylib's
+  `! frame` arm pre-hygiene-fix — it can now.
+
+## Gap list (the next slices)
+
+- No reliability: no sequence numbers, acks, or resend — input loss is
+  silent. Snapshot rate is the only liveness signal.
+- Full-state snapshots only — no delta compression, no interest
+  management (server sends everyone the whole field).
+- No client-side prediction or interpolation — input latency shows raw.
+- No tick-rate accounting — `sleep-ms(16)` approximates 60Hz, no drift
+  correction, no fixed-timestep accumulator.
+- Session key is addr<<16|port — fine for LAN, not identity. No auth.
+- No anti-cheat/telemetry — that's the `koru/signal` slice; the detector
+  surface (per-stream models over per-session state) is designed but
+  unbuilt.
+- `clock:ticks` is project-local — the unbounded-iteration primitive
+  wants a std ruling.
+- JS emitter has the same proc-body hygiene hole, unfixed (Zig path only).
