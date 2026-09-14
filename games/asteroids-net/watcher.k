@@ -1,8 +1,10 @@
-// watcher.k — the silent half of the isolation probe. Sends exactly ONE
-// packet (a zero-flag join) then listens for ~6s. Its ship is
-// identifiable by behavior, not pid: it never receives input, so it must
-// never leave its spawn spot. If the server's drive leaked another
-// client's input onto it, it would drift — measurable.
+// watcher.k — the listening half of the isolation probe. Joins with a
+// zero-flag packet, then keepalives that same packet every 30 ticks
+// (~0.5s) so the server's stale sweep (90 ticks ≈ 1.5s) never reaps the
+// session — real clients keepalive. Its ship is identifiable by pid via
+// snap.you: it receives only zero-flag input, so it must never leave its
+// spawn spot. If the server's drive leaked another client's input onto
+// it, it would drift — measurable.
 //
 // Verdict: PASS iff at least one ship stayed parked (the watcher's —
 // inputs NOT applied to it) AND at least one ship moved (the driver's —
@@ -45,6 +47,15 @@ observe = wire:snap.count(d): n
                 | then |> track-ent(e.x, e.y, e.owner)
                 | else |> _
 
+// Zero-flag input IS the keepalive: every packet runs sim:drive, which
+// touches p.last. Branched send, so it lives boxed in a tor.
+tor keepalive { s: *libs/udp:Socket<bound> }
+
+keepalive = wire:input.encode(left: false, right: false, thrust: false, fire: false): pkt
+    |> libs/udp:send.ip(sock: s, ip: "127.0.0.1", port: 7777, data: pkt)
+    | sent |> _
+    | err e |> std/io:print.ln("ka err {{ e:s }}")
+
 tor drain { s: *libs/udp:Socket<bound> }
 
 drain = libs/udp:packets(sock: s, max: 8)
@@ -60,13 +71,17 @@ report = clock:ticks(count: 16)
         | else |> _
     | done |> _
 
-// The one and only send below: joins the session, applies nothing.
+// The join send below opens the session; keepalives in the tick loop
+// hold it open for the whole ~6s observation window.
 libs/udp:bind(port: 0)
 | bound s |> std/io:print.ln("watcher up")
     |> wire:input.encode(left: false, right: false, thrust: false, fire: false): pkt
         |> libs/udp:send.ip(sock: s, ip: "127.0.0.1", port: 7777, data: pkt)
         | sent |> clock:ticks(count: 360)
-            ! each _ |> drain(s) |> std/time:sleep-ms(ms: 16)
+            ! each t |> drain(s) |> std/time:sleep-ms(ms: 16)
+                |> if (@mod(t, 30) == 0)
+                    | then |> keepalive(s)
+                    | else |> _
             | done |> report()
                 |> std/io:print.ln("watcher: {{ rep[0].snaps:d }} snaps, pid {{ rep[0].me:d }} — {{ rep[0].myparked:d }} mine-parked, {{ rep[0].still:d }} parked, {{ rep[0].driving:d }} driving")
                 |> if (rep[0].myparked >= 1 and rep[0].driving >= 1)

@@ -32,9 +32,11 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
 - `bot.k` — 100 input packets, 120 silent ticks; proves join, remote
   thrust, replication, and stale removal without a display.
 - `driver.k` / `watcher.k` — the owner-isolation pair. Driver thrusts;
-  watcher sends one join then parks and listens. Watcher learns its pid
-  from `you` and asserts its OWN ship never moved while the driver's
-  did — a cross-owner input leak fails the first half.
+  watcher joins, keepalives a zero-flag packet every 30 ticks (~0.5s —
+  every send runs `sim:drive`, which touches `p.last`), parks, and
+  listens. Watcher learns its pid from `you` and asserts its OWN ship
+  never moved while the driver's did — a cross-owner input leak fails
+  the first half.
 
 ## Measured (first two-process smoke)
 
@@ -60,14 +62,12 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
 
 ## Measured (join-ack + owner isolation)
 
-- Watcher joins silent, driver thrusts: `watcher: 91 snaps, pid 2 —
+- Watcher keepalives, driver thrusts: `watcher: 353 snaps, pid 5 —
   1 mine-parked, 1 parked, 1 driving` → `ISOLATION: PASS`. The pid came
   off `snap.you` — the watcher's own ship pinned parked by identity,
-  not by "some ship didn't move". Watcher exits clean (the join-time
-  double-free is gone — koru `166190187`).
-- Caveat: watcher only hears ~90 snaps — it joins, goes silent, and the
-  server's stale sweep reaps it mid-listen. Start the driver FIRST so
-  its thrust window overlaps the watcher's.
+  not by "some ship didn't move" — and the keepalive held the session
+  for the whole ~6s window (353 snaps vs ~91 silent). Watcher exits
+  clean (the join-time double-free is gone — koru `166190187`).
 
 ## Compiler contours this slice surfaced
 
