@@ -6,6 +6,8 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
     koruc build server.k   # authoritative server on :7777, unbounded ticks
     koruc build client.k   # raylib client — WASD/arrows, space to fire
     koruc run   bot.k      # scripted headless client (the smoke test)
+    koruc build driver.k   # thrusting probe (isolation pair, below)
+    koruc build watcher.k  # parked probe — asserts ITS ship never moved
 
 ## Shape
 
@@ -18,15 +20,21 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
   store keyed by `packet.key`, find-or-join `drive`, stale sweep that
   takes the session row AND its ship.
 - `wire` — fixed-layout big-endian codec: `KAI1` input flags up,
-  `KAS1` full-state snapshots down (tick u32 · count u16 · 28B entities ·
-  score/wave trailer).
+  `KAS2` full-state snapshots down (tick u32 · count u16 · `you` u8
+  join-ack · pad · 28B entities · score/wave trailer). `you` is patched
+  per-recipient in `snap.send` — the client's answer to "which ship is
+  mine", no handshake datagram needed.
 - `server.k` — drain → drive → tick → sweep → broadcast, ~60Hz, heartbeat
   receipts every 600 ticks.
 - `client.k` — input flags up every frame; snapshots clear+refill a `view`
-  store and paint it. No client-side prediction — the window IS the
-  server's authoritative state.
+  store and paint it, own ship cyan via `snap.you`. No client-side
+  prediction — the window IS the server's authoritative state.
 - `bot.k` — 100 input packets, 120 silent ticks; proves join, remote
   thrust, replication, and stale removal without a display.
+- `driver.k` / `watcher.k` — the owner-isolation pair. Driver thrusts;
+  watcher sends one join then parks and listens. Watcher learns its pid
+  from `you` and asserts its OWN ship never moved while the driver's
+  did — a cross-owner input leak fails the first half.
 
 ## Measured (first two-process smoke)
 
@@ -47,7 +55,19 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
   identical scripts can't distinguish "each drove its own ship" from
   "inputs applied to all ships" (thrust is idempotent per tick). The
   staggered-start variant (offset bot B so its thrust window lands in A's
-  silence) is the honest version of that test.
+  silence) is the honest version of that test. DONE, stronger: the
+  driver/watcher pair below asserts per-pid, not just asymmetric.
+
+## Measured (join-ack + owner isolation)
+
+- Watcher joins silent, driver thrusts: `watcher: 91 snaps, pid 2 —
+  1 mine-parked, 1 parked, 1 driving` → `ISOLATION: PASS`. The pid came
+  off `snap.you` — the watcher's own ship pinned parked by identity,
+  not by "some ship didn't move". Watcher exits clean (the join-time
+  double-free is gone — koru `166190187`).
+- Caveat: watcher only hears ~90 snaps — it joins, goes silent, and the
+  server's stale sweep reaps it mid-listen. Start the driver FIRST so
+  its thrust window overlaps the watcher's.
 
 ## Compiler contours this slice surfaced
 
@@ -63,6 +83,14 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
   unparseable `ccp_aspirational.kz` — import narrowly (`std/build` etc).
 - A branched call's `| err` arm can't `std/io:print` inside raylib's
   `! frame` arm pre-hygiene-fix — it can now.
+- `if(<row>.<field>)` under a `! query` arm froze raw row refs into the
+  template's `inline_body` before the sweep rewrite ran — emitted
+  `undeclared identifier 'e'`. Fixed in koru `5632e47` (pin 690_312):
+  the sweep walk now reaches into the frozen text, and the walk target
+  must be `var` — `@constCast` on a const local silently drops the write.
+- An inherited owned resource discharged inside conditional arms AND at
+  the join — double-free on watcher exit. Fixed in koru `166190187`
+  (pin 400_193): obligations are live-through a join continuation.
 
 ## Gap list (the next slices)
 

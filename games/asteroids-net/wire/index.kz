@@ -3,11 +3,13 @@
 // SERVER_CHALLENGE.md). All sizes named so the next reader can diff the wire.
 //
 //   input    C→S  "KAI1" | flags u8          (bit0 left ·1 right ·2 thrust ·3 fire)
-//   snapshot S→C  "KAS1" | tick u32 | count u16 | count×entity | score f32 | wave f32
+//   snapshot S→C  "KAS2" | tick u32 | count u16 | you u8 | pad u8 | count×entity | score f32 | wave f32
 //   entity        x y rot r inv f32 (20B) | seed i32 | kind dead owner pad u8 (4B) = 28B
 //
-// The trailer lands after the entity run; the client finds it at
-// 10 + count×28 — count is the index.
+// `you` is the join-ack: snap.send patches it per-recipient with that
+// session's pid, so every client learns which entity it owns without a
+// dedicated handshake datagram. The trailer lands after the entity run;
+// the client finds it at 12 + count×28 — count is the index.
 //
 // Snap is the build-side accumulator: begin mints <open!>, entity/trailer
 // append, send emits one datagram per player row, free consumes. A Snap
@@ -24,7 +26,7 @@ pub const Snap = struct {
 };
 
 const ENT: usize = 28;
-const HDR: usize = 10;
+const HDR: usize = 12;
 
 // ── input (client → server) ─────────────────────────────────────────────
 
@@ -59,9 +61,10 @@ const HDR: usize = 10;
 ~proc snap.begin|zig {
     const s = std.heap.page_allocator.create(Snap) catch @panic("wire: OOM");
     s.* = .{ .buf = undefined, .n = HDR, .count = 0 };
-    s.buf[0] = 'K'; s.buf[1] = 'A'; s.buf[2] = 'S'; s.buf[3] = '1';
+    s.buf[0] = 'K'; s.buf[1] = 'A'; s.buf[2] = 'S'; s.buf[3] = '2';
     std.mem.writeInt(u32, s.buf[4..8], @bitCast(tick), .big);
     s.buf[8] = 0; s.buf[9] = 0; // count patched in send
+    s.buf[10] = 0; s.buf[11] = 0; // `you` patched per-recipient in send, pad stays 0
     return s;
 }
 
@@ -94,12 +97,14 @@ const HDR: usize = 10;
 }
 
 // One datagram to the client behind `key` (udp's addr<<16|port fold). The
-// count field is patched first — it was reserved at begin. sendto failure
+// count field is patched first — it was reserved at begin — then `you`,
+// the join-ack: this datagram's recipient owns pid `you`. sendto failure
 // is a lost datagram: UDP-honest, no branch.
-~pub tor snap.send { s: *Snap<open>, sock: *libs/udp:Socket<bound>, key: i64 }
+~pub tor snap.send { s: *Snap<open>, sock: *libs/udp:Socket<bound>, key: i64, you: f32 }
 
 ~proc snap.send|zig {
     std.mem.writeInt(u16, s.buf[8..10], s.count, .big);
+    s.buf[10] = @intFromFloat(you);
     var ab: [4]u8 = undefined;
     std.mem.writeInt(u32, &ab, @as(u32, @intCast(@as(u64, @bitCast(key)) >> 16)), .big);
     const dest = std.net.Address.initIp4(ab, @as(u16, @intCast(@as(u64, @bitCast(key)) & 0xFFFF)));
@@ -117,7 +122,7 @@ const HDR: usize = 10;
 ~pub tor snap.count { d: string } -> i32
 
 ~proc snap.count|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS1")) return 0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0;
     return std.mem.readInt(u16, d[8..10], .big);
 }
 
@@ -147,11 +152,21 @@ const HDR: usize = 10;
     };
 }
 
-// The game trailer sits right after the entity run: offset 10 + count×28.
+// The join-ack byte: which pid the recipient owns. 0 = no session yet
+// (shouldn't arrive — a swept session stops getting datagrams — but a
+// stray one degrades to "no ship is mine", not a wrong highlight).
+~pub tor snap.you { d: string } -> f32
+
+~proc snap.you|zig {
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0.0;
+    return @floatFromInt(d[10]);
+}
+
+// The game trailer sits right after the entity run: offset 12 + count×28.
 ~pub tor snap.score { d: string } -> f32
 
 ~proc snap.score|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS1")) return 0.0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0.0;
     const off = HDR + @as(usize, std.mem.readInt(u16, d[8..10], .big)) * ENT;
     if (off + 4 > d.len) return 0.0;
     return @bitCast(std.mem.readInt(u32, d[off..][0..4], .big));
@@ -160,7 +175,7 @@ const HDR: usize = 10;
 ~pub tor snap.wave { d: string } -> f32
 
 ~proc snap.wave|zig {
-    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS1")) return 0.0;
+    if (d.len < HDR or !std.mem.eql(u8, d[0..4], "KAS2")) return 0.0;
     const off = HDR + @as(usize, std.mem.readInt(u16, d[8..10], .big)) * ENT;
     if (off + 8 > d.len) return 0.0;
     return @bitCast(std.mem.readInt(u32, d[off + 4 ..][0..4], .big));

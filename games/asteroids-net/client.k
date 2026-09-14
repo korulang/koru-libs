@@ -28,7 +28,7 @@ std/store:new(view, capacity: 128) {
     seed: i32, kind: f32, dead: f32, owner: f32
 }
 
-std/grid:new(hud, size: 1) { score: 0.0[f32], wave: 0.0[f32] }
+std/grid:new(hud, size: 1) { score: 0.0[f32], wave: 0.0[f32], me: 0.0[f32] }
 
 // One datagram → the whole view. clear+refill is the honest v0 — delta
 // snapshots are the next slice (SERVER_CHALLENGE.md).
@@ -44,7 +44,8 @@ tor apply { d: string }
 apply = wire:snap.count(d): n
     |> wire:snap.score(d): sc
     |> wire:snap.wave(d): wv
-    |> std/grid:stored { hud[0].score: sc, hud[0].wave: wv }
+    |> wire:snap.you(d): me
+    |> std/grid:stored { hud[0].score: sc, hud[0].wave: wv, hud[0].me: me }
     |> if (n > 0)
         | then |> refill(d, n)
         | else |> _
@@ -55,8 +56,11 @@ paint-ship = std/store:query(view)
         |> sim:ship-visible(e.inv): vis
         |> if (vis)
             | then |> sim:ship-verts(e.x, e.y, rotation: e.rot): v
-                |> libs/raylib:color(r: 235, g: 235, b: 250): white
-                |> libs/raylib:draw.triangle.lines(f, v.x1, v.y1, v.x2, v.y2, v.x3, v.y3, col: white)
+                |> if (e.owner == hud[0].me)
+                    | then |> libs/raylib:color(r: 120, g: 220, b: 235): me_col
+                        |> libs/raylib:draw.triangle.lines(f, v.x1, v.y1, v.x2, v.y2, v.x3, v.y3, col: me_col)
+                    | else |> libs/raylib:color(r: 235, g: 235, b: 250): white
+                        |> libs/raylib:draw.triangle.lines(f, v.x1, v.y1, v.x2, v.y2, v.x3, v.y3, col: white)
             | else |> _
 
 tor paint-rocks { f: *libs/raylib:Frame<frame> }

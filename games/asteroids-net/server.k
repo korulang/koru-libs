@@ -54,7 +54,7 @@ fill-trailer = std/store:query(game)
 tor send-all { sn: *wire:Snap<open>, s: *libs/udp:Socket<bound> }
 
 send-all = std/store:query(players)
-    ! query p |> wire:snap.send(s: sn, sock: s, p.key)
+    ! query p |> wire:snap.send(s: sn, sock: s, p.key, you: p.pid)
         |> std/grid:stored { tally[0].sent: tally[0].sent + 1 }
 
 // One snapshot, built once, fanned out per session row. The interest
