@@ -13,12 +13,12 @@ import std/io
 import std/store
 import sim
 
-std/store:insert(bodies) { x: 400.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 1.0, r: 12.0, t: 0.0, seed: 0, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
-std/store:insert(game) { score: 0.0, lives: 3.0, over: 0.0, wave: 1.0, rocks: 1.0, pending: 0.0, rt: 0.0, seed: 7.0 }
+std/store:insert(bodies) { x: 400.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 1, r: 12.0, t: 0.0, seed: 0, hit: 0, dead: 0, rot: 0.0, inv: 0.0, cd: 0.0 }
+std/store:insert(game) { score: 0, lives: 3, over: 0, wave: 1, rocks: 1, pending: 0, rt: 0.0, seed: 7 }
 
 // one rock parked near the ship's respawn point — the census counts it so
 // the wave machinery stays quiet through the whole test
-std/store:insert(bodies) { x: 300.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 2.0, r: 60.0, t: 0.0, seed: 5, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
+std/store:insert(bodies) { x: 300.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 2, r: 60.0, t: 0.0, seed: 5, hit: 0, dead: 0, rot: 0.0, inv: 0.0, cd: 0.0 }
 
 std/io:print.ln("── before")
 sim:dump()

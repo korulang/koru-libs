@@ -17,7 +17,7 @@ import sim
 
 tor paint-ship { f: *libs/raylib:Frame<frame> }
 paint-ship = std/store:query(bodies)
-    ! query e when e.kind == 1.0 and e.dead == 0.0
+    ! query e when e.kind == 1 and e.dead == 0
         |> sim:ship-visible(e.inv): vis
         |> if (vis)
             | then |> sim:ship-verts(e.x, e.y, rotation: e.rot): v
@@ -27,7 +27,7 @@ paint-ship = std/store:query(bodies)
 
 tor paint-rocks { f: *libs/raylib:Frame<frame> }
 paint-rocks = std/store:query(bodies)
-    ! query e when e.kind == 2.0
+    ! query e when e.kind == 2
         |> for(0..9)
             ! each i |> sim:rock-vert(cx: e.x, cy: e.y, e.r, e.seed, i: @as(i32, @intCast(i))): v1
                 |> sim:rock-vert(cx: e.x, cy: e.y, e.r, e.seed, i: @as(i32, @intCast(i + 1))): v2
@@ -36,7 +36,7 @@ paint-rocks = std/store:query(bodies)
 
 tor paint-shots { f: *libs/raylib:Frame<frame> }
 paint-shots = std/store:query(bodies)
-    ! query e when e.kind == 3.0
+    ! query e when e.kind == 3
         |> libs/raylib:color(r: 235, g: 235, b: 250): shot
         |> libs/raylib:draw.circle(f, e.x, e.y, r: 2.0, col: shot)
 
@@ -44,20 +44,20 @@ tor paint-hud { f: *libs/raylib:Frame<frame> }
 paint-hud = std/store:query(game)
     ! query g |> libs/raylib:color(r: 140, g: 140, b: 160): dim
         |> libs/raylib:draw.text(f, text: "score", x: 12, y: 10, size: 18, col: dim)
-        |> libs/raylib:draw.int(f, n: @as(i32, @intFromFloat(g.score)), x: 76, y: 10, size: 18, col: dim)
+        |> libs/raylib:draw.int(f, n: g.score, x: 76, y: 10, size: 18, col: dim)
         |> libs/raylib:draw.text(f, text: "lives", x: 160, y: 10, size: 18, col: dim)
-        |> libs/raylib:draw.int(f, n: @as(i32, @intFromFloat(g.lives)), x: 220, y: 10, size: 18, col: dim)
+        |> libs/raylib:draw.int(f, n: g.lives, x: 220, y: 10, size: 18, col: dim)
         |> libs/raylib:draw.text(f, text: "wave", x: 290, y: 10, size: 18, col: dim)
-        |> libs/raylib:draw.int(f, n: @as(i32, @intFromFloat(g.wave)), x: 350, y: 10, size: 18, col: dim)
+        |> libs/raylib:draw.int(f, n: g.wave, x: 350, y: 10, size: 18, col: dim)
 
 tor paint-over { f: *libs/raylib:Frame<frame> }
 paint-over = std/store:query(game)
-    ! query g when g.over == 1.0
+    ! query g when g.over == 1
         |> libs/raylib:color(r: 235, g: 235, b: 250): white
         |> libs/raylib:draw.text(f, text: "game over — enter to restart", x: 230, y: 290, size: 24, col: white)
 
-std/store:insert(bodies) { x: 400.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 1.0, r: 12.0, t: 0.0, seed: 0, hit: 0.0, dead: 0.0, rot: 0.0, inv: 2.0, cd: 0.0 }
-std/store:insert(game) { score: 0.0, lives: 3.0, over: 0.0, wave: 0.0, rocks: 0.0, pending: 0.0, rt: 0.0, seed: 7.0 }
+std/store:insert(bodies) { x: 400.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 1, r: 12.0, t: 0.0, seed: 0, hit: 0, dead: 0, rot: 0.0, inv: 2.0, cd: 0.0 }
+std/store:insert(game) { score: 0, lives: 3, over: 0, wave: 0, rocks: 0, pending: 0, rt: 0.0, seed: 7 }
 
 libs/raylib:window.open(width: 800, height: 600, title: "koru asteroids")
 | win w |> libs/raylib:window.fps(win: w, fps: 60) |> libs/raylib:frames(win: w)
