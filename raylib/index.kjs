@@ -13,7 +13,7 @@
 //                    no browser spelling: `| done` fires when the pump is
 //                    INSTALLED, not when count frames have run (the arm's
 //                    teardown must therefore tolerate running first — ponkatris
-//                    dumps read fine). count still bounds the pump.
+//                    dumps read fine). count, when given, bounds the pump.
 //   window.close   — a no-op: the window is the page, and the page's lifecycle
 //                    belongs to the tab, not the program.
 //   input          — polling semantics preserved: `down` is a held-state set,
@@ -137,7 +137,7 @@ function __ray_css(col) {
     const __ms = 1000.0 / (win.__fps || 60);
     let __i = 0;
     $mod.__ray.timer = setInterval(function () {
-        if (__i >= count) {
+        if (count != null && __i >= count) {
             clearInterval($mod.__ray.timer);
             return;
         }

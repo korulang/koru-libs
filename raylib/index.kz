@@ -164,11 +164,11 @@ pub const Frame = struct {
 //
 // `! frame` fires once per frame with the body inlined between BeginDrawing
 // and EndDrawing — the engine owns the bracket, exactly as sqlite3's `! row`
-// owns sqlite3_finalize. The loop ends after `count` frames or when the OS
-// asks the window to close, whichever comes first (bounded so tests halt).
+// owns sqlite3_finalize. The loop ends when the OS asks the window to close;
+// `count` is an optional bound that exists so tests halt.
 // ============================================================================
 
-~pub tor frames { win: *Window<!opened|!active>, count: i32 }
+~pub tor frames { win: *Window<!opened|!active>, count: ?i32 }
 ! frame *Frame<frame!>
 | done *Window<active!>
 
@@ -178,8 +178,9 @@ pub const Frame = struct {
     // spelling for the declaring module's own scope (koru 400_155) — never
     // reach through emitter-internal naming.
     var __f = $mod.Frame{ ._token = 0 };
+    const __cap = @as(?i32, count) orelse 2147483647;
     var i: i32 = 0;
-    while (i < count and !$mod.c.WindowShouldClose()) : (i += 1) {
+    while (i < __cap and !$mod.c.WindowShouldClose()) : (i += 1) {
         $mod.c.BeginDrawing();
         frame(&__f);
         $mod.c.EndDrawing();

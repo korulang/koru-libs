@@ -60,7 +60,7 @@ std/store:insert(bodies) { x: 400.0, y: 300.0, dx: 0.0, dy: 0.0, kind: 1.0, r: 1
 std/store:insert(game) { score: 0.0, lives: 3.0, over: 0.0, wave: 0.0, rocks: 0.0, pending: 0.0, rt: 0.0, seed: 7.0 }
 
 libs/raylib:window.open(width: 800, height: 600, title: "koru asteroids")
-| win w |> libs/raylib:window.fps(win: w, fps: 60) |> libs/raylib:frames(win: w, count: 7200)
+| win w |> libs/raylib:window.fps(win: w, fps: 60) |> libs/raylib:frames(win: w)
     ! frame f
         |> libs/raylib:input.key.down(key: 263): kl
         |> libs/raylib:input.key.down(key: 65): ka

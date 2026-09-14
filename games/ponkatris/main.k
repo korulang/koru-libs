@@ -70,7 +70,7 @@ paint-end-won = std/store:query(game)
 level/rubicon:spawn()
 
 libs/raylib:window.open(width: 620, height: 680, title: "koru ponkatris — rubicon")
-| win w |> libs/raylib:window.fps(win: w, fps: 120) |> libs/raylib:frames(win: w, count: 7200)
+| win w |> libs/raylib:window.fps(win: w, fps: 120) |> libs/raylib:frames(win: w)
     ! frame f
         |> libs/raylib:input.key.down(key: 263): left_held
         |> libs/raylib:input.key.down(key: 262): right_held
