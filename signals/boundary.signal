@@ -1,0 +1,11 @@
+name: boundary
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: fires when two sets that must move together drift — here, the
+  raylib/kjs facet's preventDefault key set vs the keys games actually bind.
+  Adding Enter-as-restart to asteroids without extending the facet guard let
+  a game key reach the browser default (activate focused link → navigate
+  away mid-game). The boundary is: every key a game may bind must be in the
+  facet's capture set, or the host page owns it.
