@@ -4,3 +4,7 @@ api/**/*
 !api/serve.mjs
 wasm/*
 !wasm/handler.wasm
+# build/ is compiler intermediates (generated/site_routes.zig, .zig-cache) —
+# the routes are already embedded in handler.wasm. With thousands of baked
+# pages this dir is gigabytes and any file >100MB fails the Vercel upload.
+build/
