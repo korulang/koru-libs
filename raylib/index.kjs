@@ -75,8 +75,9 @@ function __ray_install_keys() {
         if (code === null) return;
         if (!__ray.down.has(code)) __ray.pressed.add(code);
         __ray.down.add(code);
-        // Arrows/space/tab scroll or re-focus the page — the game owns them.
-        if ((code >= 262 && code <= 265) || code === 32 || code === 258) e.preventDefault();
+        // Arrows/space/tab scroll or re-focus the page, and Enter activates
+        // whatever link last held focus — the game owns them all.
+        if ((code >= 262 && code <= 265) || code === 32 || code === 258 || code === 257) e.preventDefault();
     });
     window.addEventListener("keyup", function (e) {
         const code = __ray_keycode(e);
