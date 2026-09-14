@@ -437,13 +437,14 @@ spawn-tick = std/store:query(game)
         |> std/store:insert(bodies) { x: ex, y: ey, vel.dx, vel.dy, kind: 2.0, r: 45.0, t: 0.0, seed: @as(i32, @intCast(j1.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
         |> std/store:stored { g.pending: g.pending - 1.0, g.rocks: g.rocks + 1.0, g.seed: @as(f32, @floatFromInt(j1.s2)) }
 
-// Restart — Enter at game over, the reference's only restart door: wipe
-// the field, refill lives, reset the ship, reseed the LCG. The wave
-// machinery deals wave 1 from the empty field on the next ticks.
+// Restart — Enter any time (the references gate it behind game over; a
+// panic button mid-wave is strictly friendlier): wipe the field, refill
+// lives, reset the ship, reseed the LCG. The wave machinery deals wave 1
+// from the empty field on the next ticks.
 pub tor reset { pressed: bool }
 
 reset = std/store:query(game)
-    ! query g when pressed and g.over == 1.0
+    ! query g when pressed
         |> std/store:stored { g.score: 0.0, g.lives: 3.0, g.over: 0.0, g.wave: 0.0, g.rocks: 0.0, g.pending: 0.0, g.rt: 0.0, g.seed: 7.0 }
         |> clear-field()
         |> reset-ship()

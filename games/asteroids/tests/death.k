@@ -57,7 +57,7 @@ std/io:print.ln("── after three deaths (over 1, ship dead)")
 sim:dump()
 sim:dump-game()
 
-// 4. restart: reset fires only at game over; the field is wiped and the
+// 4. restart: reset fires on Enter any time; the field is wiped and the
 // wave machinery deals wave 1 — same code path as the live game
 sim:reset(pressed: true)
 std/io:print.ln("── after reset (over 0, lives 3, field empty)")
