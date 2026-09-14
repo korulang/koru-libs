@@ -24,7 +24,9 @@ std/store:new(bodies, capacity: 128) {
 }
 
 std/store:new(game, capacity: 2) {
-    score: f32, lives: f32, over: f32
+    score: f32, lives: f32, over: f32,
+    wave: f32, rocks: f32, pending: f32,
+    rt: f32, seed: f32
 }
 
 const {
@@ -100,6 +102,24 @@ drag-x -> vx * @exp(@log(SHIP_DRAG) * dt)
 pub tor drag-y { vy: f32, dt: f32 } -> f32
 
 drag-y -> vy * @exp(@log(SHIP_DRAG) * dt)
+
+// Speed clamp: the scale factor that pulls a velocity back under
+// MAX_SHIP_SPEED (380^2 = 144400 — squared compare, one sqrt only when over).
+pub tor cap-scale { dx: f32, dy: f32 } -> f32
+
+cap-scale -> if (dx * dx + dy * dy > 144400.0) MAX_SHIP_SPEED / @sqrt(dx * dx + dy * dy) else 1.0
+
+// Either key held — A/D mirror the arrows in the reference.
+pub tor either { a: bool, b: bool } -> bool
+
+either -> a or b
+
+// Invulnerability blink: while inv > 0 the ship flickers at 10Hz — the
+// reference blinks off wall-clock time; we blink off the timer itself,
+// which is the same flicker and stays deterministic.
+pub tor ship-visible { inv: f32 } -> bool
+
+ship-visible -> if (inv <= 0.0) true else (@mod(@as(i32, @intFromFloat(inv * 10.0)), 2) == 1)
 // ── RNG ──────────────────────────────────────────────────────────────────────
 // Deterministic 16-bit LCG, one draw per call; the returned s2 is the next
 // seed, v is the draw. Constants chosen so NO intermediate product overflows
@@ -130,6 +150,17 @@ pub tor edge-pos { v: u32, scale: f32 } -> f32
 
 edge-pos -> @as(f32, @floatFromInt(v % 100)) / 100.0 * scale
 
+// Wave spawn point: edge 0..3 picks a side (left, right, top, bottom), p
+// (0..99) is the position along it — rocks always enter from the rim,
+// never on top of the ship.
+pub tor edge-x { edge: u32, p: f32 } -> f32
+
+edge-x -> if (edge == 0) 0.0 else (if (edge == 1) 800.0 else p * 8.0)
+
+pub tor edge-y { edge: u32, p: f32 } -> f32
+
+edge-y -> if (edge == 2) 0.0 else (if (edge == 3) 600.0 else p * 6.0)
+
 // Ship nose: SHIP_SIZE along the facing from the ship center.
 pub tor nose { x: f32, y: f32, rotation: f32 } -> { x: f32, y: f32 }
 
@@ -149,10 +180,11 @@ pub tor rock-vert { cx: f32, cy: f32, r: f32, seed: i32, i: i32 } -> { x: f32, y
 
 rock-vert -> { x: cx + @cos(@as(f32, @floatFromInt(@mod(i, ROCK_SIDES))) * 0.698132) * r * (0.7 + 0.5 * @as(f32, @floatFromInt(@mod(seed * 31 + @mod(i, ROCK_SIDES) * 97 + seed * @mod(i, ROCK_SIDES) + 13, 997))) / 997.0), y: cy + @sin(@as(f32, @floatFromInt(@mod(i, ROCK_SIDES))) * 0.698132) * r * (0.7 + 0.5 * @as(f32, @floatFromInt(@mod(seed * 31 + @mod(i, ROCK_SIDES) * 97 + seed * @mod(i, ROCK_SIDES) + 13, 997))) / 997.0) }
 
-// Muzzle velocity: ship velocity + BULLET_SPEED along the facing.
-pub tor bullet-vel { dx: f32, dy: f32, rotation: f32 } -> { dx: f32, dy: f32 }
+// Muzzle velocity: BULLET_SPEED along the facing — the reference does not
+// inherit the ship's velocity, the shot is pure facing.
+pub tor bullet-vel { rotation: f32 } -> { dx: f32, dy: f32 }
 
-bullet-vel -> { dx: dx + @sin(rotation) * BULLET_SPEED, dy: dy - @cos(rotation) * BULLET_SPEED }
+bullet-vel -> { dx: @sin(rotation) * BULLET_SPEED, dy: 0.0 - @cos(rotation) * BULLET_SPEED }
 
 pub tor bullet-life {} -> f32
 
@@ -191,10 +223,12 @@ bullet-tick -> { x: x + dx * dt, y: y + dy * dt, t: t - dt }
 // Everything below this line owns the stores. Each rule is one query arm —
 // the one-arm-per-flow shape the store grammar gives.
 
-// One tick: integrate + wrap every body; bullets drain their fuse; the
-// invulnerability and cooldown timers decay; then pairwise flags contacts —
-// bullet×rock marks both hit, ship×rock kills the ship unless it is still
-// ghosting through. Rocks ignore each other, as they should.
+// One tick: integrate every body; the ship and the rocks wrap at the rim,
+// bullets die there instead (the reference contract: a shot off the edge
+// is gone); bullets also drain their fuse; the invulnerability and
+// cooldown timers decay; then pairwise flags contacts — bullet×rock marks
+// both hit, ship×rock kills the ship unless it is still ghosting through.
+// Rocks ignore each other, as they should.
 pub tor tick { }
 
 tick = std/kernel:init(bodies) {}
@@ -203,13 +237,18 @@ tick = std/kernel:init(bodies) {}
                 const DT = 0.0166666;
                 k.x += k.dx * DT;
                 k.y += k.dy * DT;
-                if (k.x < 0.0) { k.x += 800.0; }
-                if (k.x >= 800.0) { k.x -= 800.0; }
-                if (k.y < 0.0) { k.y += 600.0; }
-                if (k.y >= 600.0) { k.y -= 600.0; }
                 if (k.kind > 2.5) {
                     k.t -= DT;
                     if (k.t <= 0.0) { k.dead = 1.0; }
+                    if (k.x < 0.0) { k.dead = 1.0; }
+                    if (k.x >= 800.0) { k.dead = 1.0; }
+                    if (k.y < 0.0) { k.dead = 1.0; }
+                    if (k.y >= 600.0) { k.dead = 1.0; }
+                } else {
+                    if (k.x < 0.0) { k.x += 800.0; }
+                    if (k.x >= 800.0) { k.x -= 800.0; }
+                    if (k.y < 0.0) { k.y += 600.0; }
+                    if (k.y >= 600.0) { k.y -= 600.0; }
                 }
                 if (k.inv > 0.0) { k.inv -= DT; }
                 if (k.cd > 0.0) { k.cd -= DT; }
@@ -239,16 +278,18 @@ tick = std/kernel:init(bodies) {}
                 }
             }
 
-// Input → the ship row: rotate, thrust along the facing, drag.
+// Input → the ship row: rotate, thrust along the facing, clamp to
+// MAX_SHIP_SPEED, drag (the reference order: thrust, cap, drag).
 pub tor control { left: bool, right: bool, thrusting: bool }
 
 control = std/store:query(bodies)
     ! query e when e.kind == 1.0 and e.dead == 0.0
         |> rotation-delta(left, right, dt: 0.016666): drot
         |> thrust-dx(vx: e.dx, rotation: e.rot + drot, thrusting, dt: 0.016666): tvx
-        |> drag-x(vx: tvx, dt: 0.016666): ndx
         |> thrust-dy(vy: e.dy, rotation: e.rot + drot, thrusting, dt: 0.016666): tvy
-        |> drag-y(vy: tvy, dt: 0.016666): ndy
+        |> cap-scale(dx: tvx, dy: tvy): cs
+        |> drag-x(vx: tvx * cs, dt: 0.016666): ndx
+        |> drag-y(vy: tvy * cs, dt: 0.016666): ndy
         |> std/store:stored { e.rot: e.rot + drot, e.dx: ndx, e.dy: ndy }
 
 // Fire one bullet from the nose while the cooldown is out. The insert lands
@@ -259,7 +300,7 @@ pub tor fire { pressed: bool }
 fire = std/store:query(bodies)
     ! query e when e.kind == 1.0 and e.dead == 0.0 and pressed and e.cd <= 0.0
         |> nose(e.x, e.y, rotation: e.rot): n
-        |> bullet-vel(e.dx, e.dy, rotation: e.rot): v
+        |> bullet-vel(rotation: e.rot): v
         |> std/store:insert(bodies) { n.x, n.y, v.dx, v.dy, kind: 3.0, r: 2.0, t: 1.1, seed: 0, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
         |> std/store:stored { e.cd: 0.25 }
 
@@ -272,7 +313,8 @@ harvest = std/store:query(bodies)
             | item _ |> _
 
 // Rocks that took a bullet — the taken row's fields feed split/score on the
-// | item continuation.
+// | item continuation. The game row's rock count is the wave trigger's
+// census: parent out (-1), children in (+2 inside spawn-children).
 pub tor harvest-rocks { }
 
 harvest-rocks = std/store:query(bodies)
@@ -280,6 +322,7 @@ harvest-rocks = std/store:query(bodies)
         |> std/store:take(bodies[e])
             | item i |> spawn-children(i.x, i.y, i.dx, i.dy, i.r, i.seed)
                 |> score-rock(i.r)
+                |> bump-rocks(n: 0.0 - 1.0)
 
 // A rock big enough splits in two — children keep the parent's velocity
 // rotated ±42°, inherit its position and radius halved (floored at the
@@ -294,6 +337,7 @@ spawn-children = split-count(r): nk
             |> rand(s: r1.s2): r2
             |> std/store:insert(bodies) { x, y, dx: sp.dx1, dy: sp.dy1, kind: 2.0, r: cr, t: 0.0, seed: @as(i32, @intCast(r1.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
             |> std/store:insert(bodies) { x, y, dx: sp.dx2, dy: sp.dy2, kind: 2.0, r: cr, t: 0.0, seed: @as(i32, @intCast(r2.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
+            |> bump-rocks(n: 2.0)
         | else |> _
 
 // Classic scoring: big 20, medium 50, small 100.
@@ -304,14 +348,17 @@ score-rock = std/store:query(game)
         g.score: g.score + @as(f32, if (r > 40.0) 20.0 else (if (r > 25.0) 50.0 else 100.0))
     }
 
-// Ship death: spend a life first; revive only runs while the game is live,
-// so the last death leaves the field empty under "game over".
+// Ship death: spend a life, then arm the respawn timer — the reference
+// holds the field empty for 1.5s before the ship reappears. e.t marks the
+// death as processed so this arm fires once per death, not once per tick
+// of the wait.
 pub tor respawn-ship { }
 
 respawn-ship = std/store:query(bodies)
-    ! query e when e.kind == 1.0 and e.dead == 1.0
+    ! query e when e.kind == 1.0 and e.dead == 1.0 and e.t == 0.0
         |> lose-life()
-        |> revive-ship()
+        |> arm-respawn()
+        |> std/store:stored { e.t: 1.0 }
 
 pub tor lose-life { }
 
@@ -321,26 +368,85 @@ lose-life = std/store:query(game)
         g.over: (if (g.lives <= 1.0) @as(f32, 1.0) else g.over)
     }
 
-pub tor revive-ship { }
+// Arm the 1.5s respawn delay — skipped once the game is over, so the last
+// death leaves the field empty under "game over".
+pub tor arm-respawn { }
 
-revive-ship = std/store:query(game)
-    ! query g when g.over == 0.0 |> revive-ship-body()
+arm-respawn = std/store:query(game)
+    ! query g when g.over == 0.0
+        |> std/store:stored { g.rt: 1.5 }
+
+// The respawn clock: decay it each frame; when it runs out, the ship
+// reappears at center ghosting (a no-op while no dead ship waits).
+pub tor respawn-tick { }
+
+respawn-tick = std/store:query(game)
+    ! query g when g.rt > 0.0
+        |> std/store:stored { g.rt: g.rt - 0.016666 }
+
+pub tor maybe-revive { }
+
+maybe-revive = std/store:query(game)
+    ! query g when g.rt <= 0.0 and g.over == 0.0
+        |> revive-ship-body()
 
 pub tor revive-ship-body { }
 
 revive-ship-body = std/store:query(bodies)
     ! query e when e.kind == 1.0 and e.dead == 1.0
-        |> std/store:stored { e.x: 400.0, e.y: 300.0, e.dx: 0.0, e.dy: 0.0, e.rot: 0.0, e.dead: 0.0, e.inv: 2.0, e.cd: 0.0 }
+        |> std/store:stored { e.x: 400.0, e.y: 300.0, e.dx: 0.0, e.dy: 0.0, e.rot: 0.0, e.dead: 0.0, e.inv: 2.0, e.cd: 0.0, e.t: 0.0 }
 
-// Restart: wipe the field, refill lives, reset the ship, seed fresh rocks.
+// ── waves ─────────────────────────────────────────────────────────────────
+// The reference's escalating field: wave N puts 3+N large rocks on the rim.
+// The census is bookkeeping (bump-rocks at every insert/take) so wave-check
+// needs no NOT EXISTS; an empty field arms the next wave, and spawn-tick
+// deals it out one rock per tick — ~70ms to materialize, deterministic off
+// the game row's LCG seed.
+
+// One rock-count adjustment — every insert and take in the field funnels
+// through here so the census stays live.
+pub tor bump-rocks { n: f32 }
+
+bump-rocks = std/store:query(game)
+    ! query g |> std/store:stored { g.rocks: g.rocks + n }
+
+// An empty, quiet field (no rocks, none pending, game live) advances the
+// wave and arms 3 + wave spawns — wave 1 deals 4, like the reference.
+// (stored reads the pre-update row, so pending = old wave + 4 = new + 3.)
+pub tor wave-check { }
+
+wave-check = std/store:query(game)
+    ! query g when g.over == 0.0 and g.rocks <= 0.0 and g.pending <= 0.0
+        |> std/store:stored { g.wave: g.wave + 1.0, g.pending: g.wave + 4.0 }
+
+// One pending rock per tick: four LCG draws pick the rim edge, the spot
+// along it, the heading, and the speed band (40..110 like the reference);
+// a fifth seeds the jagged polygon.
+pub tor spawn-tick { }
+
+spawn-tick = std/store:query(game)
+    ! query g when g.pending > 0.0
+        |> rand-under(s: @as(u32, @intFromFloat(g.seed)), n: 4): e1
+        |> rand-under(s: e1.s2, n: 100): p1
+        |> rand-under(s: p1.s2, n: 360): a1
+        |> rand-under(s: a1.s2, n: 70): v1
+        |> rand(s: v1.s2): j1
+        |> edge-x(edge: e1.v, p: @as(f32, @floatFromInt(p1.v))): ex
+        |> edge-y(edge: e1.v, p: @as(f32, @floatFromInt(p1.v))): ey
+        |> dir(deg: a1.v, speed: 40.0 + @as(f32, @floatFromInt(v1.v))): vel
+        |> std/store:insert(bodies) { x: ex, y: ey, vel.dx, vel.dy, kind: 2.0, r: 45.0, t: 0.0, seed: @as(i32, @intCast(j1.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
+        |> std/store:stored { g.pending: g.pending - 1.0, g.rocks: g.rocks + 1.0, g.seed: @as(f32, @floatFromInt(j1.s2)) }
+
+// Restart — Enter at game over, the reference's only restart door: wipe
+// the field, refill lives, reset the ship, reseed the LCG. The wave
+// machinery deals wave 1 from the empty field on the next ticks.
 pub tor reset { pressed: bool }
 
 reset = std/store:query(game)
-    ! query g when pressed
-        |> std/store:stored { g.score: 0.0, g.lives: 3.0, g.over: 0.0 }
+    ! query g when pressed and g.over == 1.0
+        |> std/store:stored { g.score: 0.0, g.lives: 3.0, g.over: 0.0, g.wave: 0.0, g.rocks: 0.0, g.pending: 0.0, g.rt: 0.0, g.seed: 7.0 }
         |> clear-field()
         |> reset-ship()
-        |> seed-field()
 
 pub tor clear-field { }
 
@@ -353,14 +459,7 @@ pub tor reset-ship { }
 
 reset-ship = std/store:query(bodies)
     ! query e when e.kind == 1.0
-        |> std/store:stored { e.x: 400.0, e.y: 300.0, e.dx: 0.0, e.dy: 0.0, e.rot: 0.0, e.dead: 0.0, e.hit: 0.0, e.inv: 0.0, e.cd: 0.0 }
-
-// Three fresh rocks, fixed seeds — the restart is deterministic on purpose.
-pub tor seed-field { }
-
-seed-field = std/store:insert(bodies) { x: 600.0, y: 150.0, dx: -40.0, dy: 25.0, kind: 2.0, r: 45.0, t: 0.0, seed: 11, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
-    |> std/store:insert(bodies) { x: 150.0, y: 400.0, dx: 35.0, dy: -20.0, kind: 2.0, r: 35.0, t: 0.0, seed: 23, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
-    |> std/store:insert(bodies) { x: 400.0, y: 550.0, dx: -25.0, dy: -30.0, kind: 2.0, r: 55.0, t: 0.0, seed: 37, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0 }
+        |> std/store:stored { e.x: 400.0, e.y: 300.0, e.dx: 0.0, e.dy: 0.0, e.rot: 0.0, e.dead: 0.0, e.hit: 0.0, e.inv: 2.0, e.cd: 0.0, e.t: 0.0 }
 
 // The test/debug door — the ship teleports where a headless run cannot
 // steer it. Same trick as ponkatris `launch`.
@@ -368,7 +467,7 @@ pub tor place-ship { x: f32, y: f32, dx: f32, dy: f32 }
 
 place-ship = std/store:query(bodies)
     ! query e when e.kind == 1.0
-        |> std/store:stored { e.x: x, e.y: y, e.dx: dx, e.dy: dy, e.dead: 0.0, e.inv: 0.0 }
+        |> std/store:stored { e.x: x, e.y: y, e.dx: dx, e.dy: dy, e.dead: 0.0, e.inv: 0.0, e.t: 0.0 }
 
 // End-of-run receipts.
 pub tor dump { }
@@ -379,4 +478,4 @@ dump = std/store:query(bodies)
 pub tor dump-game { }
 
 dump-game = std/store:query(game)
-    ! query g |> std/io:print.ln("score {{ g.score:d }} lives {{ g.lives:d }} over {{ g.over:d }}")
+    ! query g |> std/io:print.ln("score {{ g.score:d }} lives {{ g.lives:d }} over {{ g.over:d }} wave {{ g.wave:d }} rocks {{ g.rocks:d }} pending {{ g.pending:d }} rt {{ g.rt:f }} seed {{ g.seed:d }}")
