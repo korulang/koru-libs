@@ -15,6 +15,11 @@ phantom obligations; no C library, `linkLibC` only.
   i64 session key (`ipv4 << 16 | port`) a server keys per-client rows on.
 - `udp:send.ip` (dotted quad), `udp:send.to` (host-order u32+u16),
   `udp:send.key` (the packet.key fold) — three destination spellings.
+- `udp:socket.rcvbuf(sock, bytes:)` → `| ok | err` — SO_RCVBUF, the kernel
+  backlog a drain-once-per-tick server lives or dies by. Read back the
+  granted size with `udp:socket.rcvsize` — the kernel may clamp. Measured
+  need: `games/asteroids-net` at N=100, +18,284 "dropped due to full
+  socket buffers" per run until this + a drain cap above peak ingress.
 - `udp:close(sock: <!bound>)` — branchless; a datagram close can't
   meaningfully fail, and an `| err` arm here would only fork the obligation
   graph (two sockets, nested closes, first leaks — measured, KORU030).

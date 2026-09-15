@@ -86,6 +86,33 @@ pub const Packet = struct {
     return a.getPort();
 }
 
+// SO_RCVBUF — the kernel's per-socket backlog. A server that drains once
+// per tick lives or dies by this number: bursts deeper than the buffer are
+// discarded by the kernel before recvfrom ever sees them (netstat's
+// "dropped due to full socket buffers" counter). The granted size may be
+// clamped below the request (kern.ipc.maxsockbuf) — read it back with
+// socket.rcvsize and log what you actually got.
+~pub tor socket.rcvbuf { sock: *Socket<bound>, bytes: i32 }
+| ok
+| err string
+
+~proc socket.rcvbuf|zig {
+    const sz: c_int = @intCast(bytes);
+    posix.setsockopt(sock.fd, posix.SOL.SOCKET, posix.SO.RCVBUF, std.mem.asBytes(&sz)) catch {
+        return .{ .err = "udp: setsockopt SO_RCVBUF failed" };
+    };
+    return .{ .ok = .{} };
+}
+
+// The granted receive-buffer size (getsockopt) — what rcvbuf actually got.
+~pub tor socket.rcvsize { sock: *Socket<bound> } -> i32
+
+~proc socket.rcvsize|zig {
+    var sz: c_int = 0;
+    posix.getsockopt(sock.fd, posix.SOL.SOCKET, posix.SO.RCVBUF, std.mem.asBytes(&sz)) catch return -1;
+    return @intCast(sz);
+}
+
 // Branchless: a datagram close cannot meaningfully fail, and a `| err` arm
 // here would only fork the obligation graph (a second socket's close nested
 // behind it leaves the first undisposed — measured, KORU030).

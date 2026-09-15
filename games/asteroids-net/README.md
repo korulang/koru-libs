@@ -102,12 +102,20 @@ input every tick — and `load.sh N` spawns N of them against one server.
   wave spawn, ship spawn) got the same arm — a full store now drops
   the entity, never the process.
 - **N=32 / N=64** — all sessions heard, `indrop 0`, no crash.
-- **N=100** — all 100 heard (avg ~633/700 snaps) — and the first REAL
-  loss: server-side `drops` ~50–74/session (~9% of input), client-side
-  `indrop` up to ~200. The oracle built for injected gaps now measures
-  genuine socket-buffer pressure: ~48 pkts/tick arrive vs ~100 sent.
-  `last count` ~114–122 → `bodies` (cap 128) near saturation, graceful
-  refusals live. The wall is ingress drain + full-state fan-out cost.
+- **N=100, before the fix** — all 100 heard (avg ~633/700 snaps) — and
+  the first REAL loss: server-side `drops` ~50–74/session (~9% of
+  input), client-side `indrop` up to ~200. The oracle built for
+  injected gaps measured genuine socket-buffer pressure: ~48 pkts/tick
+  arrived vs ~100 sent. `netstat -s -p udp` pinned the mechanism:
+  +18,284 "dropped due to full socket buffers" in one run.
+- **N=100, after the fix** — two compounding causes, both fixed:
+  `packets(max: 64)` structurally under-drained ~100 pkts/tick, and the
+  default kernel backlog was shallow. New `udp:socket.rcvbuf` surface
+  (SO_RCVBUF, granted 4MB as asked) + drain cap 512. Result:
+  **kernel drop counter did not move (35,528 → 35,528), `indrop` 0
+  across all 100 sessions, 44,024 pkts in** (+53% ingress).
+- `bodies` (cap 128) still runs near-saturated (~114–122 entities) —
+  graceful refusals live, and the next ceiling after this one.
 
 ## Compiler contours this slice surfaced
 

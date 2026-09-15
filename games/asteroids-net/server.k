@@ -21,6 +21,8 @@ const {
     PORT: 7777
     STALE_TICKS: 90.0
     BEAT: 600.0
+    RCVBUF: 4194304
+    DRAIN: 512
 }
 
 // Run receipts: packets in, snapshots out, heartbeat counter.
@@ -79,10 +81,22 @@ heartbeat = if (tally[0].beats >= BEAT)
         |> std/io:print.ln("beat: {{ tally[0].pkts:d }} pkts in, {{ tally[0].sent:d }} snaps out")
     | else |> std/grid:stored { tally[0].beats: tally[0].beats + 1.0 }
 
+// The measured wall (N=100, +18,284 kernel buffer drops/run): drain cap
+// 64 < ~100 pkts/tick meant a structural backlog — the deficit filled the
+// kernel buffer and the counter moved. DRAIN now exceeds the 128-session
+// ceiling; SO_RCVBUF buys burst headroom. Report the GRANTED size.
+tor set-rcvbuf { s: *libs/udp:Socket<bound> }
+
+set-rcvbuf = libs/udp:socket.rcvbuf(sock: s, bytes: RCVBUF)
+    | ok |> libs/udp:socket.rcvsize(sock: s): got
+        |> std/io:print.ln("rcvbuf: asked {{ RCVBUF:d }}, granted {{ got:d }}")
+    | err e |> std/io:print.ln("rcvbuf err {{ e:s }}")
+
 libs/udp:bind(port: PORT)
 | bound s |> std/io:print.ln("asteroids-net server on :{{ PORT:d }} — no tick bound, runs until killed")
+    |> set-rcvbuf(s)
     |> clock:ticks()
-        ! each t |> libs/udp:packets(sock: s, max: 64)
+        ! each t |> libs/udp:packets(sock: s, max: DRAIN)
             ! packet p |> handle(p, t: @as(f32, @floatFromInt(t)))
             | done |> sim:tick()
                 |> sim:harvest()
