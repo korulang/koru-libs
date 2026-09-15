@@ -121,10 +121,12 @@ input every tick — and `load.sh N` spawns N of them against one server.
 - **N=128, full envelope** — all heard, `indrop` 0, kernel counter
   flat — but the phase-timed beat says **~48Hz, not 60**: ~4.7ms of
   work/tick vs a 16ms budget. Decomposition inverts the expected wall:
-  sim 0.13ms, serialize+fan-out 0.84ms, and **~3.7ms in drain+drive** —
-  every packet runs `find-touch` (128-row scan) + `control`/`fire`
-  (512-row bodies scan for one ship): ~86K row-visits/tick. The real
-  next wall is "find one row by predicate" — no early-exit, no index.
+  sim 0.13ms, serialize+fan-out 0.84ms, and **~3.7ms in drain+drive**.
+  `! first` made the row scans early-exit and `| none` collapsed
+  find-or-join into one arm pair — and the A/B measured it
+  **performance-neutral** (~41Hz both ways under matched load): the
+  ~3.7ms is per-packet fixed cost (recv/decode/dispatch), not row
+  visits. The wall was never the scans.
 - **N=140** — the churn path verified end-to-end: refused joins retry,
   stale sweep frees rows, late bots join into them (pids 129–140).
 
@@ -132,8 +134,10 @@ input every tick — and `load.sh N` spawns N of them against one server.
 
 - Branch arms ARE the continuation — a branched call ends its enclosing
   flow (box it in a tor, e.g. `push-input`, to keep a chain linear).
-- Terminal `! query` / `|> if` end flows — split find-or-join into
-  `find-touch` + `drive`; move unconditional reads before the branch.
+- `! first` + `| none` landed in std/store (koru `745d5ec`, pins
+  690_315/690_316) — find-or-join is one arm pair; `find-touch`,
+  `fresh-pid`, and the `lookup.fresh` sentinel column are deleted.
+  Still true: a `! query`/`! first` arm is terminal inside a flow.
 - Proc-body `__`-locals were NOT hygienic — nested `packets`/`ticks`
   collided on `__i`, std/io's print helper `__f` collided with raylib's
   `__f`. Fixed in koru (`__x` → `__x_s{N}` per splice site, pin 400_192).

@@ -42,10 +42,10 @@ std/store:new(game, capacity: 2) {
     seed: f32, nextpid: f32
 }
 
-// The sim's answer slot for "which pid owns this key" — a query arm can
-// write a grid cell but can't return a scalar, so find-or-join flows park
-// the result here and the chain reads it back.
-std/grid:new(lookup, size: 1) { pid: 0.0[f32], fresh: 0.0[f32] }
+// spawn-player's answer slot — a `| row` arm can write a grid cell but
+// can't return a scalar, so the join path parks the new pid here and the
+// none-chain reads it back (0 = refused).
+std/grid:new(lookup, size: 1) { pid: 0.0[f32] }
 
 const {
     SCREEN_WIDTH: 800
@@ -302,7 +302,7 @@ tick = std/kernel:init(bodies) {}
 pub tor control { pid: f32, left: bool, right: bool, thrusting: bool }
 
 control = std/store:query(bodies)
-    ! query e when e.kind == 1.0 and e.owner == pid and e.dead == 0.0
+    ! first e when e.kind == 1.0 and e.owner == pid and e.dead == 0.0
         |> rotation-delta(left, right, dt: 0.016666): drot
         |> thrust-dx(vx: e.dx, rotation: e.rot + drot, thrusting, dt: 0.016666): tvx
         |> thrust-dy(vy: e.dy, rotation: e.rot + drot, thrusting, dt: 0.016666): tvy
@@ -312,12 +312,12 @@ control = std/store:query(bodies)
         |> std/store:stored { e.rot: e.rot + drot, e.dx: ndx, e.dy: ndy }
 
 // Fire one bullet from the nose while the cooldown is out. The insert lands
-// inside the bodies sweep — safe: the appended row is visited this same
-// sweep and fails the kind==ship guard, so it is seen, not acted on.
+// inside the bodies sweep — safe: `! first` has already exited, so the
+// appended row is never visited by this scan at all.
 pub tor fire { pid: f32, pressed: bool }
 
 fire = std/store:query(bodies)
-    ! query e when e.kind == 1.0 and e.owner == pid and e.dead == 0.0 and pressed and e.cd <= 0.0
+    ! first e when e.kind == 1.0 and e.owner == pid and e.dead == 0.0 and pressed and e.cd <= 0.0
         |> nose(e.x, e.y, rotation: e.rot): n
         |> bullet-vel(rotation: e.rot): v
         |> std/store:insert(bodies) { n.x, n.y, v.dx, v.dy, kind: 3.0, r: 2.0, t: 1.1, seed: 0, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0, owner: pid }
@@ -453,42 +453,27 @@ spawn-tick = std/store:query(game)
 
 // ── sessions ────────────────────────────────────────────────────────────
 // The server's whole input path: one packet → one drive() call. The key is
-// udp's packet.key fold (addr<<16|port); an unknown key joins (session row
-// + ship spawn ghosting), a known key touches last. seq is the client's
-// tick: seq > lseq is fresh input — the gap counts into drops (inputs the
-// server never saw); seq <= lseq is a dup/reorder — liveness only, never
-// re-applied.
-
-// Chain head for drive: a flow can't open on grid:stored, so the per-call
-// lookup reset seeds through a value. (A `| none` arm on query would make
-// this unnecessary — named gap: "find-or-join wants a no-match arm".)
-pub tor fresh-pid {} -> f32
-
-fresh-pid -> 0.0
-
-// A ! query arm is terminal inside a flow — nothing chains after it at the
-// outer level — so drive is two tors: find/touch (the sweep), then the
-// join-if + input application.
-tor find-touch { key: i64, tick: f32, seq: f32 }
-
-find-touch = fresh-pid(): fp
-    |> std/grid:stored { lookup[0].pid: fp, lookup[0].fresh: 0.0 }
-    |> std/store:query(players)
-        ! query p when p.key == key
-            |> std/grid:stored { lookup[0].pid: p.pid }
-            |> if (seq > p.lseq)
-                | then |> std/grid:stored { lookup[0].fresh: 1.0 }
-                    |> std/store:stored { p.last: tick, p.drops: p.drops + seq - p.lseq - 1.0, p.lseq: seq }
-                | else |> std/store:stored { p.last: tick }
-
+// udp's packet.key fold (addr<<16|port). `! first` finds the session row and
+// stops; `| none` is the join path — the find-or-join arm pair, one scan.
+// seq is the client's tick: seq > lseq is fresh input — the gap counts into
+// drops (inputs the server never saw); seq <= lseq is a dup/reorder —
+// liveness only, never re-applied.
+//
+// `| none` resets lookup's pid before the join attempt, so a refused join
+// (| full in spawn-player) leaves it 0 and the input application no-ops —
+// the client never hears its pid, and the next packet retries.
 pub tor drive { key: i64, tick: f32, seq: f32, left: bool, right: bool, thrusting: bool, firing: bool }
 
-drive = find-touch(key, tick, seq)
-    |> if (lookup[0].pid == 0.0)
-        | then |> spawn-player(key, tick, seq)
-            |> control(lookup[0].pid, left, right, thrusting)
-            |> fire(lookup[0].pid, pressed: firing)
-        | else |> if (lookup[0].fresh == 1.0)
+drive = std/store:query(players)
+    ! first p when p.key == key
+        |> if (seq > p.lseq)
+            | then |> std/store:stored { p.last: tick, p.drops: p.drops + seq - p.lseq - 1.0, p.lseq: seq }
+                |> control(p.pid, left, right, thrusting)
+                |> fire(p.pid, pressed: firing)
+            | else |> std/store:stored { p.last: tick }
+    | none |> std/grid:stored { lookup[0].pid: 0.0 }
+        |> spawn-player(key, tick, seq)
+        |> if (lookup[0].pid != 0.0)
             | then |> control(lookup[0].pid, left, right, thrusting)
                 |> fire(lookup[0].pid, pressed: firing)
             | else |> _
