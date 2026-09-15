@@ -1,0 +1,17 @@
+score 0/1 t 0.9999999999999989 over 0 won 0
+kind 0 x 120 y 552.0173611111111 hit 0 dead 0
+kind 2 x 400 y 580 hit 0 dead 0
+kind 2 x 10 y 300 hit 0 dead 0
+kind 2 x 790 y 300 hit 0 dead 0
+kind 1 x 550 y 380 hit 0 dead 0
+kind 3 x 250 y 500 hit 0 dead 0
+kind 4 x 680 y 555 hit 0 dead 0
+score 0/1 t 0.9999999999999989 over 0 won 0
+kind 0 x 120 y 60 hit 0 dead 0
+kind 2 x 400 y 580 hit 0 dead 0
+kind 2 x 10 y 300 hit 0 dead 0
+kind 2 x 790 y 300 hit 0 dead 0
+kind 1 x 550 y 380 hit 0 dead 0
+kind 4 x 680 y 555 hit 1 dead 0
+score 1/1 t 0.9999999999999989 over 0 won 1
+score 1/1 t 0.9999999999999989 over 0 won 1

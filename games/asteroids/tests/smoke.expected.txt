@@ -1,0 +1,8 @@
+rotation-delta: left(-0.058331, expect -0.0583) both(0, expect 0) right(0.058331, expect +0.0583)
+wrap-x: -10(790, expect 790) 805(5, expect 5)
+facing(0)=(0,-1) expect (0,-1)
+rand(0): s2=28411 v=3835 | rand-under(0,360)=331
+collide d=18 true (expect true) d=22 false (expect false)
+bullet-tick(100,200,300,100,0.5): (104.9998,201.6666)
+child-r(60)=30 splits 60/14 => 2 (expect 2)
+no-input after 120 frames: x=400 y=300 vx=0 vy=0 rot=0

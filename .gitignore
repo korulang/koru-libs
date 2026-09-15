@@ -58,5 +58,11 @@ yarn-error.log*
 .koru-regressions/
 
 # asteroids-net local run artifacts
-ames/asteroids-net/*.bin
+games/asteroids-net/*.bin
 games/asteroids-net/*.log
+
+# Game oracle runner scratch (pins are tests/*.expected.txt; the rest is
+# per-run output)
+games/*/tests/actual.txt
+games/*/tests/compile.log
+games/*/tests/diff.txt

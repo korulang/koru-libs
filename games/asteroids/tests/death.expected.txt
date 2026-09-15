@@ -1,0 +1,28 @@
+── before
+kind 1 x 400 y 300 r 12 hit 0 dead 0
+kind 2 x 300 y 300 r 60 hit 0 dead 0
+score 0 lives 3 over 0 wave 1 rocks 1 pending 0 rt 0 seed 7
+── after tick (ship should be dead)
+kind 1 x 350 y 300 r 12 hit 0 dead 1
+kind 2 x 300 y 300 r 60 hit 0 dead 0
+── after respawn-ship (lives 2, rt 1.5, ship still dead)
+kind 1 x 350 y 300 r 12 hit 0 dead 1
+kind 2 x 300 y 300 r 60 hit 0 dead 0
+score 0 lives 2 over 0 wave 1 rocks 1 pending 0 rt 1.5 seed 7
+── after clock-out (ship alive at 400,300 inv 2)
+kind 1 x 400 y 300 r 12 hit 0 dead 0
+kind 2 x 300 y 300 r 60 hit 0 dead 0
+── after three deaths (over 1, ship dead)
+kind 1 x 350 y 300 r 12 hit 0 dead 1
+kind 2 x 300 y 300 r 60 hit 0 dead 0
+score 0 lives 0 over 1 wave 1 rocks 1 pending 0 rt 1.5 seed 7
+── after reset (over 0, lives 3, field empty)
+kind 1 x 400 y 300 r 12 hit 0 dead 0
+score 0 lives 3 over 0 wave 0 rocks 0 pending 0 rt 0 seed 7
+── after wave 1 dealt (ship + 4 rim rocks)
+kind 1 x 400 y 300 r 12 hit 0 dead 0
+kind 2 x 104 y 0 r 45 hit 0 dead 0
+kind 2 x 800 y 312 r 45 hit 0 dead 0
+kind 2 x 0 y 546 r 45 hit 0 dead 0
+kind 2 x 368 y 600 r 45 hit 0 dead 0
+score 0 lives 3 over 0 wave 1 rocks 4 pending 0 rt 0 seed 44219
