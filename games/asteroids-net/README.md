@@ -86,6 +86,29 @@ players over real datagrams. Three programs share `sim/` + `wire/`:
 - Semantics: `seq > lseq` is fresh input (gap → `drops`, apply); `seq <=
   lseq` is dup/reorder — liveness touch only, never re-applied.
 
+## Measured (load probe, `load.sh N`)
+
+`loadbot.k` is a real client — own process, own ephemeral port, sequenced
+input every tick — and `load.sh N` spawns N of them against one server.
+
+- **N=8** — 8/8 heard ~690/700 snaps, `indrop 0` all; heartbeat
+  `4331 pkts in / 4277 snaps out` per 600-tick beat.
+- **N=16** — the first wall: `players` was `capacity: 16` with no
+  `| full` arm on the join insert, so the 17th packet **panicked the
+  server** (`store 'players' is full`, the 690_011 mechanism). Fixed:
+  capacity 128 + a `| full` arm that refuses the join instead — the
+  refused packet leaves `lookup` at 0, so input no-ops and the client
+  simply never hears a pid. Every `insert` site (`fire`, rock split,
+  wave spawn, ship spawn) got the same arm — a full store now drops
+  the entity, never the process.
+- **N=32 / N=64** — all sessions heard, `indrop 0`, no crash.
+- **N=100** — all 100 heard (avg ~633/700 snaps) — and the first REAL
+  loss: server-side `drops` ~50–74/session (~9% of input), client-side
+  `indrop` up to ~200. The oracle built for injected gaps now measures
+  genuine socket-buffer pressure: ~48 pkts/tick arrive vs ~100 sent.
+  `last count` ~114–122 → `bodies` (cap 128) near saturation, graceful
+  refusals live. The wall is ingress drain + full-state fan-out cost.
+
 ## Compiler contours this slice surfaced
 
 - Branch arms ARE the continuation — a branched call ends its enclosing

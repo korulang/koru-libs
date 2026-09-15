@@ -29,7 +29,7 @@ std/store:new(bodies, capacity: 128) {
     owner: f32
 }
 
-std/store:new(players, capacity: 16) {
+std/store:new(players, capacity: 128) {
     pid: f32, key: i64, rt: f32, waiting: f32, last: f32,
     lseq: f32, drops: f32
 }
@@ -318,7 +318,8 @@ fire = std/store:query(bodies)
         |> nose(e.x, e.y, rotation: e.rot): n
         |> bullet-vel(rotation: e.rot): v
         |> std/store:insert(bodies) { n.x, n.y, v.dx, v.dy, kind: 3.0, r: 2.0, t: 1.1, seed: 0, hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0, owner: pid }
-        |> std/store:stored { e.cd: 0.25 }
+            | row _ |> std/store:stored { e.cd: 0.25 }
+            | full |> _
 
 // Bullets that burned out or struck.
 pub tor harvest { }
@@ -352,8 +353,10 @@ spawn-children = split-count(r): nk
             |> rand(s: sp.s2): r1
             |> rand(s: r1.s2): r2
             |> std/store:insert(bodies) { x, y, dx: sp.dx1, dy: sp.dy1, kind: 2.0, r: cr, t: 0.0, seed: @as(i32, @intCast(r1.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0, owner: 0.0 }
-            |> std/store:insert(bodies) { x, y, dx: sp.dx2, dy: sp.dy2, kind: 2.0, r: cr, t: 0.0, seed: @as(i32, @intCast(r2.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0, owner: 0.0 }
-            |> bump-rocks(n: 2.0)
+                | row _ |> std/store:insert(bodies) { x, y, dx: sp.dx2, dy: sp.dy2, kind: 2.0, r: cr, t: 0.0, seed: @as(i32, @intCast(r2.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0, owner: 0.0 }
+                    | row _ |> bump-rocks(n: 2.0)
+                    | full |> bump-rocks(n: 1.0)
+                | full |> _
         | else |> _
 
 // Classic scoring: big 20, medium 50, small 100.
@@ -442,7 +445,8 @@ spawn-tick = std/store:query(game)
         |> edge-y(edge: e1.v, p: @as(f32, @floatFromInt(p1.v))): ey
         |> dir(deg: a1.v, speed: 40.0 + @as(f32, @floatFromInt(v1.v))): vel
         |> std/store:insert(bodies) { x: ex, y: ey, vel.dx, vel.dy, kind: 2.0, r: 45.0, t: 0.0, seed: @as(i32, @intCast(j1.v)), hit: 0.0, dead: 0.0, rot: 0.0, inv: 0.0, cd: 0.0, owner: 0.0 }
-        |> std/store:stored { g.pending: g.pending - 1.0, g.rocks: g.rocks + 1.0, g.seed: @as(f32, @floatFromInt(j1.s2)) }
+            | row _ |> std/store:stored { g.pending: g.pending - 1.0, g.rocks: g.rocks + 1.0, g.seed: @as(f32, @floatFromInt(j1.s2)) }
+            | full |> _
 
 // ── sessions ────────────────────────────────────────────────────────────
 // The server's whole input path: one packet → one drive() call. The key is
@@ -492,18 +496,27 @@ pub tor spawn-spot { pid: f32 } -> { x: f32, y: f32 }
 
 spawn-spot -> { x: 80.0 + @mod(pid, 4.0) * 213.0, y: 80.0 + @mod(@floor(pid / 4.0), 2.0) * 440.0 }
 
+// A refused join is a boundary, not a crash: | full leaves lookup at 0,
+// so the caller's input application no-ops and the client just never
+// hears its pid. The packet still touched nothing — next one retries.
 tor spawn-player { key: i64, tick: f32, seq: f32 }
 
 spawn-player = std/store:query(game)
-    ! query g |> std/grid:stored { lookup[0].pid: g.nextpid }
-        |> std/store:insert(players) { pid: g.nextpid, key, rt: 0.0, waiting: 0.0, last: tick, lseq: seq, drops: 0.0 }
-        |> spawn-ship(pid: g.nextpid)
-        |> std/store:stored { g.nextpid: g.nextpid + 1.0 }
+    ! query g |> std/store:insert(players) { pid: g.nextpid, key, rt: 0.0, waiting: 0.0, last: tick, lseq: seq, drops: 0.0 }
+        | row _ |> std/grid:stored { lookup[0].pid: g.nextpid }
+            |> spawn-ship(pid: g.nextpid)
+            |> std/store:stored { g.nextpid: g.nextpid + 1.0 }
+        | full |> std/io:print.ln("server full — refused join, key {{ key:d }}")
 
 tor spawn-ship { pid: f32 }
 
+// bodies-full leaves a shipless session row — a ghost that hears snaps
+// but owns nothing. Graceful, and the watcher's per-pid tracking would
+// report it as "no own ship" rather than hide it.
 spawn-ship = spawn-spot(pid): spot
     |> std/store:insert(bodies) { spot.x, spot.y, dx: 0.0, dy: 0.0, kind: 1.0, r: 12.0, t: 0.0, seed: 0, hit: 0.0, dead: 0.0, rot: 0.0, inv: 2.0, cd: 0.0, owner: pid }
+        | row _ |> _
+        | full |> _
 
 // A client silent for `timeout` ticks forfeits: the session row takes, then
 // its ship — take's | item arm carries pid across the two stores.
