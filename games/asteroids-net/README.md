@@ -114,8 +114,19 @@ input every tick — and `load.sh N` spawns N of them against one server.
   (SO_RCVBUF, granted 4MB as asked) + drain cap 512. Result:
   **kernel drop counter did not move (35,528 → 35,528), `indrop` 0
   across all 100 sessions, 44,024 pkts in** (+53% ingress).
-- `bodies` (cap 128) still runs near-saturated (~114–122 entities) —
-  graceful refusals live, and the next ceiling after this one.
+- `bodies` raised 128 → 512: 128 ships + rocks + bullets already
+  overflowed at N=128 (late joiners spawned shipless — graceful, but
+  the caps disagreed by construction). Entity rows must exceed the
+  session ceiling.
+- **N=128, full envelope** — all heard, `indrop` 0, kernel counter
+  flat — but the phase-timed beat says **~48Hz, not 60**: ~4.7ms of
+  work/tick vs a 16ms budget. Decomposition inverts the expected wall:
+  sim 0.13ms, serialize+fan-out 0.84ms, and **~3.7ms in drain+drive** —
+  every packet runs `find-touch` (128-row scan) + `control`/`fire`
+  (512-row bodies scan for one ship): ~86K row-visits/tick. The real
+  next wall is "find one row by predicate" — no early-exit, no index.
+- **N=140** — the churn path verified end-to-end: refused joins retry,
+  stale sweep frees rows, late bots join into them (pids 129–140).
 
 ## Compiler contours this slice surfaced
 
