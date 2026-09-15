@@ -25,8 +25,11 @@ const {
     DRAIN: 512
 }
 
-// Run receipts: packets in, snapshots out, heartbeat counter.
-std/grid:new(tally, size: 1) { pkts: 0[i32], sent: 0[i32], beats: 0.0[f32] }
+// Run receipts: packets in, snapshots out, heartbeat counter, beat clock
+// (ns as f64 — the tick rate is the load signal: 60Hz nominal, overruns sag).
+// simms/bcastms accumulate per-tick phase times so the beat says WHERE the
+// budget went — drain is the remainder (it includes per-packet sim:drive).
+std/grid:new(tally, size: 1) { pkts: 0[i32], sent: 0[i32], beats: 0.0[f32], lastbeat: 0.0[f64], simms: 0.0[f64], bcastms: 0.0[f64] }
 
 // The shared world row: score/wave/census/spawn-queue/LCG-seed/pid-counter.
 std/store:insert(game) { score: 0.0, wave: 0.0, rocks: 0.0, pending: 0.0, seed: 7.0, nextpid: 1.0 }
@@ -75,10 +78,13 @@ broadcast = wire:snap.begin(tick: t): sn
 tor heartbeat {}
 
 heartbeat = if (tally[0].beats >= BEAT)
-    | then |> std/grid:stored { tally[0].beats: 0.0 }
+    | then |> std/time:now(): tn
+        |> std/time:elapsed(start: @as(i128, @intFromFloat(tally[0].lastbeat))): el
+        |> std/grid:stored { tally[0].beats: 0.0, tally[0].lastbeat: @as(f64, @floatFromInt(tn)) }
         |> sim:dump-game()
         |> sim:dump-players()
-        |> std/io:print.ln("beat: {{ tally[0].pkts:d }} pkts in, {{ tally[0].sent:d }} snaps out")
+        |> std/io:print.ln("beat: {{ tally[0].pkts:d }} pkts in, {{ tally[0].sent:d }} snaps out, {{ el.ms:f }}ms — {{ 600000.0 / el.ms:f }}Hz (sim {{ tally[0].simms:f }}ms bcast {{ tally[0].bcastms:f }}ms)")
+        |> std/grid:stored { tally[0].simms: 0.0, tally[0].bcastms: 0.0 }
     | else |> std/grid:stored { tally[0].beats: tally[0].beats + 1.0 }
 
 // The measured wall (N=100, +18,284 kernel buffer drops/run): drain cap
@@ -95,10 +101,13 @@ set-rcvbuf = libs/udp:socket.rcvbuf(sock: s, bytes: RCVBUF)
 libs/udp:bind(port: PORT)
 | bound s |> std/io:print.ln("asteroids-net server on :{{ PORT:d }} — no tick bound, runs until killed")
     |> set-rcvbuf(s)
+    |> std/time:now(): t0
+    |> std/grid:stored { tally[0].lastbeat: @as(f64, @floatFromInt(t0)) }
     |> clock:ticks()
         ! each t |> libs/udp:packets(sock: s, max: DRAIN)
             ! packet p |> handle(p, t: @as(f32, @floatFromInt(t)))
-            | done |> sim:tick()
+            | done |> std/time:now(): t1
+                |> sim:tick()
                 |> sim:harvest()
                 |> sim:harvest-rocks()
                 |> sim:respawn-ship()
@@ -107,7 +116,11 @@ libs/udp:bind(port: PORT)
                 |> sim:wave-check()
                 |> sim:spawn-tick()
                 |> sim:sweep-stale(tick: @as(f32, @floatFromInt(t)), timeout: STALE_TICKS)
+                |> std/time:now(): t2
+                |> std/grid:stored { tally[0].simms: tally[0].simms + @as(f64, @floatFromInt(t2 - t1)) / 1000000.0 }
                 |> broadcast(s, t: @as(i32, @intCast(t)))
+                |> std/time:now(): t3
+                |> std/grid:stored { tally[0].bcastms: tally[0].bcastms + @as(f64, @floatFromInt(t3 - t2)) / 1000000.0 }
                 |> heartbeat()
                 |> std/time:sleep-ms(ms: 16)
             | err e |> std/io:print.ln("drain err {{ e:s }}")

@@ -20,7 +20,10 @@ import std/store
 import std/kernel
 import std/grid
 
-std/store:new(bodies, capacity: 128) {
+// 512: players cap is 128, and 128 ships + rocks + live bullets already
+// overflowed 128 at N=128 — late joiners spawned shipless. Entity rows
+// must exceed the session ceiling or the caps disagree by construction.
+std/store:new(bodies, capacity: 512) {
     x: f32, y: f32, dx: f32, dy: f32,
     kind: f32, r: f32, t: f32,
     seed: i32,
