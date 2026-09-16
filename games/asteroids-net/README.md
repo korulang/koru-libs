@@ -119,14 +119,15 @@ input every tick — and `load.sh N` spawns N of them against one server.
   the caps disagreed by construction). Entity rows must exceed the
   session ceiling.
 - **N=128, full envelope** — all heard, `indrop` 0, kernel counter
-  flat — but the phase-timed beat says **~48Hz, not 60**: ~4.7ms of
-  work/tick vs a 16ms budget. Decomposition inverts the expected wall:
-  sim 0.13ms, serialize+fan-out 0.84ms, and **~3.7ms in drain+drive**.
-  `! first` made the row scans early-exit and `| none` collapsed
-  find-or-join into one arm pair — and the A/B measured it
-  **performance-neutral** (~41Hz both ways under matched load): the
-  ~3.7ms is per-packet fixed cost (recv/decode/dispatch), not row
-  visits. The wall was never the scans.
+  flat — and after the tick-pacing fix, **~59.9Hz** (was ~48). The
+  hunt went through three wrong walls to get there: fan-out (18%),
+  row scans (`! first`/`| none` — performance-neutral under A/B),
+  then the real one: the tick body is only ~1.9ms of work, but
+  `sleep-ms(16)` slept ~18.7ms — nanosleep quantization + overshoot
+  was the whole sag. `std/time:pace` (deadline off the schedule, not
+  a duration after work) lands 60Hz with headroom: per tick ~1.0ms
+  drain (drive 4.6µs + dispatch ~2µs + decode 0.2µs per packet),
+  0.1ms sim, ~0.9ms bcast.
 - **N=140** — the churn path verified end-to-end: refused joins retry,
   stale sweep frees rows, late bots join into them (pids 129–140).
 
@@ -163,8 +164,10 @@ input every tick — and `load.sh N` spawns N of them against one server.
 - Full-state snapshots only — no delta compression, no interest
   management (server sends everyone the whole field).
 - No client-side prediction or interpolation — input latency shows raw.
-- No tick-rate accounting — `sleep-ms(16)` approximates 60Hz, no drift
-  correction, no fixed-timestep accumulator.
+- Tick pacing is now deadline-scheduled (`std/time:pace`, period
+  16_666_667ns off the schedule) — holds ~59.9Hz at full envelope.
+  The residual ~1ms/tick wake overshoot is a nanosleep property;
+  sub-ms precision would want a spin-trim or `mach_wait_until`.
 - Session key is addr<<16|port — fine for LAN, not identity. No auth.
 - No anti-cheat/telemetry — that's the `koru/signal` slice; the detector
   surface (per-stream models over per-session state) is designed but

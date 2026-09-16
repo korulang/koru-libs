@@ -28,8 +28,13 @@ const {
 // Run receipts: packets in, snapshots out, heartbeat counter, beat clock
 // (ns as f64 — the tick rate is the load signal: 60Hz nominal, overruns sag).
 // simms/bcastms accumulate per-tick phase times so the beat says WHERE the
-// budget went — drain is the remainder (it includes per-packet sim:drive).
-std/grid:new(tally, size: 1) { pkts: 0[i32], sent: 0[i32], beats: 0.0[f32], lastbeat: 0.0[f64], simms: 0.0[f64], bcastms: 0.0[f64] }
+// budget went. tickms wraps the whole arm body; pace keeps the tick on a
+// deadline — sleep off the schedule, not a fixed 16ms after the work.
+// The drain decomposition: drainms wraps the whole packets step; hdrms /
+// decodems / drivems are per-packet sums inside handle (accessors, wire
+// decode, sim:drive). The residual — drain minus the three — is the
+// iterator + per-packet arm dispatch, the cost no row scan ever paid.
+std/grid:new(tally, size: 1) { pkts: 0[i32], sent: 0[i32], beats: 0.0[f32], lastbeat: 0.0[f64], pacens: 0.0[f64], simms: 0.0[f64], bcastms: 0.0[f64], drainms: 0.0[f64], hdrms: 0.0[f64], decodems: 0.0[f64], drivems: 0.0[f64], tickms: 0.0[f64] }
 
 // The shared world row: score/wave/census/spawn-queue/LCG-seed/pid-counter.
 std/store:insert(game) { score: 0.0, wave: 0.0, rocks: 0.0, pending: 0.0, seed: 7.0, nextpid: 1.0 }
@@ -38,13 +43,17 @@ std/store:insert(game) { score: 0.0, wave: 0.0, rocks: 0.0, pending: 0.0, seed: 
 
 tor handle { p: *libs/udp:Packet<packet>, t: f32 }
 
-handle = libs/udp:packet.data(p): d
+handle = std/time:now(): h0
+    |> libs/udp:packet.data(p): d
     |> libs/udp:packet.key(p): k
+    |> std/time:now(): h1
     |> wire:input.decode(d): inp
+    |> std/time:now(): h2
     |> if (inp.ok)
         | then |> sim:drive(key: k, tick: t, seq: @as(f32, @floatFromInt(inp.seq)), inp.left, inp.right, thrusting: inp.thrust, firing: inp.fire)
-            |> std/grid:stored { tally[0].pkts: tally[0].pkts + 1 }
-        | else |> _
+            |> std/time:now(): h3
+            |> std/grid:stored { tally[0].pkts: tally[0].pkts + 1, tally[0].hdrms: tally[0].hdrms + @as(f64, @floatFromInt(h1 - h0)) / 1000000.0, tally[0].decodems: tally[0].decodems + @as(f64, @floatFromInt(h2 - h1)) / 1000000.0, tally[0].drivems: tally[0].drivems + @as(f64, @floatFromInt(h3 - h2)) / 1000000.0 }
+        | else |> std/grid:stored { tally[0].hdrms: tally[0].hdrms + @as(f64, @floatFromInt(h1 - h0)) / 1000000.0, tally[0].decodems: tally[0].decodems + @as(f64, @floatFromInt(h2 - h1)) / 1000000.0 }
 
 tor fill-bodies { sn: *wire:Snap<open> }
 
@@ -84,7 +93,9 @@ heartbeat = if (tally[0].beats >= BEAT)
         |> sim:dump-game()
         |> sim:dump-players()
         |> std/io:print.ln("beat: {{ tally[0].pkts:d }} pkts in, {{ tally[0].sent:d }} snaps out, {{ el.ms:f }}ms — {{ 600000.0 / el.ms:f }}Hz (sim {{ tally[0].simms:f }}ms bcast {{ tally[0].bcastms:f }}ms)")
-        |> std/grid:stored { tally[0].simms: 0.0, tally[0].bcastms: 0.0 }
+        |> std/io:print.ln("  drain {{ tally[0].drainms:f }}ms = hdr {{ tally[0].hdrms:f }} + dec {{ tally[0].decodems:f }} + drive {{ tally[0].drivems:f }} + disp {{ tally[0].drainms - tally[0].hdrms - tally[0].decodems - tally[0].drivems:f }}ms")
+        |> std/io:print.ln("  tickbody {{ tally[0].tickms:f }}ms — other {{ tally[0].tickms - tally[0].drainms - tally[0].simms - tally[0].bcastms:f }}ms outside packets+sim+bcast; sleep acct {{ el.ms - tally[0].tickms:f }}ms")
+        |> std/grid:stored { tally[0].simms: 0.0, tally[0].bcastms: 0.0, tally[0].drainms: 0.0, tally[0].hdrms: 0.0, tally[0].decodems: 0.0, tally[0].drivems: 0.0, tally[0].tickms: 0.0 }
     | else |> std/grid:stored { tally[0].beats: tally[0].beats + 1.0 }
 
 // The measured wall (N=100, +18,284 kernel buffer drops/run): drain cap
@@ -102,11 +113,14 @@ libs/udp:bind(port: PORT)
 | bound s |> std/io:print.ln("asteroids-net server on :{{ PORT:d }} — no tick bound, runs until killed")
     |> set-rcvbuf(s)
     |> std/time:now(): t0
-    |> std/grid:stored { tally[0].lastbeat: @as(f64, @floatFromInt(t0)) }
+    |> std/grid:stored { tally[0].lastbeat: @as(f64, @floatFromInt(t0)), tally[0].pacens: @as(f64, @floatFromInt(t0)) }
     |> clock:ticks()
-        ! each t |> libs/udp:packets(sock: s, max: DRAIN)
+        ! each t |> std/time:now(): td0
+            |> libs/udp:packets(sock: s, max: DRAIN)
             ! packet p |> handle(p, t: @as(f32, @floatFromInt(t)))
-            | done |> std/time:now(): t1
+            | done |> std/time:elapsed(start: td0): del
+                |> std/grid:stored { tally[0].drainms: tally[0].drainms + del.us / 1000.0 }
+                |> std/time:now(): t1
                 |> sim:tick()
                 |> sim:harvest()
                 |> sim:harvest-rocks()
@@ -122,7 +136,10 @@ libs/udp:bind(port: PORT)
                 |> std/time:now(): t3
                 |> std/grid:stored { tally[0].bcastms: tally[0].bcastms + @as(f64, @floatFromInt(t3 - t2)) / 1000000.0 }
                 |> heartbeat()
-                |> std/time:sleep-ms(ms: 16)
+                |> std/time:elapsed(start: td0): tel
+                |> std/grid:stored { tally[0].tickms: tally[0].tickms + tel.us / 1000.0 }
+                |> std/time:pace(period: 16666667, last: @as(i128, @intFromFloat(tally[0].pacens))): pb
+                |> std/grid:stored { tally[0].pacens: @as(f64, @floatFromInt(pb)) }
             | err e |> std/io:print.ln("drain err {{ e:s }}")
     | done |> libs/udp:close(sock: s)
 | err e |> std/io:print.ln("bind err {{ e:s }}")
