@@ -1,0 +1,6 @@
+name: constraint
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a hard boundary the language places on what code may express — not a defect to fix but a law to design inside. First fired 2026-09-16 — `__H` is splice-position-only, so arm-forwarding compositions live at generated call sites, not in procs (the ruling that made `vaxis:run` a transform).

@@ -1,33 +1,31 @@
 // FRONTIER REPRO — Charm Bubbles spinner natural shape (COMPONENT replay 04).
 //
-// Thesis: a reusable <spinner/> needs time-driven frame ticks so glyph
-// cycling lives inside the widget boundary (or a store it owns), not in
-// ! key as fake chrome.
+// The natural Charm consumer: `<spinner/>` + `<text>` inside a stack-panel,
+// glyph cycling living inside the widget boundary (ms interval), `! tick`
+// pulses driving repaint. Every wall this file once hit is now closed:
 //
-// Natural consumer shape (Charm TickMsg / tea.Tick):
-//   koru/vaxis:run(...)
-//   ! draw w |> app(win: w, frame: spin.frame)
-//   ! tick _ |> std/store:stored { spin.frame: (spin.frame + 1) % 10 }
+//   `! ?tick i64` on run            — shipped (pulses + repaint)
+//   `koru/vaxis:spinner { win, ms }` — shipped (MiniDot, own frame clock)
+//   `<text>` inside `<stack-panel>`  — a painted row, not a component call
+//     (was KORU040 `<consumer>:text` — the inner walk lacked the text branch)
 //
-// Wall: koru/vaxis:run declares only ! ?draw / ! ?key / ! ?resize /
-// ! ?focus-in / ! ?focus-out. No ! tick (or timer/frame) effect branch.
-// Without that substrate, Charm-class animation cannot live honestly.
+//   koruc run tests/frontier/charm_spinner_natural.k   (q quit)
 
 import std/io
 import std/store
 import koru/vaxis
 
-std/store:new(spin) { frame: 0[i64] }
+std/store:new(spin) { ms: 0[i64] }
 
 koru/vaxis:component(app) {
     <stack-panel>
-        <spinner frame={{ frame:d }}/>
+        <spinner ms={{ ms:d }}/>
         <text>q quit</text>
     </stack-panel>
 }
 
 koru/vaxis:run(title: "spinner-frontier")
-! draw w |> app(win: w, spin.frame)
-! tick _ |> std/store:stored { spin.frame: (spin.frame + 1) % 10 }
+! draw w |> app(win: w, spin.ms)
+! tick ms |> std/store:stored { spin.ms: ms }
 ! char k when k.ch == 'q' |> koru/vaxis:quit()
 | err e |> std/io:print.ln("vaxis failed: {{ e:s }}")

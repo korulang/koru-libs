@@ -23,3 +23,14 @@ Probe: `examples/tick.k` (or any `! tick _ |> …` consumer).
 
 Surface `i64 /` still emits Zig `/` (needs `@divTrunc`) — FPS math stays in
 the zig builtin (honest float, not a library dodge of a koru expression).
+
+## `<text>` inside `<stack-panel>` — CLOSED (2026-09-16)
+
+The stack-panel inner walk treated every child tag as a component call, so
+`<text>` in a stack row resolved as `<consumer>:text` → KORU040. A text row
+is a PAINTED element in the row's slice: the walk now routes `cn == "text"`
+through `textEl` (the shared placeholder/prop classifier the top-level path
+uses) and emission carves `sub(win, y:stack_y, h:1)` before painting at y:0
+of the slice — the same two-op shape a stacked component gets. Verified live:
+`charm_spinner_natural.k` renders the MiniDot glyph + `q quit` row and exits
+clean on `q`.
