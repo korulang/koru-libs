@@ -34,3 +34,14 @@ uses) and emission carves `sub(win, y:stack_y, h:1)` before painting at y:0
 of the slice — the same two-op shape a stacked component gets. Verified live:
 `charm_spinner_natural.k` renders the MiniDot glyph + `q quit` row and exits
 clean on `q`.
+
+## `<text>` inside `<dock>` — CLOSED (2026-09-16)
+
+Same class as the stack-panel gap: dock children were all classified as
+component calls. A text row is painted content in the carved slot — the
+inner walk routes `cn == "text"` through `textEl` and emission carves the
+dock slot first (top `sub` / bottom `sub-from-bottom` / fill `sub-fill`,
+the same three primitives components get) then paints at y:0 of the
+slice. Verified live: `dock_text.k` pins a title row top and `q quit`
+bottom in one `<dock>`. Nested `<stack-panel>` kids inside a dock slot
+still classify text as components — deeper nesting is the remaining case.
