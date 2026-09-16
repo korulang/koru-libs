@@ -17,6 +17,7 @@
 
 import std/io
 import std/store
+import std/indexes
 import std/kernel
 import std/grid
 
@@ -37,6 +38,11 @@ std/store:new(players, capacity: 1024) {
     pid: f32, key: i64, rt: f32, waiting: f32, last: f32,
     lseq: f32, drops: f32
 }
+
+// The session lookup is the hot path — one `! first p when p.key == key`
+// per packet per tick. Declared indexed: drive's find-or-join answers a
+// key→handle map lookup instead of sweeping the session rows.
+std/indexes:store(players, key)
 
 std/store:new(game, capacity: 2) {
     score: f32, wave: f32, rocks: f32, pending: f32,
