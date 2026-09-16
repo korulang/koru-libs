@@ -72,7 +72,13 @@ pub const c = @cImport({
 pub const Tls = struct {
     ssl: ?*c.SSL,
     ctx: ?*c.SSL_CTX,
+    owns_ctx: bool,
     fd: c_int,
+    allocator: std.mem.Allocator,
+};
+
+pub const ServerCtx = struct {
+    ctx: ?*c.SSL_CTX,
     allocator: std.mem.Allocator,
 };
 
@@ -106,7 +112,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // SSL_get_verify_result check. Any failure returns `err` loudly — it never
 // hands back an unverified connection.
 
-~pub tor connect { host: string, port: u16, allocator: ?std.mem.Allocator }
+~[retain]pub tor connect { host: string, port: u16, allocator: ?std.mem.Allocator }
 | ok *Tls<open!>
 | err Error
 
@@ -185,7 +191,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
     const conn = alloc.create(Tls) catch {
         return .{ .err = .{ .code = 0, .msg = "out of memory allocating connection" } };
     };
-    conn.* = .{ .ssl = ssl, .ctx = ctx, .fd = fd, .allocator = alloc };
+    conn.* = .{ .ssl = ssl, .ctx = ctx, .owns_ctx = true, .fd = fd, .allocator = alloc };
     return .{ .ok = conn };
 }
 
@@ -200,7 +206,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // identical, so the ONLY signal of danger is at the call site — which is the
 // point.
 
-~pub tor connect.insecure { host: string, port: u16, allocator: ?std.mem.Allocator }
+~[retain]pub tor connect.insecure { host: string, port: u16, allocator: ?std.mem.Allocator }
 | ok *Tls<open!>
 | err Error
 
@@ -244,15 +250,176 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
     const conn = alloc.create(Tls) catch {
         return .{ .err = .{ .code = 0, .msg = "out of memory allocating connection" } };
     };
-    conn.* = .{ .ssl = ssl, .ctx = ctx, .fd = fd, .allocator = alloc };
+    conn.* = .{ .ssl = ssl, .ctx = ctx, .owns_ctx = true, .fd = fd, .allocator = alloc };
     return .{ .ok = conn };
+}
+
+// ============================================================================
+// Server-side TLS — shared context + per-connection accept.
+// ============================================================================
+
+pub const LoadServerResult = union(enum) {
+    ok: *ServerCtx,
+    err: Error,
+};
+
+pub const SslAcceptResult = union(enum) {
+    ok: *c.SSL,
+    err: Error,
+};
+
+pub const SslFillResult = enum { more, idle, gone };
+
+pub fn loadServerCtx(alloc: std.mem.Allocator, cert_path: []const u8, key_path: []const u8) LoadServerResult {
+    const cert_z = alloc.dupeZ(u8, cert_path) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory duplicating cert_path" } };
+    };
+    defer alloc.free(cert_z);
+    const key_z = alloc.dupeZ(u8, key_path) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory duplicating key_path" } };
+    };
+    defer alloc.free(key_z);
+
+    const ctx = c.SSL_CTX_new(c.TLS_server_method());
+    if (ctx == null) {
+        return .{ .err = drainErr(alloc, "SSL_CTX_new failed") };
+    }
+    errdefer c.SSL_CTX_free(ctx);
+
+    _ = c.SSL_CTX_set_min_proto_version(ctx, c.TLS1_3_VERSION);
+
+    if (c.SSL_CTX_use_certificate_file(ctx, cert_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
+        return .{ .err = drainErr(alloc, "SSL_CTX_use_certificate_file failed") };
+    }
+    if (c.SSL_CTX_use_PrivateKey_file(ctx, key_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
+        return .{ .err = drainErr(alloc, "SSL_CTX_use_PrivateKey_file failed") };
+    }
+    if (c.SSL_CTX_check_private_key(ctx) != 1) {
+        return .{ .err = drainErr(alloc, "certificate and private key do not match") };
+    }
+
+    const server = alloc.create(ServerCtx) catch {
+        return .{ .err = .{ .code = 0, .msg = "out of memory allocating server context" } };
+    };
+    server.* = .{ .ctx = ctx, .allocator = alloc };
+    return .{ .ok = server };
+}
+
+pub fn freeServerCtx(server: *ServerCtx) void {
+    if (server.ctx) |ctx| {
+        c.SSL_CTX_free(ctx);
+        server.ctx = null;
+    }
+    server.allocator.destroy(server);
+}
+
+pub fn acceptServerSsl(server: *ServerCtx, fd: c_int, alloc: std.mem.Allocator) SslAcceptResult {
+    const ssl_ptr = c.SSL_new(server.ctx);
+    if (ssl_ptr == null) {
+        return .{ .err = drainErr(alloc, "SSL_new failed") };
+    }
+    const ssl = ssl_ptr.?;
+    errdefer c.SSL_free(ssl);
+
+    _ = c.SSL_set_fd(ssl, fd);
+
+    if (c.SSL_accept(ssl) != 1) {
+        return .{ .err = drainErr(alloc, "SSL_accept failed") };
+    }
+
+    return .{ .ok = ssl };
+}
+
+pub fn releaseServerSsl(ssl: *c.SSL) void {
+    _ = c.SSL_shutdown(ssl);
+    c.SSL_free(ssl);
+}
+
+pub fn sslFill(ssl: *c.SSL, buf: []u8, alloc: std.mem.Allocator) SslFillResult {
+    const rc = c.SSL_read(ssl, buf.ptr, @intCast(buf.len));
+    if (rc > 0) return .more;
+    const err_code = c.SSL_get_error(ssl, rc);
+    return switch (err_code) {
+        c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => .idle,
+        c.SSL_ERROR_ZERO_RETURN => .gone,
+        else => {
+            _ = drainErr(alloc, "SSL_read failed");
+            return .gone;
+        },
+    };
+}
+
+pub fn sslWriteAll(ssl: *c.SSL, fd: c_int, data: []const u8, alloc: std.mem.Allocator) bool {
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const rc = c.SSL_write(ssl, data.ptr + offset, @intCast(data.len - offset));
+        if (rc > 0) {
+            offset += @intCast(rc);
+            continue;
+        }
+        const err_code = c.SSL_get_error(ssl, rc);
+        switch (err_code) {
+            c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => {
+                var pfd = [_]std.posix.pollfd{.{ .fd = fd, .events = std.posix.POLL.IN | std.posix.POLL.OUT, .revents = 0 }};
+                const ready = std.posix.poll(&pfd, 10_000) catch return false;
+                if (ready == 0) return false;
+                if (pfd[0].revents & (std.posix.POLL.ERR | std.posix.POLL.HUP | std.posix.POLL.NVAL) != 0) return false;
+            },
+            else => {
+                _ = drainErr(alloc, "SSL_write failed");
+                return false;
+            },
+        }
+    }
+    return true;
+}
+
+~[retain]pub tor server.load { cert_path: string, key_path: string, allocator: ?std.mem.Allocator }
+| ok *ServerCtx<ready!>
+| err Error
+
+~proc server.load|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+    return loadServerCtx(alloc, cert_path, key_path);
+}
+
+~[retain]pub tor server.accept { server: *ServerCtx<!ready>, fd: c_int, allocator: ?std.mem.Allocator }
+| ok *Tls<open!>
+| err Error
+
+~proc server.accept|zig {
+    const alloc = allocator orelse std.heap.page_allocator;
+    const accepted = acceptServerSsl(server, fd, alloc);
+    switch (accepted) {
+        .ok => |ssl| {
+            const conn = alloc.create(Tls) catch {
+                releaseServerSsl(ssl);
+                return .{ .err = .{ .code = 0, .msg = "out of memory allocating connection" } };
+            };
+            conn.* = .{
+                .ssl = ssl,
+                .ctx = server.ctx,
+                .owns_ctx = false,
+                .fd = fd,
+                .allocator = alloc,
+            };
+            return .{ .ok = conn };
+        },
+        .err => |e| return .{ .err = e },
+    }
+}
+
+~[retain]pub tor server.close { server: *ServerCtx<!ready> }
+
+~proc server.close|zig {
+    freeServerCtx(server);
 }
 
 // ============================================================================
 // write — requires `open`, so it cannot run before connect or after shutdown.
 // ============================================================================
 
-~pub tor write { conn: *Tls<!open>, data: string }
+~[retain]pub tor write { conn: *Tls<!open>, data: string }
 | ok { conn: *Tls<open!>, n: usize }
 | err { conn: *Tls<open!>, code: c_ulong, msg: string }
 
@@ -273,7 +440,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // ============================================================================
 // `bytes` is a slice INTO the caller's `buf`, so there is nothing extra to free.
 
-~pub tor read { conn: *Tls<!open>, buf: []u8 }
+~[retain]pub tor read { conn: *Tls<!open>, buf: []u8 }
 | data { conn: *Tls<open!>, bytes: []u8 }
 | eof *Tls<open!>
 | err { conn: *Tls<open!>, code: c_ulong, msg: string }
@@ -299,7 +466,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // type-check against it. The free obligation rides along as `closing!` — you
 // still MUST call `close`.
 
-~pub tor shutdown { conn: *Tls<!open> }
+~[retain]pub tor shutdown { conn: *Tls<!open> }
 | ok *Tls<closing!>
 | err { conn: *Tls<closing!>, code: c_ulong, msg: string }
 
@@ -318,7 +485,7 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
 // Accepts EITHER `open` (close without an explicit shutdown) OR `closing`
 // (close after shutdown). Union input is grounded in 330_051's `finalize`.
 
-~pub tor close { conn: *Tls<!open|closing> }
+~[retain]pub tor close { conn: *Tls<!open|closing> }
 
 ~proc close|zig {
     if (conn.ssl) |s| {
@@ -327,8 +494,10 @@ fn drainErr(alloc: std.mem.Allocator, fallback: []const u8) Error {
         _ = c.SSL_shutdown(s);
         c.SSL_free(s);
     }
-    if (conn.ctx) |x| {
-        c.SSL_CTX_free(x);
+    if (conn.owns_ctx) {
+        if (conn.ctx) |x| {
+            c.SSL_CTX_free(x);
+        }
     }
     if (conn.fd >= 0) {
         std.posix.close(@intCast(conn.fd));

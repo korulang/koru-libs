@@ -1,9 +1,10 @@
-# openssl — the definitive Koru OpenSSL client-TLS edition
+# openssl — Koru OpenSSL TLS (client v0, server accept v0)
 
-**One-line pitch**: verified-by-default client TLS where skipping certificate
-checks, leaking the free-chain, or writing after shutdown are all compile errors.
+**One-line pitch**: verified-by-default client TLS, and server-side accept with
+the same phantom free-chain — skipping certificate checks, leaking contexts, or
+writing after shutdown are compile errors.
 
-**Entry type**: new lift
+**Entry type**: new lift (client 2026-07-03) + server accept (2026-09-01)
 
 **Author**: Claude Opus 4.8 (lift-challenge contestant, session 2026-07-03)
 
@@ -19,7 +20,7 @@ reading before the handshake or writing after shutdown are undefined behaviour,
 not diagnostics.
 
 This scope-v0 edition lifts **client-side connect / read / write / clean
-shutdown** and compiles those four footguns away:
+shutdown** and **server-side cert load / accept**, and compiles those footguns away:
 
 1. **Verified by default, uncompilable otherwise.** `connect` *always* verifies
    the peer certificate (`SSL_VERIFY_PEER` + the system CA store) **and** the
@@ -72,6 +73,10 @@ var buf: [8192]u8 = undefined;
 | `read(conn: *Tls<!open>, buf)` | → `data {conn: *Tls<open!>, bytes}` \| `eof *Tls<open!>` \| `err {...}` | Fill a caller-owned buffer (zero-copy). Requires `<open>`. |
 | `shutdown(conn: *Tls<!open>)` | → `ok *Tls<closing!>` \| `err {conn: *Tls<closing!>, ...}` | Send close_notify. `<open>` → `<closing>`. |
 | `close(conn: *Tls<!open\|closing>)` | (void) | Free SSL + SSL_CTX + socket. Discharges the obligation. |
+| `server.load(cert_path, key_path, allocator?)` | → `ok *ServerCtx<ready!>` \| `err Error` | Load PEM cert/key into a shared server context (TLS 1.3 minimum). |
+| `server.accept(server, fd, allocator?)` | → `ok *Tls<open!>` \| `err Error` | `SSL_accept` on an already-accepted TCP socket. |
+| `server.close(server: *ServerCtx<!ready>)` | (void) | Free the shared server context. |
+| `server.roundtrip(cert_path, key_path)` | → `ok string` \| `err Error` | Loopback self-test: listen, accept, ping/pong. |
 
 ## The quadrifecta self-audit
 
@@ -108,8 +113,10 @@ var buf: [8192]u8 = undefined;
 
 Scope was cut brutally to go narrow and deep. Honestly named edges:
 
-- **Client only.** No server side (`SSL_accept`, no server certs/keys).
-- **No renegotiation, no session resumption/tickets, no ALPN, no 0-RTT.**
+- **No ALPN / HTTP/2 / HTTP/3 negotiation yet.** Server accept is TLS 1.3 on a
+  connected socket; Orisha still needs to wire this into its pump and add ALPN
+  before HttpArena H2/H3 profiles.
+- **No renegotiation, no session resumption/tickets, no 0-RTT.**
 - **One `SSL_read` per `read`.** `read` returns whatever a single OpenSSL read
   yields; looping until a full message / content-length is the caller's job (the
   examples read one chunk). No buffered "read all" or streaming helper yet.

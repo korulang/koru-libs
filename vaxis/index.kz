@@ -136,6 +136,21 @@ var event_loop: libvaxis.Loop(VaxisEvent) = undefined;
 // Same convention as pq using `c` for the C-import alias.)
 var is_initialized: bool = false;
 var should_quit: bool = false;
+
+// Participant verbs (std/pump contract): init/step/live/wait/deinit. `run`
+// is the same lifecycle hand-spelled for one participant — these are what a
+// `std/pump(name) ! step |> vaxis:step()` join composes.
+var arms_armed: bool = false;
+var tick_enabled: bool = false;
+var tick_due_at: i128 = 0;
+var initial_cols: u16 = 0;
+var initial_rows: u16 = 0;
+// libvaxis's event queue wakes on a condvar — not pollable. A watcher thread
+// waits on it and writes a byte here, fd-ifying "event arrived" so `wait`
+// can hand the pump's union poll a real descriptor.
+var wake_rfd: i32 = -1;
+var wake_wfd: i32 = -1;
+var wake_thread: ?std.Thread = null;
 var alloc: std.mem.Allocator = undefined;
 var tty_buffer: [4096]u8 = undefined;
 
@@ -285,8 +300,18 @@ const VaxisEvent = union(enum) {
 // Terminals:
 //   | done             — clean exit
 //   | err string       — init failure
+//
+// The same lifecycle, decomposed as std/pump participant verbs — init is
+// mechanics only; step carries the whole `!` surface (arms are comptime-known,
+// so presence-gated setup happens on its first pass); wait hands the pump a
+// real fd (the wake pipe — the event queue's condvar isn't pollable) plus the
+// tick deadline; live is `!should_quit`; deinit is the teardown.
 
-~pub tor run { title: string }
+~pub tor init { title: string }
+| ?done
+| err string
+
+~pub tor step {} -> i32
 ! ?draw koru/vaxis:Window
 ! ?key-raw koru/vaxis:KeyData
 ! ?char koru/vaxis:KeyData
@@ -332,10 +357,28 @@ const VaxisEvent = union(enum) {
 ! ?focus-in
 ! ?focus-out
 ! ?tick i64
-| ?done
-| err string
 
-~proc run|zig {
+~pub tor live {} -> i64
+
+~pub tor wait { i: i64 } -> { fd: i32, wait_ns: i128 }
+
+~pub tor deinit {}
+
+// RUN — the composition, emitted. A `run` call lowers to a generated
+// one-participant pump: `init` inside a generated driver, a generated
+// `vaxis:step()` unit carrying the call's `!` arms (the join — `__H` exists
+// inside a generated call site, where a hand-written proc could never spell
+// `step_event.handler(.{}, __H)`), the live/wait/poll loop, then `deinit`.
+// `| ?done`/`| err` stay on the generated call — init failure is `| err`.
+~[comptime|transform]pub tor run {
+    expr: Expression,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~proc init|zig {
     _ = title;  // title is accepted but not yet threaded into vaxis init
     $mod.alloc = std.heap.page_allocator;
     $mod.text_arena = std.heap.ArenaAllocator.init($mod.alloc);
@@ -360,25 +403,10 @@ const VaxisEvent = union(enum) {
     $mod.vx.enterAltScreen($mod.tty.writer()) catch {};
     $mod.vx.queryTerminal($mod.tty.writer(), 1 * std.time.ns_per_s) catch {};
 
-    // Mouse capture is opt-in: only apps that bind a mouse arm pay for it —
-    // capture displaces native terminal text selection, so an unbound app
-    // keeps the terminal's defaults. Presence-gated like `! tick`; ANY arm
-    // of the family turns it on.
-    const wants_mouse = @hasDecl(__H, "mouse-raw") or @hasDecl(__H, "wheel-up") or @hasDecl(__H, "wheel-down") or @hasDecl(__H, "wheel-left") or @hasDecl(__H, "wheel-right") or @hasDecl(__H, "press") or @hasDecl(__H, "release") or @hasDecl(__H, "motion") or @hasDecl(__H, "drag") or @hasDecl(__H, "mouse-leave");
-    if (wants_mouse) {
-        $mod.vx.setMouseMode($mod.tty.writer(), true) catch {};
-    }
-
-    // Bracketed paste is opt-in the same way: an app that binds `! paste`
-    // asks the terminal to wrap pasted text in CSI 200/201 markers, which is
-    // what lets the dispatcher assemble the burst into one event.
-    if (@hasDecl(__H, "paste")) {
-        $mod.vx.setBracketedPaste($mod.tty.writer(), true) catch {};
-    }
-
     // Wait for initial resize so the window has dimensions before any
-    // render call. Don't fire `! resize` yet — we'll do that as the first
-    // event after mount so consumers see a consistent ordering.
+    // render call. The mount `! draw`/`! resize` fire from `step`'s first
+    // pass — arms are comptime-known there, and a pump join carries them
+    // under `! step`, not at init.
     var initial_size: ?$mod.libvaxis.Winsize = null;
     while (initial_size == null) {
         const ev = $mod.event_loop.nextEvent();
@@ -390,22 +418,68 @@ const VaxisEvent = union(enum) {
             else => {},
         }
     }
+    $mod.initial_cols = initial_size.?.cols;
+    $mod.initial_rows = initial_size.?.rows;
 
     $mod.is_initialized = true;
 
-    // Fire ! draw, handing the consumer the ROOT WINDOW as the payload — the
-    // canvas to paint into (`! draw w |> app(win: w)`). This is the RETAINED-view
-    // hook: it fires here on MOUNT, and again on every resize (below), so the
-    // scene is declared once and repainted on damage. Auto-render after so
-    // consumers don't call render() themselves.
-    draw($mod.vx.window());
-    $mod.vx.render($mod.tty.writer()) catch {};
+    // The event queue wakes on a condvar — not pollable. A watcher thread
+    // waits on it and writes a byte to a pipe, giving `wait` a real fd to
+    // hand the union poll. Over-signaling is harmless: `step` drains the
+    // pipe and re-reads the queue.
+    if (std.posix.pipe() catch null) |pf| {
+        $mod.wake_rfd = pf[0];
+        $mod.wake_wfd = pf[1];
+        $mod.wake_thread = std.Thread.spawn(.{}, struct {
+            fn call() void {
+                while (!$mod.should_quit) {
+                    $mod.event_loop.queue.poll();
+                    if ($mod.wake_wfd >= 0) _ = std.posix.write($mod.wake_wfd, "x") catch 0;
+                }
+            }
+        }.call, .{}) catch null;
+    }
 
-    // Fire initial ! resize so consumers that only redraw on resize get
-    // triggered immediately. Auto-render after.
-    const init_ws = initial_size.?;
-    resize(.{ .width = init_ws.cols, .height = init_ws.rows });
-    $mod.vx.render($mod.tty.writer()) catch {};
+    return .{ .done = .{} };
+}
+
+~proc step|zig {
+    _ = &__koru_event_input;
+    var progressed: i32 = 0;
+
+    // First pass: the arms are comptime-known here (the pump join carries
+    // them under `! step`), so presence-gated setup lives here — mouse
+    // capture and bracketed paste are opt-in, the mount `! draw`/`! resize`
+    // fire once, and `! tick` arms the deadline `wait` will consult.
+    if (!$mod.arms_armed) {
+        $mod.arms_armed = true;
+        const wants_mouse = @hasDecl(__H, "mouse-raw") or @hasDecl(__H, "wheel-up") or @hasDecl(__H, "wheel-down") or @hasDecl(__H, "wheel-left") or @hasDecl(__H, "wheel-right") or @hasDecl(__H, "press") or @hasDecl(__H, "release") or @hasDecl(__H, "motion") or @hasDecl(__H, "drag") or @hasDecl(__H, "mouse-leave");
+        if (wants_mouse) {
+            $mod.vx.setMouseMode($mod.tty.writer(), true) catch {};
+        }
+        if (@hasDecl(__H, "paste")) {
+            $mod.vx.setBracketedPaste($mod.tty.writer(), true) catch {};
+        }
+        draw($mod.vx.window());
+        $mod.vx.render($mod.tty.writer()) catch {};
+        resize(.{ .width = $mod.initial_cols, .height = $mod.initial_rows });
+        $mod.vx.render($mod.tty.writer()) catch {};
+        if (@hasDecl(__H, "tick")) {
+            $mod.tick_enabled = true;
+            $mod.tick_due_at = std.time.nanoTimestamp() + 16 * std.time.ns_per_ms;
+        }
+    }
+
+    // Drain watcher wake-bytes — signals only; the queue is the source.
+    if ($mod.wake_rfd >= 0) {
+        var pfd = [_]std.posix.pollfd{.{ .fd = $mod.wake_rfd, .events = std.posix.POLL.IN, .revents = 0 }};
+        var buf: [64]u8 = undefined;
+        while ((std.posix.poll(&pfd, 0) catch 0) > 0) {
+            const r = std.posix.read($mod.wake_rfd, &buf) catch 0;
+            if (r <= 0) break;
+            pfd[0].revents = 0;
+        }
+    }
 
     const repaint = struct {
         fn call() void {
@@ -580,47 +654,296 @@ const VaxisEvent = union(enum) {
         }
     }.call;
 
-    // Presence-gated loop: `@hasDecl(__H, "tick")` — void optional arms get
-    // noop stand-ins (not nullable fns; 400_148 is for value-resuming arms).
-    // With a real `! tick` handler → tryEvent + ~60 Hz; without → blocking
-    // nextEvent (no timer wake tax on todo/gallery-without-animation).
-    if (@hasDecl(__H, "tick")) {
-        const tick_period_ns: i128 = 16 * std.time.ns_per_ms;
-        var next_tick: i128 = std.time.nanoTimestamp() + tick_period_ns;
-        while (!$mod.should_quit) {
-            while ($mod.event_loop.tryEvent()) |ev| {
-                handle(ev);
-                if ($mod.should_quit) break;
-            }
-            if ($mod.should_quit) break;
-            const now: i128 = std.time.nanoTimestamp();
-            if (now >= next_tick) {
-                next_tick = now + tick_period_ns;
-                const ms: i64 = @intCast(@divTrunc(now, std.time.ns_per_ms));
-                tick(ms);
-                repaint();
-            } else {
-                const remain: i128 = next_tick - now;
-                const sleep_ns: u64 = if (remain <= 0) 0 else @intCast(@min(remain, tick_period_ns));
-                if (sleep_ns > 0) std.Thread.sleep(sleep_ns);
-            }
-        }
-    } else {
-        while (!$mod.should_quit) {
-            handle($mod.event_loop.nextEvent());
+
+    // One pass of the old loop's body: drain pending events, then a due tick.
+    while ($mod.event_loop.tryEvent()) |ev| {
+        handle(ev);
+        progressed += 1;
+        if ($mod.should_quit) return progressed;
+    }
+    if ($mod.tick_enabled) {
+        const now: i128 = std.time.nanoTimestamp();
+        if (now >= $mod.tick_due_at) {
+            $mod.tick_due_at = now + 16 * std.time.ns_per_ms;
+            const ms: i64 = @intCast(@divTrunc(now, std.time.ns_per_ms));
+            tick(ms);
+            repaint();
+            progressed += 1;
         }
     }
+    return progressed;
+}
 
-    // Cleanup inside the producer body — no separate `cleanup` event needed.
+~proc live|zig {
+    _ = &__koru_event_input;
+    return @intFromBool(!$mod.should_quit);
+}
+
+~proc wait|zig {
+    _ = i;
+    // The wake pipe is the fd interest; the tick deadline is the time
+    // interest. No `! tick` armed -> maxInt: block on the pipe alone —
+    // the old blocking nextEvent behavior.
+    var wns: i128 = std.math.maxInt(i128);
+    if ($mod.tick_enabled) {
+        const remain = $mod.tick_due_at - std.time.nanoTimestamp();
+        wns = if (remain < 0) 0 else remain;
+    }
+    return .{ .fd = $mod.wake_rfd, .wait_ns = wns };
+}
+
+~proc deinit|zig {
+    _ = &__koru_event_input;
+    // Wake the watcher so it can see should_quit and exit, then join it.
+    $mod.should_quit = true;
+    $mod.event_loop.queue.not_empty.signal();
+    if ($mod.wake_thread) |t| {
+        t.join();
+        $mod.wake_thread = null;
+    }
+    if ($mod.wake_rfd >= 0) { std.posix.close($mod.wake_rfd); $mod.wake_rfd = -1; }
+    if ($mod.wake_wfd >= 0) { std.posix.close($mod.wake_wfd); $mod.wake_wfd = -1; }
     $mod.vx.deinit($mod.alloc, $mod.tty.writer());
     $mod.tty.deinit();
     $mod.text_arena.deinit();
     $mod.paste_buf.deinit($mod.alloc);
     $mod.is_initialized = false;
-
-    return .{ .done = .{} };
+    $mod.should_quit = false;
+    $mod.arms_armed = false;
+    $mod.tick_enabled = false;
 }
 
+~proc run|zig {
+    const ast = @import("ast");
+    const ast_functional = @import("ast_functional");
+    const codegen_utils = @import("codegen_utils");
+
+    if (invocation.inline_body != null) return .{};
+    const flow = if (item.* == .flow) &item.flow else return .{};
+    const rinv = flow.inv();
+
+    const mkPath = struct {
+        fn go(a: std.mem.Allocator, module: []const u8, name: []const u8) ast.DottedPath {
+            const segs = a.alloc([]const u8, 1) catch unreachable;
+            segs[0] = a.dupe(u8, name) catch unreachable;
+            return ast.DottedPath{ .module_qualifier = a.dupe(u8, module) catch unreachable, .segments = segs };
+        }
+    }.go;
+    const refuse = struct {
+        fn go(a: std.mem.Allocator, f: *const ast.Flow, msg: []const u8) ast.Item {
+            const code = std.fmt.allocPrint(a, "comptime {{ @compileError(\"{s}\"); }}", .{msg}) catch unreachable;
+            return ast.Item{ .inline_code = ast.InlineCode{ .code = code, .location = f.location, .module = f.module } };
+        }
+    }.go;
+    // Same-module scan by last path segment — the counter keys off the
+    // generated `__vaxis_run_<n>` decls this transform itself emits.
+    const declExists = struct {
+        fn scan(its: []const ast.Item, want: []const u8) bool {
+            for (its) |*pi| {
+                switch (pi.*) {
+                    .event_decl => |*ed| {
+                        if (ed.path.segments.len > 0 and std.mem.eql(u8, ed.path.segments[ed.path.segments.len - 1], want)) return true;
+                    },
+                    .proc_decl => |*pd| {
+                        if (pd.path.segments.len > 0 and std.mem.eql(u8, pd.path.segments[pd.path.segments.len - 1], want)) return true;
+                    },
+                    .module_decl => |*md| {
+                        if (scan(md.items, want)) return true;
+                    },
+                    else => {},
+                }
+            }
+            return false;
+        }
+        fn go(prog: *const ast.Program, want: []const u8) bool {
+            return scan(prog.items, want);
+        }
+    }.go;
+    // Module qualifier for emitted handler calls — `main_module.` for the
+    // entry module, else the koru_ path (`koru_koru.koru_vaxis.`).
+    const eventQual = struct {
+        fn go(a: std.mem.Allocator, home: []const u8, main: []const u8) []const u8 {
+            if (home.len == 0 or std.mem.eql(u8, home, main)) return a.dupe(u8, "main_module.") catch unreachable;
+            const p = codegen_utils.buildKoruModulePath(a, home) catch unreachable;
+            return std.fmt.allocPrint(a, "{s}.", .{p}) catch unreachable;
+        }
+    }.go;
+
+    // Partition the call's arms: `!` continuations ride the generated
+    // `vaxis:step()` unit; `|`/`|>` terminals stay on the generated call.
+    var arms = std.ArrayList(ast.Continuation).initCapacity(allocator, flow.body.continuations.len) catch unreachable;
+    var terminals = std.ArrayList(ast.Continuation).initCapacity(allocator, 4) catch unreachable;
+    for (flow.body.continuations) |*c| {
+        const cloned = ast_functional.cloneContinuation(allocator, c) catch unreachable;
+        if (c.kind == .effect) {
+            arms.append(allocator, cloned) catch unreachable;
+            continue;
+        }
+        const cb = std.mem.trim(u8, c.branch, " ");
+        if (cb.len > 0 and !std.mem.eql(u8, cb, "done") and !std.mem.eql(u8, cb, "err")) {
+            const msg = std.fmt.allocPrint(allocator, "koru/vaxis:run: `| {s}` doesn't parse on a run call - the driver's terminals are `| ?done` (the loop drained) and `| err` (init failed); vaxis's event surface is `!`-armed", .{cb}) catch unreachable;
+            return .{ .replacement = refuse(allocator, flow, msg) };
+        }
+        terminals.append(allocator, cloned) catch unreachable;
+    }
+
+    var n: usize = 0;
+    while (declExists(program, std.fmt.allocPrint(allocator, "__vaxis_run_{d}", .{n}) catch unreachable)) n += 1;
+    const step_name = std.fmt.allocPrint(allocator, "__vaxis_step_{d}", .{n}) catch unreachable;
+    const run_name = std.fmt.allocPrint(allocator, "__vaxis_run_{d}", .{n}) catch unreachable;
+
+    var appended = std.ArrayList(ast.Item).initCapacity(allocator, 4) catch unreachable;
+    const retain_ann = blk_ra: {
+        const anns = allocator.alloc([]const u8, 1) catch unreachable;
+        anns[0] = allocator.dupe(u8, "retain") catch unreachable;
+        break :blk_ra anns;
+    };
+
+    // __vaxis_step_<n> -> i32 — the join unit. Its impl is a plain
+    // `vaxis:step()` call wearing the run call's `!` arms, bound `-> __koru_r`
+    // with a bare-return tail so the progress count reaches the driver.
+    appended.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+        .path = mkPath(allocator, flow.module, step_name),
+        .input = ast.Shape{ .fields = &[_]ast.Field{} },
+        .branches = &[_]ast.Branch{},
+        .return_type = allocator.dupe(u8, "i32") catch unreachable,
+        .is_public = false,
+        .is_implicit_flow = false,
+        .annotations = retain_ann,
+        .location = flow.location,
+        .module = allocator.dupe(u8, flow.module) catch unreachable,
+    } }) catch unreachable;
+    const step_segs = allocator.alloc([]const u8, 1) catch unreachable;
+    step_segs[0] = allocator.dupe(u8, "step") catch unreachable;
+    const step_inv = ast.Invocation{
+        .path = ast.DottedPath{
+            .module_qualifier = if (rinv.path.module_qualifier) |mq| allocator.dupe(u8, mq) catch unreachable else null,
+            .segments = step_segs,
+        },
+        .args = &[_]ast.Arg{},
+        .source_module = allocator.dupe(u8, flow.module) catch unreachable,
+        .return_binding = allocator.dupe(u8, "__koru_r") catch unreachable,
+    };
+    var sconts = std.ArrayList(ast.Continuation).initCapacity(allocator, arms.items.len + 1) catch unreachable;
+    sconts.appendSlice(allocator, arms.items) catch unreachable;
+    sconts.append(allocator, ast.Continuation{
+        .branch = allocator.dupe(u8, "") catch unreachable,
+        .binding = null,
+        .kind = .terminal,
+        .condition = null,
+        .node = ast.Node{ .branch_constructor = ast.BranchConstructor{
+            .branch_name = allocator.dupe(u8, "") catch unreachable,
+            .fields = &[_]ast.Field{},
+            .plain_value = allocator.dupe(u8, "__koru_r") catch unreachable,
+            .is_bare_return = true,
+        } },
+        .indent = 0,
+        .continuations = &[_]ast.Continuation{},
+    }) catch unreachable;
+    appended.append(allocator, ast.Item{ .flow = ast.Flow{
+        .body = ast.rootSite(step_inv, sconts.items, flow.location),
+        .pre_label = null,
+        .impl_of = mkPath(allocator, flow.module, step_name),
+        .super_shape = null,
+        .is_pure = false,
+        .is_transitively_pure = false,
+        .location = flow.location,
+        .module = allocator.dupe(u8, flow.module) catch unreachable,
+    } }) catch unreachable;
+
+    // __vaxis_run_<n> { title: string } | ?done | err string — the driver.
+    const run_input = allocator.alloc(ast.Field, 1) catch unreachable;
+    run_input[0] = ast.Field{
+        .name = allocator.dupe(u8, "title") catch unreachable,
+        .type = allocator.dupe(u8, "string") catch unreachable,
+    };
+    const run_branches = allocator.alloc(ast.Branch, 2) catch unreachable;
+    run_branches[0] = ast.Branch{
+        .name = allocator.dupe(u8, "done") catch unreachable,
+        .payload = ast.Shape{ .fields = &[_]ast.Field{} },
+        .is_optional = true,
+        .kind = .terminal,
+    };
+    const err_fields = allocator.alloc(ast.Field, 1) catch unreachable;
+    err_fields[0] = ast.Field{
+        .name = allocator.dupe(u8, "__type_ref") catch unreachable,
+        .type = allocator.dupe(u8, "string") catch unreachable,
+    };
+    run_branches[1] = ast.Branch{
+        .name = allocator.dupe(u8, "err") catch unreachable,
+        .payload = ast.Shape{ .fields = err_fields },
+        .is_optional = false,
+        .kind = .terminal,
+    };
+    appended.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+        .path = mkPath(allocator, flow.module, run_name),
+        .input = ast.Shape{ .fields = run_input },
+        .branches = run_branches,
+        .is_public = false,
+        .is_implicit_flow = false,
+        .annotations = retain_ann,
+        .location = flow.location,
+        .module = allocator.dupe(u8, flow.module) catch unreachable,
+    } }) catch unreachable;
+
+    // The driver: init -> while live { step; idle -> wait/poll } -> deinit.
+    const vq = eventQual(allocator, "koru.vaxis", program.main_module_name);
+    const mq = eventQual(allocator, flow.module, program.main_module_name);
+    const body = std.fmt.allocPrint(allocator,
+        \\switch ({s}init_event.handler(.{{ .title = __koru_event_input.title }})) {{
+        \\    .err => |e| return .{{ .err = e }},
+        \\    else => {{}},
+        \\}}
+        \\while ({s}live_event.handler(.{{}}) != 0) {{
+        \\    if ({s}{s}_event.handler(.{{}}) == 0) {{
+        \\        const w = {s}wait_event.handler(.{{ .i = 0 }});
+        \\        var wms: i32 = -1;
+        \\        if (w.wait_ns != @import("std").math.maxInt(i128)) wms = @intCast(@min(@as(i128, @import("std").math.maxInt(i32)) * 1_000_000, @max(@as(i128, 0), w.wait_ns)) / 1_000_000);
+        \\        if (w.fd >= 0) {{
+        \\            var pfd = [_]@import("std").posix.pollfd{{.{{ .fd = w.fd, .events = @import("std").posix.POLL.IN, .revents = 0 }}}};
+        \\            _ = @import("std").posix.poll(&pfd, wms) catch 0;
+        \\        }} else if (wms >= 0) {{
+        \\            @import("std").Thread.sleep(@as(u64, @intCast(wms)) * 1_000_000);
+        \\        }} else {{
+        \\            @import("std").Thread.sleep(1_000_000);
+        \\        }}
+        \\    }}
+        \\}}
+        \\{s}deinit_event.handler(.{{}});
+        \\return .{{ .done = .{{}} }};
+        \\
+    , .{ vq, vq, mq, step_name, vq, vq }) catch unreachable;
+    appended.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
+        .path = mkPath(allocator, flow.module, run_name),
+        .body = ast.Source{ .text = body, .location = flow.location, .scope = .{ .bindings = &[_]ast.ScopeBinding{} }, .phantom_type = null },
+        .annotations = &[_][]const u8{},
+        .target = allocator.dupe(u8, "zig") catch unreachable,
+        .location = flow.location,
+        .module = allocator.dupe(u8, flow.module) catch unreachable,
+    } }) catch unreachable;
+
+    // The replacement call: same args (title forwards), `|` terminals stay.
+    var inv_clone = ast_functional.cloneInvocation(allocator, rinv) catch unreachable;
+    const rsegs = allocator.alloc([]const u8, 1) catch unreachable;
+    rsegs[0] = allocator.dupe(u8, run_name) catch unreachable;
+    inv_clone.path.segments = rsegs;
+    inv_clone.path.module_qualifier = null;
+    inv_clone.source_module = allocator.dupe(u8, flow.module) catch unreachable;
+
+    return .{ .replacement = ast.Item{ .flow = ast.Flow{
+        .body = ast.rootSite(inv_clone, terminals.items, flow.location),
+        .annotations = flow.annotations,
+        .pre_label = flow.pre_label,
+        .impl_of = flow.impl_of,
+        .super_shape = flow.super_shape,
+        .inline_body = flow.inline_body,
+        .preamble_code = flow.preamble_code,
+        .is_pure = flow.is_pure,
+        .is_transitively_pure = flow.is_transitively_pure,
+        .location = flow.location,
+        .module = allocator.dupe(u8, flow.module) catch unreachable,
+    } }, .appended = appended.toOwnedSlice(allocator) catch unreachable };
+}
 // ============================================================================
 // CONSUMER-FACING UTILITIES
 // ============================================================================
