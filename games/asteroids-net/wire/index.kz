@@ -29,7 +29,7 @@
 const std = @import("std");
 
 pub const Snap = struct {
-    buf: [32768]u8,
+    buf: [65536]u8,
     n: usize,
     count: u16,
 };
@@ -78,10 +78,24 @@ const HDR: usize = 14;
     return s;
 }
 
+// Entities that did not fit the datagram — the world is bigger than the
+// wire. Read via snap.truncated so the beat can say "N entities never
+// went out" instead of the snapshot quietly shrinking.
+var snap_truncated: u64 = 0;
+
+~pub tor snap.truncated {} -> i64
+
+~proc snap.truncated|zig {
+    return @intCast(snap_truncated);
+}
+
 ~pub tor snap.entity { s: *Snap<open>, x: f32, y: f32, rot: f32, r: f32, inv: f32, seed: i32, kind: f32, dead: f32, owner: f32 }
 
 ~proc snap.entity|zig {
-    if (s.n + ENT > s.buf.len) return;
+    if (s.n + ENT > s.buf.len) {
+        snap_truncated += 1;
+        return;
+    }
     const o = s.buf[s.n..];
     std.mem.writeInt(u32, o[0..4], @bitCast(x), .big);
     std.mem.writeInt(u32, o[4..8], @bitCast(y), .big);
@@ -99,7 +113,10 @@ const HDR: usize = 14;
 ~pub tor snap.trailer { s: *Snap<open>, score: f32, wave: f32 }
 
 ~proc snap.trailer|zig {
-    if (s.n + 8 > s.buf.len) return;
+    if (s.n + 8 > s.buf.len) {
+        snap_truncated += 1;
+        return;
+    }
     std.mem.writeInt(u32, s.buf[s.n..][0..4], @bitCast(score), .big);
     std.mem.writeInt(u32, s.buf[s.n + 4 ..][0..4], @bitCast(wave), .big);
     s.n += 8;

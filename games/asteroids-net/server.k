@@ -95,6 +95,10 @@ heartbeat = if (tally[0].beats >= BEAT)
         |> std/io:print.ln("beat: {{ tally[0].pkts:d }} pkts in, {{ tally[0].sent:d }} snaps out, {{ el.ms:f }}ms — {{ 600000.0 / el.ms:f }}Hz (sim {{ tally[0].simms:f }}ms bcast {{ tally[0].bcastms:f }}ms)")
         |> std/io:print.ln("  drain {{ tally[0].drainms:f }}ms = hdr {{ tally[0].hdrms:f }} + dec {{ tally[0].decodems:f }} + drive {{ tally[0].drivems:f }} + disp {{ tally[0].drainms - tally[0].hdrms - tally[0].decodems - tally[0].drivems:f }}ms")
         |> std/io:print.ln("  tickbody {{ tally[0].tickms:f }}ms — other {{ tally[0].tickms - tally[0].drainms - tally[0].simms - tally[0].bcastms:f }}ms outside packets+sim+bcast; sleep acct {{ el.ms - tally[0].tickms:f }}ms")
+        |> wire:snap.truncated(): trunc
+        |> if (trunc > 0)
+            | then |> std/io:print.ln("  SNAP TRUNCATED: {{ trunc:d }} entities never went out — the world exceeds the datagram")
+            | else |> _
         |> std/grid:stored { tally[0].simms: 0.0, tally[0].bcastms: 0.0, tally[0].drainms: 0.0, tally[0].hdrms: 0.0, tally[0].decodems: 0.0, tally[0].drivems: 0.0, tally[0].tickms: 0.0 }
     | else |> std/grid:stored { tally[0].beats: tally[0].beats + 1.0 }
 

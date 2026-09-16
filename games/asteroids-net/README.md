@@ -130,6 +130,18 @@ input every tick — and `load.sh N` spawns N of them against one server.
   0.1ms sim, ~0.9ms bcast.
 - **N=140** — the churn path verified end-to-end: refused joins retry,
   stale sweep frees rows, late bots join into them (pids 129–140).
+- **N=256** — first run CRASHED: `you u8` on the wire — pid 256
+  overflows `@intFromFloat` ("integer part out of bounds"), and entity
+  `owner u8` was one pid away from the same. KAS4 widens both to u16
+  by spending pad bytes v0 reserved — packet sizes unchanged — and the
+  snap buffer went 8192→65536 (the UDP payload ceiling is 65507; the
+  buffer now IS the protocol's hard limit). Then: all heard, 59.9Hz.
+- **N=512 / N=1024** — all heard, `drops`/`indrop` 0, kernel counter
+  flat, **~59.9Hz**. Final 1024 beat: 704,842 pkts in / 866,561 snaps
+  out in 10s — ~70K inputs/s and ~87K datagrams/s through one thread,
+  tickbody ~3.8ms of 16.67ms. `snap.entity`/`trailer` now count into
+  `snap.truncated` instead of silently dropping at buffer capacity —
+  the beat prints SNAP TRUNCATED when the world exceeds the datagram.
 
 ## Compiler contours this slice surfaced
 
@@ -161,8 +173,11 @@ input every tick — and `load.sh N` spawns N of them against one server.
 - Reliability is measured, not repaired: input seq gaps count into
   `indrop` and dup/reorder is detected — but there are no acks, no
   resend, and no client-side response to `indrop > 0`.
-- Full-state snapshots only — no delta compression, no interest
-  management (server sends everyone the whole field).
+- Full-state snapshots only — and now with a measured hard ceiling:
+  ~2,340 entities fit a 64KB datagram, so at ~N=1500 the world stops
+  fitting one packet. Delta snapshots / interest management are
+  *necessary* there, not optional — `snap.truncated` counts it when
+  it happens.
 - No client-side prediction or interpolation — input latency shows raw.
 - Tick pacing is now deadline-scheduled (`std/time:pace`, period
   16_666_667ns off the schedule) — holds ~59.9Hz at full envelope.

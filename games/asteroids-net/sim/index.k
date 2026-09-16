@@ -24,7 +24,7 @@ import std/grid
 // overflowed the entity store at N=128 — late joiners spawned shipless.
 // Entity rows must exceed the session ceiling or the caps disagree by
 // construction.
-std/store:new(bodies, capacity: 2048) {
+std/store:new(bodies, capacity: 4096) {
     x: f32, y: f32, dx: f32, dy: f32,
     kind: f32, r: f32, t: f32,
     seed: i32,
@@ -33,7 +33,7 @@ std/store:new(bodies, capacity: 2048) {
     owner: f32
 }
 
-std/store:new(players, capacity: 512) {
+std/store:new(players, capacity: 1024) {
     pid: f32, key: i64, rt: f32, waiting: f32, last: f32,
     lseq: f32, drops: f32
 }
