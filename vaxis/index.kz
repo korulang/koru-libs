@@ -370,7 +370,7 @@ const VaxisEvent = union(enum) {
 // inside a generated call site, where a hand-written proc could never spell
 // `step_event.handler(.{}, __H)`), the live/wait/poll loop, then `deinit`.
 // `| ?done`/`| err` stay on the generated call — init failure is `| err`.
-~[comptime|transform]pub tor run {
+~[comptime|transform|claims_descendants]pub tor run {
     expr: Expression,
     invocation: *const Invocation,
     item: *const Item,
