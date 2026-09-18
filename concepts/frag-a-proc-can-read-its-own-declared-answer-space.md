@@ -2,8 +2,8 @@
 type: belief
 id: frag-a-proc-can-read-its-own-declared-answer-space
 provenance: odds — the Jev `criteria` map is built by enumerating the
-  return union's f64-payload fields at comptime (2026-09-21)
-ts: 2026-09-21
+  return union's f64-payload fields at comptime (2026-09-18)
+ts: 2026-09-18
 ---
 
 # A proc can read its own declared answer space (belief)
@@ -23,19 +23,27 @@ branches are the same declaration distinguished by payload.
 
 Two corollaries worth holding:
 
-- This is **emergent, not ratified.** Nothing in the koru suite says a
-  proc body may use `@This()`; it works because of how the emitter
-  splices bodies today. A pin belongs in koru's regression suite — if
-  the splice ever changes, every consumer breaks silently.
-- The reflectable surface is **field names + payload types only.** What
-  it cannot carry is per-branch metadata (a criteria *description*),
-  because the union has no slot for it — the place descriptions want to
-  live does not exist in the type yet.
+- This is **pinned** — `200_COMPILER_FEATURES/230_EMITTER/230_019` in
+  koru's suite runs a proc that enumerates its own f64-payload
+  branches and `@unionInit`s the winner by reflected name. It was
+  emergent when this frag was written; the splice contract is now
+  ratified, and a change to it breaks a test, not a consumer.
+- The reflectable surface is **field names + payload types** — and the
+  field name *is* the metadata slot. The emitter quotes a bracketed
+  branch name verbatim into the union field (`@"bug: Bug reports"`), so
+  a `[tag: description]` pattern name carries both halves of a
+  criterion: split on the first `:` and the key and its description
+  come out of the same declared string. The "missing slot" was the
+  name itself; `350_012` in koru's suite pins the round-trip and the
+  name-equality dispatch.
 
 ## Instance
 
-`koru/odds` `writeCriteria(Out, w)` + `@unionInit(Out, f.name, p)`:
-criteria keys out, winning branch tagged back in — both driven by the
-same comptime field list. Verified live: the inbox example's
-`bug`/`feature`/`other` branches reached the Decisions API verbatim and
-returned `probabilities` keyed by the same names.
+`koru/odds` `writeCriteria(Out, w)` + `pick`/`@unionInit(Out, f.name, p)`:
+the tor declares `| [bug: Bug reports] f64` and the proc splits `f.name`
+on `:` — `bug` becomes the criteria key Jev answers with, `Bug reports`
+the description it reads. The returned `probabilities` arrive keyed by
+tag, `pick` matches the tag against `branchKey(f.name)`, and the union
+is init'd by the full pattern name. Verified by probe against the same
+comptime path: the criteria map builds as `{"bug":"Bug reports",...}`
+and a `[bug: Bug reports]` arm dispatches by name equality.

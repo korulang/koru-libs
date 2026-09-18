@@ -9,14 +9,14 @@ import koru/odds
 import std/io
 
 koru/odds:judge.mock(budget: 10): j |> koru/odds:triage(j, text: "the export button crashes", question: "Which team handles this?")
-| bug p |> std/io:print.ln("triage: bug p={{ p:f }}") |> koru/odds:chaos(j): cj |> koru/odds:ctriage(j: cj, text: "the export button crashes", question: "Which team handles this?")
-    | bug q     |> std/io:print.ln("chaos: bug p={{ q:f }}") |> koru/odds:settle(j: cj)
-    | feature q |> std/io:print.ln("chaos: feature p={{ q:f }}") |> koru/odds:settle(j: cj)
-    | other q   |> std/io:print.ln("chaos: other p={{ q:f }}") |> koru/odds:settle(j: cj)
-    | exhausted |> std/io:print.ln("chaos exhausted") |> koru/odds:settle(j: cj)
-    | err e     |> std/io:print.ln("chaos err: {{ e.msg:s }}") |> koru/odds:settle(j: cj)
-| feature p |> std/io:print.ln("triage: feature p={{ p:f }}")
-| other p   |> std/io:print.ln("triage: other p={{ p:f }}")
+| [bug: Bug reports] p |> std/io:print.ln("triage: bug p={{ p:f }}") |> koru/odds:chaos(j): cj |> koru/odds:ctriage(j: cj, text: "the export button crashes", question: "Which team handles this?")
+    | [bug: Bug reports] q          |> std/io:print.ln("chaos: bug p={{ q:f }}") |> koru/odds:settle(j: cj)
+    | [feature: Feature requests] q |> std/io:print.ln("chaos: feature p={{ q:f }}") |> koru/odds:settle(j: cj)
+    | [other: Other messages] q     |> std/io:print.ln("chaos: other p={{ q:f }}") |> koru/odds:settle(j: cj)
+    | exhausted                     |> std/io:print.ln("chaos exhausted") |> koru/odds:settle(j: cj)
+    | err e                         |> std/io:print.ln("chaos err: {{ e.msg:s }}") |> koru/odds:settle(j: cj)
+| [feature: Feature requests] p |> std/io:print.ln("triage: feature p={{ p:f }}")
+| [other: Other messages] p     |> std/io:print.ln("triage: other p={{ p:f }}")
 | exhausted |> std/io:print.ln("triage exhausted")
 | err e     |> std/io:print.ln("triage err: {{ e.msg:s }}")
 

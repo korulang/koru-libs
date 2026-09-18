@@ -10,10 +10,19 @@ routed around; these notes are the ledger.
 - **`@This().Output` works inside `~proc` bodies.** Proc bodies splice
   into the event struct's `handler`, so `@typeInfo(@This().Output)`
   enumerates the declared branch names at comptime — the hook the
-  criteria reflection stands on. It is *emergent*, not pinned: nothing
-  in the koru regression suite says a proc body may use `@This()`, and
-  an emitter change to how bodies splice would break this package
-  silently. Worth a pin in koru's suite.
+  criteria reflection stands on. Pinned: `230_019` in koru's
+  `200_COMPILER_FEATURES/230_EMITTER` runs a proc that enumerates its
+  own f64-payload branches and `@unionInit`s the winner by reflected
+  name. It was emergent when first written; now it is contract.
+
+- **Pattern branch names are a metadata channel.** `[bug: Bug
+  reports]` is an opaque branch name — spaces and colon included —
+  quoted verbatim into the union field (`@"bug: Bug reports"`). The
+  same `@typeInfo` enumeration reads the full text back, so
+  `f.name` splits on `:` into criteria key + description. Dispatch is
+  name equality (no `:param` parsing is involved at all — real
+  pattern-dispatch is still aspirational, `350_003` TODO). Pinned:
+  `350_012` in `300_ADVANCED_FEATURES/350_PATTERN_BRANCHES`.
 
 - **Proc bodies compile against the consumer's Zig std.** Zig 0.15.2
   moved JSON/`std.http` to the `Io.Writer` interface
@@ -55,14 +64,16 @@ routed around; these notes are the ledger.
 
 ## Open questions
 
-- **Criteria descriptions.** `criteria` currently maps each branch
-  name to itself (`"bug": "bug"`). Jev reads option *descriptions* to
-  separate categories; name-as-description works on clear cases
-  (observed p≈1.0) but is thin where branches overlap. There is no
-  per-branch metadata slot in tor syntax — descriptions want a home
-  that isn't a second declaration. (Syntax is Lars's; candidates: a
-  doc-string convention on branches, a `criteria` argument of name→desc
-  pairs, or richer `instructions`.)
+- ~~Criteria descriptions~~ — **answered by the branch name itself.**
+  Pattern-named branches spell `[tag: description]`: the emitter quotes
+  the pattern text into the union field verbatim (`@"bug: Bug
+  reports"`), so the proc splits `f.name` on the first `:` — tag out as
+  the criteria key, description as the text Jev reads. No metadata slot
+  needed; the name *was* the slot. The cost is call-site verbosity —
+  every continuation respells `| [bug: Bug reports] p |>` — and
+  descriptions are load-bearing in branch identity (rename the text,
+  every arm edits). A tag-prefix shorthand (`| [bug]`) would be a
+  language nicety, not a blocker. Pinned: `350_012`.
 
 - **`confidence` is dropped.** The API returns per-choice `confidence`
   alongside `probabilities`; the package forwards only the probability.

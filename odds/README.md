@@ -27,16 +27,26 @@ A judgment tor's `f64`-payload branches **are** the question's
 
 ```koru
 ~pub tor triage { j: *Judge<greedy>, text: string, question: string }
-| bug f64        ┐
-| feature f64    ├─→  "criteria": { "bug": "bug", "feature": "feature",
-| other f64      ┘                     "other": "other" }
-| exhausted        control, not criteria (non-f64 payload)
-| err Err          control, not criteria (non-f64 payload)
+| [bug: Bug reports] f64           ┐
+| [feature: Feature requests] f64  ├─→ "criteria": {
+| [other: Other messages] f64      ┘       "bug": "Bug reports",
+| exhausted                            "feature": "Feature requests",
+| err Err                              "other": "Other messages" }
+                            control ↑ non-f64 payload, never criteria
 ```
 
-Rename a branch and the API question changes — the category names are
-never spelled twice. Non-`f64` branches are control flow and excluded
-by *type*, not by naming convention.
+A pattern-named branch spells `[tag: description]` — the tag is the
+criteria key Jev answers with, the text after the first `:` is the
+description it reads to separate options. Both halves come out of the
+one declared string: the emitter quotes the pattern into the union
+field name verbatim (`@"bug: Bug reports"`), so a comptime split on `:`
+recovers them. A bare branch name is its own key and description —
+`feels`'s `| yes f64 | no f64` needs no annotation.
+
+Continuations match the full pattern name by equality and bind the
+`f64` payload — `| [bug: Bug reports] p when p >= 0.8 |>`. Non-`f64`
+branches are control flow and excluded by *type*, not by naming
+convention.
 
 ## Usage
 
@@ -44,12 +54,12 @@ by *type*, not by naming convention.
 import koru/odds
 
 koru/odds:judge(budget: 8): j |> koru/odds:triage(j, text: mail, question: "Which team handles this?")
-| bug p when p >= 0.8 |> ...
-| bug p               |> ...        // low confidence — a named outcome
-| feature p           |> ...
-| other p             |> ...
-| exhausted           |> ...        // fuel spent — a named outcome
-| err e               |> ...
+| [bug: Bug reports] p when p >= 0.8  |> ...
+| [bug: Bug reports] p                |> ...  // low confidence — a named outcome
+| [feature: Feature requests] p       |> ...
+| [other: Other messages] p           |> ...
+| exhausted                           |> ...  // fuel spent — a named outcome
+| err e                               |> ...
 ```
 
 `judge.mock(budget)` issues the same `*Judge<greedy>` resource with a
@@ -76,9 +86,9 @@ koruc run odds/tests/mock_roundtrip.k
 
 ## Status
 
-Early. The live backend is one file (`index.kz`, ~360 lines) with no
+Early. The live backend is one file (`index.kz`, ~370 lines) with no
 package dependencies — transport is `std.http` inside proc bodies.
-Open design questions live in `LIFT_NOTES.md`: per-branch criteria
-descriptions, the dropped `confidence` field, batched questions, and
-whether the HTTP lifecycle should surface as a Koru-level obligation
-like `@korulang/curl`'s `open!`.
+Open design questions live in `LIFT_NOTES.md`: the dropped
+`confidence` field, batched questions, and whether the HTTP lifecycle
+should surface as a Koru-level obligation like `@korulang/curl`'s
+`open!`.

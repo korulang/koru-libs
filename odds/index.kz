@@ -11,8 +11,9 @@
 // question's criteria, enumerated at comptime from @This().Output.
 // The answer space is declared exactly once — in the event
 // signature — and the API question is built by reflecting on it.
-// Non-f64 branches (`exhausted`, `err`) are control flow, never
-// criteria.
+// Pattern-named branches spell "[tag: description]": the tag is the
+// criteria key, the rest the description Jev reads. Non-f64 branches
+// (`exhausted`, `err`) are control flow, never criteria.
 //
 // Backend: OpenRouter's Decisions API
 // (POST https://openrouter.ai/api/alpha/decisions, model
@@ -76,9 +77,21 @@ fn postJson(alloc: std.mem.Allocator, url: []const u8, key: []const u8, body: []
 
 // ── The reflection ─────────────────────────────────────────────────
 
+// A pattern-named branch spells "tag: description" — the tag is the
+// criteria key Jev answers with, the text after the first ':' is the
+// description it reads to separate options. A bare branch name is
+// both; the convention is opt-in, not required.
+fn branchKey(comptime name: []const u8) []const u8 {
+    return if (std.mem.indexOfScalar(u8, name, ':')) |i| name[0..i] else name;
+}
+fn branchDesc(comptime name: []const u8) []const u8 {
+    return if (std.mem.indexOfScalar(u8, name, ':')) |i| std.mem.trim(u8, name[i + 1 ..], " ") else name;
+}
+
 // Enumerate the union's f64-payload branches and write them as
-// `"name":"name"` criteria pairs. The branch names ARE the category
-// names — the answer space is spelled once, in the event signature.
+// `"tag":"description"` criteria pairs. The branch names ARE the
+// answer space AND its documentation — spelled once, in the event
+// signature, nowhere else.
 fn writeCriteria(comptime Out: type, w: anytype) !void {
     const fields = @typeInfo(Out).@"union".fields;
     var first = true;
@@ -86,9 +99,9 @@ fn writeCriteria(comptime Out: type, w: anytype) !void {
         if (f.type == f64) {
             if (!first) try w.writeAll(",");
             first = false;
-            try std.json.Stringify.value(f.name, .{}, w);
+            try std.json.Stringify.value(branchKey(f.name), .{}, w);
             try w.writeAll(":");
-            try std.json.Stringify.value(f.name, .{}, w);
+            try std.json.Stringify.value(branchDesc(f.name), .{}, w);
         }
     }
 }
@@ -222,7 +235,7 @@ fn pick(j: *Judge, probs: std.json.ObjectMap, comptime Out: type, mode: Mode) !O
         }
     }
     inline for (fields) |f| {
-        if (f.type == f64 and std.mem.eql(u8, chosen, f.name)) {
+        if (f.type == f64 and std.mem.eql(u8, chosen, branchKey(f.name))) {
             return @unionInit(Out, f.name, chosen_p);
         }
     }
@@ -325,11 +338,12 @@ fn jsonFloat(v: std.json.Value) f64 {
 }
 
 // triage — multi-way choice. The answer space lives ONLY in the type:
-// the criteria map is built by reflecting on the f64 branches below.
+// each [tag: description] branch is one criterion — tag the key Jev
+// answers with, description the text it reads to separate options.
 ~pub tor triage { j: *Judge<greedy>, text: string, question: string }
-| bug f64
-| feature f64
-| other f64
+| [bug: Bug reports] f64
+| [feature: Feature requests] f64
+| [other: Other messages] f64
 | exhausted
 | err Err
 
@@ -344,9 +358,9 @@ fn jsonFloat(v: std.json.Value) f64 {
 
 // ctriage — same label set, sampled from the real distribution.
 ~pub tor ctriage { j: *Judge<chaotic>, text: string, question: string }
-| bug f64
-| feature f64
-| other f64
+| [bug: Bug reports] f64
+| [feature: Feature requests] f64
+| [other: Other messages] f64
 | exhausted
 | err Err
 
