@@ -1,0 +1,419 @@
+// @koru/odds — System One judgments as Koru tors.
+//
+// A System One model (TypeSafe's Jev is the first) answers typed
+// questions over a CLOSED answer space and returns calibrated
+// probabilities — which is already the shape of a Koru tor: the
+// branch set IS the answer space, the payload IS the winner's
+// probability, `when` clauses ARE confidence gates, and the decode
+// policy IS a phantom state on the judge.
+//
+// THE REFLECTION: a judgment tor's f64-payload branches ARE the
+// question's criteria, enumerated at comptime from @This().Output.
+// The answer space is declared exactly once — in the event
+// signature — and the API question is built by reflecting on it.
+// Non-f64 branches (`exhausted`, `err`) are control flow, never
+// criteria.
+//
+// Backend: OpenRouter's Decisions API
+// (POST https://openrouter.ai/api/alpha/decisions, model
+// `~typesafe/jev-latest`), reached with std.http — no package
+// dependencies. `judge.mock` issues the same `*Judge<greedy>`
+// resource with a deterministic hash backend for offline tests:
+// every tor compiles and runs identically against either.
+//
+// `gen` is deliberately a DIFFERENT category: System One models
+// cannot generate text, so revision goes to a chat-completions
+// model. The polish loop composes the two categories in one flow.
+// `gen` may migrate to @koru/ai when that package grows an
+// OpenRouter endpoint.
+
+const std = @import("std");
+
+pub const Judge = struct {
+    fuel: i32,
+    rng: std.Random.DefaultPrng,
+    live: bool,
+};
+
+const decisions_endpoint = "https://openrouter.ai/api/alpha/decisions";
+const chat_endpoint = "https://openrouter.ai/api/v1/chat/completions";
+const model = "~typesafe/jev-latest";
+const gen_model = "openai/gpt-4o-mini";
+
+pub const Err = struct { code: i32, msg: []const u8 };
+
+fn fail(comptime msg: []const u8, code: i32) Err {
+    return .{ .code = code, .msg = msg };
+}
+
+// ── Transport ──────────────────────────────────────────────────────
+
+// POST a JSON body, return the response body slice (backing memory
+// leaks by design — judgments are short-lived and the alternative is
+// threading a second obligation through every call site).
+fn postJson(alloc: std.mem.Allocator, url: []const u8, key: []const u8, body: []const u8) ![]u8 {
+    var client: std.http.Client = .{ .allocator = alloc };
+    defer client.deinit();
+    const auth = std.fmt.allocPrint(alloc, "Bearer {s}", .{key}) catch return error.OOM;
+    var aw: std.Io.Writer.Allocating = .init(alloc);
+    errdefer aw.deinit();
+    const res = client.fetch(.{
+        .location = .{ .url = url },
+        .method = .POST,
+        .payload = body,
+        .extra_headers = &.{
+            .{ .name = "authorization", .value = auth },
+            .{ .name = "content-type", .value = "application/json" },
+        },
+        .response_writer = &aw.writer,
+    }) catch return error.FetchFailed;
+    if (@intFromEnum(res.status) >= 400) {
+        aw.deinit();
+        return error.HttpStatus;
+    }
+    return aw.writer.buffered();
+}
+
+// ── The reflection ─────────────────────────────────────────────────
+
+// Enumerate the union's f64-payload branches and write them as
+// `"name":"name"` criteria pairs. The branch names ARE the category
+// names — the answer space is spelled once, in the event signature.
+fn writeCriteria(comptime Out: type, w: anytype) !void {
+    const fields = @typeInfo(Out).@"union".fields;
+    var first = true;
+    inline for (fields) |f| {
+        if (f.type == f64) {
+            if (!first) try w.writeAll(",");
+            first = false;
+            try std.json.Stringify.value(f.name, .{}, w);
+            try w.writeAll(":");
+            try std.json.Stringify.value(f.name, .{}, w);
+        }
+    }
+}
+
+const Mode = enum { greedy, sample };
+
+// One choice question, one call. Greedy argmaxes the returned
+// probabilities; sample draws from them. The winning branch is tagged
+// by name — @unionInit with a comptime field name matched against the
+// model's pick.
+fn ask(alloc: std.mem.Allocator, j: *Judge, state_text: []const u8, instructions: []const u8, comptime Out: type, mode: Mode) !Out {
+    const key = std.posix.getenv("OPENROUTER_API_KEY") orelse return error.NoKey;
+
+    var bw: std.Io.Writer.Allocating = .init(alloc);
+    defer bw.deinit();
+    const w = &bw.writer;
+    try w.writeAll("{\"model\":\"");
+    try w.writeAll(model);
+    try w.writeAll("\",\"state\":");
+    try std.json.Stringify.value(state_text, .{}, w);
+    try w.writeAll(",\"questions\":{\"q\":{\"type\":\"choice\",\"instructions\":");
+    try std.json.Stringify.value(instructions, .{}, w);
+    try w.writeAll(",\"criteria\":{");
+    try writeCriteria(Out, w);
+    try w.writeAll("}}}}");
+
+    const resp = try postJson(alloc, decisions_endpoint, key, bw.writer.buffered());
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, resp, .{}) catch return error.BadJson;
+    defer parsed.deinit();
+    const answers = parsed.value.object.get("answers") orelse return error.NoAnswers;
+    const q = answers.object.get("q") orelse return error.NoAnswers;
+    const probs = (q.object.get("probabilities") orelse return error.NoProbs).object;
+
+    return pick(j, probs, Out, mode);
+}
+
+// The offline backend: deterministic hash probabilities per f64
+// branch name. Same pick path as the live backend — the mode switch
+// is the only difference between a live judge and a mock one.
+fn askMock(j: *Judge, state_text: []const u8, comptime Out: type, mode: Mode) Out {
+    const fields = @typeInfo(Out).@"union".fields;
+    var best_p: f64 = -1;
+    var chosen: []const u8 = "";
+    var chosen_p: f64 = 0;
+    var total: f64 = 0;
+    inline for (fields) |f| {
+        if (f.type == f64) {
+            var h = std.hash.Wyhash.init(0x5EED);
+            h.update(f.name);
+            h.update(state_text);
+            const p = @as(f64, @floatFromInt(h.final() % 1000)) / 1000.0 + 0.001;
+            total += p;
+            if (mode == .greedy and p > best_p) {
+                best_p = p;
+                chosen = f.name;
+                chosen_p = p;
+            }
+        }
+    }
+    if (mode == .sample) {
+        const roll = j.rng.random().float(f64) * total;
+        var acc: f64 = 0;
+        inline for (fields) |f| {
+            if (f.type == f64 and chosen.len == 0) {
+                var h = std.hash.Wyhash.init(0x5EED);
+                h.update(f.name);
+                h.update(state_text);
+                const p = @as(f64, @floatFromInt(h.final() % 1000)) / 1000.0 + 0.001;
+                acc += p;
+                if (roll < acc) {
+                    chosen = f.name;
+                    chosen_p = p;
+                }
+            }
+        }
+    }
+    if (chosen.len == 0) {
+        inline for (fields) |f| {
+            if (f.type == f64) {
+                chosen = f.name;
+                chosen_p = 0.001;
+            }
+        }
+    }
+    const final_p = chosen_p / total;
+    inline for (fields) |f| {
+        if (f.type == f64 and std.mem.eql(u8, chosen, f.name)) {
+            return @unionInit(Out, f.name, final_p);
+        }
+    }
+    unreachable;
+}
+
+fn pick(j: *Judge, probs: std.json.ObjectMap, comptime Out: type, mode: Mode) !Out {
+    const fields = @typeInfo(Out).@"union".fields;
+    var chosen: []const u8 = "";
+    var chosen_p: f64 = 0;
+    if (mode == .greedy) {
+        var best_p: f64 = -1;
+        var it = probs.iterator();
+        while (it.next()) |kv| {
+            const p = jsonFloat(kv.value_ptr.*);
+            if (p > best_p) {
+                best_p = p;
+                chosen = kv.key_ptr.*;
+            }
+        }
+        chosen_p = best_p;
+    } else {
+        var total: f64 = 0;
+        var it = probs.iterator();
+        while (it.next()) |kv| total += jsonFloat(kv.value_ptr.*);
+        const roll = j.rng.random().float(f64) * total;
+        var acc: f64 = 0;
+        it = probs.iterator();
+        while (it.next()) |kv| {
+            const p = jsonFloat(kv.value_ptr.*);
+            acc += p;
+            if (roll < acc) {
+                chosen = kv.key_ptr.*;
+                chosen_p = p;
+                break;
+            }
+        }
+        if (chosen.len == 0) {
+            var last = probs.iterator();
+            while (last.next()) |kv| {
+                chosen = kv.key_ptr.*;
+                chosen_p = jsonFloat(kv.value_ptr.*);
+            }
+        }
+    }
+    inline for (fields) |f| {
+        if (f.type == f64 and std.mem.eql(u8, chosen, f.name)) {
+            return @unionInit(Out, f.name, chosen_p);
+        }
+    }
+    return error.UnknownBranch;
+}
+
+fn jsonFloat(v: std.json.Value) f64 {
+    return switch (v) {
+        .float => |f| f,
+        .integer => |i| @floatFromInt(i),
+        else => 0,
+    };
+}
+
+// ── The judge resource ─────────────────────────────────────────────
+
+// judge — issue a LIVE judge: budget judgments of fuel, backend is the
+// Decisions API. Requires OPENROUTER_API_KEY in the environment.
+~pub tor judge { budget: i32 } -> *Judge<greedy!>
+
+~proc judge|zig {
+    const j = std.heap.page_allocator.create(Judge) catch unreachable;
+    j.* = .{
+        .fuel = budget,
+        .rng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp())),
+        .live = true,
+    };
+    return j;
+}
+
+// judge.mock — same resource, deterministic hash backend, no network.
+// For tests and offline development: every tor compiles and runs
+// identically; only the probabilities' provenance differs.
+~pub tor judge.mock { budget: i32 } -> *Judge<greedy!>
+
+~proc judge.mock|zig {
+    const j = std.heap.page_allocator.create(Judge) catch unreachable;
+    j.* = .{
+        .fuel = budget,
+        .rng = std.Random.DefaultPrng.init(0x9e33),
+        .live = false,
+    };
+    return j;
+}
+
+// chaos — flip to sampled mode. Consumes <greedy>, reissues <chaotic>.
+~pub tor chaos { j: *Judge<!greedy> } -> *Judge<chaotic!>
+~proc chaos|zig {
+    return j;
+}
+
+// settle — back to argmax. The two modes form a phantom cycle.
+~pub tor settle { j: *Judge<!chaotic> } -> *Judge<greedy!>
+~proc settle|zig {
+    return j;
+}
+
+// retire — the discharge. Every issued judge must be retired.
+~pub tor retire { j: *Judge<!greedy> }
+~proc retire|zig {
+    std.heap.page_allocator.destroy(j);
+}
+
+// ── Judgments ──────────────────────────────────────────────────────
+
+// feels — binary judgment: | yes f64 | no f64 asks exactly that
+// question — the branch names are the criteria keys.
+~pub tor feels { j: *Judge<greedy>, text: string, question: string }
+| yes f64
+| no f64
+| exhausted
+| err Err
+
+~proc feels|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    j.fuel -= 1;
+    if (!j.live) return askMock(j, text, @This().Output, .greedy);
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch {
+        return .{ .err = fail("odds call failed", -1) };
+    };
+}
+
+// cfeels — same question, sampled. Only a <chaotic> judge can be asked.
+~pub tor cfeels { j: *Judge<chaotic>, text: string, question: string }
+| yes f64
+| no f64
+| exhausted
+| err Err
+
+~proc cfeels|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    j.fuel -= 1;
+    if (!j.live) return askMock(j, text, @This().Output, .sample);
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch {
+        return .{ .err = fail("odds call failed", -1) };
+    };
+}
+
+// triage — multi-way choice. The answer space lives ONLY in the type:
+// the criteria map is built by reflecting on the f64 branches below.
+~pub tor triage { j: *Judge<greedy>, text: string, question: string }
+| bug f64
+| feature f64
+| other f64
+| exhausted
+| err Err
+
+~proc triage|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    j.fuel -= 1;
+    if (!j.live) return askMock(j, text, @This().Output, .greedy);
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch {
+        return .{ .err = fail("odds call failed", -1) };
+    };
+}
+
+// ctriage — same label set, sampled from the real distribution.
+~pub tor ctriage { j: *Judge<chaotic>, text: string, question: string }
+| bug f64
+| feature f64
+| other f64
+| exhausted
+| err Err
+
+~proc ctriage|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    j.fuel -= 1;
+    if (!j.live) return askMock(j, text, @This().Output, .sample);
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch {
+        return .{ .err = fail("odds call failed", -1) };
+    };
+}
+
+// gen — NOT a System One call. Judgment models cannot generate text;
+// revision goes to a chat-completions model on the same key.
+~pub tor gen { j: *Judge<greedy>, instruction: string, using: string }
+| done string
+| exhausted
+| err Err
+
+~proc gen|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    const alloc = std.heap.page_allocator;
+    j.fuel -= 1;
+    if (!j.live) {
+        const out = std.fmt.allocPrint(alloc, "{s} - edit", .{using}) catch unreachable;
+        return .{ .done = out };
+    }
+    const key = std.posix.getenv("OPENROUTER_API_KEY") orelse return .{ .err = fail("OPENROUTER_API_KEY unset", -1) };
+    var bw: std.Io.Writer.Allocating = .init(alloc);
+    defer bw.deinit();
+    const w = &bw.writer;
+    w.writeAll("{\"model\":\"") catch return .{ .err = fail("oom", -1) };
+    w.writeAll(gen_model) catch return .{ .err = fail("oom", -1) };
+    w.writeAll("\",\"messages\":[{\"role\":\"user\",\"content\":") catch return .{ .err = fail("oom", -1) };
+    const prompt = std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ instruction, using }) catch return .{ .err = fail("oom", -1) };
+    std.json.Stringify.value(prompt, .{}, w) catch return .{ .err = fail("oom", -1) };
+    w.writeAll("}]}") catch return .{ .err = fail("oom", -1) };
+    const resp = postJson(alloc, chat_endpoint, key, bw.writer.buffered()) catch return .{ .err = fail("chat call failed", -1) };
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, resp, .{}) catch return .{ .err = fail("bad json", -1) };
+    defer parsed.deinit();
+    const choices = parsed.value.object.get("choices") orelse return .{ .err = fail("no choices", -1) };
+    if (choices.array.items.len == 0) return .{ .err = fail("no choices", -1) };
+    const msg = choices.array.items[0].object.get("message") orelse return .{ .err = fail("no message", -1) };
+    const content = msg.object.get("content") orelse return .{ .err = fail("no content", -1) };
+    const out = alloc.dupe(u8, content.string) catch return .{ .err = fail("oom", -1) };
+    return .{ .done = out };
+}
+
+// polish — a judgment-gated rewrite loop. One round: ask the judge
+// whether the draft is still jargon; if yes, spend a generation and
+// loop; if no, hand the draft back. Fuel is the honest bound.
+~tor polish-round { j: *Judge<greedy>, draft: string }
+| again string
+| done string
+| exhausted
+
+~polish-round = feels(j, text: draft, question: "full of corporate jargon")
+| yes _ |> gen(j, instruction: "Rewrite plainly.", using: draft)
+    | done d => again d
+    | exhausted => exhausted
+    | err _ => done draft
+| no _ => done draft
+| exhausted => exhausted
+| err _ => done draft
+
+~pub tor polish { j: *Judge<greedy>, draft: string }
+| polished string
+| exhausted
+
+~polish = #loop polish-round(j, draft)
+| again d |> @loop(j, draft: d)
+| done out => polished out
+| exhausted => exhausted

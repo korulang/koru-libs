@@ -1,0 +1,26 @@
+{
+  "name": "@korulang/odds",
+  "version": "0.0.1",
+  "description": "System One judgments as Koru tors — typed questions over a closed answer space, calibrated probabilities as branch payloads, decode policy as a phantom state",
+  "keywords": ["koru", "korulang", "jev", "typesafe", "system-one", "judgment", "classification", "llm"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/odds"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "koru.json",
+    "README.md",
+    "LIFT_NOTES.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}
