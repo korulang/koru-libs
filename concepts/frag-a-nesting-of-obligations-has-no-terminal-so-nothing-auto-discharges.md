@@ -71,7 +71,7 @@ nesting built this way can make it **at every level, without arranging for it**.
   nesting narrows every finalizer at once, because a finalizer that returns a
   parent is by construction not a terminal.
 
-## Instance, 2026-09-21 — the rule holds for a CYCLE, not only a nesting
+## Instance, 2026-09-18 — the rule holds for a CYCLE, not only a nesting
 
 `koru/odds` has no parent/child structure; it has a phantom *cycle*:
 `chaos` consumes `<!greedy>` and mints `<chaotic!>`, `settle` consumes
