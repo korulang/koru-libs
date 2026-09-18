@@ -70,3 +70,28 @@ nesting built this way can make it **at every level, without arranging for it**.
   This is the same mechanism found in the structure rather than in a single tor:
   nesting narrows every finalizer at once, because a finalizer that returns a
   parent is by construction not a terminal.
+
+## Instance, 2026-09-21 — the rule holds for a CYCLE, not only a nesting
+
+`koru/odds` has no parent/child structure; it has a phantom *cycle*:
+`chaos` consumes `<!greedy>` and mints `<chaotic!>`, `settle` consumes
+`<!chaotic>` and mints `<greedy!>`. The same rule surfaces twice:
+
+- **`<chaotic>` can never auto-discharge.** `settle` is its only
+  consumer and `settle` is a transition, not a terminal — splicing it
+  would mint a fresh `<greedy!>` the inserter then cannot name. So a
+  chaotic judge's exit is *always* a spelled call, which is correct:
+  leaving sampled mode is a decision, not bookkeeping. The caller
+  writes `|> settle(j: cj)` and the reissued `<greedy!>` disposes
+  itself.
+- **Candidate enumeration counts transitions as consumers.** For
+  `!greedy` the disposer set was `{retire, chaos}` — a two-way tie the
+  policy refuses to settle unattended, which is why `retire` had to be
+  spelled on every arm. The designed answer is `~[!]`: mark `retire`
+  the preferred discharge and the tie resolves — greedy judges now
+  auto-discharge with nothing spelled.
+
+So "no terminal" is not only the leak-detection win it was for `uk9p`;
+it is also the mechanism that keeps a *mode transition* honest. A cycle
+member has no terminal by construction — its only exit mints an
+obligation — and that is exactly why the caller must name the exit.

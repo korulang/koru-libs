@@ -27,6 +27,19 @@ routed around; these notes are the ledger.
   match the parameter name (`feels(j2, ...)`) is refused with a good
   hint (`j: j2`). Cost: one compile cycle. No action needed.
 
+- **Auto-discharge is real, and `chaos` broke its tie.** Koru's
+  emitter splices a resource's disposer at scope exits when it can
+  pick one unattended (`pickUnattendedDischarge`): one candidate →
+  silent splice; several → settled by a single `[!]` annotation; zero
+  or a tie → `KORU030`. `retire` was never auto-firing because
+  `chaos` also consumes `<!greedy>` — transitions count as disposal
+  *candidates* — so `~[!]pub tor retire` was added and greedy judges
+  now discharge with nothing spelled. `<chaotic>` still requires a
+  spelled `settle`: a transition mints a fresh obligation, so it is
+  never a *disposal* — the inserter will not chain. Verified both
+  ways: a greedy flow with zero `retire` calls compiles and runs;
+  `<chaotic>` without `settle` still hits `KORU030` naming the call.
+
 - **No network-shaped obligations surfaced** — deliberately. The whole
   HTTP lifecycle happens inside each proc body, so the checker sees
   nothing of it. `@korulang/curl`'s `open!`/`close` is the lifted
