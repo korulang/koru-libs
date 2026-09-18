@@ -14,12 +14,18 @@
 set -u
 cd "$(dirname "$0")"
 N="${1:-8}"
+MODE="${MODE:-debug}"        # MODE=release builds --release=fast
+SERVER_BIN="${SERVER_BIN:-}" # SERVER_BIN=./foreign skips the koru server build — same wire, other implementation
 LOG=/tmp/asteroids-net-load
 rm -rf "$LOG"; mkdir -p "$LOG"
 
-for f in server loadbot; do
+REL=""; [ "$MODE" = release ] && REL="--release=fast"
+echo "mode: $MODE ${SERVER_BIN:+server=$SERVER_BIN}"
+
+TARGETS="loadbot"; [ -z "$SERVER_BIN" ] && TARGETS="server loadbot"
+for f in $TARGETS; do
     printf "%-10s build... " "$f"
-    if koruc build "$f.k" > "$LOG/$f.build.log" 2>&1 && mv a.out "$f.bin"; then
+    if koruc build "$f.k" $REL > "$LOG/$f.build.log" 2>&1 && mv a.out "$f.bin"; then
         echo ok
     else
         echo FAIL
@@ -28,7 +34,7 @@ for f in server loadbot; do
     fi
 done
 
-./server.bin > "$LOG/server.log" 2>&1 &
+"${SERVER_BIN:-./server.bin}" > "$LOG/server.log" 2>&1 &
 SRV=$!
 trap 'kill $SRV 2>/dev/null' EXIT
 sleep 1
