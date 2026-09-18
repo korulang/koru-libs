@@ -1,0 +1,457 @@
+// @korulang/metal — a Metal window for Koru (v0: open + clear + close)
+//
+// Tracer for the native-app assimilation path: can Koru drive an
+// Objective-C-flavored API with no shim? Everything below goes through
+// objc_msgSend typed casts — no .m file, no wrapper library, just the
+// ObjC runtime's C surface plus the few genuinely-C entry points
+// (MTLCreateSystemDefaultDevice, CFStringCreateWithCString).
+//
+// The C footguns this compiles away, same bet as raylib/index.kz:
+//
+//   1. A window you open and never render is leaked Cocoa state — here it is
+//      a KORU030 outright: `frames` is the only route to <active!>, and
+//      <active!> is the only state window.close accepts.
+//   2. Rendering without a drawable/descriptor bracket is a silent no-op —
+//      here every draw call borrows a *Frame<frame> that only exists inside
+//      the `! frame` effect-branch body: the pass descriptor lives between
+//      the engine's bracket, so drawing outside a frame is not expressible.
+//   3. Forgetting to end/present a command buffer hangs the swap — the
+//      engine owns that bracket: endEncoding + presentDrawable + commit are
+//      emitted around the frame body, so the user cannot omit them.
+//
+// House style follows raylib/index.kz and sqlite3/index.kz: `<state!>` grants
+// an obligation, `<!state>` consumes it, bare `<state>` borrows.
+
+~import std/build
+
+~std/build:requires {
+    exe.linkLibC();
+    exe.linkFramework("Cocoa");
+    exe.linkFramework("QuartzCore");
+    exe.linkFramework("Metal");
+    exe.linkFramework("CoreFoundation");
+}
+
+const std = @import("std");
+
+const objc = @cImport({
+    @cInclude("objc/runtime.h");
+    @cInclude("objc/message.h");
+    @cInclude("objc/objc.h");
+});
+
+const cf = @cImport({
+    @cInclude("CoreFoundation/CoreFoundation.h");
+});
+
+const Id = ?*anyopaque;
+const SEL = objc.SEL;
+
+extern fn MTLCreateSystemDefaultDevice() callconv(.c) Id;
+extern fn objc_autoreleasePoolPush() callconv(.c) *anyopaque;
+extern fn objc_autoreleasePoolPop(*anyopaque) callconv(.c) void;
+extern var NSDefaultRunLoopMode: Id;
+
+const NSPoint = extern struct { x: f64, y: f64 };
+const NSSize = extern struct { width: f64, height: f64 };
+const NSRect = extern struct { origin: NSPoint, size: NSSize };
+const MTLClearColor = extern struct { red: f64, green: f64, blue: f64, alpha: f64 };
+
+// Vertex positions come from [[vertex_id]] — no vertex buffers needed for a
+// static triangle. Compiled at runtime through newLibraryWithSource:.
+const msl_src: [:0]const u8 =
+    \\#include <metal_stdlib>
+    \\using namespace metal;
+    \\vertex float4 vertex_main(uint vid [[vertex_id]]) {
+    \\    float2 pos[3] = { float2(0.0, 0.7), float2(-0.7, -0.5), float2(0.7, -0.5) };
+    \\    return float4(pos[vid], 0.0, 1.0);
+    \\}
+    \\fragment float4 fragment_main() {
+    \\    return float4(1.0, 0.45, 0.1, 1.0);
+    \\}
+;
+
+fn sel(comptime name: [:0]const u8) SEL {
+    return objc.sel_registerName(name);
+}
+
+fn cls(comptime name: [:0]const u8) Id {
+    return @ptrCast(objc.objc_getClass(name));
+}
+
+// msgSend, arity-indexed. objc_msgSend is an unprototyped forwarder; the
+// call's real signature is asserted per use by the fn-pointer cast.
+fn send(comptime R: type, recv: Id, selector: SEL) R {
+    return @as(*const fn (Id, SEL) callconv(.c) R, @ptrCast(&objc.objc_msgSend))(recv, selector);
+}
+
+fn send1(comptime R: type, comptime A1: type, recv: Id, selector: SEL, a1: A1) R {
+    return @as(*const fn (Id, SEL, A1) callconv(.c) R, @ptrCast(&objc.objc_msgSend))(recv, selector, a1);
+}
+
+fn send2(comptime R: type, comptime A1: type, comptime A2: type, recv: Id, selector: SEL, a1: A1, a2: A2) R {
+    return @as(*const fn (Id, SEL, A1, A2) callconv(.c) R, @ptrCast(&objc.objc_msgSend))(recv, selector, a1, a2);
+}
+
+fn send3(comptime R: type, comptime A1: type, comptime A2: type, comptime A3: type, recv: Id, selector: SEL, a1: A1, a2: A2, a3: A3) R {
+    return @as(*const fn (Id, SEL, A1, A2, A3) callconv(.c) R, @ptrCast(&objc.objc_msgSend))(recv, selector, a1, a2, a3);
+}
+
+fn send4(comptime R: type, comptime A1: type, comptime A2: type, comptime A3: type, comptime A4: type, recv: Id, selector: SEL, a1: A1, a2: A2, a3: A3, a4: A4) R {
+    return @as(*const fn (Id, SEL, A1, A2, A3, A4) callconv(.c) R, @ptrCast(&objc.objc_msgSend))(recv, selector, a1, a2, a3, a4);
+}
+
+fn cstr(title: []const u8, buf: []u8) [*:0]const u8 {
+    const n = @min(title.len, buf.len - 1);
+    @memcpy(buf[0..n], title[0..n]);
+    buf[n] = 0;
+    return @ptrCast(buf.ptr);
+}
+
+// ============================================================================
+// Event mailbox — the ObjC ↔ Koru boundary. ObjC IMPs are plain C functions:
+// they cannot call Koru effect arms, so they PUSH events into this ring, and
+// the `frames` proc — the splice site where arms are callable — drains it and
+// dispatches. Mirror of vaxis's watcher-thread + wake-pipe decoupling.
+// ============================================================================
+
+pub const KeyData = struct {
+    code: u16,
+};
+
+pub const MouseData = struct {
+    x: f64,
+    y: f64,
+};
+
+const Event = union(enum) {
+    key_down: KeyData,
+    mouse_down: MouseData,
+};
+
+var ev_buf: [64]Event = undefined;
+var ev_head: usize = 0;
+var ev_tail: usize = 0;
+
+fn pushEvent(e: Event) void {
+    const next = (ev_tail + 1) % ev_buf.len;
+    if (next != ev_head) {
+        ev_buf[ev_tail] = e;
+        ev_tail = next;
+    }
+}
+
+fn popEvent() ?Event {
+    if (ev_head == ev_tail) return null;
+    const e = ev_buf[ev_head];
+    ev_head = (ev_head + 1) % ev_buf.len;
+    return e;
+}
+
+var should_quit: bool = false;
+
+// ============================================================================
+// Subclassing-as-a-library: KoruMetalView, an NSView subclass minted at
+// runtime. IMPs are module fns that write the mailbox — they carry no Koru
+// knowledge, just C ABI and a queue.
+// ============================================================================
+
+var view_class: ?objc.Class = null;
+
+fn impKeyDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = recv;
+    _ = _s;
+    const kc = send(u16, ev, sel("keyCode"));
+    pushEvent(.{ .key_down = .{ .code = kc } });
+}
+
+fn impMouseDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = recv;
+    _ = _s;
+    const p = send(NSPoint, ev, sel("locationInWindow"));
+    pushEvent(.{ .mouse_down = .{ .x = p.x, .y = p.y } });
+}
+
+fn impAcceptsFirstResponder(recv: Id, _s: SEL) callconv(.c) bool {
+    _ = recv;
+    _ = _s;
+    return true;
+}
+
+fn ensureViewClass() ?objc.Class {
+    if (view_class) |c| return c;
+    const sup: objc.Class = @ptrCast(cls("NSView"));
+    const c = objc.objc_allocateClassPair(sup, "KoruMetalView", 0) orelse return null;
+    _ = objc.class_addMethod(c, sel("keyDown:"), @ptrCast(&impKeyDown), "v@:@");
+    _ = objc.class_addMethod(c, sel("mouseDown:"), @ptrCast(&impMouseDown), "v@:@");
+    _ = objc.class_addMethod(c, sel("acceptsFirstResponder"), @ptrCast(&impAcceptsFirstResponder), "B@:");
+    objc.objc_registerClassPair(c);
+    view_class = c;
+    return c;
+}
+
+// ============================================================================
+// Window lifecycle — the ASYMMETRIC model, same shape as raylib's:
+//   opened — fresh from window.open, never rendered. No disposer accepts it.
+//   active — has presented at least one frame.
+//   closed — window.close accepts ONLY <!active>.
+// ============================================================================
+
+// The ObjC objects a live window needs every frame, carried in one token.
+pub const Window = struct {
+    app: Id,
+    win: Id,
+    layer: Id,
+    queue: Id,
+    pso: Id,
+    clear: MTLClearColor,
+};
+
+// A frame in flight — carries the LIVE render encoder, so draw calls inside
+// `! frame` record into the pass the engine ends, presents and commits after
+// the body returns.
+pub const Frame = struct {
+    encoder: Id,
+};
+
+~pub tor window.open { width: i32, height: i32, title: string }
+| win *Window<opened!>
+| err string
+
+~proc window.open|zig {
+    const pool = objc_autoreleasePoolPush();
+    defer objc_autoreleasePoolPop(pool);
+
+    const app = send(Id, cls("NSApplication"), sel("sharedApplication"));
+    _ = send1(bool, i64, app, sel("setActivationPolicy:"), 0);
+    send(void, app, sel("finishLaunching"));
+
+    const rect = NSRect{
+        .origin = .{ .x = 0, .y = 0 },
+        .size = .{ .width = @floatFromInt(width), .height = @floatFromInt(height) },
+    };
+    const wobj = send4(
+        Id, NSRect, u64, u64, bool,
+        send(Id, cls("NSWindow"), sel("alloc")),
+        sel("initWithContentRect:styleMask:backing:defer:"),
+        rect, 15, 2, false,
+    );
+    if (wobj == null) {
+        return .{ .err = "metal: NSWindow init failed" };
+    }
+
+    var tbuf: [256]u8 = undefined;
+    const titleStr = cf.CFStringCreateWithCString(null, cstr(title, &tbuf), cf.kCFStringEncodingUTF8);
+    send1(void, Id, wobj, sel("setTitle:"), @as(Id, @ptrCast(@constCast(titleStr))));
+
+    const device = MTLCreateSystemDefaultDevice();
+    if (device == null) {
+        return .{ .err = "metal: MTLCreateSystemDefaultDevice returned null" };
+    }
+
+    const layer = send(Id, cls("CAMetalLayer"), sel("layer"));
+    send1(void, Id, layer, sel("setDevice:"), device);
+    send1(void, u64, layer, sel("setPixelFormat:"), 80); // MTLPixelFormatBGRA8Unorm
+    send1(void, NSSize, layer, sel("setDrawableSize:"), NSSize{
+        .width = @floatFromInt(width),
+        .height = @floatFromInt(height),
+    });
+
+    // Our own NSView subclass carries the responder IMPs — it becomes the
+    // content view AND first responder so key/mouse events route to us.
+    const view_cls = ensureViewClass() orelse {
+        return .{ .err = "metal: KoruMetalView class registration failed" };
+    };
+    const view = send1(
+        Id, NSRect,
+        send(Id, @as(Id, @ptrCast(view_cls)), sel("alloc")),
+        sel("initWithFrame:"), rect,
+    );
+    send1(void, Id, wobj, sel("setContentView:"), view);
+    send1(void, Id, view, sel("setLayer:"), layer);
+    send1(void, bool, view, sel("setWantsLayer:"), true);
+    _ = send1(bool, Id, wobj, sel("makeFirstResponder:"), view);
+
+    const queue = send(Id, device, sel("newCommandQueue"));
+    if (queue == null) {
+        return .{ .err = "metal: newCommandQueue returned null" };
+    }
+
+    // Pipeline: compile the MSL source, wire the descriptor, build the state.
+    const srcStr = cf.CFStringCreateWithCString(null, msl_src.ptr, cf.kCFStringEncodingUTF8);
+    var shaderErr: Id = null;
+    const lib = send3(Id, Id, Id, *Id, device, sel("newLibraryWithSource:options:error:"), @as(Id, @ptrCast(@constCast(srcStr))), @as(Id, null), &shaderErr);
+    if (lib == null) {
+        if (shaderErr) |e| {
+            const d = send(Id, e, sel("localizedDescription"));
+            const cstr_ = cf.CFStringGetCStringPtr(@ptrCast(d), cf.kCFStringEncodingUTF8);
+            if (cstr_ != null) std.debug.print("metal: shader error: {s}\n", .{std.mem.span(cstr_)});
+        }
+        return .{ .err = "metal: shader library compile failed" };
+    }
+
+    const vname = cf.CFStringCreateWithCString(null, "vertex_main", cf.kCFStringEncodingUTF8);
+    const fname = cf.CFStringCreateWithCString(null, "fragment_main", cf.kCFStringEncodingUTF8);
+    const vfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(vname))));
+    const ffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(fname))));
+    if (vfn == null or ffn == null) {
+        return .{ .err = "metal: shader functions not found in library" };
+    }
+
+    const pdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, pdesc, sel("setVertexFunction:"), vfn);
+    send1(void, Id, pdesc, sel("setFragmentFunction:"), ffn);
+    const patts = send(Id, pdesc, sel("colorAttachments"));
+    const patt = send1(Id, u64, patts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, patt, sel("setPixelFormat:"), 80); // match the layer
+
+    var psoErr: Id = null;
+    const pso = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), pdesc, &psoErr);
+    if (pso == null) {
+        return .{ .err = "metal: render pipeline state creation failed" };
+    }
+
+    send1(void, Id, wobj, sel("makeKeyAndOrderFront:"), @as(Id, null));
+    send1(void, bool, app, sel("activateIgnoringOtherApps:"), true);
+
+    const w = std.heap.page_allocator.create(Window) catch @panic("metal: OOM allocating Window token");
+    w.* = Window{
+        .app = app,
+        .win = wobj,
+        .layer = layer,
+        .queue = queue,
+        .pso = pso,
+        .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
+    };
+    return .{ .win = w };
+}
+
+// The frame loop — the `opened -> active` transition, same bracket shape as
+// raylib's: the engine acquires the drawable, builds the render pass, hands
+// the user a *Frame borrow for pass configuration, then ends, presents and
+// commits around the body. `! frame` fires once per frame; `count` bounds
+// the loop so tests halt.
+//
+// Callbacks as effect branches, the vaxis shape: ObjC IMPs cannot call Koru
+// arms, so they push into the mailbox while sendEvent runs; the loop drains
+// it here — the splice site where arms are callable — and fires the
+// optional `! ?` arms. Unbound optional arms are generated no-ops. `! close`
+// fires when the window closed (isVisible polled — no delegate needed; the
+// default close button just closes); quit() breaks the loop.
+~pub tor frames { win: *Window<!opened|!active>, count: ?i32 }
+! frame *Frame<frame!>
+! ?key-down koru/metal:KeyData
+! ?mouse-down koru/metal:MouseData
+! ?close
+| done *Window<active!>
+
+~proc frames|zig {
+    const __cap = @as(?i32, count) orelse 2147483647;
+    var i: i32 = 0;
+    while (i < __cap) : (i += 1) {
+        const pool = $mod.objc_autoreleasePoolPush();
+        defer $mod.objc_autoreleasePoolPop(pool);
+
+        // Pump pending AppKit events so the window tracks, closes, repaints.
+        // sendEvent dispatches to our view's IMPs, which push the mailbox.
+        while (true) {
+            const ev = $mod.send4(
+                $mod.Id, u64, $mod.Id, $mod.Id, bool,
+                win.app,
+                $mod.sel("nextEventMatchingMask:untilDate:inMode:dequeue:"),
+                $mod.std.math.maxInt(u64), @as($mod.Id, null), $mod.NSDefaultRunLoopMode, true,
+            );
+            if (ev == null) break;
+            $mod.send1(void, $mod.Id, win.app, $mod.sel("sendEvent:"), ev);
+        }
+        $mod.send(void, win.app, $mod.sel("updateWindows"));
+
+        // Mailbox -> effect arms, the dispatch site.
+        while ($mod.popEvent()) |mev| {
+            switch (mev) {
+                .key_down => |k| key_down(k),
+                .mouse_down => |m| mouse_down(m),
+            }
+        }
+        if ($mod.should_quit) break;
+        if (!$mod.send(bool, win.win, $mod.sel("isVisible"))) {
+            close();
+            break;
+        }
+
+        const drawable = $mod.send($mod.Id, win.layer, $mod.sel("nextDrawable"));
+        if (drawable == null) break; // window closed or invisible
+
+        const desc = $mod.send($mod.Id, $mod.cls("MTLRenderPassDescriptor"), $mod.sel("renderPassDescriptor"));
+        const atts = $mod.send($mod.Id, desc, $mod.sel("colorAttachments"));
+        const att = $mod.send1($mod.Id, u64, atts, $mod.sel("objectAtIndexedSubscript:"), 0);
+        const tex = $mod.send($mod.Id, drawable, $mod.sel("texture"));
+        $mod.send1(void, $mod.Id, att, $mod.sel("setTexture:"), tex);
+        $mod.send1(void, u64, att, $mod.sel("setLoadAction:"), 2); // MTLLoadActionClear
+        $mod.send1(void, u64, att, $mod.sel("setStoreAction:"), 1); // MTLStoreActionStore
+        $mod.send1(void, $mod.MTLClearColor, att, $mod.sel("setClearColor:"), win.clear);
+
+        // The encoder exists BEFORE the frame body: the `! frame` body records
+        // draws into a live pass, then the engine ends, presents, commits.
+        const buf = $mod.send($mod.Id, win.queue, $mod.sel("commandBuffer"));
+        const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
+        $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
+
+        var __f = $mod.Frame{ .encoder = enc };
+        frame(&__f);
+
+        $mod.send(void, enc, $mod.sel("endEncoding"));
+        $mod.send1(void, $mod.Id, buf, $mod.sel("presentDrawable:"), drawable);
+        $mod.send(void, buf, $mod.sel("commit"));
+
+        $mod.std.Thread.sleep(16 * $mod.std.time.ns_per_ms);
+    }
+    return .{ .done = win };
+}
+
+// No-op consumer of the per-frame borrow — auto-inserted release, mirror of
+// raylib's release.frame.
+~pub tor release.frame { f: *Frame<!frame> }
+~proc release.frame|zig { _ = &f; }
+
+~pub tor window.close { win: *Window<!active> }
+
+~proc window.close|zig {
+    const pool = objc_autoreleasePoolPush();
+    defer objc_autoreleasePoolPop(pool);
+    send(void, win.win, sel("close"));
+    std.heap.page_allocator.destroy(win);
+}
+
+// ============================================================================
+// Clear color — a WINDOW property, not a draw call. Metal reads the pass
+// descriptor's clearColor at encoder creation, so a `draw.clear` inside the
+// frame body would be a silent no-op by construction. Setting it here, as a
+// borrow (same shape as raylib's window.fps), keeps the semantic honest: the
+// stored color is applied to every frame's attachment.
+// ============================================================================
+
+~pub tor window.clear.color { win: *Window<opened|active>, r: f32, g: f32, b: f32 }
+
+~proc window.clear.color|zig {
+    win.clear = .{ .red = r, .green = g, .blue = b, .alpha = 1.0 };
+}
+
+// ============================================================================
+// Drawing — every draw call borrows the frame handle, so it can only appear
+// inside a `! frame` body, where it records into the live render encoder.
+// ============================================================================
+
+~pub tor draw.triangle { f: *Frame<frame> }
+
+~proc draw.triangle|zig {
+    send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3);
+}
+
+// Request the frames loop to exit at the next iteration — same shape as
+// vaxis:quit. Sets a module flag; frames checks it after mailbox dispatch.
+~pub tor quit {}
+
+~proc quit|zig {
+    should_quit = true;
+}
