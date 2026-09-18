@@ -14,8 +14,8 @@ tor:
 - **the decode policy IS a phantom state** — `*Judge<greedy>` argmaxes,
   `*Judge<chaotic>` samples the same distribution
 - **the judge IS an obligation** — every issued judge must be retired
-  or the program does not compile — and `retire` carries `[!]`, the
-  preferred-discharge mark, so the emitter splices it at scope exits
+  or the program does not compile, and `retire` is the sole spliceable
+  disposer (void, no output), so the emitter inserts it at scope exits
   and you never spell it. `settle` is the only call you write: a mode
   transition mints a fresh obligation, so leaving `<chaotic>` is a
   decision you name, not bookkeeping the compiler does.
@@ -56,9 +56,9 @@ koru/odds:judge(budget: 8): j |> koru/odds:triage(j, text: mail, question: "Whic
 deterministic hash backend — no network, for tests and offline work.
 `chaos`/`settle` flip the judge's decode mode at the type level;
 `cfeels`/`ctriage` are only callable on a `<chaotic>` judge. `retire`
-is never spelled — `[!]` makes it the default discharge, spliced at
-scope exits; a `<chaotic>` judge exits through `settle`, which
-reissues `<greedy>` and that disposes itself.
+is never spelled — it is the sole void disposer, spliced at scope
+exits; a `<chaotic>` judge exits through `settle`, which reissues
+`<greedy>` and that disposes itself.
 
 `gen` is deliberately a different category: System One models cannot
 generate text, so `gen` calls a chat-completions model. `polish`

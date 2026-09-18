@@ -280,11 +280,11 @@ fn jsonFloat(v: std.json.Value) f64 {
     return j;
 }
 
-// retire — the discharge. Every issued judge must be retired, but
-// the caller needn't spell it: [!] marks this the preferred
-// discharge, so with `chaos` also consuming <greedy> the policy's
-// tie resolves here and the emitter splices the call at scope exits.
-~[!]pub tor retire { j: *Judge<!greedy> }
+// retire — the discharge. Every issued judge must be retired, and
+// the caller never spells it: retire is the sole spliceable disposer
+// of <greedy> (void, no output — chaos returns a value and is never
+// a candidate), so the emitter inserts the call at every scope exit.
+~pub tor retire { j: *Judge<!greedy> }
 ~proc retire|zig {
     std.heap.page_allocator.destroy(j);
 }

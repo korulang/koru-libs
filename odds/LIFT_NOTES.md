@@ -27,18 +27,21 @@ routed around; these notes are the ledger.
   match the parameter name (`feels(j2, ...)`) is refused with a good
   hint (`j: j2`). Cost: one compile cycle. No action needed.
 
-- **Auto-discharge is real, and `chaos` broke its tie.** Koru's
-  emitter splices a resource's disposer at scope exits when it can
-  pick one unattended (`pickUnattendedDischarge`): one candidate →
-  silent splice; several → settled by a single `[!]` annotation; zero
-  or a tie → `KORU030`. `retire` was never auto-firing because
-  `chaos` also consumes `<!greedy>` — transitions count as disposal
-  *candidates* — so `~[!]pub tor retire` was added and greedy judges
-  now discharge with nothing spelled. `<chaotic>` still requires a
-  spelled `settle`: a transition mints a fresh obligation, so it is
-  never a *disposal* — the inserter will not chain. Verified both
-  ways: a greedy flow with zero `retire` calls compiles and runs;
-  `<chaotic>` without `settle` still hits `KORU030` naming the call.
+- **Auto-discharge is real, and `retire` never needed `[!]`.** Koru's
+  emitter splices a resource's disposer at scope exits when the
+  *strict* candidate set (void events — any output disqualifies, since
+  the inserter cannot bind a return) has exactly one member, or one
+  `[!]` default among several. `retire` was always sole for
+  `<greedy>`: `chaos` returns `*Judge<chaotic!>` and the void filter
+  excludes it — transitions never reach the candidate set at all.
+  Greedy judges auto-discharge with nothing spelled, with or without
+  the annotation. `<chaotic>` still requires a spelled `settle`: a
+  transition mints a fresh obligation, so it is never a *disposal* —
+  the inserter will not chain. Verified: zero-`retire` greedy flow
+  compiles and runs unannotated; `<chaotic>` without `settle` hits
+  `KORU030` naming the call. (The earlier revision of this note
+  claimed `[!]` settled a retire-vs-chaos tie — wrong set read; the
+  loose candidate list only feeds the error suggestion.)
 
 - **No network-shaped obligations surfaced** — deliberately. The whole
   HTTP lifecycle happens inside each proc body, so the checker sees

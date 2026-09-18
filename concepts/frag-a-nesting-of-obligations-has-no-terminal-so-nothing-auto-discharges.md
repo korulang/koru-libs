@@ -75,7 +75,7 @@ nesting built this way can make it **at every level, without arranging for it**.
 
 `koru/odds` has no parent/child structure; it has a phantom *cycle*:
 `chaos` consumes `<!greedy>` and mints `<chaotic!>`, `settle` consumes
-`<!chaotic>` and mints `<greedy!>`. The same rule surfaces twice:
+`<!chaotic>` and mints `<greedy!>`.
 
 - **`<chaotic>` can never auto-discharge.** `settle` is its only
   consumer and `settle` is a transition, not a terminal — splicing it
@@ -84,14 +84,21 @@ nesting built this way can make it **at every level, without arranging for it**.
   leaving sampled mode is a decision, not bookkeeping. The caller
   writes `|> settle(j: cj)` and the reissued `<greedy!>` disposes
   itself.
-- **Candidate enumeration counts transitions as consumers.** For
-  `!greedy` the disposer set was `{retire, chaos}` — a two-way tie the
-  policy refuses to settle unattended, which is why `retire` had to be
-  spelled on every arm. The designed answer is `~[!]`: mark `retire`
-  the preferred discharge and the tie resolves — greedy judges now
-  auto-discharge with nothing spelled.
+- **`<greedy>` auto-discharges with no annotation at all.** The
+  strict candidate set — void events only; any output disqualifies
+  because the inserter cannot bind a return — held `retire` alone
+  from the start. `chaos` was never a candidate: it returns
+  `*Judge<chaotic!>`, so transitions never reach the spliceable set.
+  An earlier revision of this instance claimed a `{retire, chaos}`
+  tie that `[!]` resolved; that read the `pickUnattendedDischarge`
+  signature without checking which set feeds it (the strict set —
+  the loose one only builds the `KORU030` suggestion). `retire`
+  carries no `[!]`; it needs none.
 
 So "no terminal" is not only the leak-detection win it was for `uk9p`;
 it is also the mechanism that keeps a *mode transition* honest. A cycle
 member has no terminal by construction — its only exit mints an
 obligation — and that is exactly why the caller must name the exit.
+And the terminal side needs no help: a cycle's true destructor is sole
+spliceable candidate by construction, since every transition is
+filtered out by its own return value.
