@@ -10,8 +10,7 @@
 // Run it:
 //   OPENROUTER_API_KEY=sk-or-v1-... koruc run odds/examples/01_inbox.k
 //
-// With no key the `err` arms fire — itself a faithful run. For an
-// offline run swap `odds:judge` for `odds:judge.mock` below.
+// With no key the `err` arms fire — itself a faithful run.
 
 import koru/odds
 import std/io

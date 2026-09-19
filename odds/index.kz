@@ -18,9 +18,7 @@
 // Backend: OpenRouter's Decisions API
 // (POST https://openrouter.ai/api/alpha/decisions, model
 // `~typesafe/jev-latest`), reached with std.http — no package
-// dependencies. `judge.mock` issues the same `*Judge<greedy>`
-// resource with a deterministic hash backend for offline tests:
-// every tor compiles and runs identically against either.
+// dependencies.
 //
 // `gen` is deliberately a DIFFERENT category: System One models
 // cannot generate text, so revision goes to a chat-completions
@@ -33,7 +31,6 @@ const std = @import("std");
 pub const Judge = struct {
     fuel: i32,
     rng: std.Random.DefaultPrng,
-    live: bool,
 };
 
 const decisions_endpoint = "https://openrouter.ai/api/alpha/decisions";
@@ -138,63 +135,6 @@ fn ask(alloc: std.mem.Allocator, j: *Judge, state_text: []const u8, instructions
     return pick(j, probs, Out, mode);
 }
 
-// The offline backend: deterministic hash probabilities per f64
-// branch name. Same pick path as the live backend — the mode switch
-// is the only difference between a live judge and a mock one.
-fn askMock(j: *Judge, state_text: []const u8, comptime Out: type, mode: Mode) Out {
-    const fields = @typeInfo(Out).@"union".fields;
-    var best_p: f64 = -1;
-    var chosen: []const u8 = "";
-    var chosen_p: f64 = 0;
-    var total: f64 = 0;
-    inline for (fields) |f| {
-        if (f.type == f64) {
-            var h = std.hash.Wyhash.init(0x5EED);
-            h.update(f.name);
-            h.update(state_text);
-            const p = @as(f64, @floatFromInt(h.final() % 1000)) / 1000.0 + 0.001;
-            total += p;
-            if (mode == .greedy and p > best_p) {
-                best_p = p;
-                chosen = f.name;
-                chosen_p = p;
-            }
-        }
-    }
-    if (mode == .sample) {
-        const roll = j.rng.random().float(f64) * total;
-        var acc: f64 = 0;
-        inline for (fields) |f| {
-            if (f.type == f64 and chosen.len == 0) {
-                var h = std.hash.Wyhash.init(0x5EED);
-                h.update(f.name);
-                h.update(state_text);
-                const p = @as(f64, @floatFromInt(h.final() % 1000)) / 1000.0 + 0.001;
-                acc += p;
-                if (roll < acc) {
-                    chosen = f.name;
-                    chosen_p = p;
-                }
-            }
-        }
-    }
-    if (chosen.len == 0) {
-        inline for (fields) |f| {
-            if (f.type == f64) {
-                chosen = f.name;
-                chosen_p = 0.001;
-            }
-        }
-    }
-    const final_p = chosen_p / total;
-    inline for (fields) |f| {
-        if (f.type == f64 and std.mem.eql(u8, chosen, f.name)) {
-            return @unionInit(Out, f.name, final_p);
-        }
-    }
-    unreachable;
-}
-
 fn pick(j: *Judge, probs: std.json.ObjectMap, comptime Out: type, mode: Mode) !Out {
     const fields = @typeInfo(Out).@"union".fields;
     var chosen: []const u8 = "";
@@ -261,22 +201,6 @@ fn jsonFloat(v: std.json.Value) f64 {
     j.* = .{
         .fuel = budget,
         .rng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp())),
-        .live = true,
-    };
-    return j;
-}
-
-// judge.mock — same resource, deterministic hash backend, no network.
-// For tests and offline development: every tor compiles and runs
-// identically; only the probabilities' provenance differs.
-~pub tor judge.mock { budget: i32 } -> *Judge<greedy!>
-
-~proc judge.mock|zig {
-    const j = std.heap.page_allocator.create(Judge) catch unreachable;
-    j.* = .{
-        .fuel = budget,
-        .rng = std.Random.DefaultPrng.init(0x9e33),
-        .live = false,
     };
     return j;
 }
@@ -315,7 +239,6 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc feels|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    if (!j.live) return askMock(j, text, @This().Output, .greedy);
     return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch {
         return .{ .err = fail("odds call failed", -1) };
     };
@@ -331,7 +254,6 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc cfeels|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    if (!j.live) return askMock(j, text, @This().Output, .sample);
     return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch {
         return .{ .err = fail("odds call failed", -1) };
     };
@@ -350,7 +272,6 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc triage|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    if (!j.live) return askMock(j, text, @This().Output, .greedy);
     return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch {
         return .{ .err = fail("odds call failed", -1) };
     };
@@ -367,7 +288,6 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc ctriage|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    if (!j.live) return askMock(j, text, @This().Output, .sample);
     return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch {
         return .{ .err = fail("odds call failed", -1) };
     };
@@ -384,10 +304,6 @@ fn jsonFloat(v: std.json.Value) f64 {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     const alloc = std.heap.page_allocator;
     j.fuel -= 1;
-    if (!j.live) {
-        const out = std.fmt.allocPrint(alloc, "{s} - edit", .{using}) catch unreachable;
-        return .{ .done = out };
-    }
     const key = std.posix.getenv("OPENROUTER_API_KEY") orelse return .{ .err = fail("OPENROUTER_API_KEY unset", -1) };
     var bw: std.Io.Writer.Allocating = .init(alloc);
     defer bw.deinit();

@@ -62,8 +62,6 @@ koru/odds:judge(budget: 8): j |> koru/odds:triage(j, text: mail, question: "Whic
 | err e                               |> ...
 ```
 
-`judge.mock(budget)` issues the same `*Judge<greedy>` resource with a
-deterministic hash backend — no network, for tests and offline work.
 `chaos`/`settle` flip the judge's decode mode at the type level;
 `cfeels`/`ctriage` are only callable on a `<chaotic>` judge. `retire`
 is never spelled — it is the sole void disposer, spliced at scope
@@ -79,9 +77,6 @@ composes the two — a judgment-gated rewrite loop bounded by fuel.
 ```sh
 # live — real Jev through OpenRouter (~$0.00002 per judgment)
 OPENROUTER_API_KEY=sk-or-v1-... koruc run odds/examples/01_inbox.k
-
-# offline — deterministic mock backend, no key needed
-koruc run odds/tests/mock_roundtrip.k
 ```
 
 ## Status
