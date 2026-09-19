@@ -26,6 +26,16 @@
 // `gen` may migrate to @koru/ai when that package grows an
 // OpenRouter endpoint.
 
+~import std/invariants
+
+// The package's own invariant, colocated: the gate fires it only when
+// this file is in the staged diff, judged against this file's hunks.
+~std/invariants:inferred {
+    "name": "single-judgment-surface",
+    "tags": ["git-gate-local"],
+    "rule": "Does this diff add a second judgment implementation to koru/odds — a deterministic, hash-derived, canned, or otherwise offline path that emits verdict-shaped output without a live ask? The library ships one surface: judge talks to the model; offline the honest answer is the err branch, and consumer tests script the ask through test() substitution, never through a backend inside the package. A constructor that takes an explicit endpoint or transport for a REAL service is not a second judgment path. Answer yes ONLY if the diff adds or restores a substitute judgment path inside the package."
+}
+
 const std = @import("std");
 
 pub const Judge = struct {
