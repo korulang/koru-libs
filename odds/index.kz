@@ -17,8 +17,9 @@
 //
 // Backend: OpenRouter's Decisions API
 // (POST https://openrouter.ai/api/alpha/decisions, model
-// `~typesafe/jev-latest`), reached with std.http — no package
-// dependencies.
+// `typesafe/jev-1.13-20260917` — pinned, dated: `-latest` floats and a
+// gate must know which judge it is under), reached with std.http — no
+// package dependencies.
 //
 // `gen` is deliberately a DIFFERENT category: System One models
 // cannot generate text, so revision goes to a chat-completions
@@ -45,8 +46,8 @@ pub const Judge = struct {
 
 const decisions_endpoint = "https://openrouter.ai/api/alpha/decisions";
 const chat_endpoint = "https://openrouter.ai/api/v1/chat/completions";
-const model = "~typesafe/jev-latest";
-const gen_model = "openai/gpt-4o-mini";
+const model = "typesafe/jev-1.13-20260917";
+const gen_model = "openai/gpt-4o-mini-2024-07-18";
 
 pub const Err = struct { code: i32, msg: []const u8 };
 
