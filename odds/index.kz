@@ -249,8 +249,8 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc feels|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch {
-        return .{ .err = fail("odds call failed", -1) };
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     };
 }
 
@@ -264,8 +264,8 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc cfeels|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch {
-        return .{ .err = fail("odds call failed", -1) };
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     };
 }
 
@@ -282,8 +282,8 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc triage|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch {
-        return .{ .err = fail("odds call failed", -1) };
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     };
 }
 
@@ -298,8 +298,8 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc ctriage|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch {
-        return .{ .err = fail("odds call failed", -1) };
+    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     };
 }
 
@@ -324,7 +324,7 @@ fn jsonFloat(v: std.json.Value) f64 {
     const prompt = std.fmt.allocPrint(alloc, "{s}\n\n{s}", .{ instruction, using }) catch return .{ .err = fail("oom", -1) };
     std.json.Stringify.value(prompt, .{}, w) catch return .{ .err = fail("oom", -1) };
     w.writeAll("}]}") catch return .{ .err = fail("oom", -1) };
-    const resp = postJson(alloc, chat_endpoint, key, bw.writer.buffered()) catch return .{ .err = fail("chat call failed", -1) };
+    const resp = postJson(alloc, chat_endpoint, key, bw.writer.buffered()) catch |e| return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     const parsed = std.json.parseFromSlice(std.json.Value, alloc, resp, .{}) catch return .{ .err = fail("bad json", -1) };
     defer parsed.deinit();
     const choices = parsed.value.object.get("choices") orelse return .{ .err = fail("no choices", -1) };
