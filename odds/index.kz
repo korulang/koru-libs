@@ -77,7 +77,6 @@ fn postJson(alloc: std.mem.Allocator, url: []const u8, key: []const u8, body: []
         .response_writer = &aw.writer,
     }) catch return error.FetchFailed;
     if (@intFromEnum(res.status) >= 400) {
-        aw.deinit();
         return error.HttpStatus;
     }
     return aw.writer.buffered();
