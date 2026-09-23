@@ -75,10 +75,11 @@ routed around; these notes are the ledger.
   every arm edits). A tag-prefix shorthand (`| [bug]`) would be a
   language nicety, not a blocker. Pinned: `350_012`.
 
-- **`confidence` is dropped.** The API returns per-choice `confidence`
-  alongside `probabilities`; the package forwards only the probability.
-  Options: a second f64 payload (`| bug f64 f64`), a `confidence`
-  question type, or a `when`-surface redesign.
+- ~~**`confidence` is dropped.**~~ **CLOSED — the ask/decode split.**
+  `*.map` returns the whole distribution as a synthesized `Dist`
+  (`d.yes`, `d.no`, `d.confidence.yes`, …); `*.pick`/`*.draw` decode it
+  purely. Confidence rides the dist's `confidence` struct, keyed by the
+  same `branchKey` reflection.
 
 - **Batched questions.** The API evaluates N questions in parallel per
   call — a `decide`-style event that fans out N judgments in one POST

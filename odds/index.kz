@@ -113,13 +113,82 @@ fn writeCriteria(comptime Out: type, w: anytype) !void {
     }
 }
 
-const Mode = enum { greedy, sample };
+// ── The distribution ───────────────────────────────────────────────
+//
+// The ask (`*.map`) returns the WHOLE probability distribution; the
+// decode (`*.pick` argmax / `*.draw` sample) is pure, free, repeatable.
+// The distribution type is synthesized at comptime by DistOf: one f64
+// field per criteria branch, keyed by branchKey(), plus a parallel
+// `confidence` struct carrying the API's per-choice confidence.
+//
+// The canonical answer space lives in a module-level union — NOT in a
+// tor signature — for two measured reasons: a tor cannot derive a
+// payload type from its OWN Output (Zig "union depends on itself"),
+// and deriving from a SIBLING event's Output breaks whenever that
+// event is dead-stripped (uninvoked tors are not emitted). The union
+// decl is always referenceable; the decode tors re-spell the branches
+// for continuation matching, and pick/draw assert the two agree at
+// comptime (@field on a missing key is a compile error).
 
-// One choice question, one call. Greedy argmaxes the returned
-// probabilities; sample draws from them. The winning branch is tagged
-// by name — @unionInit with a comptime field name matched against the
-// model's pick.
-fn ask(alloc: std.mem.Allocator, j: *Judge, state_text: []const u8, instructions: []const u8, comptime Out: type, mode: Mode) !Out {
+const FeelsSpace = union(enum) {
+    yes: f64,
+    no: f64,
+};
+
+const TriageSpace = union(enum) {
+    @"bug: Bug reports": f64,
+    @"feature: Feature requests": f64,
+    @"other: Other messages": f64,
+};
+
+fn DistOf(comptime Space: type) type {
+    const fields = @typeInfo(Space).@"union".fields;
+    var sf: [fields.len + 1]std.builtin.Type.StructField = undefined;
+    var cf: [fields.len]std.builtin.Type.StructField = undefined;
+    var n: usize = 0;
+    for (fields) |f| {
+        if (f.type != f64) continue;
+        const key = std.fmt.comptimePrint("{s}", .{branchKey(f.name)});
+        const field = std.builtin.Type.StructField{
+            .name = key,
+            .type = f64,
+            .default_value_ptr = @ptrCast(&@as(f64, 0.0)),
+            .is_comptime = false,
+            .alignment = @alignOf(f64),
+        };
+        sf[n] = field;
+        cf[n] = field;
+        n += 1;
+    }
+    const Conf = @Type(.{ .@"struct" = .{
+        .layout = .auto,
+        .fields = cf[0..n],
+        .decls = &.{},
+        .is_tuple = false,
+    } });
+    sf[n] = .{
+        .name = "confidence",
+        .type = Conf,
+        .default_value_ptr = @ptrCast(&std.mem.zeroes(Conf)),
+        .is_comptime = false,
+        .alignment = @alignOf(Conf),
+    };
+    return @Type(.{ .@"struct" = .{
+        .layout = .auto,
+        .fields = sf[0 .. n + 1],
+        .decls = &.{},
+        .is_tuple = false,
+    } });
+}
+
+pub const FeelsDist = DistOf(FeelsSpace);
+pub const TriageDist = DistOf(TriageSpace);
+
+// One choice question, one call — returns the whole distribution.
+// Criteria are enumerated from the Space union (key + description from
+// each field name); probabilities and per-choice confidence fill the
+// synthesized Dist by branchKey.
+fn askDist(alloc: std.mem.Allocator, state_text: []const u8, instructions: []const u8, comptime Space: type) !DistOf(Space) {
     const key = std.posix.getenv("OPENROUTER_API_KEY") orelse return error.NoKey;
 
     var bw: std.Io.Writer.Allocating = .init(alloc);
@@ -132,7 +201,7 @@ fn ask(alloc: std.mem.Allocator, j: *Judge, state_text: []const u8, instructions
     try w.writeAll(",\"questions\":{\"q\":{\"type\":\"choice\",\"instructions\":");
     try std.json.Stringify.value(instructions, .{}, w);
     try w.writeAll(",\"criteria\":{");
-    try writeCriteria(Out, w);
+    try writeCriteria(Space, w);
     try w.writeAll("}}}}");
 
     const resp = try postJson(alloc, decisions_endpoint, key, bw.writer.buffered());
@@ -141,51 +210,81 @@ fn ask(alloc: std.mem.Allocator, j: *Judge, state_text: []const u8, instructions
     const answers = parsed.value.object.get("answers") orelse return error.NoAnswers;
     const q = answers.object.get("q") orelse return error.NoAnswers;
     const probs = (q.object.get("probabilities") orelse return error.NoProbs).object;
+    const conf: ?std.json.ObjectMap = if (q.object.get("confidence")) |c| switch (c) {
+        .object => |o| o,
+        else => null,
+    } else null;
 
-    return pick(j, probs, Out, mode);
+    var d: DistOf(Space) = std.mem.zeroes(DistOf(Space));
+    const fields = @typeInfo(Space).@"union".fields;
+    inline for (fields) |f| {
+        if (f.type == f64) {
+            if (probs.get(branchKey(f.name))) |v| @field(d, branchKey(f.name)) = jsonFloat(v);
+            if (conf) |c| {
+                if (c.get(branchKey(f.name))) |v| @field(d.confidence, branchKey(f.name)) = jsonFloat(v);
+            }
+        }
+    }
+    return d;
 }
 
-fn pick(j: *Judge, probs: std.json.ObjectMap, comptime Out: type, mode: Mode) !Out {
+// Greedy decode: argmax over the dist's fields, matched against the
+// calling tor's f64-payload branches by name. A branch whose key has no
+// Dist field is a comptime error — the two spellings cannot drift.
+fn pickDist(d: anytype, comptime Out: type) !Out {
     const fields = @typeInfo(Out).@"union".fields;
     var chosen: []const u8 = "";
     var chosen_p: f64 = 0;
-    if (mode == .greedy) {
-        var best_p: f64 = -1;
-        var it = probs.iterator();
-        while (it.next()) |kv| {
-            const p = jsonFloat(kv.value_ptr.*);
+    var best_p: f64 = -1;
+    inline for (fields) |f| {
+        if (f.type == f64) {
+            const p = @field(d, branchKey(f.name));
             if (p > best_p) {
                 best_p = p;
-                chosen = kv.key_ptr.*;
+                chosen = f.name;
             }
         }
-        chosen_p = best_p;
-    } else {
-        var total: f64 = 0;
-        var it = probs.iterator();
-        while (it.next()) |kv| total += jsonFloat(kv.value_ptr.*);
-        const roll = j.rng.random().float(f64) * total;
-        var acc: f64 = 0;
-        it = probs.iterator();
-        while (it.next()) |kv| {
-            const p = jsonFloat(kv.value_ptr.*);
+    }
+    chosen_p = best_p;
+    inline for (fields) |f| {
+        if (f.type == f64 and std.mem.eql(u8, chosen, f.name)) {
+            return @unionInit(Out, f.name, chosen_p);
+        }
+    }
+    return error.UnknownBranch;
+}
+
+// Sampled decode: draw from the dist through the judge's rng.
+fn drawDist(j: *Judge, d: anytype, comptime Out: type) !Out {
+    const fields = @typeInfo(Out).@"union".fields;
+    var total: f64 = 0;
+    inline for (fields) |f| {
+        if (f.type == f64) total += @field(d, branchKey(f.name));
+    }
+    const roll = j.rng.random().float(f64) * total;
+    var acc: f64 = 0;
+    var chosen: []const u8 = "";
+    var chosen_p: f64 = 0;
+    inline for (fields) |f| {
+        if (f.type == f64 and chosen.len == 0) {
+            const p = @field(d, branchKey(f.name));
             acc += p;
             if (roll < acc) {
-                chosen = kv.key_ptr.*;
+                chosen = f.name;
                 chosen_p = p;
-                break;
             }
         }
-        if (chosen.len == 0) {
-            var last = probs.iterator();
-            while (last.next()) |kv| {
-                chosen = kv.key_ptr.*;
-                chosen_p = jsonFloat(kv.value_ptr.*);
+    }
+    if (chosen.len == 0) {
+        inline for (fields) |f| {
+            if (f.type == f64) {
+                chosen = f.name;
+                chosen_p = @field(d, branchKey(f.name));
             }
         }
     }
     inline for (fields) |f| {
-        if (f.type == f64 and std.mem.eql(u8, chosen, branchKey(f.name))) {
+        if (f.type == f64 and std.mem.eql(u8, chosen, f.name)) {
             return @unionInit(Out, f.name, chosen_p);
         }
     }
@@ -237,41 +336,136 @@ fn jsonFloat(v: std.json.Value) f64 {
 }
 
 // ── Judgments ──────────────────────────────────────────────────────
+//
+// Each judgment is split in two: `*.map` asks (one POST, fuel spent)
+// and returns the WHOLE distribution as a `| map` payload; `*.pick`
+// (greedy borrow) argmaxes it and `*.draw` (chaotic borrow) samples it
+// — the decode is pure, free, repeatable. `feels`/`triage` and their
+// chaotic twins are the same ask+decode composed as sugar.
+//
+// The judge on `map` is unphased: asking is mode-agnostic — the decode
+// carries the policy, so a greedy judge picks and a chaotic one draws.
+
+// feels.map — the binary ask, undecoded. `| map d` binds the whole
+// distribution: d.yes / d.no are probabilities, d.confidence.* the
+// API's per-choice confidence.
+~pub tor feels.map { j: *Judge, text: string, question: string }
+| map FeelsDist
+| exhausted
+| err Err
+
+~proc feels.map|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    j.fuel -= 1;
+    const d = askDist(std.heap.page_allocator, text, question, FeelsSpace) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+    return .{ .map = d };
+}
+
+// feels.pick — greedy decode over a fetched distribution.
+~pub tor feels.pick { j: *Judge<greedy>, d: FeelsDist }
+| yes f64
+| no f64
+| err Err
+
+~[pure]proc feels.pick|zig {
+    return pickDist(d, @This().Output) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+}
+
+// feels.draw — sampled decode over the same distribution.
+~pub tor feels.draw { j: *Judge<chaotic>, d: FeelsDist }
+| yes f64
+| no f64
+| err Err
+
+~proc feels.draw|zig {
+    return drawDist(j, d, @This().Output) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+}
+
+// triage.map — the multi-way ask, undecoded.
+~pub tor triage.map { j: *Judge, text: string, question: string }
+| map TriageDist
+| exhausted
+| err Err
+
+~proc triage.map|zig {
+    if (j.fuel <= 0) return .{ .exhausted = .{} };
+    j.fuel -= 1;
+    const d = askDist(std.heap.page_allocator, text, question, TriageSpace) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+    return .{ .map = d };
+}
+
+// triage.pick — greedy decode.
+~pub tor triage.pick { j: *Judge<greedy>, d: TriageDist }
+| [bug: Bug reports] f64
+| [feature: Feature requests] f64
+| [other: Other messages] f64
+| err Err
+
+~[pure]proc triage.pick|zig {
+    return pickDist(d, @This().Output) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+}
+
+// triage.draw — sampled decode.
+~pub tor triage.draw { j: *Judge<chaotic>, d: TriageDist }
+| [bug: Bug reports] f64
+| [feature: Feature requests] f64
+| [other: Other messages] f64
+| err Err
+
+~proc triage.draw|zig {
+    return drawDist(j, d, @This().Output) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+}
 
 // feels — binary judgment: | yes f64 | no f64 asks exactly that
-// question — the branch names are the criteria keys.
+// question — the branch names are the criteria keys. Sugar: map+pick.
 ~pub tor feels { j: *Judge<greedy>, text: string, question: string }
 | yes f64
 | no f64
 | exhausted
 | err Err
 
-~proc feels|zig {
-    if (j.fuel <= 0) return .{ .exhausted = .{} };
-    j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch |e| {
-        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
-    };
-}
+~feels = feels.map(j, text, question)
+| map d |> feels.pick(j, d)
+    | yes p => yes p
+    | no p => no p
+    | err e => err e
+| exhausted => exhausted
+| err e => err e
 
 // cfeels — same question, sampled. Only a <chaotic> judge can be asked.
+// Sugar: map+draw.
 ~pub tor cfeels { j: *Judge<chaotic>, text: string, question: string }
 | yes f64
 | no f64
 | exhausted
 | err Err
 
-~proc cfeels|zig {
-    if (j.fuel <= 0) return .{ .exhausted = .{} };
-    j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch |e| {
-        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
-    };
-}
+~cfeels = feels.map(j, text, question)
+| map d |> feels.draw(j, d)
+    | yes p => yes p
+    | no p => no p
+    | err e => err e
+| exhausted => exhausted
+| err e => err e
 
 // triage — multi-way choice. The answer space lives ONLY in the type:
 // each [tag: description] branch is one criterion — tag the key Jev
 // answers with, description the text it reads to separate options.
+// Proc, not sugar: `=>` branch ctors cannot spell a pattern name —
+// `=> [bug: Bug reports] p` does not parse — so the subflow that
+// would compose map+pick cannot construct these branches. FLOATED.
 ~pub tor triage { j: *Judge<greedy>, text: string, question: string }
 | [bug: Bug reports] f64
 | [feature: Feature requests] f64
@@ -282,12 +476,16 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc triage|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .greedy) catch |e| {
+    const d = askDist(std.heap.page_allocator, text, question, TriageSpace) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+    return pickDist(d, @This().Output) catch |e| {
         return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     };
 }
 
 // ctriage — same label set, sampled from the real distribution.
+// Proc for the same reason as triage.
 ~pub tor ctriage { j: *Judge<chaotic>, text: string, question: string }
 | [bug: Bug reports] f64
 | [feature: Feature requests] f64
@@ -298,7 +496,10 @@ fn jsonFloat(v: std.json.Value) f64 {
 ~proc ctriage|zig {
     if (j.fuel <= 0) return .{ .exhausted = .{} };
     j.fuel -= 1;
-    return ask(std.heap.page_allocator, j, text, question, @This().Output, .sample) catch |e| {
+    const d = askDist(std.heap.page_allocator, text, question, TriageSpace) catch |e| {
+        return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
+    };
+    return drawDist(j, d, @This().Output) catch |e| {
         return .{ .err = .{ .code = -1, .msg = @errorName(e) } };
     };
 }

@@ -68,6 +68,24 @@ is never spelled — it is the sole void disposer, spliced at scope
 exits; a `<chaotic>` judge exits through `settle`, which reissues
 `<greedy>` and that disposes itself.
 
+## The split
+
+Each judgment is two operations. `feels.map` / `triage.map` ask — one
+live POST, fuel spent — and return the **whole distribution** as a
+`| map` payload: every branch's probability plus the API's per-choice
+`confidence` (`d.yes`, `d.no`, `d.confidence.yes`, …). `*.pick`
+argmaxes the dist, `*.draw` samples it — both pure, free, repeatable
+over one fetch:
+
+```koru
+koru/odds:feels.map(j, text: mail, question: "urgent?")
+| map d |> koru/odds:feels.pick(j, d)   // d survives — read d.confidence.*,
+    | yes p |> ...                      // decode again, no second call
+```
+
+`feels`/`cfeels`/`triage`/`ctriage` are the same ask+decode composed —
+the one-call spelling for callers that only want the winner.
+
 `gen` is deliberately a different category: System One models cannot
 generate text, so `gen` calls a chat-completions model. `polish`
 composes the two — a judgment-gated rewrite loop bounded by fuel.
@@ -81,9 +99,8 @@ OPENROUTER_API_KEY=sk-or-v1-... koruc run odds/examples/01_inbox.k
 
 ## Status
 
-Early. The live backend is one file (`index.kz`, ~370 lines) with no
+Early. The live backend is one file (`index.kz`) with no
 package dependencies — transport is `std.http` inside proc bodies.
-Open design questions live in `LIFT_NOTES.md`: the dropped
-`confidence` field, batched questions, and whether the HTTP lifecycle
-should surface as a Koru-level obligation like `@korulang/curl`'s
-`open!`.
+Open design questions live in `LIFT_NOTES.md`: batched questions, and
+whether the HTTP lifecycle should surface as a Koru-level obligation
+like `@korulang/curl`'s `open!`.
