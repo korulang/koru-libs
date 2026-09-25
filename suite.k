@@ -34,19 +34,19 @@ koru/regressions:case(signal external tick) {
 }
 
 koru/regressions:case(signal init surface) {
-  "file": "signal/tests/init_surface/input.kz",
+  "file": "signal/tests/init_surface/input.k",
   "category": ["c-libs", "signal"],
   "tags": ["signal-processing", "transform"]
 }
 
 koru/regressions:case(signal tick surface) {
-  "file": "signal/tests/tick_surface/input.kz",
+  "file": "signal/tests/tick_surface/input.k",
   "category": ["c-libs", "signal"],
   "tags": ["signal-processing", "transform"]
 }
 
 koru/regressions:case(signal reference surface) {
-  "file": "signal/tests/reference_surface/input.kz",
+  "file": "signal/tests/reference_surface/input.k",
   "category": ["c-libs", "signal"],
   "tags": ["signal-processing", "transform"]
 }
@@ -58,13 +58,13 @@ koru/regressions:case(signal tick before init) {
 }
 
 koru/regressions:case(signal shape surface) {
-  "file": "signal/tests/shape_surface/input.kz",
+  "file": "signal/tests/shape_surface/input.k",
   "category": ["c-libs", "signal"],
   "tags": ["signal-processing", "shape"]
 }
 
 koru/regressions:case(signal model spine) {
-  "file": "signal/tests/model_spine/input.kz",
+  "file": "signal/tests/model_spine/input.k",
   "category": ["c-libs", "signal"],
   "tags": ["signal-processing", "authoring"]
 }
