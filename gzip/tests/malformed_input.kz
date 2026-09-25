@@ -5,6 +5,10 @@
 
 ~import libs/gzip
 ~import std/io
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "Correctly rejected non-gzip input via error branch:")
 
 const std = @import("std");
 
@@ -20,7 +24,7 @@ const garbage: []const u8 = "this is definitely not gzip data, just plain text b
     @panic("decompress() must reject non-gzip input via the error branch, but it reported success");
 }
 
-~tor expected-error { msg: []const u8 }
+~tor expected-error { msg: string }
 
 ~proc expected-error|zig {
     if (msg.len == 0) {
