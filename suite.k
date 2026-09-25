@@ -25,6 +25,10 @@ koru/regressions:case(gzip malformed input is rejected) {
   "file": "gzip/tests/malformed_input.kz"
 }
 
+koru/regressions:case(gzip stream round-trip) {
+  "file": "gzip/tests/stream_roundtrip.kz"
+}
+
 koru/regressions:case(gzip use-after-finish is rejected) {
   "file": "gzip/tests/deflate_use_after_finish.k",
   "category": ["c-libs", "smoke"],
