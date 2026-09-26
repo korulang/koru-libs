@@ -1,0 +1,25 @@
+{
+  "name": "@korulang/winnow",
+  "version": "0.0.1",
+  "description": "Result shaping for agent-facing tool output — per-command grammar of filters, statics, diffs, and judged summaries applied at the tool-result boundary",
+  "keywords": ["koru", "korulang", "compression", "diff", "llm", "agent", "tool-output"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/winnow"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "DESIGN.md",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}

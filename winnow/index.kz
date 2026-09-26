@@ -1,0 +1,244 @@
+// @korulang/winnow — result shaping for agent-facing tool output
+// ==============================================================
+//
+// A command runs; something decides what the model actually sees.
+// Winnow is that decision: a per-command grammar of filters, static
+// replies, diffs, and judged summaries applied at the tool-result
+// boundary — inside the scope proc or harness, never wrapped around
+// a shell.
+//
+// See DESIGN.md for the full surface and the profiles grammar.
+//
+// V0 SCOPE — what is here is what works: the tier-1 line ops, pure
+// string (head / tail / below / dedup) plus the regex trio over
+// koru/pcre2 (extract.lines / remove.lines / grep — caller hands a bare
+// pattern, winnow owns the whole-line wrap, compile, and free). The
+// Myers diff, the koru/ai summarize tier, and the koru/odds escalation
+// gate are designed in DESIGN.md and land as real lifts, in that order.
+// Nothing here pretends to a tier it does not implement.
+
+~import koru/pcre2
+~import std/string
+
+const std = @import("std");
+
+// ============================================================================
+// head — first `lines` lines of `text`
+// ============================================================================
+//
+// Fewer lines than requested returns the whole text. `lines <= 0`
+// returns "". Returns a subslice of `text` — no allocation, no copy.
+
+~pub tor head { text: string, lines: i64 } -> string
+~proc head|zig {
+    if (lines <= 0) return "";
+    var pos: usize = 0;
+    var seen: i64 = 0;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    while (it.next()) |line| {
+        seen += 1;
+        if (seen == lines) return text[0 .. pos + line.len];
+        pos += line.len + 1;
+    }
+    return text;
+}
+
+// ============================================================================
+// tail — last `lines` lines of `text`
+// ============================================================================
+//
+// Errors live at the end of tool output; this is the single most-used
+// op in the profiles grammar. A trailing newline does not mint a
+// phantom empty line. Subslice return, no allocation.
+
+~pub tor tail { text: string, lines: i64 } -> string
+~proc tail|zig {
+    if (lines <= 0) return "";
+    var t = text;
+    if (t.len > 0 and t[t.len - 1] == '\n') t = t[0 .. t.len - 1];
+    var start: usize = 0;
+    var seen: i64 = 0;
+    var i: usize = t.len;
+    while (i > 0) {
+        i -= 1;
+        if (t[i] == '\n') {
+            seen += 1;
+            if (seen == lines) {
+                start = i + 1;
+                break;
+            }
+        }
+    }
+    if (seen < lines) start = 0;
+    return t[start..];
+}
+
+// ============================================================================
+// below — everything after the line containing `marker`
+// ============================================================================
+//
+// The "failing tests:" cut from the profiles grammar: keep what is
+// below the marker line, drop the header above it. Marker absent →
+// the text unchanged (nothing to cut is an honest answer, not an
+// error). Marker on the last line → "".
+
+~pub tor below { text: string, marker: string } -> string
+~proc below|zig {
+    const idx = std.mem.indexOf(u8, text, marker) orelse return text;
+    const nl = std.mem.indexOfScalarPos(u8, text, idx + marker.len, '\n') orelse return "";
+    return text[nl + 1 ..];
+}
+
+// ============================================================================
+// dedup — first occurrence wins, order preserved
+// ============================================================================
+//
+// Progress-bar spam and repeated noise lines collapse to one line
+// each. The one allocating op in v0: the output buffer lives on
+// page_allocator and is handed back — the produced program's own
+// accounting owns the lifetime (same convention as pcre2's error
+// messages and odds' transport bodies).
+
+~pub tor dedup { text: string } -> string
+~proc dedup|zig {
+    const alloc = std.heap.page_allocator;
+    var seen = std.StringHashMap(void).init(alloc);
+    defer seen.deinit();
+    var out = std.ArrayList(u8).initCapacity(alloc, text.len) catch return text;
+    var it = std.mem.splitScalar(u8, text, '\n');
+    var first = true;
+    while (it.next()) |line| {
+        if (seen.contains(line)) continue;
+        seen.put(line, {}) catch {};
+        if (!first) out.append(alloc, '\n') catch {};
+        out.appendSlice(alloc, line) catch {};
+        first = false;
+    }
+    return out.items;
+}
+
+// ============================================================================
+// append-join — `line` onto `s`, `\n` between kept lines only
+// ============================================================================
+//
+// Join semantics, not terminate: no trailing separator is minted.
+// Internal helper for the collect flows.
+
+~tor append-join { s: *std/string:String<instance>, line: string }
+| ok
+| err string
+
+~append-join = std/string:len(s): n |> if(n == 0)
+| then |> std/string:append(s, text: line)
+    | ok => ok
+    | err e => err e
+| else |> std/string:append(s, text: "\n")
+    | ok |> std/string:append(s, text: line)
+        | ok => ok
+        | err e => err e
+    | err e => err e
+
+// ============================================================================
+// line-pattern — wrap a bare pattern so it matches WHOLE lines
+// ============================================================================
+//
+// The grammar's ops are per-line; `find.all` scans the whole text once.
+// keep-mode wraps `P` as `(?m)^.*(?:P).*$` — matches land on lines that
+// CONTAIN P. drop-mode wraps as `(?m)^(?!.*(?:P).*$).*$` — matches land
+// on lines that do NOT contain P, so "remove lines matching P" is one
+// inverted scan, not per-line bookkeeping.
+
+~tor line-pattern { pattern: string, invert: i64 }
+| ok string
+| err string
+
+~proc line-pattern|zig {
+    const alloc = std.heap.page_allocator;
+    const wp = if (invert != 0)
+        std.fmt.allocPrint(alloc, "(?m)^(?!.*(?:{s}).*$).*$", .{pattern}) catch {
+            return .{ .err = "oom in line-pattern" };
+        }
+    else
+        std.fmt.allocPrint(alloc, "(?m)^.*(?:{s}).*$", .{pattern}) catch {
+            return .{ .err = "oom in line-pattern" };
+        };
+    return .{ .ok = wp };
+}
+
+~tor line-re { pattern: string, invert: i64 }
+| ok *koru/pcre2:Regex<compiled!>
+| err string
+
+~line-re = line-pattern(pattern, invert)
+| ok wp |> koru/pcre2:compile(pattern: wp)
+    | ok r => ok r
+    | err e => err e.msg
+| err e => err e
+
+// ============================================================================
+// collect-matches — every match of `re` in `text`, joined by \n
+// ============================================================================
+//
+// `re` is BORROWED for the scan — the caller compiled it and owes the
+// `free`. Only chain-bound names reach `! match` bodies (flow params
+// do not cross the effect boundary — measured 2026-09-26), which is
+// why `re` appears at the call site and only `buf`/`m` inside bodies.
+
+~tor collect-matches { re: *koru/pcre2:Regex<compiled>, text: string }
+| ok *std/string:String<view!>
+| err string
+
+~collect-matches = std/string:from-page(text: "")
+| ok acc |> std/string:take(s: acc): buf
+    |> koru/pcre2:find.all(re, subject: text)
+        ! match m |> koru/pcre2:group.text(m, index: 0): line
+            |> append-join(s: buf, line)
+            | ok |> _
+            | err e => err e
+        | done |> std/string:release(s: buf): v => ok v
+        | err _ |> std/string:free(s: buf) => err "pcre2 scan failed"
+| err e => err e
+
+// ============================================================================
+// remove.lines / extract.lines — the grammar's line filters
+// ============================================================================
+//
+// Caller hands a BARE pattern; winnow owns wrapping, compiling, and
+// freeing the regex. The result is an owned `*String<view!>` the
+// caller must `std/string:free`.
+
+~pub tor extract.lines { pattern: string, text: string }
+| ok *std/string:String<view!>
+| err string
+
+~extract.lines = line-re(pattern, invert: 0)
+| ok re |> collect-matches(re, text)
+    | ok s |> koru/pcre2:free(re) => ok s
+    | err e |> koru/pcre2:free(re) => err e
+| err e => err e
+
+~pub tor remove.lines { pattern: string, text: string }
+| ok *std/string:String<view!>
+| err string
+
+~remove.lines = line-re(pattern, invert: 1)
+| ok re |> collect-matches(re, text)
+    | ok s |> koru/pcre2:free(re) => ok s
+    | err e |> koru/pcre2:free(re) => err e
+| err e => err e
+
+// ============================================================================
+// grep — does `text` contain a match of `pattern` at all?
+// ============================================================================
+
+~pub tor grep { pattern: string, text: string }
+| yes
+| no
+| err string
+
+~grep = koru/pcre2:compile(pattern)
+| ok re |> koru/pcre2:matches(re, subject: text)
+    | yes |> koru/pcre2:free(re) => yes
+    | no |> koru/pcre2:free(re) => no
+    | err e |> koru/pcre2:free(re) => err e.msg
+| err e => err e.msg
