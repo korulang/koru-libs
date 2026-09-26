@@ -116,6 +116,37 @@ pub const Match = struct {
 }
 
 // ============================================================================
+// matches — the boolean probe: does `subject` match at all?
+// ============================================================================
+//
+// The question `find.all` makes you spell with a loop and an early
+// exit, answered in one call. Match-data is allocated and freed inside
+// — the caller holds nothing but the verdict. `compiled` is BORROWED:
+// the caller keeps the obligation and still owes exactly one `free`.
+
+~pub tor matches { re: *Regex<compiled>, subject: string }
+| yes
+| no
+| err { code: i32, msg: string }
+
+~proc matches|zig {
+    const md = $mod.c.pcre2_match_data_create_from_pattern_8(re.code, null);
+    if (md == null) {
+        return .{ .err = .{ .code = 0, .msg = "pcre2: failed to allocate match data" } };
+    }
+    defer $mod.c.pcre2_match_data_free_8(md);
+    const rc = $mod.c.pcre2_match_8(re.code, subject.ptr, subject.len, 0, 0, md, null);
+    if (rc == $mod.c.PCRE2_ERROR_NOMATCH) return .{ .no = .{} };
+    if (rc <= 0) {
+        var buf: [256]u8 = undefined;
+        _ = $mod.c.pcre2_get_error_message_8(rc, &buf, buf.len);
+        const msg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&buf, 0)) catch "pcre2 match error";
+        return .{ .err = .{ .code = rc, .msg = msg } };
+    }
+    return .{ .yes = .{} };
+}
+
+// ============================================================================
 // find.all — iterate every match; the match-data buffer never escapes
 // ============================================================================
 //
@@ -138,39 +169,43 @@ pub const Match = struct {
     // consumer's frame AND as this module's own handler. `$mod.` is the
     // compiler-provided spelling that resolves to this module's scope at BOTH
     // sites (koru 400_155) — never reach through emitter-internal naming.
-    const md = $mod.c.pcre2_match_data_create_from_pattern_8(re.code, null);
-    if (md == null) {
+    const __md = $mod.c.pcre2_match_data_create_from_pattern_8(re.code, null);
+    if (__md == null) {
         return .{ .err = .{ .code = 0, .msg = "pcre2: failed to allocate match data" } };
     }
-    defer $mod.c.pcre2_match_data_free_8(md);
+    defer $mod.c.pcre2_match_data_free_8(__md);
 
     // Named with `__` so it can't collide with the consumer's `! match <name>`
     // binding, whose body is inlined right here (same convention as sqlite3's
-    // `__row`).
+    // `__row`). EVERY local in this body needs the prefix — the body splices
+    // into the consumer's frame, and a bare local (`buf`, `offset`, …)
+    // shadows any same-named consumer binding: Zig rejects shadowing even
+    // across nested blocks. Surfaced by winnow's `collect-matches`, which
+    // binds `buf` (koru-libs 400_198 fix made the nested splice reachable).
     var __match = $mod.Match{ .subject = subject, .ovector = undefined, .count = 0 };
-    var offset: usize = 0;
-    while (offset <= subject.len) {
-        const rc = $mod.c.pcre2_match_8(re.code, subject.ptr, subject.len, offset, 0, md, null);
-        if (rc == $mod.c.PCRE2_ERROR_NOMATCH) break;
-        if (rc <= 0) {
-            var buf: [256]u8 = undefined;
-            _ = $mod.c.pcre2_get_error_message_8(rc, &buf, buf.len);
-            const dupmsg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&buf, 0)) catch "pcre2 match error";
-            return .{ .err = .{ .code = rc, .msg = dupmsg } };
+    var __offset: usize = 0;
+    while (__offset <= subject.len) {
+        const __rc = $mod.c.pcre2_match_8(re.code, subject.ptr, subject.len, __offset, 0, __md, null);
+        if (__rc == $mod.c.PCRE2_ERROR_NOMATCH) break;
+        if (__rc <= 0) {
+            var __buf: [256]u8 = undefined;
+            _ = $mod.c.pcre2_get_error_message_8(__rc, &__buf, __buf.len);
+            const __dupmsg = std.heap.page_allocator.dupe(u8, std.mem.sliceTo(&__buf, 0)) catch "pcre2 match error";
+            return .{ .err = .{ .code = __rc, .msg = __dupmsg } };
         }
-        const ov = $mod.c.pcre2_get_ovector_pointer_8(md);
-        __match.ovector = ov;
-        __match.count = @intCast(rc);
+        const __ov = $mod.c.pcre2_get_ovector_pointer_8(__md);
+        __match.ovector = __ov;
+        __match.count = @intCast(__rc);
         match(&__match);
         // Advance past this match. An empty match (zero-width, e.g. `\b` or
         // `a*` at a non-`a`) would loop forever at the same offset, so nudge
         // forward by one code unit in that case to guarantee progress.
-        const mstart = ov[0];
-        var mend = ov[1];
-        if (mend <= mstart) {
-            mend = mstart + 1;
+        const __mstart = __ov[0];
+        var __mend = __ov[1];
+        if (__mend <= __mstart) {
+            __mend = __mstart + 1;
         }
-        offset = mend;
+        __offset = __mend;
     }
     return .{ .done = .{} };
 }
