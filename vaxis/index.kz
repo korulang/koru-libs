@@ -676,7 +676,8 @@ const VaxisEvent = union(enum) {
 
 ~proc live|zig {
     _ = &__koru_event_input;
-    return @intFromBool(!$mod.should_quit);
+    // Started and not asked to quit — a failed init never joins the pump.
+    return @intFromBool($mod.is_initialized and !$mod.should_quit);
 }
 
 ~proc wait|zig {
@@ -694,9 +695,15 @@ const VaxisEvent = union(enum) {
 
 ~proc deinit|zig {
     _ = &__koru_event_input;
+    if (!$mod.is_initialized) return;
     // Wake the watcher so it can see should_quit and exit, then join it.
+    // The watcher is parked in queue.poll(), a predicate wait on
+    // "queue non-empty" — a bare not_empty.signal() wakes it only to
+    // re-wait on the still-empty queue. A posted item satisfies the
+    // predicate for real. tryPostEvent, not postEvent: on a full queue
+    // the watcher isn't blocked, and we must never block here.
     $mod.should_quit = true;
-    $mod.event_loop.queue.not_empty.signal();
+    _ = $mod.event_loop.tryPostEvent(.{ .winsize = undefined });
     if ($mod.wake_thread) |t| {
         t.join();
         $mod.wake_thread = null;
@@ -711,6 +718,22 @@ const VaxisEvent = union(enum) {
     $mod.should_quit = false;
     $mod.arms_armed = false;
     $mod.tick_enabled = false;
+}
+
+// Retirement verdict for a captured run's `| done` — a compound pump's driver
+// fires the retire unit on the first `live() == 0` pass. `done` answers only
+// when the TTY actually stood up and is being torn down now; `silent` is "the
+// machinery never initialized" (a failed init already answered `| err`), so a
+// `| done` arm can't claim a clean exit that never happened.
+~pub tor __retire {}
+| ?done
+| ?silent
+
+~proc __retire|zig {
+    _ = &__koru_event_input;
+    if (!$mod.is_initialized) return .{ .silent = .{} };
+    $mod.deinit_event.handler(.{});
+    return .{ .done = .{} };
 }
 
 ~proc run|zig {
@@ -770,9 +793,12 @@ const VaxisEvent = union(enum) {
     }.go;
 
     // Partition the call's arms: `!` continuations ride the generated
-    // `vaxis:step()` unit; `|`/`|>` terminals stay on the generated call.
+    // `vaxis:step()` unit; `|`/`|>` terminals stay on the generated call —
+    // except `| done`, which under a compound pump retires with the
+    // participant rather than answering at the call site.
     var arms = std.ArrayList(ast.Continuation).initCapacity(allocator, flow.body.continuations.len) catch unreachable;
     var terminals = std.ArrayList(ast.Continuation).initCapacity(allocator, 4) catch unreachable;
+    var done_arm: ?*const ast.Continuation = null;
     for (flow.body.continuations) |*c| {
         const cloned = ast_functional.cloneContinuation(allocator, c) catch unreachable;
         if (c.kind == .effect) {
@@ -784,13 +810,95 @@ const VaxisEvent = union(enum) {
             const msg = std.fmt.allocPrint(allocator, "koru/vaxis:run: `| {s}` doesn't parse on a run call - the driver's terminals are `| ?done` (the loop drained) and `| err` (init failed); vaxis's event surface is `!`-armed", .{cb}) catch unreachable;
             return .{ .replacement = refuse(allocator, flow, msg) };
         }
+        if (std.mem.eql(u8, cb, "done")) done_arm = c;
         terminals.append(allocator, cloned) catch unreachable;
     }
 
+    // An open std/pump absorbs this run — `__pump_decl_<n>` markers planted
+    // with no matching `__pump_ran_<n>`. The scan restates koru_pump's
+    // markers (private to std/pump — consumer transforms restate them).
+    //
+    // RULED: `// __pump_decl_<name>` / `// __pump_ran_<name>` is the
+    // open-pump marker spelling — decided in koru 7636e4146 and named in
+    // koru concepts/frag-comment-markers-are-the-inter-transform-wire.
+    //
+    // ASPIRATIONAL — this scan is one edge of the comment wire, duplicated
+    // per participant library. The resolved migration is a typed program
+    // item (facet_decl precedent) owned by std/pump and queried, not
+    // scanned. See koru
+    // concepts/frag-comment-markers-are-the-inter-transform-wire.
+    const markerExists = struct {
+        // A marker host_line is exactly `// <marker>` — anything looser and
+        // prose naming the marker pattern reads as a planted pump.
+        fn scan(its: []const ast.Item, w: []const u8) bool {
+            for (its) |*pi| {
+                switch (pi.*) {
+                    .host_line => |*hl| {
+                        const t = std.mem.trim(u8, hl.content, " \r\n\t");
+                        if (t.len >= 3 and std.mem.startsWith(u8, t, "// ") and std.mem.eql(u8, t[3..], w)) return true;
+                    },
+                    .module_decl => |*md| {
+                        if (scan(md.items, w)) return true;
+                    },
+                    else => {},
+                }
+            }
+            return false;
+        }
+        fn go(prog: *const ast.Program, w: []const u8) bool {
+            return scan(prog.items, w);
+        }
+    }.go;
+    var open = std.ArrayList([]const u8).initCapacity(allocator, 2) catch unreachable;
+    const CollectOpen = struct {
+        fn scan(list: *std.ArrayList([]const u8), a: std.mem.Allocator, prog: *const ast.Program, its: []const ast.Item, hasMarker: *const fn (*const ast.Program, []const u8) bool) void {
+            for (its) |*pi| {
+                switch (pi.*) {
+                    .host_line => |*hl| {
+                        const t = std.mem.trim(u8, hl.content, " \r\n\t");
+                        if (declName(t)) |name| {
+                            for (list.items) |seen| {
+                                if (std.mem.eql(u8, seen, name)) break;
+                            } else {
+                                const ran = std.fmt.allocPrint(a, "__pump_ran_{s}", .{name}) catch unreachable;
+                                if (!hasMarker(prog, ran)) list.append(a, a.dupe(u8, name) catch unreachable) catch unreachable;
+                            }
+                        }
+                    },
+                    .module_decl => |*md| scan(list, a, prog, md.items, hasMarker),
+                    else => {},
+                }
+            }
+        }
+        fn declName(t: []const u8) ?[]const u8 {
+            const prefix = "// __pump_decl_";
+            if (!std.mem.startsWith(u8, t, prefix)) return null;
+            const name = t[prefix.len..];
+            if (name.len == 0) return null;
+            for (name) |ch| {
+                if (!std.ascii.isAlphanumeric(ch) and ch != '_') return null;
+            }
+            return name;
+        }
+    };
+    CollectOpen.scan(&open, allocator, program, program.items, markerExists);
+    if (open.items.len > 1) {
+        const msg = std.fmt.allocPrint(allocator, "koru/vaxis:run: two pumps are open ('{s}', '{s}') - a captured run can't tell which to join; drive one before opening the next", .{ open.items[0], open.items[1] }) catch unreachable;
+        return .{ .replacement = refuse(allocator, flow, msg) };
+    }
+
     var n: usize = 0;
-    while (declExists(program, std.fmt.allocPrint(allocator, "__vaxis_run_{d}", .{n}) catch unreachable)) n += 1;
-    const step_name = std.fmt.allocPrint(allocator, "__vaxis_step_{d}", .{n}) catch unreachable;
-    const run_name = std.fmt.allocPrint(allocator, "__vaxis_run_{d}", .{n}) catch unreachable;
+    var step_name: []const u8 = undefined;
+    var run_name: []const u8 = undefined;
+    if (open.items.len == 1) {
+        // Captured — count this pump's existing joins for the next index.
+        while (declExists(program, std.fmt.allocPrint(allocator, "__pump_{s}_step_{d}", .{ open.items[0], n }) catch unreachable)) n += 1;
+        step_name = std.fmt.allocPrint(allocator, "__pump_{s}_step_{d}", .{ open.items[0], n }) catch unreachable;
+    } else {
+        while (declExists(program, std.fmt.allocPrint(allocator, "__vaxis_run_{d}", .{n}) catch unreachable)) n += 1;
+        step_name = std.fmt.allocPrint(allocator, "__vaxis_step_{d}", .{n}) catch unreachable;
+        run_name = std.fmt.allocPrint(allocator, "__vaxis_run_{d}", .{n}) catch unreachable;
+    }
 
     var appended = std.ArrayList(ast.Item).initCapacity(allocator, 4) catch unreachable;
     const retain_ann = blk_ra: {
@@ -850,6 +958,169 @@ const VaxisEvent = union(enum) {
         .location = flow.location,
         .module = allocator.dupe(u8, flow.module) catch unreachable,
     } }) catch unreachable;
+
+    if (open.items.len == 1) {
+        // Captured — the step unit is already emitted as this pump's join
+        // `__pump_<p>_step_<i>`; `live`/`wait` follow it by convention, and
+        // the retire unit owns teardown plus `| done`. The site itself
+        // becomes the `init` call — args forward, `| err` rides it, `| done`
+        // was lifted to the retire unit.
+        const pump_name = open.items[0];
+        if (done_arm) |da| {
+            if (da.binding) |b| {
+                if (b.len > 0 and !std.mem.eql(u8, b, "_")) {
+                    return .{ .replacement = refuse(allocator, flow, "koru/vaxis:run: a captured `| done` can't bind a payload - the driver retires the participant; nothing reaches the arm") };
+                }
+            }
+            const hasReturn = struct {
+                fn scan(c: *const ast.Continuation) bool {
+                    if (c.node) |*cn| {
+                        if (cn.* == .branch_constructor) return true;
+                    }
+                    for (c.continuations) |*cc| {
+                        if (scan(cc)) return true;
+                    }
+                    return false;
+                }
+            };
+            if (hasReturn.scan(da)) {
+                return .{ .replacement = refuse(allocator, flow, "koru/vaxis:run: a captured `| done` can't `->` return - the arm runs inside the pump's retire unit, not this flow") };
+            }
+        }
+
+        const emitVerb = struct {
+            // `__pump_<p>_<verb>_<i>` decl + impl: the module verb call,
+            // bound `-> <bind_name>`, bare-return tail answering `ret_expr`.
+            fn go(a: std.mem.Allocator, items: *std.ArrayList(ast.Item), flow_: *const ast.Flow, qual: ?[]const u8, unit: []const u8, verb: []const u8, args: []ast.Arg, input: []ast.Field, ret_ty: []const u8, bind_name: []const u8, ret_expr: []const u8, retain: []const []const u8) void {
+                const uname = a.dupe(u8, unit) catch unreachable;
+                const dsegs = a.alloc([]const u8, 1) catch unreachable;
+                dsegs[0] = uname;
+                items.append(a, ast.Item{ .event_decl = ast.EventDecl{
+                    .path = ast.DottedPath{ .module_qualifier = a.dupe(u8, flow_.module) catch unreachable, .segments = dsegs },
+                    .input = ast.Shape{ .fields = input },
+                    .branches = &[_]ast.Branch{},
+                    .return_type = a.dupe(u8, ret_ty) catch unreachable,
+                    .is_public = false,
+                    .is_implicit_flow = false,
+                    .annotations = retain,
+                    .location = flow_.location,
+                    .module = a.dupe(u8, flow_.module) catch unreachable,
+                } }) catch unreachable;
+                const vsegs = a.alloc([]const u8, 1) catch unreachable;
+                vsegs[0] = a.dupe(u8, verb) catch unreachable;
+                const vinv = ast.Invocation{
+                    .path = ast.DottedPath{
+                        .module_qualifier = if (qual) |mq| a.dupe(u8, mq) catch unreachable else null,
+                        .segments = vsegs,
+                    },
+                    .args = args,
+                    .source_module = a.dupe(u8, flow_.module) catch unreachable,
+                    .return_binding = a.dupe(u8, bind_name) catch unreachable,
+                };
+                const tail = a.alloc(ast.Continuation, 1) catch unreachable;
+                tail[0] = ast.Continuation{
+                    .branch = a.dupe(u8, "") catch unreachable,
+                    .binding = null,
+                    .kind = .terminal,
+                    .condition = null,
+                    .node = ast.Node{ .branch_constructor = ast.BranchConstructor{
+                        .branch_name = a.dupe(u8, "") catch unreachable,
+                        .fields = &[_]ast.Field{},
+                        .plain_value = a.dupe(u8, ret_expr) catch unreachable,
+                        .is_bare_return = true,
+                    } },
+                    .indent = 0,
+                    .continuations = &[_]ast.Continuation{},
+                };
+                items.append(a, ast.Item{ .flow = ast.Flow{
+                    .body = ast.rootSite(vinv, tail, flow_.location),
+                    .pre_label = null,
+                    .impl_of = ast.DottedPath{ .module_qualifier = a.dupe(u8, flow_.module) catch unreachable, .segments = dsegs },
+                    .super_shape = null,
+                    .is_pure = false,
+                    .is_transitively_pure = false,
+                    .location = flow_.location,
+                    .module = a.dupe(u8, flow_.module) catch unreachable,
+                } }) catch unreachable;
+            }
+        }.go;
+
+        const vmq = rinv.path.module_qualifier;
+        emitVerb(allocator, &appended, flow, vmq, std.fmt.allocPrint(allocator, "__pump_{s}_live_{d}", .{ pump_name, n }) catch unreachable, "live", &[_]ast.Arg{}, &[_]ast.Field{}, "i64", "__koru_r", "__koru_r", retain_ann);
+        const wait_field = allocator.alloc(ast.Field, 1) catch unreachable;
+        wait_field[0] = ast.Field{ .name = allocator.dupe(u8, "i") catch unreachable, .type = allocator.dupe(u8, "i64") catch unreachable };
+        const wait_arg = allocator.alloc(ast.Arg, 1) catch unreachable;
+        wait_arg[0] = ast.Arg{ .name = allocator.dupe(u8, "i") catch unreachable, .value = allocator.dupe(u8, "i") catch unreachable };
+        emitVerb(allocator, &appended, flow, vmq, std.fmt.allocPrint(allocator, "__pump_{s}_wait_{d}", .{ pump_name, n }) catch unreachable, "wait", wait_arg, wait_field, "{ fd: i32, wait_ns: i128 }", "__koru_w", ".{ .fd = __koru_w.fd, .wait_ns = __koru_w.wait_ns }", retain_ann);
+
+        // The retire unit — teardown belongs to retirement, so it is
+        // emitted whether or not `| done` is armed; `__retire` gates on
+        // is_initialized so `| done` fires only for a run that stood up.
+        const rname = std.fmt.allocPrint(allocator, "__pump_{s}_retired_{d}", .{ pump_name, n }) catch unreachable;
+        const rsegs = allocator.alloc([]const u8, 1) catch unreachable;
+        rsegs[0] = allocator.dupe(u8, rname) catch unreachable;
+        appended.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+            .path = ast.DottedPath{ .module_qualifier = allocator.dupe(u8, flow.module) catch unreachable, .segments = rsegs },
+            .input = ast.Shape{ .fields = &[_]ast.Field{} },
+            .branches = &[_]ast.Branch{},
+            .is_public = false,
+            .is_implicit_flow = false,
+            .annotations = retain_ann,
+            .location = flow.location,
+            .module = allocator.dupe(u8, flow.module) catch unreachable,
+        } }) catch unreachable;
+        const vretire = allocator.alloc([]const u8, 1) catch unreachable;
+        vretire[0] = allocator.dupe(u8, "__retire") catch unreachable;
+        const retire_inv = ast.Invocation{
+            .path = ast.DottedPath{
+                .module_qualifier = if (vmq) |q| allocator.dupe(u8, q) catch unreachable else null,
+                .segments = vretire,
+            },
+            .args = &[_]ast.Arg{},
+            .source_module = allocator.dupe(u8, flow.module) catch unreachable,
+        };
+        const rconts = if (done_arm) |da| blk: {
+            const cc = allocator.alloc(ast.Continuation, 1) catch unreachable;
+            cc[0] = ast_functional.cloneContinuation(allocator, da) catch unreachable;
+            break :blk cc;
+        } else &[_]ast.Continuation{};
+        appended.append(allocator, ast.Item{ .flow = ast.Flow{
+            .body = ast.rootSite(retire_inv, rconts, flow.location),
+            .pre_label = null,
+            .impl_of = ast.DottedPath{ .module_qualifier = allocator.dupe(u8, flow.module) catch unreachable, .segments = rsegs },
+            .super_shape = null,
+            .is_pure = false,
+            .is_transitively_pure = false,
+            .location = flow.location,
+            .module = allocator.dupe(u8, flow.module) catch unreachable,
+        } }) catch unreachable;
+
+        // The site's replacement: `init` — same args, `| err` and the `|>`
+        // chain; `!` arms live on the step unit, `| done` on the retire unit.
+        var init_inv = ast_functional.cloneInvocation(allocator, rinv) catch unreachable;
+        const isegs = allocator.alloc([]const u8, 1) catch unreachable;
+        isegs[0] = allocator.dupe(u8, "init") catch unreachable;
+        init_inv.path.segments = isegs;
+        var iconts = std.ArrayList(ast.Continuation).initCapacity(allocator, flow.body.continuations.len) catch unreachable;
+        for (flow.body.continuations) |*c| {
+            if (c.kind == .effect) continue;
+            if (done_arm != null and c == done_arm.?) continue;
+            iconts.append(allocator, ast_functional.cloneContinuation(allocator, c) catch unreachable) catch unreachable;
+        }
+        return .{ .replacement = ast.Item{ .flow = ast.Flow{
+            .body = ast.rootSite(init_inv, iconts.items, flow.location),
+            .annotations = flow.annotations,
+            .pre_label = flow.pre_label,
+            .impl_of = flow.impl_of,
+            .super_shape = flow.super_shape,
+            .inline_body = flow.inline_body,
+            .preamble_code = flow.preamble_code,
+            .is_pure = flow.is_pure,
+            .is_transitively_pure = flow.is_transitively_pure,
+            .location = flow.location,
+            .module = allocator.dupe(u8, flow.module) catch unreachable,
+        } }, .appended = appended.toOwnedSlice(allocator) catch unreachable };
+    }
 
     // __vaxis_run_<n> { title: string } | ?done | err string — the driver.
     const run_input = allocator.alloc(ast.Field, 1) catch unreachable;
