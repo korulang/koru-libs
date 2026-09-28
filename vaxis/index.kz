@@ -8,10 +8,10 @@
 // USAGE:
 //   ~import koru/vaxis
 //
-//   ~koru/vaxis:run(title: "Hello")
+//   ~koru/vaxis:run(title: "Hello")          // add tick_ms: 16 for a heartbeat
 //   ! draw _ |> koru/vaxis:write-at(x: 2, y: 2, text: "Hello! Press q to quit.")
 //   ! char k when k.ch == 'q' |> koru/vaxis:quit()
-//   | done _ |> _
+//   | done |> std/io:print.ln("bye")
 //   | err e |> _
 //
 //   draw refires on every damage event and run auto-renders — no explicit
@@ -143,6 +143,9 @@ var should_quit: bool = false;
 var arms_armed: bool = false;
 var tick_enabled: bool = false;
 var tick_due_at: i128 = 0;
+// run(tick_ms: N) — a configured heartbeat (N>0 arms the deadline even with no
+// `! tick` handler). 0 = arm by `! tick` presence only, interval 16ms.
+var tick_cfg_ms: i64 = 0;
 var initial_cols: u16 = 0;
 var initial_rows: u16 = 0;
 // libvaxis's event queue wakes on a condvar — not pollable. A watcher thread
@@ -307,7 +310,7 @@ const VaxisEvent = union(enum) {
 // real fd (the wake pipe — the event queue's condvar isn't pollable) plus the
 // tick deadline; live is `!should_quit`; deinit is the teardown.
 
-~pub tor init { title: string }
+~pub tor init { title: string, tick_ms: i64 = 0 }
 | ?done
 | err string
 
@@ -380,6 +383,7 @@ const VaxisEvent = union(enum) {
 
 ~proc init|zig {
     _ = title;  // title is accepted but not yet threaded into vaxis init
+    $mod.tick_cfg_ms = tick_ms;
     $mod.alloc = std.heap.page_allocator;
     $mod.text_arena = std.heap.ArenaAllocator.init($mod.alloc);
     $mod.should_quit = false;
@@ -464,9 +468,10 @@ const VaxisEvent = union(enum) {
         $mod.vx.render($mod.tty.writer()) catch {};
         resize(.{ .width = $mod.initial_cols, .height = $mod.initial_rows });
         $mod.vx.render($mod.tty.writer()) catch {};
-        if (@hasDecl(__H, "tick")) {
+        if (@hasDecl(__H, "tick") or $mod.tick_cfg_ms > 0) {
             $mod.tick_enabled = true;
-            $mod.tick_due_at = std.time.nanoTimestamp() + 16 * std.time.ns_per_ms;
+            const ivl_ms: i128 = if ($mod.tick_cfg_ms > 0) $mod.tick_cfg_ms else 16;
+            $mod.tick_due_at = std.time.nanoTimestamp() + ivl_ms * std.time.ns_per_ms;
         }
     }
 
@@ -664,7 +669,8 @@ const VaxisEvent = union(enum) {
     if ($mod.tick_enabled) {
         const now: i128 = std.time.nanoTimestamp();
         if (now >= $mod.tick_due_at) {
-            $mod.tick_due_at = now + 16 * std.time.ns_per_ms;
+            const ivl_ms: i128 = if ($mod.tick_cfg_ms > 0) $mod.tick_cfg_ms else 16;
+            $mod.tick_due_at = now + ivl_ms * std.time.ns_per_ms;
             const ms: i64 = @intCast(@divTrunc(now, std.time.ns_per_ms));
             tick(ms);
             repaint();
@@ -1123,10 +1129,15 @@ const VaxisEvent = union(enum) {
     }
 
     // __vaxis_run_<n> { title: string } | ?done | err string — the driver.
-    const run_input = allocator.alloc(ast.Field, 1) catch unreachable;
+    const run_input = allocator.alloc(ast.Field, 2) catch unreachable;
     run_input[0] = ast.Field{
         .name = allocator.dupe(u8, "title") catch unreachable,
         .type = allocator.dupe(u8, "string") catch unreachable,
+    };
+    run_input[1] = ast.Field{
+        .name = allocator.dupe(u8, "tick_ms") catch unreachable,
+        .type = allocator.dupe(u8, "i64") catch unreachable,
+        .default = allocator.dupe(u8, "0") catch unreachable,
     };
     const run_branches = allocator.alloc(ast.Branch, 2) catch unreachable;
     run_branches[0] = ast.Branch{
@@ -1161,7 +1172,7 @@ const VaxisEvent = union(enum) {
     const vq = eventQual(allocator, "koru.vaxis", program.main_module_name);
     const mq = eventQual(allocator, flow.module, program.main_module_name);
     const body = std.fmt.allocPrint(allocator,
-        \\switch ({s}init_event.handler(.{{ .title = __koru_event_input.title }})) {{
+        \\switch ({s}init_event.handler(.{{ .title = __koru_event_input.title, .tick_ms = __koru_event_input.tick_ms }})) {{
         \\    .err => |e| return .{{ .err = e }},
         \\    else => {{}},
         \\}}

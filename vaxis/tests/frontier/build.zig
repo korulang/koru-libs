@@ -24,21 +24,18 @@ pub fn build(__koru_b: *std.Build) void {
 // This will be baked into the generated build.zig
 const REL_TO_ROOT = "/Users/larsde/src/koru";
 
-// Errors module - error reporting
 const errors_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/errors.zig" },
     .target = target,
     .optimize = optimize,
 });
 
-// Log module - logging utilities
 const log_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/log.zig" },
     .target = target,
     .optimize = optimize,
 });
 
-// AST module - core AST data structures
 const ast_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/ast.zig" },
     .target = target,
@@ -199,7 +196,7 @@ const branch_checker_module = b.createModule(.{
     .optimize = optimize,
 });
 
-// Shape checker - validates event/branch structures
+// Shape checker - validates tor/branch structures
 const shape_checker_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/shape_checker.zig" },
     .target = target,
@@ -289,7 +286,7 @@ auto_discharge_inserter_module.addImport("log", log_module);
 auto_discharge_inserter_module.addImport("phantom_parser", phantom_parser_module);
 auto_discharge_inserter_module.addImport("annotation_parser", annotation_parser_module);
 
-// Dead strip pass - removes unreachable events/procs from AST
+// Dead strip pass - removes unreachable tors/procs from AST
 const dead_strip_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/dead_strip.zig" },
     .target = target,
@@ -339,6 +336,24 @@ const struct_literal_module = b.createModule(.{
 });
 struct_literal_module.addImport("liquid", liquid_module);
 
+// Site hash — fuzzy hierarchical program addresses (module→item→site→detail)
+const site_hash_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/site_hash.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+site_hash_module.addImport("ast", ast_module);
+site_hash_module.addImport("errors", errors_module);
+
+// AST printer — canonical AST → Koru source; explainers print the items
+// a transform wrote (the elaborated view) through printItemSource.
+const ast_printer_module = b.createModule(.{
+    .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/ast_printer.zig" },
+    .target = target,
+    .optimize = optimize,
+});
+ast_printer_module.addImport("ast", ast_module);
+
 // Compiler config
 const compiler_config_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/compiler_config.zig" },
@@ -361,6 +376,7 @@ emitter_helpers_module.addImport("codegen_utils", codegen_utils_module);
 emitter_helpers_module.addImport("annotation_parser", annotation_parser_module);
 emitter_helpers_module.addImport("struct_literal", struct_literal_module);
 parser_module.addImport("struct_literal", struct_literal_module);
+flow_checker_module.addImport("struct_literal", struct_literal_module);
 
 // Tap pattern matcher
 const glob_pattern_matcher_module = b.createModule(.{
@@ -368,6 +384,8 @@ const glob_pattern_matcher_module = b.createModule(.{
     .target = target,
     .optimize = optimize,
 });
+ast_module.addImport("glob_pattern_matcher", glob_pattern_matcher_module);
+shape_checker_module.addImport("glob_pattern_matcher", glob_pattern_matcher_module);
 
 // Tap registry - tap/observer system
 const tap_registry_module = b.createModule(.{
@@ -411,7 +429,7 @@ template_processor_module.addImport("errors", errors_module);
 template_processor_module.addImport("annotation_parser", annotation_parser_module);
 template_processor_module.addImport("struct_literal", struct_literal_module);
 template_processor_module.addImport("codegen_utils", codegen_utils_module);
-
+auto_discharge_inserter_module.addImport("template_processor", template_processor_module);
 // Purity helpers
 const purity_helpers_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/compiler_passes/purity_helpers.zig" },
@@ -439,7 +457,7 @@ visitor_emitter_module.addImport("annotation_parser", annotation_parser_module);
 visitor_emitter_module.addImport("codegen_utils", codegen_utils_module);
 visitor_emitter_module.addImport("file_types", file_types_module);
 visitor_emitter_module.addImport("comptime_eval", comptime_eval_module);
-
+visitor_emitter_module.addImport("struct_literal", struct_literal_module);
 // JS-target emitter (spike): minimal AST→JS for pump.kz. Gated behind
 // --lang=js in emit-zig; the default Zig path never references it.
 const js_emitter_module = b.createModule(.{
@@ -523,7 +541,7 @@ const ast_serializer_module = b.createModule(.{
 ast_serializer_module.addImport("ast", ast_module);
 
 // Transform pass runner - recursive AST walker for transform handlers
-// Also handles [expand] events via template lookup and interpolation
+// Also handles [expand] tors via template lookup and interpolation
 const transform_pass_runner_module = b.createModule(.{
     .root_source_file = .{ .cwd_relative = REL_TO_ROOT ++ "/src/transform_pass_runner.zig" },
     .target = target,
@@ -535,6 +553,7 @@ transform_pass_runner_module.addImport("annotation_parser", annotation_parser_mo
 transform_pass_runner_module.addImport("template_utils", template_utils_module);
 transform_pass_runner_module.addImport("ast_functional", ast_functional_module);
 transform_pass_runner_module.addImport("liquid", liquid_module);
+transform_pass_runner_module.addImport("glob_pattern_matcher", glob_pattern_matcher_module);
 
 // Add all imports to the backend executable
 // Backend_output_emitted as its own compilation unit, linked via addObject.
@@ -588,6 +607,8 @@ backend_output_module.addImport("continuation_codegen", continuation_codegen_mod
 backend_output_module.addImport("template_utils", template_utils_module);
 backend_output_module.addImport("liquid", liquid_module);
 backend_output_module.addImport("struct_literal", struct_literal_module);
+backend_output_module.addImport("site_hash", site_hash_module);
+backend_output_module.addImport("ast_printer", ast_printer_module);
 backend_output_module.addImport("keyword_registry", keyword_registry_module);
 
 // backend_output_emitted as a MODULE of the exe (single compilation unit =
@@ -633,6 +654,7 @@ exe.root_module.addImport("continuation_codegen", continuation_codegen_module);
 exe.root_module.addImport("template_utils", template_utils_module);
 exe.root_module.addImport("liquid", liquid_module);
 exe.root_module.addImport("struct_literal", struct_literal_module);
+exe.root_module.addImport("site_hash", site_hash_module);
         }
     }.call;
 compiler_build_0(__koru_b, __koru_exe, __koru_target, __koru_optimize);
