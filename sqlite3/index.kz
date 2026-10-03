@@ -30,6 +30,13 @@ pub const c = @cImport({
 
 pub const Connection = struct {
     handle: ?*c.sqlite3,
+    // Prepared-statement cache, keyed by static SQL text. The `default`
+    // transform emits get-or-prepare + reset/clear instead of prepare +
+    // finalize, so a program's compile-time-known SQL pays prepare once per
+    // connection, ever. `cache_mu` guards the map only — a statement is
+    // still per-connection state, so keep one connection per thread.
+    cache_mu: std.Thread.Mutex = .{},
+    stmt_cache: std.StringHashMapUnmanaged(?*c.sqlite3_stmt) = .{},
 };
 
 pub const Statement = struct {
@@ -86,6 +93,11 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
 ~pub tor close { conn: *Connection<!opened> }
 ~proc close|zig {
     if (conn.handle) |h| {
+        var it = conn.stmt_cache.iterator();
+        while (it.next()) |e| {
+            _ = c.sqlite3_finalize(e.value_ptr.*.?);
+        }
+        conn.stmt_cache.deinit(std.heap.page_allocator);
         _ = c.sqlite3_close(h);
     }
     std.heap.page_allocator.destroy(conn);
@@ -357,7 +369,13 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
 
     var code_buf = std.ArrayList(u8).initCapacity(allocator, 2048) catch unreachable;
     const w = code_buf.writer(allocator);
-    w.print("//@koru:inline_stmt\n{{\n    const {s} = @import(\"root\").{s};\n    const {s} = {s}.c;\n    var {s}: ?*{s}.sqlite3_stmt = null;\n    const {s}_prep = {s}.sqlite3_prepare_v2({s}.handle, \"", .{ SQ, mod_path, C, SQ, STMT, C, RC, C, conn_var }) catch unreachable;
+    // The SQL lives in a named const so the emitted code can use it both as
+    // the statement-cache key and the prepare argument. The cache lives on
+    // the connection: compile-time SQL (a Source block — always a literal)
+    // is prepared once per connection, ever. On a hit we skip prepare
+    // entirely; on a miss we prepare then get-or-put under the map mutex —
+    // a lost race finalizes our copy and takes the winner's.
+    w.print("//@koru:inline_stmt\n{{\n    const {s} = @import(\"root\").{s};\n    const {s} = {s}.c;\n    const __sql{s} = \"", .{ SQ, mod_path, C, SQ, px }) catch unreachable;
     for (sql_buf.items) |ch| {
         switch (ch) {
             '"' => code_buf.appendSlice(allocator, "\\\"") catch unreachable,
@@ -368,7 +386,8 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
             else => code_buf.append(allocator, ch) catch unreachable,
         }
     }
-    w.print("\", -1, &{s}, null);\n    if ({s}_prep != {s}.SQLITE_OK) {{\n        const {s} = {s}.sqlite3_errmsg({s}.handle);\n", .{ STMT, RC, C, MSG, C, conn_var }) catch unreachable;
+    w.print("\";\n    var {s}: ?*{s}.sqlite3_stmt = null;\n    {s}.cache_mu.lock();\n    if ({s}.stmt_cache.get(__sql{s})) |cs| {{ {s} = cs; }}\n    {s}.cache_mu.unlock();\n    var {s}_prep: c_int = {s}.SQLITE_OK;\n    if ({s} == null) {{\n        {s}_prep = {s}.sqlite3_prepare_v2({s}.handle, __sql{s}, -1, &{s}, null);\n        if ({s}_prep == {s}.SQLITE_OK) {{\n            {s}.cache_mu.lock();\n            if ({s}.stmt_cache.get(__sql{s})) |cs| {{\n                _ = {s}.sqlite3_finalize({s});\n                {s} = cs;\n            }} else {{\n                {s}.stmt_cache.put(@import(\"std\").heap.page_allocator, __sql{s}, {s}) catch {{}};\n            }}\n            {s}.cache_mu.unlock();\n        }}\n    }}\n    if ({s} == null) {{\n        const {s} = {s}.sqlite3_errmsg({s}.handle);\n",
+        .{ STMT, C, conn_var, conn_var, px, STMT, conn_var, RC, C, STMT, RC, C, conn_var, px, STMT, RC, C, conn_var, conn_var, px, C, STMT, STMT, conn_var, px, STMT, conn_var, STMT, MSG, C, conn_var }) catch unreachable;
     if (err_idx) |ei| {
         err_branch(&code_buf, allocator, conn_var, std.fmt.allocPrint(allocator, "{s}_prep", .{RC}) catch unreachable, MSG, err_binding, ei);
     }
@@ -382,16 +401,17 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     }
 
     // Per-row iteration: the ! row body splices at the marker once per
-    // SQLITE_ROW. The statement is finalized exactly once, by us — the user
-    // never finalizes. No `! row` branch → statement semantics (exec): rows
-    // are stepped through and dropped.
+    // SQLITE_ROW. The statement is cached, not finalized — reset + clear
+    // return it ready for the next call with this SQL; `close` finalizes
+    // every cached statement exactly once. No `! row` branch → statement
+    // semantics (exec): rows are stepped through and dropped.
     w.print("        var {s} = {s}.sqlite3_step({s});\n", .{ RC, C, STMT }) catch unreachable;
     if (row_idx) |ri| {
         w.print("        var {s} = {s}.Statement{{ .handle = {s} }};\n        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{\n            __koru_inline_{d}(&{s})\n        }}\n", .{ ROW, SQ, STMT, RC, C, RC, C, STMT, ri, ROW }) catch unreachable;
     } else {
         w.print("        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{}}\n", .{ RC, C, RC, C, STMT }) catch unreachable;
     }
-    w.print("        _ = {s}.sqlite3_finalize({s});\n        if ({s} != {s}.SQLITE_DONE) {{\n            const {s} = {s}.sqlite3_errmsg({s}.handle);\n", .{ C, STMT, RC, C, MSG, C, conn_var }) catch unreachable;
+    w.print("        _ = {s}.sqlite3_reset({s});\n        _ = {s}.sqlite3_clear_bindings({s});\n        if ({s} != {s}.SQLITE_DONE) {{\n            const {s} = {s}.sqlite3_errmsg({s}.handle);\n", .{ C, STMT, C, STMT, RC, C, MSG, C, conn_var }) catch unreachable;
     if (err_idx) |ei| {
         err_branch(&code_buf, allocator, conn_var, RC, MSG, err_binding, ei);
     }
