@@ -584,6 +584,14 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
         S.debug.print("✗ could not copy wasm into the deploy dir\n", .{});
         return false;
     };
+    // Vercel refuses a single uploaded file over 100MB, and a reactor with a
+    // full bake (identity + gzip per route) crosses it — korulang.org measured
+    // 251MB on 2026-10-03 while the same bytes gzip to ~83MB. The artifact is
+    // staged as handler.wasm.gz; the adapter inflates it once per cold start.
+    if (!wrun(&.{ "gzip", "-9", "-f", "handler.wasm" }, wjoin(a, &.{ deploy_dir, "wasm" }))) {
+        S.debug.print("✗ could not gzip the staged wasm\n", .{});
+        return false;
+    }
 
     // ---- 4. Adapter from the scaffold, parameterized by the site surface ----
     const scaffold = wjoin(a, &.{ dir, "scaffold" });
@@ -631,13 +639,14 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
     }
 
     var kb: u64 = 0;
-    if (S.fs.cwd().statFile(wasm)) |st| kb = @max(1, st.size / 1024) else |_| {}
+    const wasm_gz = S.fmt.allocPrint(a, "{s}.gz", .{wasm_out}) catch wasm_out;
+    if (S.fs.cwd().statFile(wasm_gz)) |st| kb = @max(1, st.size / 1024) else |_| {}
     if (cfg.backend != null) {
-        S.debug.print("✓ staged {s} (wasm {d} KB, dynamic + shell)\n", .{ deploy_dir, kb });
+        S.debug.print("✓ staged {s} (wasm.gz {d} KB, dynamic + shell)\n", .{ deploy_dir, kb });
     } else if (cfg.routes.len > 0) {
-        S.debug.print("✓ staged {s} (wasm {d} KB, declared shell routes)\n", .{ deploy_dir, kb });
+        S.debug.print("✓ staged {s} (wasm.gz {d} KB, declared shell routes)\n", .{ deploy_dir, kb });
     } else {
-        S.debug.print("✓ staged {s} (wasm {d} KB, static 404-on-miss)\n", .{ deploy_dir, kb });
+        S.debug.print("✓ staged {s} (wasm.gz {d} KB, static 404-on-miss)\n", .{ deploy_dir, kb });
     }
     return true;
 }

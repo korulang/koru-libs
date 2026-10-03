@@ -12,6 +12,7 @@
 // The module is instantiated at module scope — once per cold start, not once
 // per request.
 import { readFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -26,7 +27,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const env = { time: () => BigInt(Math.floor(Date.now() / 1000)) };
 
 const ready = (async () => {
-  const bytes = await readFile(join(here, "..", "wasm", "handler.wasm"));
+  // The staged artifact is gzip'd — Vercel refuses single files over 100MB
+  // and a full-bake reactor crosses it. Inflate once, here at cold start.
+  const bytes = gunzipSync(await readFile(join(here, "..", "wasm", "handler.wasm.gz")));
   const { instance } = await WebAssembly.instantiate(bytes, { env });
   return instance.exports;
 })();
