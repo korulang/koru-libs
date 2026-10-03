@@ -43,16 +43,39 @@
     "apk": "openssl-dev"
 }
 
-// Build requirements: link against libssl + libcrypto.
-// OpenSSL is keg-only on macOS/Homebrew, so we point the C importer and the
-// linker at the Homebrew prefix explicitly. (Verified this session against
-// openssl@3 3.6.2 at /opt/homebrew/opt/openssl@3 — see README "Proof of life".)
+// Build requirements: link against libssl + libcrypto, but only where a system
+// OpenSSL can exist on the build host. Gate on the TARGET, not the host: a
+// consumer importing this module unconditionally (orisha's pump) cross-compiles
+// for x86_64-linux-musl, where Homebrew's macOS archive is "not an ELF file" and
+// no musl libssl exists at all. TLS is lazily analyzed, so a program that never
+// calls into this package still links clean for those targets; one that does
+// fails loudly at the @cImport instead of at the linker with the wrong arch.
+// (Verified this session against openssl@3 3.6.2 at /opt/homebrew/opt/openssl@3
+// — see README "Proof of life".)
 ~std/build:requires {
-    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
-    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
-    exe.linkSystemLibrary("ssl");
-    exe.linkSystemLibrary("crypto");
-    exe.linkLibC();
+    const res = target.result;
+    if (res.os.tag == .macos) {
+        // OpenSSL is keg-only on macOS/Homebrew — point the C importer and the
+        // linker at the Homebrew prefix explicitly.
+        if (res.cpu.arch == .aarch64) {
+            exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/include" });
+            exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/opt/openssl@3/lib" });
+        } else {
+            exe.addIncludePath(.{ .cwd_relative = "/usr/local/opt/openssl@3/include" });
+            exe.addLibraryPath(.{ .cwd_relative = "/usr/local/opt/openssl@3/lib" });
+        }
+        exe.linkSystemLibrary("ssl");
+        exe.linkSystemLibrary("crypto");
+        exe.linkLibC();
+    } else if (res.os.tag == .linux and res.abi != .musl) {
+        // glibc linux with the dev package installed (std/deps:requires.system
+        // asks for libssl-dev) resolves both from default search paths.
+        exe.linkSystemLibrary("ssl");
+        exe.linkSystemLibrary("crypto");
+        exe.linkLibC();
+    }
+    // musl, freestanding, everything else: no system openssl can be linked —
+    // emit nothing so non-TLS consumers still cross-compile.
 }
 
 const std = @import("std");
