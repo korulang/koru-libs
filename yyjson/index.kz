@@ -273,7 +273,7 @@ pub const Entry = struct {
 // mismatches (`koru.yyjson:copied` vs consumer-homed) at every foreign
 // call site, so the copy joins the one existing heap-buffer label.
 ~pub tor as.string { doc: *Doc<open>, v: *Value }
-| ok string<std.io:allocated!>
+| ok string<std/io:allocated!>
 | wrong-type
 ~proc as.string|zig {
     _ = doc;
