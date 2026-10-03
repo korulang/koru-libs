@@ -48,6 +48,10 @@ pub const Statement = struct {
 /// so `{{uid}}` needs no `:d`/`:s` hint. ints → int64, floats → double,
 /// bool → int, optional/null → NULL, text → bind_text with TRANSIENT
 /// (interpolated temporaries may not outlive the statement).
+// SQLITE_TRANSIENT is spelled inside bindValue, not as a comptime const:
+// translate-c's `cast(destructor_type, -1)` and a comptime @ptrFromInt both
+// fail Zig's fn-pointer alignment check. A runtime local defers the cast —
+// the check is comptime-only and sqlite only ever compares the sentinel.
 pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
@@ -63,7 +67,10 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
             const is_text = p.child == u8 or (@typeInfo(p.child) == .array and @typeInfo(p.child).array.child == u8);
             if (!is_text) @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)");
             const s8: []const u8 = value;
-            return c.sqlite3_bind_text(stmt, index, s8.ptr, @intCast(s8.len), c.SQLITE_TRANSIENT);
+            var addr: usize = std.math.maxInt(usize);
+            _ = &addr; // defeats comptime folding — fn-ptr alignment check is comptime-only
+            const transient: c.sqlite3_destructor_type = @ptrFromInt(addr);
+            return c.sqlite3_bind_text(stmt, index, s8.ptr, @intCast(s8.len), transient);
         },
         else => @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)"),
     }
