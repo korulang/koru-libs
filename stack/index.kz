@@ -1,0 +1,404 @@
+// @korulang/stack — declarative service stacks for Koru
+//
+// A program declares its services once; `koruc app.kz stack manifest`
+// materializes the graph into docker-compose YAML. The graph is compile-time
+// data — cycles and dangling depends_on edges are refusals, not runtime
+// surprises.
+//
+// DECLARATION:
+//   import koru/stack
+//
+//   koru/stack:service(name: "db", image: "postgres:16") {
+//       "healthcheck": "pg_isready -U shop",
+//       "env": { "POSTGRES_DB": "shop" }
+//   }
+//
+//   [depends_on("db")]koru/stack:service(name: "web", image: "web:latest") {
+//       "port": "web_port"
+//   }
+//
+//   // a field-less service needs no block:
+//   koru/stack:service(name: "cache", image: "redis:7")
+//
+// EDGES: [depends_on("a", "b")] annotations on the service declaration —
+// the same convention std/build:step uses. A dep that declares a
+// healthcheck emits `condition: service_healthy`; without one it emits
+// `service_started`.
+//
+// FLAG-ERASED VALUES: every string field is resolved through build:config
+// first — a value that names a config key substitutes, anything else is
+// literal. [build("x")] annotations gate whole declarations, so the graph's
+// shape and its values both vary per --build flag and resolve before the
+// manifest exists.
+//
+// COMMANDS:
+//   koruc app.kz stack manifest   — emit compose.yaml (today)
+//   koruc app.kz stack up|down    — pending (imperative materialization)
+
+~import std/build
+~import std/deps
+~import std/compiler
+
+// System dependency: Docker CLI must be installed
+~std/deps:requires.system {
+    "name": "docker",
+    "check": "docker --version",
+    "brew": "docker",
+    "apt": "docker.io",
+    "dnf": "docker",
+    "pacman": "docker",
+    "apk": "docker"
+}
+
+~std/compiler:command.declare {
+    "name": "stack",
+    "description": "Materialize the declared service stack (manifest today; up/down pending)"
+}
+
+~[comptime|command]pub tor stack {
+    program: *const Program,
+    allocator: __koru_std.mem.Allocator,
+    argv: []string,
+}
+
+const std = @import("std");
+
+~proc stack|zig {
+    const ann_parser = @import("annotation_parser");
+    const emitter_helpers = @import("emitter_helpers");
+    const RootEnv = @import("root").CompilerEnv;
+
+    var subcommand: []const u8 = "manifest";
+    if (argv.len > 0) subcommand = argv[0];
+
+    if (!std.mem.eql(u8, subcommand, "manifest")) {
+        if (std.mem.eql(u8, subcommand, "up") or std.mem.eql(u8, subcommand, "down")) {
+            std.debug.print("stack {s}: not implemented yet — 'manifest' is the working materialization\n", .{subcommand});
+            std.process.exit(1);
+        }
+        std.debug.print("Usage: koruc <file> stack manifest\n", .{});
+        std.debug.print("       koruc <file> stack up|down (pending)\n", .{});
+        std.process.exit(1);
+    }
+
+    // Inline copy of the build-flag matcher (same as koru/docker's) —
+    // std/build:matchesFlags exists but cross-module import in command procs
+    // has been unreliable; keep the local copy honest.
+    const matchesBuildFlags = struct {
+        fn check(annotations: []const []const u8) bool {
+            for (annotations) |ann| {
+                const maybe_call = ann_parser.parseCall(std.heap.page_allocator, ann) catch continue;
+                if (maybe_call) |call| {
+                    defer {
+                        var mc = call;
+                        mc.deinit(std.heap.page_allocator);
+                    }
+                    if (std.mem.eql(u8, call.name, "build")) {
+                        for (call.args) |arg| {
+                            var buf: [64]u8 = undefined;
+                            const flag = std.fmt.bufPrint(&buf, "build={s}", .{arg}) catch continue;
+                            if (RootEnv.hasFlagRuntime(flag)) return true;
+                        }
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+    }.check;
+
+    // Resolve a string field through build:config — a value that names a
+    // config key substitutes the flag-gated value; anything else is literal.
+    // The result is duped into page_allocator: Source-body strings die with
+    // the parsed JSON tree, but the service list must outlive each parse.
+    const resolve = struct {
+        fn call(v: []const u8) []const u8 {
+            const r = emitter_helpers.getBuildConfig(v) orelse v;
+            return std.heap.page_allocator.dupe(u8, r) catch @panic("oom");
+        }
+    }.call;
+
+    const EnvPair = struct { key: []const u8, value: []const u8 };
+    const Service = struct {
+        name: []const u8,
+        image: []const u8,
+        healthcheck: ?[]const u8 = null,
+        ports: std.ArrayListUnmanaged([]const u8) = .{},
+        env: std.ArrayListUnmanaged(EnvPair) = .{},
+        deps: std.ArrayListUnmanaged([]const u8) = .{},
+    };
+
+    var services = std.ArrayListUnmanaged(Service){};
+    defer {
+        for (services.items) |*s| {
+            s.ports.deinit(allocator);
+            s.env.deinit(allocator);
+            s.deps.deinit(allocator);
+        }
+        services.deinit(allocator);
+    }
+
+    const stripQuotes = struct {
+        fn call(v: []const u8) []const u8 {
+            if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') {
+                return v[1 .. v.len - 1];
+            }
+            return v;
+        }
+    }.call;
+
+    // ------------------------------------------------------------------
+    // Collect service declarations from the AST
+    // ------------------------------------------------------------------
+    for (program.items) |item| {
+        if (item != .flow) continue;
+        const flow = item.flow;
+        const mq = flow.inv().path.module_qualifier orelse continue;
+        const is_stack_module = std.mem.eql(u8, mq, "stack") or
+            std.mem.endsWith(u8, mq, ".stack");
+        if (!is_stack_module) continue;
+        if (flow.inv().path.segments.len != 1) continue;
+        if (!std.mem.eql(u8, flow.inv().path.segments[0], "service")) continue;
+        // Annotations attach at TWO points depending on spelling: .k
+        // head-declarations land them on flow.annotations, .kz invocations
+        // on flow.inv().annotations. Gate on the union.
+        if (!matchesBuildFlags(flow.annotations)) continue;
+        if (!matchesBuildFlags(flow.inv().annotations)) continue;
+
+        var svc = Service{ .name = "", .image = "" };
+        for (flow.inv().args) |arg| {
+            if (std.mem.eql(u8, arg.name, "name")) {
+                svc.name = stripQuotes(arg.value);
+            } else if (std.mem.eql(u8, arg.name, "image")) {
+                svc.image = resolve(stripQuotes(arg.value));
+            } else if (std.mem.eql(u8, arg.name, "source")) {
+                // Body fields are JSON-ish: wrap the Source text in braces
+                // and let std.json own the grammar.
+                const wrapped = std.fmt.allocPrint(allocator, "{{{s}}}", .{arg.value}) catch {
+                    std.debug.print("stack: out of memory\n", .{});
+                    return;
+                };
+                defer allocator.free(wrapped);
+                const parsed = std.json.parseFromSlice(std.json.Value, allocator, wrapped, .{}) catch {
+                    std.debug.print("stack: service '{s}' body is not valid JSON fields\n", .{svc.name});
+                    std.process.exit(1);
+                };
+                defer parsed.deinit();
+                if (parsed.value != .object) continue;
+                var it = parsed.value.object.iterator();
+                while (it.next()) |entry| {
+                    const key = entry.key_ptr.*;
+                    const val = entry.value_ptr.*;
+                    if (std.mem.eql(u8, key, "healthcheck")) {
+                        if (val == .string) svc.healthcheck = resolve(val.string);
+                    } else if (std.mem.eql(u8, key, "port")) {
+                        if (val == .string) {
+                            svc.ports.append(allocator, resolve(val.string)) catch return;
+                        }
+                    } else if (std.mem.eql(u8, key, "ports")) {
+                        if (val == .array) {
+                            for (val.array.items) |p| {
+                                if (p == .string) {
+                                    svc.ports.append(allocator, resolve(p.string)) catch return;
+                                }
+                            }
+                        }
+                    } else if (std.mem.eql(u8, key, "env")) {
+                        if (val == .object) {
+                            var eit = val.object.iterator();
+                            while (eit.next()) |e| {
+                                if (e.value_ptr.* == .string) {
+                                    svc.env.append(allocator, .{
+                                        .key = std.heap.page_allocator.dupe(u8, e.key_ptr.*) catch @panic("oom"),
+                                        .value = resolve(e.value_ptr.*.string),
+                                    }) catch return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (svc.name.len == 0) {
+            std.debug.print("stack: a service declaration is missing name:\n", .{});
+            std.process.exit(1);
+        }
+
+        // depends_on edges ride the declaration's annotations — again on
+        // either attachment point, deduped.
+        const ann_sets = [_][]const []const u8{ flow.annotations, flow.inv().annotations };
+        for (ann_sets) |anns| {
+            if (ann_parser.getCall(std.heap.page_allocator, anns, "depends_on") catch null) |call| {
+                var mc = call;
+                defer mc.deinit(std.heap.page_allocator);
+                for (call.args) |dep| {
+                    var seen = false;
+                    for (svc.deps.items) |d| {
+                        if (std.mem.eql(u8, d, dep)) seen = true;
+                    }
+                    if (!seen) {
+                        svc.deps.append(allocator, std.heap.page_allocator.dupe(u8, dep) catch return) catch return;
+                    }
+                }
+            }
+        }
+
+        services.append(allocator, svc) catch return;
+    }
+
+    if (services.items.len == 0) {
+        std.debug.print("stack: no services declared.\n", .{});
+        std.debug.print("Use: koru/stack:service(name: \"db\", image: \"postgres:16\") {{ ... }}\n", .{});
+        std.process.exit(1);
+    }
+
+    // ------------------------------------------------------------------
+    // Validate the graph: dangling refs and cycles are refusals
+    // ------------------------------------------------------------------
+    const findService = struct {
+        fn call(svcs: []const Service, name: []const u8) ?usize {
+            for (svcs, 0..) |s, i| {
+                if (std.mem.eql(u8, s.name, name)) return i;
+            }
+            return null;
+        }
+    }.call;
+
+    for (services.items) |*s| {
+        for (s.deps.items) |dep| {
+            if (findService(services.items, dep) == null) {
+                std.debug.print("stack: '{s}' depends_on '{s}', but no service named '{s}' is declared\n", .{ s.name, dep, dep });
+                std.process.exit(1);
+            }
+        }
+    }
+
+    // Kahn's algorithm over deps (service -> its dependencies). A service
+    // emits once every dep it names has emitted; leftovers mean a cycle.
+    const n = services.items.len;
+    var remaining = allocator.alloc(usize, n) catch return;
+    defer allocator.free(remaining);
+    var emitted = allocator.alloc(bool, n) catch return;
+    defer allocator.free(emitted);
+    var order = std.ArrayListUnmanaged(usize){};
+    defer order.deinit(allocator);
+
+    for (services.items, 0..) |s, i| {
+        remaining[i] = s.deps.items.len;
+        emitted[i] = false;
+    }
+
+    while (order.items.len < n) {
+        var progressed = false;
+        for (services.items, 0..) |s, i| {
+            if (emitted[i] or remaining[i] != 0) continue;
+            emitted[i] = true;
+            progressed = true;
+            order.append(allocator, i) catch return;
+            // Every service depending on s just lost a blocker
+            for (services.items, 0..) |other, j| {
+                if (emitted[j]) continue;
+                for (other.deps.items) |dep| {
+                    if (std.mem.eql(u8, dep, s.name)) {
+                        remaining[j] -= 1;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!progressed) {
+            std.debug.print("stack: depends_on cycle involving:", .{});
+            for (services.items, 0..) |s, i| {
+                if (!emitted[i]) std.debug.print(" {s}", .{s.name});
+            }
+            std.debug.print("\n", .{});
+            std.process.exit(1);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Emit compose.yaml
+    // ------------------------------------------------------------------
+    var out = std.ArrayListUnmanaged(u8){};
+    defer out.deinit(allocator);
+    const w = out.writer(allocator);
+
+    w.writeAll("# generated by koru/stack — do not edit\n") catch return;
+    w.writeAll("services:\n") catch return;
+
+    for (order.items) |i| {
+        const s = services.items[i];
+        w.print("  {s}:\n", .{s.name}) catch return;
+        w.print("    image: {s}\n", .{s.image}) catch return;
+        if (s.healthcheck) |hc| {
+            w.writeAll("    healthcheck:\n") catch return;
+            w.print("      test: [\"CMD-SHELL\", \"{s}\"]\n", .{hc}) catch return;
+        }
+        if (s.ports.items.len > 0) {
+            w.writeAll("    ports:\n") catch return;
+            for (s.ports.items) |p| {
+                w.print("      - \"{s}\"\n", .{p}) catch return;
+            }
+        }
+        if (s.env.items.len > 0) {
+            w.writeAll("    environment:\n") catch return;
+            for (s.env.items) |e| {
+                w.print("      {s}: {s}\n", .{ e.key, e.value }) catch return;
+            }
+        }
+        if (s.deps.items.len > 0) {
+            w.writeAll("    depends_on:\n") catch return;
+            for (s.deps.items) |dep| {
+                const di = findService(services.items, dep).?;
+                const cond = if (services.items[di].healthcheck != null)
+                    "service_healthy"
+                else
+                    "service_started";
+                w.print("      {s}:\n        condition: {s}\n", .{ dep, cond }) catch return;
+            }
+        }
+    }
+
+    const file = std.fs.cwd().createFile("compose.yaml", .{}) catch |err| {
+        std.debug.print("stack: cannot write compose.yaml: {}\n", .{err});
+        return;
+    };
+    defer file.close();
+    file.writeAll(out.items) catch |err| {
+        std.debug.print("stack: write failed: {}\n", .{err});
+        return;
+    };
+
+    std.debug.print("stack: {d} service(s) → compose.yaml\n", .{services.items.len});
+    for (order.items) |i| {
+        std.debug.print("  {s}", .{services.items[i].name});
+        if (services.items[i].deps.items.len > 0) {
+            std.debug.print(" (waits on", .{});
+            for (services.items[i].deps.items) |dep| {
+                std.debug.print(" {s}", .{dep});
+            }
+            std.debug.print(")", .{});
+        }
+        std.debug.print("\n", .{});
+    }
+}
+
+// ============================================================================
+// Service Declaration (compile-time)
+// ============================================================================
+// Declare one service in the stack graph. Collected by `koruc <file> stack`.
+// The optional Source body is JSON-ish fields: "healthcheck",
+// "port"/"ports", "env" — a field-less service omits the block entirely.
+// String values resolve through build:config first, then literal.
+// Edges ride annotations: [depends_on("db")] — same convention as
+// std/build:step. Flag-gate whole declarations with [build("dev")].
+~[comptime|norun]pub tor service {
+    name: string,
+    image: string,
+    source: ?Source,
+}
+
+~proc service|zig {
+    // Void event — collected during AST walking by the stack command
+}

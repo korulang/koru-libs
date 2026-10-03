@@ -27,6 +27,9 @@ compiler_env.zig
 compiler_env.json
 program.ast.json
 
+# koru/stack manifest output (generated export artifact, regenerated per run)
+compose.yaml
+
 # Agent worktrees (live git worktrees, not source)
 .claude/worktrees/
 

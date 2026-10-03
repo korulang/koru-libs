@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/stack",
+  "version": "0.0.1",
+  "description": "Declarative service stacks for Koru - compile-time service graphs, compose materialization",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru_libs",
+    "directory": "stack"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "keywords": [
+    "koru",
+    "docker",
+    "compose",
+    "orchestration",
+    "services"
+  ],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "koru": {
+    "entry": "index.kz"
+  }
+}
