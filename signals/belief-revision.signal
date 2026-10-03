@@ -1,0 +1,11 @@
+name: belief-revision
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a belief previously held as true was measured false — the commit
+      names the falsified claim in quotes and the observation that killed
+      it. Distinct from defect (the belief was about behavior, not code)
+      and from design (no new shape was chosen; an old fact was revoked).
+      The signal exists so "we thought X was true" has a discoverable
+      correction point later.
