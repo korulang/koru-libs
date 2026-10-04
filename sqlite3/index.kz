@@ -48,10 +48,12 @@ pub const Statement = struct {
 /// so `{{uid}}` needs no `:d`/`:s` hint. ints → int64, floats → double,
 /// bool → int, optional/null → NULL, text → bind_text with TRANSIENT
 /// (interpolated temporaries may not outlive the statement).
-// SQLITE_TRANSIENT is spelled inside bindValue, not as a comptime const:
-// translate-c's `cast(destructor_type, -1)` and a comptime @ptrFromInt both
-// fail Zig's fn-pointer alignment check. A runtime local defers the cast —
-// the check is comptime-only and sqlite only ever compares the sentinel.
+// SQLITE_TRANSIENT is a pointer-sized sentinel (-1), not a callable fn —
+// so the bind_text extern declares its destructor param usize and no cast
+// ever happens. Every fn-pointer spelling (@ptrFromInt, @bitCast,
+// translate-c's own c_translation.cast) hits Zig's alignment checks.
+const bind_text = @extern(*const fn (?*c.sqlite3_stmt, c_int, [*c]const u8, c_int, usize) callconv(.c) c_int, .{ .name = "sqlite3_bind_text" });
+
 pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
@@ -67,10 +69,7 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
             const is_text = p.child == u8 or (@typeInfo(p.child) == .array and @typeInfo(p.child).array.child == u8);
             if (!is_text) @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)");
             const s8: []const u8 = value;
-            var addr: usize = std.math.maxInt(usize);
-            _ = &addr; // defeats comptime folding — fn-ptr alignment check is comptime-only
-            const transient: c.sqlite3_destructor_type = @ptrFromInt(addr);
-            return c.sqlite3_bind_text(stmt, index, s8.ptr, @intCast(s8.len), transient);
+            return bind_text(stmt, index, s8.ptr, @intCast(s8.len), std.math.maxInt(usize));
         },
         else => @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)"),
     }
