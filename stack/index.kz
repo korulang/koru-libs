@@ -107,14 +107,51 @@ const std = @import("std");
         }
     }.check;
 
+    // ------------------------------------------------------------------
+    // Declared build:config keys across ALL variants. getBuildConfig only
+    // sees the active flag's registry, so a null there is ambiguous between
+    // "literal" and "a key this build didn't define" — this set splits them.
+    // ------------------------------------------------------------------
+    var declared_config = std.StringHashMap(void).init(allocator);
+    defer declared_config.deinit();
+
+    for (program.items) |item| {
+        if (item != .flow) continue;
+        const flow = item.flow;
+        const mq = flow.inv().path.module_qualifier orelse continue;
+        if (!std.mem.eql(u8, mq, "build") and !std.mem.endsWith(u8, mq, ".build")) continue;
+        if (flow.inv().path.segments.len != 1) continue;
+        if (!std.mem.eql(u8, flow.inv().path.segments[0], "config")) continue;
+        for (flow.inv().args) |arg| {
+            if (!std.mem.eql(u8, arg.name, "source")) continue;
+            const wrapped = std.fmt.allocPrint(allocator, "{{{s}}}", .{arg.value}) catch return;
+            defer allocator.free(wrapped);
+            const parsed = std.json.parseFromSlice(std.json.Value, allocator, wrapped, .{}) catch continue;
+            defer parsed.deinit();
+            if (parsed.value != .object) continue;
+            var kit = parsed.value.object.iterator();
+            while (kit.next()) |entry| {
+                declared_config.put(std.heap.page_allocator.dupe(u8, entry.key_ptr.*) catch return, {}) catch return;
+            }
+        }
+    }
+
     // Resolve a string field through build:config — a value that names a
     // config key substitutes the flag-gated value; anything else is literal.
+    // Naming a declared key the active build didn't define is a refusal, not
+    // a passthrough — a literal "api_port" in the manifest ships as garbage.
     // The result is duped into page_allocator: Source-body strings die with
     // the parsed JSON tree, but the service list must outlive each parse.
     const resolve = struct {
-        fn call(v: []const u8) []const u8 {
-            const r = emitter_helpers.getBuildConfig(v) orelse v;
-            return std.heap.page_allocator.dupe(u8, r) catch @panic("oom");
+        fn call(v: []const u8, declared: *const std.StringHashMap(void)) []const u8 {
+            if (emitter_helpers.getBuildConfig(v)) |r| {
+                return std.heap.page_allocator.dupe(u8, r) catch @panic("oom");
+            }
+            if (declared.contains(v)) {
+                std.debug.print("stack: field value '{s}' names a build:config key the active build doesn't define — pass --build or declare it\n", .{v});
+                std.process.exit(1);
+            }
+            return std.heap.page_allocator.dupe(u8, v) catch @panic("oom");
         }
     }.call;
 
@@ -170,7 +207,7 @@ const std = @import("std");
             if (std.mem.eql(u8, arg.name, "name")) {
                 svc.name = stripQuotes(arg.value);
             } else if (std.mem.eql(u8, arg.name, "image")) {
-                svc.image = resolve(stripQuotes(arg.value));
+                svc.image = resolve(stripQuotes(arg.value), &declared_config);
             } else if (std.mem.eql(u8, arg.name, "source")) {
                 // Body fields are JSON-ish: wrap the Source text in braces
                 // and let std.json own the grammar.
@@ -190,16 +227,16 @@ const std = @import("std");
                     const key = entry.key_ptr.*;
                     const val = entry.value_ptr.*;
                     if (std.mem.eql(u8, key, "healthcheck")) {
-                        if (val == .string) svc.healthcheck = resolve(val.string);
+                        if (val == .string) svc.healthcheck = resolve(val.string, &declared_config);
                     } else if (std.mem.eql(u8, key, "port")) {
                         if (val == .string) {
-                            svc.ports.append(allocator, resolve(val.string)) catch return;
+                            svc.ports.append(allocator, resolve(val.string, &declared_config)) catch return;
                         }
                     } else if (std.mem.eql(u8, key, "ports")) {
                         if (val == .array) {
                             for (val.array.items) |p| {
                                 if (p == .string) {
-                                    svc.ports.append(allocator, resolve(p.string)) catch return;
+                                    svc.ports.append(allocator, resolve(p.string, &declared_config)) catch return;
                                 }
                             }
                         }
@@ -210,7 +247,7 @@ const std = @import("std");
                                 if (e.value_ptr.* == .string) {
                                     svc.env.append(allocator, .{
                                         .key = std.heap.page_allocator.dupe(u8, e.key_ptr.*) catch @panic("oom"),
-                                        .value = resolve(e.value_ptr.*.string),
+                                        .value = resolve(e.value_ptr.*.string, &declared_config),
                                     }) catch return;
                                 }
                             }
