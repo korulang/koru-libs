@@ -1,0 +1,6 @@
+name: new-belief
+kind: inferred
+shape: categorical
+face: in
+membrane: true
+note: fires when a commit declares a belief the concept corpus did not hold — the commit must carry the corresponding `Action: create` under ## Membrane
