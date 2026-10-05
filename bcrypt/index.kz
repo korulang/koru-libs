@@ -22,9 +22,12 @@ const std = @import("std");
 // garbage string in the database means "not this password", never a crash.
 // ============================================================================
 
-~pub tor verify { password: string, digest: string } -> bool
+~pub tor verify { password: ?string, digest: string } -> bool
 
 ~proc verify|zig {
+    // A missing password (absent form field) fails closed — authenticate_by
+    // maps a nil password to a rejected attempt the same way.
+    const pw = password orelse return false;
     // std's CryptFormatHasher.verify rehashes via strHashInternal — which
     // always emits "$2b$" — then mem.eqls all 60 chars. A bcrypt-ruby "$2a$"
     // digest (the spelling has_secure_password writes) would fail on the
@@ -39,7 +42,7 @@ const std = @import("std");
         norm[2] = 'b';
         str = &norm;
     }
-    std.crypto.pwhash.bcrypt.strVerify(str, password, .{
+    std.crypto.pwhash.bcrypt.strVerify(str, pw, .{
         .silently_truncate_password = true,
     }) catch return false;
     return true;
