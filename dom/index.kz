@@ -113,6 +113,24 @@ const std = @import("std");
     const Child = struct { name: []const u8, args: []const ast.Arg };
     const Node = struct { is_child: bool, seg: Seg, child: Child };
 
+    // Formatting-vs-content for text-run edges: a whitespace run at a run's
+    // edge is source formatting iff it contains a newline — `>\n  <a` is
+    // indentation, `</a> | <a` is content. The old flat trim corrupted
+    // authored markup (` | ` → `|`), which the native render must emit
+    // byte-exactly; JS templates gain literal spaces browsers collapse.
+    const trimFormattingEdges = struct {
+        fn call(run: []const u8) []const u8 {
+            var r = run;
+            var e: usize = 0;
+            while (e < r.len and std.ascii.isWhitespace(r[e])) e += 1;
+            if (std.mem.indexOfScalar(u8, r[0..e], '\n') != null) r = r[e..];
+            var b = r.len;
+            while (b > 0 and std.ascii.isWhitespace(r[b - 1])) b -= 1;
+            if (std.mem.indexOfScalar(u8, r[b..], '\n') != null) r = r[0..b];
+            return r;
+        }
+    }.call;
+
     // ── Native (zig) render lowering ─────────────────────────────────────
     // The server artifact is a different KIND of thing from paint: not an
     // imperative tor addressed at a live element, but a pure
@@ -357,18 +375,29 @@ const std = @import("std");
                 } else s.die("attribute value must be \"literal\" or {{ ident:type }}");
             }
 
+            // HTML void elements never carry a close tag — `<hr>` or `<hr/>`
+            // both emit bare `<hr>`, the canonical HTML5 form (a real `</hr>`
+            // is ignored by browsers anyway, so the paint DOM is unchanged).
+            const is_void = std.mem.eql(u8, tag, "area") or std.mem.eql(u8, tag, "base") or std.mem.eql(u8, tag, "br") or
+                std.mem.eql(u8, tag, "col") or std.mem.eql(u8, tag, "embed") or std.mem.eql(u8, tag, "hr") or
+                std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "input") or std.mem.eql(u8, tag, "link") or
+                std.mem.eql(u8, tag, "meta") or std.mem.eql(u8, tag, "source") or std.mem.eql(u8, tag, "track") or
+                std.mem.eql(u8, tag, "wbr");
             if (s.m[s.i] == '/') {
                 s.i += 1;
                 if (s.i >= s.m.len or s.m[s.i] != '>') s.die("malformed self-closing tag");
                 s.i += 1;
                 html.append(s.a, '>') catch unreachable;
-                html.appendSlice(s.a, "</") catch unreachable;
-                html.appendSlice(s.a, tag) catch unreachable;
-                html.append(s.a, '>') catch unreachable;
+                if (!is_void) {
+                    html.appendSlice(s.a, "</") catch unreachable;
+                    html.appendSlice(s.a, tag) catch unreachable;
+                    html.append(s.a, '>') catch unreachable;
+                }
                 return;
             }
             s.i += 1; // '>'
             html.append(s.a, '>') catch unreachable;
+            if (is_void) return;
 
             // Children: text runs and nested elements, in order.
             var text_parts = std.ArrayList(Part).initCapacity(s.a, 2) catch unreachable;
@@ -377,7 +406,7 @@ const std = @import("std");
                 const t0 = s.i;
                 while (s.i < s.m.len and s.m[s.i] != '<') s.i += 1;
                 if (s.i > t0) {
-                    const run = std.mem.trim(u8, s.m[t0..s.i], " \t\r\n");
+                    const run = trimFormattingEdges(s.m[t0..s.i]);
                     if (run.len > 0) {
                         if (std.mem.indexOf(u8, run, "{{") == null) {
                             html.appendSlice(s.a, run) catch unreachable;
