@@ -109,7 +109,6 @@ build = for(0..n)
 [name(tenth)]std/store:rule(rows)
 ! row { [row]e, [id]h } when @mod(e.pos, 10) == 0 |> if(op.code == 4)
     | then |> std/store:stored { e.label: "{{ e.label:s }} !!!" } |> Row-repaint-label(key: h, e.label)
-    | else |> _
 
 // The op sweep, now only two cases wide. Swap (6) exchanges the pos values of
 // the rows at positions op.a/op.b and stashes their HANDLES so the DOM move can
@@ -126,12 +125,9 @@ build = for(0..n)
         | then |> std/store:stored { e.pos: op.b } |> std/store:stored { op.ida: h }
         | else |> if(e.pos == op.b)
             | then |> std/store:stored { e.pos: op.a } |> std/store:stored { op.idb: h }
-            | else |> _
     | else |> if(op.code == 77)
             | then |> if(e.pos > op.b)
                 | then |> std/store:stored { e.pos: e.pos - 1 }
-                | else |> _
-            | else |> _
 
 koru/dom:run(title: "Koru-DOM (keyed)")
 ! click { action } when action == 1 |> clear() |> build(n: 1000)
@@ -141,7 +137,6 @@ koru/dom:run(title: "Koru-DOM (keyed)")
 ! click { action } when action == 5 |> clear()
 ! click { action } when action == 6 |> if(cnt.n > 998)
     | then |> std/store:stored { op.code: 6 } |> std/store:stored { op.a: 1 } |> std/store:stored { op.b: 998 } |> std/store:stripe(rows) |> swap-rows(a: op.ida, b: op.idb) |> std/store:stored { op.code: 0 }
-    | else |> _
 ! click { action, key } when action == 7 |> std/store:stored { op.b: rows[key].pos } |> std/store:take(rows[key])
     | item _ |> std/store:stored { op.code: 77 } |> std/store:stripe(rows) |> std/store:stored { op.code: 0 }
 ! click { action, key } when action == 8 |> std/store:stored { sel.cur: key }

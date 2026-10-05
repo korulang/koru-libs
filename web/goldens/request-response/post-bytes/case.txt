@@ -1,0 +1,2 @@
+POST /api/bytes
+content-type: application/octet-stream

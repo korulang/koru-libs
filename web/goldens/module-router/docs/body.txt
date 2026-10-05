@@ -1,0 +1,1 @@
+<html><head></head><body><nav><a href="/">home</a> | <a href="/about">about</a> | <a href="/docs">docs</a> | <a href="/docs/install">install</a> | <a href="/pricing">pricing</a></nav><hr><section><p>docs layout</p><h1>docs</h1><p>src/app/docs.rs -&gt; /docs</p></section></body></html>

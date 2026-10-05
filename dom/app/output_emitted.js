@@ -1,98 +1,36 @@
+(() => {
 const __koru_len = { get() { return this.length; }, configurable: true };
 Object.defineProperty(String.prototype, "len", __koru_len);
 Object.defineProperty(Array.prototype, "len", __koru_len);
-// koru/dom |js facet — the host bodies for the events declared in index.k.
-// Same facet layout the suite pins in 140_009/140_010: one stem, per-target
-// implementation files, merged at import.
-// The keyed element registry. A component declaring `key` records what it
-// painted; `drop` detaches it. This is the library's own book, never the
-// consumer's — an app using the markup surface writes no lookup code at all,
-// which is the difference between a DOM library and a DOM convention.
-//
-// Keyed by whatever the caller supplies. From a store that is a row HANDLE,
-// which survives compaction: `take` swap-removes the last row into the freed
-// slot, so a row's position changes under it while its handle does not.
+const __koru_stdout_write = (typeof process !== "undefined" && process.stdout)
+    ? (s) => process.stdout.write(s)
+    : (s) => console.log(s.endsWith("\n") ? s.slice(0, -1) : s);
+const __koru_stderr_write = (typeof process !== "undefined" && process.stderr)
+    ? (s) => process.stderr.write(s)
+    : (s) => console.error(s.endsWith("\n") ? s.slice(0, -1) : s);
 const __koru_dom_reg = new Map();
-// Both directions, because the paint is the one moment both are in hand.
-//
-// The map answers "which element does this key own" — that is what a repaint
-// and a drop need. The property on the element answers the inverse, "which key
-// painted this", which is what a CLICK needs, and recording it here is the
-// whole reason a consumer no longer has to write its rows' identity into the
-// page as text for the delegation to parse back out.
-//
-// The reference does exactly this and nothing more (`tr.data_id = data.id`,
-// vanillajs Main.js:352). An expando on a node the library created is not
-// state anyone else can collide with.
 function __koru_dom_track(key, node) {
     __koru_dom_reg.set(key, node);
     node.__koru_key = key;
 }
-// The library's HOST surface: host code in the same module addresses the
-// element a key owns, instead of searching the page for it.
-//
-// This exists because mutating text in place is still host work. A row's text
-// column can be READ from Koru but not EXTENDED — building "old + suffix"
-// needs an allocating string instance, since the cheap page-allocated form is
-// a read-only view, and on a hot path that is one allocation per row per
-// update. Until a text column can grow in place, the read-modify-write lives
-// here, and the only thing it needs from the library is WHICH element.
-//
-// Returns undefined for a key nothing was painted under; a caller that has a
-// live handle from the store cannot be in that position.
 function koruDomNode(key) {
     return __koru_dom_reg.get(key);
 }
-// Vehicle |js facet — the host escapes the app carries. Each proc is a leaf
-// DOM writer; WHICH rows it touches is decided on the Koru side (store
-// sweeps, interceptors, the sel watch). Escaped because of named walls:
-//
-// make-label — the reference's random three-word label (Main.js:18-73,
-//   _random at Main.js:3-5, mirrored exactly). The pick is Math.random
-//   (host) and the assembled label cannot live in the store (string columns
-//   refused, char[N] has no JS lowering — see main.k header).
-//
-// swap-rows / select-row — the two host escapes left, and each is left for a
-//   NAMED reason rather than by default.
-//
-//   MARKING IS GONE FROM HERE. A row's text lives in the store, a rule arm
-//   writes it (`e.label: "{{ e.label:s }} !!!"`), and `Row-repaint` pushes it
-//   back through the same markup that painted it. The component describes the
-//   row ONCE and both creating it and updating it fall out of that one
-//   description — which is what a markup surface is for, and what every
-//   hand-written DOM mutation here was standing in for.
-//
-//   swap-rows MOVES two elements. That is a change to the PARENT's child
-//   order, not to anything a row's markup describes, so no repaint expresses
-//   it; a keyed list reorder is its own primitive and does not exist yet.
-//
-//   select-row sets a class on one row and clears it from another. A class
-//   placeholder (`class={{ sel:s }}`) LOOKS like it would make this a store
-//   write plus a repaint, exactly like marking. It would not, and the reason
-//   is worth writing down: a repaint is addressed by the row's HANDLE, and a
-//   click only carries the row's ID — it reads it off the element. Getting
-//   from one to the other means a scan of the store per click, or a sweep that
-//   repaints every row to change one class. Selecting is at PARITY with
-//   hand-written today (1.00x); both routes cost more than the single DOM
-//   write it does now. So this is a design question about carrying identity
-//   through an event, not a markup spelling — and it is not obviously worth
-//   winning.
-//
-//   make-label is the reference's random three-word label (Main.js:18-73). The
-//   pick is Math.random; it stays host by nature, not by gap.
 const adjectives = ["pretty", "large", "big", "small", "tall", "short", "long", "handsome", "plain", "quaint", "clean", "elegant", "easy", "angry", "crazy", "helpful", "mushy", "odd", "unsightly", "adorable", "important", "inexpensive", "cheap", "expensive", "fancy"];
 const colours = ["red", "yellow", "blue", "green", "pink", "brown", "purple", "brown", "white", "black", "orange"];
 const nouns = ["table", "chair", "house", "bbq", "desk", "car", "pony", "cookie", "sandwich", "burger", "pizza", "mouse", "keyboard"];
 function domRandom(max) {
     return Math.round(Math.random() * 1000) % max;
 }
-// The two host escapes below address elements the library painted, by the same
-// handle the store issued. Nothing searches the page for a row any more, and
-// nothing needs a row's identity written into the markup for it to be findable.
 function domRow(key) {
     return koruDomNode(key);
 }
 const __koru_dom_tpl_Row_0 = (() => { const t = document.createElement("template"); t.innerHTML = "<tr><td class=\"col-md-1\"></td><td class=\"col-md-4\"><a data-action=\"8\"></a></td><td class=\"col-md-1\"><a data-action=\"7\"><span class=\"glyphicon glyphicon-remove\" aria-hidden=\"true\"></span></a></td><td class=\"col-md-6\"></td></tr>"; return t.content.firstChild; })();
+// std/store: plural store 'rows' created (SoA cell + insert/query/write/take/stripe units); fields id: i64, pos: i64, label: char[48]
+// std/store: 'seq' created (cell + write-subflow at module scope); fields next: i64
+// std/store: 'cnt' created (cell + write-subflow at module scope); fields n: i64
+// std/store: 'op' created (cell + write-subflow at module scope); fields code: i64, a: i64, b: i64, ida: i64, idb: i64
+// std/store: 'sel' created (cell + write-subflow at module scope); fields cur: i64
 let __koru_store_rows = {
   id: new Array(16384).fill(0),
   pos: new Array(16384).fill(0),
@@ -113,7 +51,9 @@ let __koru_store_rows = {
     const slot = low % 16777216;
     if (slot >= this.__koru_hslot_next) return null;
     if (gen !== this.__koru_hslot_gen[slot]) return null;
-    return this.__koru_hslot_row[slot];
+    const r = this.__koru_hslot_row[slot];
+    if (r < 0 || r >= this.len) return null;
+    return r;
   },
   __koru_resolve(h) {
     const r = this.__koru_row_of(h);
@@ -134,8 +74,8 @@ let __koru_store_rows = {
   __koru_handle_of(dense) {
     const slot = this.__koru_row_hslot[dense];
     return slot + this.__koru_brand * 16777216 + this.__koru_hslot_gen[slot] * 4294967296;
-  },
-};
+  },};
+
 let __koru_store_seq = { next: 1 };
 let __koru_store_cnt = { n: 0 };
 let __koru_store_op = { code: 0, a: 0, b: 0, ida: 0, idb: 0 };
@@ -196,6 +136,7 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
  }
         
     }
+    {  }
     },
   },
   Row_event: {
@@ -245,10 +186,10 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       __koru_store_rows.len += 1;
       main_module.__store_inserted_rows_0_event.handler({ id: id, label: label, h: __koru_store_rows.__koru_handle_of(__koru_new_row) });
       if (__site_line > 110) {
-      main_module.__store_qrow_rows_L110_event.handler({ row: __koru_new_row });
+      main_module.__store_qrow_rows_L110_main_3c1e38_event.handler({ row: __koru_new_row });
       }
-      if (__site_line > 124) {
-      main_module.__store_qrow_rows_L124_event.handler({ row: __koru_new_row });
+      if (__site_line > 123) {
+      main_module.__store_qrow_rows_L123_main_3c1e38_event.handler({ row: __koru_new_row });
       }
       return { tag: "row", row: __koru_store_rows.__koru_handle_of(__koru_new_row) };
     },
@@ -278,74 +219,71 @@ for (let __koru_item = 0; __koru_item < n; __koru_item++) {
       const value_2 = __koru_input.value_2;
       const result_1 = main_module.__store_apply_rows_event.handler({ row: row, field: field, value_0: value_0, value_1: value_1, value_2: value_2 });
       if (result_1.tag === "id") {
-        const _auto_5 = result_1.id;
+        const _auto_6 = result_1.id;
       }
       if (result_1.tag === "pos") {
-        const _auto_6 = result_1.pos;
+        const _auto_7 = result_1.pos;
       }
       if (result_1.tag === "label") {
-        const _auto_7 = result_1.label;
+        const _auto_8 = result_1.label;
       }
     },
   },
-  __store_qrow_rows_L110_event: {
+  __store_qrow_rows_L110_main_3c1e38_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const pos = __koru_store_rows.pos[__koru_r];
       const h = __koru_store_rows.__koru_handle_of(__koru_r);
       if (!(((((pos) % (10)) + (10)) % (10)) == 0)) return;
-      main_module.__store_qbody_rows_L110_event.handler({ pos: pos, __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      main_module.__store_qbody_rows_L110_main_3c1e38_event.handler({ pos: pos, __koru_sdix_rule_L110: __koru_r , h: h });
       return;
     },
   },
-  __store_qbody_rows_L110_event: {
+  __store_qbody_rows_L110_main_3c1e38_event: {
     handler(__koru_input) {
       const pos = __koru_input.pos;
-      const __koru_qrow = __koru_input.__koru_qrow;
+      const __koru_sdix_rule_L110 = __koru_input.__koru_sdix_rule_L110;
       const h = __koru_input.h;
 if (__koru_store_op.code == 4) {
-        {         const __koru_tmpl_1 = "" + ((__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)]) + " !!!";
-        main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 2, value_0: 0, value_1: 0, value_2: __koru_tmpl_1 });
-        main_module.Row_repaint_label_event.handler({ key: h, label: (__koru_store_rows.label)[__koru_store_rows.__koru_resolve(__koru_qrow)] });
+        {         const __koru_tmpl_1 = "" + ((__koru_store_rows.label)[((__koru_sdix_rule_L110))]) + " !!!";
+        main_module.__store_write_rows_event.handler({ row: __koru_sdix_rule_L110, field: 2, value_0: 0, value_1: 0, value_2: __koru_tmpl_1 });
+        main_module.Row_repaint_label_event.handler({ key: h, label: (__koru_store_rows.label)[((__koru_sdix_rule_L110))] });
  }
     } else {
         {  }
     }
     },
   },
-  __store_qsweep_rows_L110_event: {
+  __store_qsweep_rows_L110_main_3c1e38_event: {
     handler(__koru_input) {
-      let __koru_i = 0;
-      while (__koru_i < __koru_store_rows.len) {
-      const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L110_event.handler({ row: __koru_i });
-      if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
+      for (let __koru_i = 0; __koru_i < __koru_store_rows.len; __koru_i++) {
+      main_module.__store_qrow_rows_L110_main_3c1e38_event.handler({ row: __koru_i });
       }
       return;
     },
   },
-  __store_qrow_rows_L124_event: {
+  __store_qrow_rows_L123_main_3c1e38_event: {
     handler(__koru_input) {
       const row = __koru_input.row;
       const __koru_r = row;
       const h = __koru_store_rows.__koru_handle_of(__koru_r);
-      main_module.__store_qbody_rows_L124_event.handler({ __koru_qrow: __koru_store_rows.__koru_handle_of(__koru_r) , h: h });
+      main_module.__store_qbody_rows_L123_main_3c1e38_event.handler({ __koru_sdix_rule_L123: __koru_r , h: h });
       return;
     },
   },
-  __store_qbody_rows_L124_event: {
+  __store_qbody_rows_L123_main_3c1e38_event: {
     handler(__koru_input) {
-      const __koru_qrow = __koru_input.__koru_qrow;
+      const __koru_sdix_rule_L123 = __koru_input.__koru_sdix_rule_L123;
       const h = __koru_input.h;
 if (__koru_store_op.code == 6) {
-        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.a) {
-        {           main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.b, value_2: "" });
+        { if ((__koru_store_rows.pos)[((__koru_sdix_rule_L123))] == __koru_store_op.a) {
+        {           main_module.__store_write_rows_event.handler({ row: __koru_sdix_rule_L123, field: 1, value_0: 0, value_1: __koru_store_op.b, value_2: "" });
           main_module.__store_write_op_event.handler({ field: 3, value: h });
  }
     } else {
-        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] == __koru_store_op.b) {
-        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: __koru_store_op.a, value_2: "" });
+        { if ((__koru_store_rows.pos)[((__koru_sdix_rule_L123))] == __koru_store_op.b) {
+        {             main_module.__store_write_rows_event.handler({ row: __koru_sdix_rule_L123, field: 1, value_0: 0, value_1: __koru_store_op.a, value_2: "" });
             main_module.__store_write_op_event.handler({ field: 4, value: h });
  }
     } else {
@@ -356,8 +294,8 @@ if (__koru_store_op.code == 6) {
  }
     } else {
         { if (__koru_store_op.code == 77) {
-        { if ((__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] > __koru_store_op.b) {
-        {             main_module.__store_write_rows_event.handler({ row: ((__koru_store_rows.__koru_resolve(__koru_qrow))), field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(__koru_qrow)] - 1, value_2: "" });
+        { if ((__koru_store_rows.pos)[((__koru_sdix_rule_L123))] > __koru_store_op.b) {
+        {             main_module.__store_write_rows_event.handler({ row: __koru_sdix_rule_L123, field: 1, value_0: 0, value_1: (__koru_store_rows.pos)[((__koru_sdix_rule_L123))] - 1, value_2: "" });
  }
     } else {
         {  }
@@ -370,13 +308,10 @@ if (__koru_store_op.code == 6) {
     }
     },
   },
-  __store_qsweep_rows_L124_event: {
+  __store_qsweep_rows_L123_main_3c1e38_event: {
     handler(__koru_input) {
-      let __koru_i = 0;
-      while (__koru_i < __koru_store_rows.len) {
-      const __koru_len_before = __koru_store_rows.len;
-      main_module.__store_qrow_rows_L124_event.handler({ row: __koru_i });
-      if (__koru_store_rows.len >= __koru_len_before) __koru_i += 1;
+      for (let __koru_i = 0; __koru_i < __koru_store_rows.len; __koru_i++) {
+      main_module.__store_qrow_rows_L123_main_3c1e38_event.handler({ row: __koru_i });
       }
       return;
     },
@@ -400,6 +335,7 @@ if (__koru_store_op.code == 6) {
       __koru_store_rows.__koru_hslot_row[__koru_mv_slot] = __koru_r;
       __koru_store_rows.__koru_row_hslot[__koru_r] = __koru_mv_slot;
       }
+      __koru_store_rows.__koru_hslot_row[__koru_gone_slot] = -1;
       __koru_store_rows.len = __koru_last;
       __koru_store_rows.__koru_hslot_gen[__koru_gone_slot] = (__koru_store_rows.__koru_hslot_gen[__koru_gone_slot] + 1) % 2097152;
       __koru_store_rows.__koru_hslot_free[__koru_store_rows.__koru_hslot_free_len] = __koru_gone_slot;
@@ -449,8 +385,8 @@ if (__koru_store_op.code == 6) {
   },
   __store_stripe_rows_event: {
     handler(__koru_input) {
-      main_module.__store_qsweep_rows_L110_event.handler({});
-      main_module.__store_qsweep_rows_L124_event.handler({});
+      main_module.__store_qsweep_rows_L110_main_3c1e38_event.handler({});
+      main_module.__store_qsweep_rows_L123_main_3c1e38_event.handler({});
     },
   },
   __store_apply_seq_event: {
@@ -468,7 +404,7 @@ if (__koru_store_op.code == 6) {
       const field = __koru_input.field;
       const value = __koru_input.value;
       const result_2 = main_module.__store_apply_seq_event.handler({ field: field, value: value });
-      const _auto_8 = result_2.next;
+      const _auto_13 = result_2.next;
     },
   },
   __store_announce_seq_event: {
@@ -492,7 +428,7 @@ if (__koru_store_op.code == 6) {
       const field = __koru_input.field;
       const value = __koru_input.value;
       const result_3 = main_module.__store_apply_cnt_event.handler({ field: field, value: value });
-      const _auto_9 = result_3.n;
+      const _auto_14 = result_3.n;
     },
   },
   __store_announce_cnt_event: {
@@ -521,19 +457,19 @@ if (__koru_store_op.code == 6) {
       const value = __koru_input.value;
       const result_4 = main_module.__store_apply_op_event.handler({ field: field, value: value });
       if (result_4.tag === "code") {
-        const _auto_10 = result_4.code;
+        const _auto_15 = result_4.code;
       }
       if (result_4.tag === "a") {
-        const _auto_11 = result_4.a;
+        const _auto_16 = result_4.a;
       }
       if (result_4.tag === "b") {
-        const _auto_12 = result_4.b;
+        const _auto_17 = result_4.b;
       }
       if (result_4.tag === "ida") {
-        const _auto_13 = result_4.ida;
+        const _auto_18 = result_4.ida;
       }
       if (result_4.tag === "idb") {
-        const _auto_14 = result_4.idb;
+        const _auto_19 = result_4.idb;
       }
     },
   },
@@ -657,10 +593,10 @@ if (__koru_store_op.code == 6) {
     },
   },
   flow0() {
-    main_module.__store_qsweep_rows_L110_event.handler({});
+    main_module.__store_qsweep_rows_L110_main_3c1e38_event.handler({});
   },
   flow1() {
-    main_module.__store_qsweep_rows_L124_event.handler({});
+    main_module.__store_qsweep_rows_L123_main_3c1e38_event.handler({});
   },
   flow2() {
     const Handlers_7 = {
@@ -728,14 +664,14 @@ if (__koru_store_cnt.n > 998) {
             main_module.__store_write_op_event.handler({ field: 2, value: (__koru_store_rows.pos)[__koru_store_rows.__koru_resolve(key)] });
             const result_9 = main_module.__store_take_rows_event.handler({ row: key });
             if (result_9.tag === "item") {
-              const _auto_3 = result_9.item;
+              const _auto_4 = result_9.item;
               main_module.__store_write_op_event.handler({ field: 0, value: 77 });
               main_module.__store_stripe_rows_event.handler({});
               main_module.__store_write_op_event.handler({ field: 0, value: 0 });
             }
             if (result_9.tag === "empty") {
-              const _auto_4 = result_9.empty;
-              (() => { throw new Error("unhandled panic branch 'empty' fired at runtime"); })();
+              const _auto_5 = result_9.empty;
+              throw new Error("main:__store_take_rows: unhandled panic branch 'empty' fired at runtime");
             }
             return;
           }
@@ -756,3 +692,4 @@ if (__koru_store_cnt.n > 998) {
 main_module.flow0();
 main_module.flow1();
 main_module.flow2();
+})();

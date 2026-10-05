@@ -1,0 +1,2 @@
+POST /api/maybe-user
+content-type: application/json

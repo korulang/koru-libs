@@ -1,0 +1,2 @@
+GET /api/search?limit=3
+
