@@ -47,6 +47,7 @@
 ~std/deps:requires.system {
     "name": "docker",
     "check": "docker --version",
+    "ready": "docker info",
     "brew": "docker",
     "apt": "docker.io",
     "dnf": "docker",
