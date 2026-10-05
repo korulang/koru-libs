@@ -2,9 +2,9 @@
 // must exit 1 naming the offending reference.
 
 import libs/stack
-[build("dev")]libs/stack:service(name: "db", image: "postgres:16") {
+[build("dev")]libs/stack:service(db, image: "postgres:16") {
     "ports": ["5432:5432"]
 }
-libs/stack:service(name: "api", image: "shop/api") {
+libs/stack:service(api, image: "shop/api") {
     "env": { "DB": "{{ db.host }}:{{ db.port }}" }
 }

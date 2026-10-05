@@ -13,18 +13,18 @@ import std/build
     "api_port": "80:80"
 }
 
-libs/stack:service(name: "pg", image: "postgres:16") {
+libs/stack:service(pg, image: "postgres:16") {
     "healthcheck": "pg_isready -U shop",
     "ports": ["5432:5432"],
     "env": { "POSTGRES_DB": "shop" }
 }
 
-libs/stack:service(name: "cache", image: "redis:7-alpine") {
+libs/stack:service(cache, image: "redis:7-alpine") {
     "healthcheck": "redis-cli ping",
     "ports": ["6379:6379"]
 }
 
-[depends_on("pg", "cache")]libs/stack:service(name: "api", image: "shop/api") {
+[depends_on("pg", "cache")]libs/stack:service(api, image: "shop/api") {
     "port": "api_port",
     "env": {
         "DB_HOST": "pg",

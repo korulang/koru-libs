@@ -28,23 +28,23 @@ richer (flag-erased variants, compile-checked edges) and governs downward.
     "web_port": "80:80"
 }
 
-koru/stack:service(name: "db", image: "postgres:16") {
+koru/stack:service(db, image: "postgres:16") {
     "healthcheck": "pg_isready -U shop",
     "env": { "POSTGRES_DB": "shop" }
 }
 
-[depends_on("db")]koru/stack:service(name: "web", image: "web:latest") {
+[depends_on("db")]koru/stack:service(web, image: "web:latest") {
     "port": "web_port",
     "env": { "DB_HOST": "db" }
 }
 
 // flag-gated: exists only under --build=dev
-[build("dev")|depends_on("db")]koru/stack:service(name: "debug_ui", image: "debug:latest") {
+[build("dev")|depends_on("db")]koru/stack:service(debug_ui, image: "debug:latest") {
     "port": "9229:9229"
 }
 
 // a field-less service needs no block
-koru/stack:service(name: "cache", image: "redis:7")
+koru/stack:service(cache, image: "redis:7")
 ```
 
 ## Commands

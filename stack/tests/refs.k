@@ -4,13 +4,13 @@
 
 import libs/stack
 
-libs/stack:service(name: "db", image: "postgres:16") {
+libs/stack:service(db, image: "postgres:16") {
     "healthcheck": "pg_isready -U shop",
     "ports": ["5432:5432"],
     "env": { "POSTGRES_DB": "shop", "POSTGRES_PASSWORD": "{{ \"DB_PASS\" | env_late }}" }
 }
 
-libs/stack:service(name: "api", image: "shop/api") {
+libs/stack:service(api, image: "shop/api") {
     "ports": ["3000:3000"],
     "env": {
         "DATABASE_URL": "postgres://{{ db.name }}:{{ db.port }}/shop",

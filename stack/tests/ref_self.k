@@ -2,6 +2,6 @@
 // must exit 1 naming the offending reference.
 
 import libs/stack
-libs/stack:service(name: "api", image: "shop/api") {
+libs/stack:service(api, image: "shop/api") {
     "env": { "ME": "{{ api.name }}" }
 }
