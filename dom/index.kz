@@ -104,10 +104,112 @@ const std = @import("std");
     //   kind 0 — setAttribute(attr, String(ident)) at the element `path` names.
     //   kind 1 — textContent assignment; `parts` is the static/placeholder mix.
     const Part = struct { is_ident: bool, text: []const u8, ptype: []const u8 };
-    const Op = struct { kind: u8, path: []const usize, attr: []const u8, parts: []const Part };
+    // `pos` is the byte offset into `html` where this dynamic site belongs —
+    // placeholder positions never land in `html` itself, so a string-renderer
+    // merge-walks literals and ops by it. Appended in document order, so ops
+    // arrive already sorted (equal `pos` keeps insertion order).
+    const Op = struct { kind: u8, path: []const usize, attr: []const u8, parts: []const Part, pos: usize };
     const Seg = struct { html: []const u8, ops: []const Op };
     const Child = struct { name: []const u8, args: []const ast.Arg };
     const Node = struct { is_child: bool, seg: Seg, child: Child };
+
+    // ── Native (zig) render lowering ─────────────────────────────────────
+    // The server artifact is a different KIND of thing from paint: not an
+    // imperative tor addressed at a live element, but a pure
+    // `Name-render(props) -> string` producing bytes. Same declaration, same
+    // scanned IR — the emitter just walks it linearly instead of cloning a
+    // template.
+    //
+    // Escaping is explicit here because the browser gave it to paint for
+    // free (textContent/setAttribute cannot inject markup). Text context
+    // escapes & < >; attribute context adds " and '.
+
+    // Escape a byte string for embedding inside a double-quoted Zig literal.
+    const zigLit = struct {
+        fn call(a: std.mem.Allocator, w: *std.ArrayList(u8), s: []const u8) void {
+            for (s) |c| switch (c) {
+                '"' => w.appendSlice(a, "\\\"") catch unreachable,
+                '\\' => w.appendSlice(a, "\\\\") catch unreachable,
+                '\n' => w.appendSlice(a, "\\n") catch unreachable,
+                '\r' => w.appendSlice(a, "\\r") catch unreachable,
+                else => w.append(a, c) catch unreachable,
+            };
+        }
+    }.call;
+
+    // Build the `|zig` body of `<C>-render`: an ArrayList built from literal
+    // chunks and typed placeholder writes, returned as an owned slice the
+    // caller frees (orisha hands it to release-body via body_allocated).
+    const renderBody = struct {
+        // `__a` is the allocator local; `__o` the output list.
+        fn lit(a: std.mem.Allocator, w: *std.ArrayList(u8), s: []const u8) void {
+            if (s.len == 0) return;
+            w.appendSlice(a, "__o.appendSlice(__a, \"") catch unreachable;
+            zigLit(a, w, s);
+            w.appendSlice(a, "\") catch unreachable;\n") catch unreachable;
+        }
+        // One dynamic write: escaped string, formatted number, or bool word.
+        fn dyn(a: std.mem.Allocator, w: *std.ArrayList(u8), ident: []const u8, ptype: []const u8, in_attr: bool) void {
+            if (std.mem.eql(u8, ptype, "bool")) {
+                const line = std.fmt.allocPrint(a, "__o.appendSlice(__a, if ({s}) \"true\" else \"false\") catch unreachable;\n", .{ident}) catch unreachable;
+                w.appendSlice(a, line) catch unreachable;
+                return;
+            }
+            if (!std.mem.eql(u8, ptype, "string")) {
+                const line = std.fmt.allocPrint(a, "{{ var __nb: [64]u8 = undefined; __o.appendSlice(__a, std.fmt.bufPrint(&__nb, \"{{d}}\", .{{{s}}}) catch unreachable) catch unreachable; }}\n", .{ident}) catch unreachable;
+                w.appendSlice(a, line) catch unreachable;
+                return;
+            }
+            const q = if (in_attr)
+                "'\"' => __o.appendSlice(__a, \"&quot;\") catch unreachable,\n        '\\'' => __o.appendSlice(__a, \"&#39;\") catch unreachable,\n        "
+            else
+                "";
+            const line = std.fmt.allocPrint(a, "for ({s}) |__c| switch (__c) {{\n        '&' => __o.appendSlice(__a, \"&amp;\") catch unreachable,\n        '<' => __o.appendSlice(__a, \"&lt;\") catch unreachable,\n        '>' => __o.appendSlice(__a, \"&gt;\") catch unreachable,\n        {s}else => __o.append(__a, __c) catch unreachable,\n    }};\n", .{ ident, q }) catch unreachable;
+            w.appendSlice(a, line) catch unreachable;
+        }
+        fn call(a: std.mem.Allocator, sanit_: anytype, nodes: []const Node) []const u8 {
+            var w = std.ArrayList(u8).initCapacity(a, 512) catch unreachable;
+            w.appendSlice(a, "const std = @import(\"std\");\nconst __a = koru_allocator();\nvar __o = std.ArrayList(u8).initCapacity(__a, 256) catch unreachable;\n") catch unreachable;
+            var child_n: usize = 0;
+            for (nodes) |node| {
+                if (node.is_child) {
+                    const cid = sanit_(a, node.child.name);
+                    var args_w = std.ArrayList(u8).initCapacity(a, 64) catch unreachable;
+                    for (node.child.args, 0..) |ca, ci| {
+                        if (ci > 0) args_w.appendSlice(a, ", ") catch unreachable;
+                        args_w.appendSlice(a, ".") catch unreachable;
+                        args_w.appendSlice(a, ca.name) catch unreachable;
+                        args_w.appendSlice(a, " = ") catch unreachable;
+                        args_w.appendSlice(a, ca.value) catch unreachable;
+                    }
+                    const line = std.fmt.allocPrint(a, "{{ const __r{d} = {s}_render_event.handler(.{{ {s} }});\ndefer __a.free(__r{d});\n__o.appendSlice(__a, __r{d}) catch unreachable; }}\n", .{ child_n, cid, args_w.items, child_n, child_n }) catch unreachable;
+                    w.appendSlice(a, line) catch unreachable;
+                    child_n += 1;
+                    continue;
+                }
+                var cursor: usize = 0;
+                for (node.seg.ops) |op| {
+                    lit(a, &w, node.seg.html[cursor..op.pos]);
+                    if (op.kind == 0) {
+                        const name_line = std.fmt.allocPrint(a, " {s}=\"", .{op.attr}) catch unreachable;
+                        lit(a, &w, name_line);
+                        for (op.parts) |p| {
+                            if (p.is_ident) dyn(a, &w, p.text, p.ptype, true) else lit(a, &w, p.text);
+                        }
+                        lit(a, &w, "\"");
+                    } else {
+                        for (op.parts) |p| {
+                            if (p.is_ident) dyn(a, &w, p.text, p.ptype, false) else lit(a, &w, p.text);
+                        }
+                    }
+                    cursor = op.pos;
+                }
+                lit(a, &w, node.seg.html[cursor..]);
+            }
+            w.appendSlice(a, "return __o.toOwnedSlice(__a) catch unreachable;\n") catch unreachable;
+            return w.toOwnedSlice(a) catch unreachable;
+        }
+    }.call;
 
     // The markup scanner. One instance per component declaration; registers
     // every {{ ident:type }} it meets as a prop (deduped by name).
@@ -250,6 +352,7 @@ const std = @import("std");
                         .path = s.a.dupe(usize, path.items) catch unreachable,
                         .attr = s.a.dupe(u8, aname) catch unreachable,
                         .parts = parts,
+                        .pos = html.items.len,
                     }) catch unreachable;
                 } else s.die("attribute value must be \"literal\" or {{ ident:type }}");
             }
@@ -323,6 +426,7 @@ const std = @import("std");
                     .path = s.a.dupe(usize, path.items) catch unreachable,
                     .attr = "",
                     .parts = text_parts.toOwnedSlice(s.a) catch unreachable,
+                    .pos = html.items.len,
                 }) catch unreachable;
             }
 
@@ -417,8 +521,9 @@ const std = @import("std");
             continue;
         }
 
-        if (!std.mem.eql(u8, CompilerEnv.lang, "js")) {
-            std.debug.panic("koru/dom:component has no '{s}' paint lowering — the DOM is a JS-target surface (dom/index.kz)", .{CompilerEnv.lang});
+        const is_js = std.mem.eql(u8, CompilerEnv.lang, "js");
+        if (!is_js and !std.mem.eql(u8, CompilerEnv.lang, "zig")) {
+            std.debug.panic("koru/dom:component has no '{s}' lowering — paint is the JS surface, render is the zig one (dom/index.kz)", .{CompilerEnv.lang});
         }
 
         // Name + markup off the declaration (source arg carries the block; the
@@ -484,6 +589,52 @@ const std = @import("std");
         }
         if (nodes.items.len == 0) sc.die("component markup is empty");
 
+        const cname_id = sanit(allocator, cname);
+
+        if (!is_js) {
+            // ── Native render: `Name-render(props) -> string` ────────────
+            // The server artifact. No `parent`, no `key` — render is pure;
+            // the caller decides where the bytes go. Children render through
+            // their own `Child-render` tors, called in document order.
+            const rfields = allocator.alloc(ast.Field, prop_name.items.len) catch unreachable;
+            for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
+                rfields[i] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .type = allocator.dupe(u8, pt) catch unreachable };
+            }
+            const rname = std.fmt.allocPrint(allocator, "{s}-render", .{cname}) catch unreachable;
+            synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+                .path = mkPath(allocator, cmodule, rname),
+                .input = ast.Shape{ .fields = rfields },
+                .branches = &[_]ast.Branch{},
+                .return_type = allocator.dupe(u8, "string") catch unreachable,
+                .return_phantom = allocator.dupe(u8, "std.io:allocated!") catch unreachable,
+                .is_public = false,
+                .is_implicit_flow = false,
+                .annotations = &[_][]const u8{},
+                .location = cloc,
+                .module = allocator.dupe(u8, cmodule) catch unreachable,
+            } }) catch unreachable;
+            synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
+                .path = mkPath(allocator, cmodule, rname),
+                .body = ast.Source{
+                    .text = renderBody(allocator, sanit, nodes.items),
+                    .location = cloc,
+                    .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
+                    .phantom_type = null,
+                },
+                .annotations = &[_][]const u8{},
+                .target = allocator.dupe(u8, "zig") catch unreachable,
+                .location = cloc,
+                .module = allocator.dupe(u8, cmodule) catch unreachable,
+            } }) catch unreachable;
+            const consumed = std.fmt.allocPrint(allocator, "// koru/dom: component '{s}' synthesized → render proc (native)", .{cname}) catch unreachable;
+            new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
+                .content = consumed,
+                .location = cloc,
+                .module = allocator.dupe(u8, cmodule) catch unreachable,
+            } }) catch unreachable;
+            continue;
+        }
+
         // Event input shape: parent selector + every registered prop, and for
         // a single-root component a `key`.
         //
@@ -510,8 +661,6 @@ const std = @import("std");
                 return fields;
             }
         }.call;
-
-        const cname_id = sanit(allocator, cname);
 
         // Per-segment template host lines (JS module scope; routed to the JS
         // output by their .kjs-spelled synthetic location, exactly the routing
