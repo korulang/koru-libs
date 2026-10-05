@@ -36,8 +36,10 @@
 // manifest exists.
 //
 // COMMANDS:
-//   koruc app.kz stack manifest   — emit compose.yaml (today)
-//   koruc app.kz stack up|down    — pending (imperative materialization)
+//   koruc app.kz stack manifest   — emit compose.yaml
+//   koruc app.kz stack up         — validate, emit, compose up -d --wait
+//   koruc app.kz stack down       — tear the stack down
+//   koruc app.kz stack logs       — follow service logs
 
 ~import std/build
 ~import std/deps
@@ -57,7 +59,13 @@
 
 ~std/compiler:command.declare {
     "name": "stack",
-    "description": "Materialize the declared service stack (manifest today; up/down pending)"
+    "description": "Materialize and run the declared service stack",
+    "subcommands": [
+        { "name": "manifest", "description": "Emit compose.yaml (default)" },
+        { "name": "up", "description": "docker compose up -d --wait against the emitted manifest" },
+        { "name": "down", "description": "Tear the stack down" },
+        { "name": "logs", "description": "Follow service logs" }
+    ]
 }
 
 ~[comptime|command]pub tor stack {
@@ -76,13 +84,12 @@ const std = @import("std");
     var subcommand: []const u8 = "manifest";
     if (argv.len > 0) subcommand = argv[0];
 
-    if (!std.mem.eql(u8, subcommand, "manifest")) {
-        if (std.mem.eql(u8, subcommand, "up") or std.mem.eql(u8, subcommand, "down")) {
-            std.debug.print("stack {s}: not implemented yet — 'manifest' is the working materialization\n", .{subcommand});
-            std.process.exit(1);
-        }
-        std.debug.print("Usage: koruc <file> stack manifest\n", .{});
-        std.debug.print("       koruc <file> stack up|down (pending)\n", .{});
+    const is_manifest = std.mem.eql(u8, subcommand, "manifest");
+    const is_up = std.mem.eql(u8, subcommand, "up");
+    const is_down = std.mem.eql(u8, subcommand, "down");
+    const is_logs = std.mem.eql(u8, subcommand, "logs");
+    if (!is_manifest and !is_up and !is_down and !is_logs) {
+        std.debug.print("Usage: koruc <file> stack manifest|up|down|logs\n", .{});
         std.process.exit(1);
     }
 
@@ -752,6 +759,74 @@ const std = @import("std");
         }
         std.debug.print("\n", .{});
     }
+
+    if (is_manifest) return;
+
+    // ------------------------------------------------------------------
+    // up / down / logs — compose is the executor. The graph was validated
+    // above, so `up` can never start a stack the collector refused.
+    // ------------------------------------------------------------------
+    if (is_up) {
+        // Preflight: the binary may be installed with the daemon down —
+        // `docker info` is the liveness probe, same split deps' `ready`
+        // field carries.
+        const daemon = std.process.Child.run(.{
+            .allocator = allocator,
+            .argv = &[_][]const u8{ "docker", "info" },
+        }) catch |err| {
+            std.debug.print("stack up: cannot run 'docker info': {}\n", .{err});
+            std.process.exit(1);
+        };
+        allocator.free(daemon.stdout);
+        allocator.free(daemon.stderr);
+        if (daemon.term.Exited != 0) {
+            std.debug.print("stack up: docker daemon not reachable — start it and retry\n", .{});
+            std.process.exit(1);
+        }
+        std.debug.print("stack up: docker compose up -d --wait\n", .{});
+    }
+
+    const compose_args: []const []const u8 = if (is_up)
+        &.{ "up", "-d", "--wait" }
+    else if (is_down)
+        &.{"down"}
+    else
+        &.{ "logs", "-f" };
+
+    var cargv = std.ArrayListUnmanaged([]const u8){};
+    defer cargv.deinit(allocator);
+    cargv.appendSlice(allocator, &.{ "docker", "compose", "-f", "compose.yaml" }) catch return;
+    cargv.appendSlice(allocator, compose_args) catch return;
+
+    if (is_logs) {
+        // Follow needs live stdio — spawn inheriting the terminal so output
+        // streams instead of buffering until exit.
+        var child = std.process.Child.init(cargv.items, allocator);
+        child.stdin_behavior = .Inherit;
+        child.stdout_behavior = .Inherit;
+        child.stderr_behavior = .Inherit;
+        _ = child.spawnAndWait() catch |err| {
+            std.debug.print("stack logs: spawn failed: {}\n", .{err});
+            std.process.exit(1);
+        };
+        return;
+    }
+
+    const res = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = cargv.items,
+    }) catch |err| {
+        std.debug.print("stack {s}: cannot run docker compose: {}\n", .{ subcommand, err });
+        std.process.exit(1);
+    };
+    defer allocator.free(res.stdout);
+    defer allocator.free(res.stderr);
+    if (res.term.Exited != 0) {
+        std.debug.print("{s}", .{res.stderr});
+        std.debug.print("stack {s}: docker compose exited {d}\n", .{ subcommand, res.term.Exited });
+        std.process.exit(1);
+    }
+    std.debug.print("stack {s}: done — {d} service(s)\n", .{ subcommand, services.items.len });
 }
 
 // ============================================================================

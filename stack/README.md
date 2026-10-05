@@ -63,10 +63,17 @@ koru/stack:service(db)|dev {
 
 ```bash
 koruc app.kz stack manifest [--build=dev|prod]
+koruc app.kz stack up
+koruc app.kz stack down
+koruc app.kz stack logs
 ```
 
-Emits `compose.yaml` in the current directory. `up` and `down` are pending —
-the imperative materialization reuses the same graph.
+`manifest` emits `compose.yaml` in the current directory. `up` runs the same
+validate-then-emit pipeline, preflights `docker info` for daemon liveness, then
+`docker compose up -d --wait` — health-gated by each service's declared
+`"healthcheck"`. `down` and `logs` ride the emitted manifest the same way. A
+graph the collector refuses (cycle, dangling edge, gated-out reference) never
+reaches docker — `up` on a refused stack exits in the collector.
 
 **Command position matters:** the command is the argument immediately after
 the input file. `koruc app.kz --build=dev stack manifest` does a normal
