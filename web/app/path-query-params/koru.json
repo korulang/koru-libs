@@ -1,0 +1,9 @@
+{
+    "name": "web-gauntlet-path-query-params",
+    "version": "0.1.0",
+    "paths": {
+        "std": "/usr/local/lib/koru/koru_std",
+        "orisha": "/Users/larsde/src/orisha/.claude/worktrees/http-surface/lib",
+        "koru": "/Users/larsde/src/koru-libs"
+    }
+}
