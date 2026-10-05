@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/bcrypt",
+  "version": "0.0.1",
+  "description": "bcrypt password hashing for Koru — $2a$/$2b$ modular-crypt digests, Rails has_secure_password compatible",
+  "keywords": ["koru", "korulang", "bcrypt", "password", "hash", "digest", "crypto", "rails", "has_secure_password"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "bcrypt"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": []
+    }
+  }
+}
