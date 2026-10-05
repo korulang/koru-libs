@@ -10,15 +10,15 @@ richer (flag-erased variants, compile-checked edges) and governs downward.
 ## Installation
 
 ```koru
-~import std/package
-~std/package:requires.npm { "@korulang/stack": "^0.0.1" }
+import std/package
+std/package:requires.npm { "@korulang/stack": "^0.0.1" }
 ```
 
 ## Usage
 
 ```koru
-~import koru/stack
-~import std/build
+import koru/stack
+import std/build
 
 // Values resolve through build:config — the flag decides which port ships.
 [build("dev")]std/build:config {
