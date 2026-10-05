@@ -4,5 +4,9 @@
 
 import libs/stack
 
-[depends_on("b")]libs/stack:service(a, image: "img:a")
-[depends_on("a")]libs/stack:service(b, image: "img:b")
+[depends_on("b")]libs/stack:service(a) {
+    "image": "img:a"
+}
+[depends_on("a")]libs/stack:service(b) {
+    "image": "img:b"
+}

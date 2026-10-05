@@ -8,17 +8,21 @@
 // DECLARATION:
 //   import koru/stack
 //
-//   koru/stack:service(db, image: "postgres:16") {
+//   koru/stack:service(db) {
+//       "image": "postgres:16",
 //       "healthcheck": "pg_isready -U shop",
 //       "env": { "POSTGRES_DB": "shop" }
 //   }
 //
-//   [depends_on("db")]koru/stack:service(web, image: "web:latest") {
+//   [depends_on("db")]koru/stack:service(web) {
+//       "image": "web:latest",
 //       "port": "web_port"
 //   }
 //
-//   // a field-less service needs no block:
-//   koru/stack:service(cache, image: "redis:7")
+//   // a minimal service is name + body:
+//   koru/stack:service(cache) {
+//       "image": "redis:7"
+//   }
 //
 // EDGES: [depends_on("a", "b")] annotations on the service declaration —
 // the same convention std/build:step uses. A dep that declares a
@@ -234,7 +238,8 @@ const std = @import("std");
                 std.debug.print("stack: 'name:' is positional — spell it service({s}, …)\n", .{arg.value});
                 std.process.exit(1);
             } else if (std.mem.eql(u8, arg.name, "image")) {
-                svc.image = dupe(stripQuotes(arg.value));
+                std.debug.print("stack: 'image:' is a body field — spell it {{ \"image\": {s} }}\n", .{arg.value});
+                std.process.exit(1);
             } else if (std.mem.eql(u8, arg.name, "source")) {
                 // Body fields are JSON-ish: wrap the Source text in braces
                 // and let std.json own the grammar.
@@ -253,7 +258,9 @@ const std = @import("std");
                 while (it.next()) |entry| {
                     const key = entry.key_ptr.*;
                     const val = entry.value_ptr.*;
-                    if (std.mem.eql(u8, key, "healthcheck")) {
+                    if (std.mem.eql(u8, key, "image")) {
+                        if (val == .string) svc.image = dupe(val.string);
+                    } else if (std.mem.eql(u8, key, "healthcheck")) {
                         if (val == .string) svc.healthcheck = dupe(val.string);
                     } else if (std.mem.eql(u8, key, "port")) {
                         if (val == .string) {
@@ -285,7 +292,11 @@ const std = @import("std");
         }
 
         if (svc.name.len == 0) {
-            std.debug.print("stack: a service declaration is missing its name — service(web, image: …)\n", .{});
+            std.debug.print("stack: a service declaration is missing its name — service(web) {{ \"image\": … }}\n", .{});
+            std.process.exit(1);
+        }
+        if (svc.image.len == 0) {
+            std.debug.print("stack: service '{s}' declares no \"image\" — the spec lives in the body\n", .{svc.name});
             std.process.exit(1);
         }
 
@@ -704,7 +715,6 @@ const std = @import("std");
 // std/build:step. Flag-gate whole declarations with [build("dev")].
 ~[comptime|norun]pub tor service {
     expr: Expression,
-    image: string,
     source: ?Source,
 }
 

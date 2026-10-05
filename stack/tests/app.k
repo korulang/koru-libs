@@ -13,16 +13,19 @@ import std/build
     "web_port": "80:80"
 }
 
-libs/stack:service(db, image: "postgres:16") {
+libs/stack:service(db) {
+    "image": "postgres:16",
     "healthcheck": "pg_isready -U shop",
     "env": { "POSTGRES_DB": "shop" }
 }
 
-[depends_on("db")]libs/stack:service(web, image: "web:latest") {
+[depends_on("db")]libs/stack:service(web) {
+    "image": "web:latest",
     "port": "web_port",
     "env": { "DB_HOST": "db" }
 }
 
-[build("dev")|depends_on("db")]libs/stack:service(debug_ui, image: "debug:latest") {
+[build("dev")|depends_on("db")]libs/stack:service(debug_ui) {
+    "image": "debug:latest",
     "port": "9229:9229"
 }

@@ -5,4 +5,6 @@
 
 import libs/stack
 
-[depends_on("missing")]libs/stack:service(web, image: "web:latest")
+[depends_on("missing")]libs/stack:service(web) {
+    "image": "web:latest"
+}

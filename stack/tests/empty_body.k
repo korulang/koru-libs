@@ -1,15 +1,9 @@
-// Empty-body pin: a service whose `{}` body carries no fields. The
-// original repro that surfaced two compiler defects — an empty Source
-// block swallowed the following declaration (210_311/210_312), then
-// emitted a dangling `.text =` splice (210_313). Both fixed in koru;
-// this file keeps the consumer-level assertion: two services, both
-// present, `a` bare, `b` carrying env.
+// Refusal pin: a service whose `{}` body carries no fields declares no
+// spec — "image" is required (a `run:` arm will make it either/or).
+// The empty-body shape itself is what surfaced 210_311/210_312/210_313
+// upstream; this file now pins the semantic refusal on top of it.
 
 import libs/stack
 
-libs/stack:service(a, image: "img:a") {
-}
-
-libs/stack:service(b, image: "img:b") {
-    "env": { "X": "1" }
+libs/stack:service(a) {
 }
