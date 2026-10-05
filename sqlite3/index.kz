@@ -91,6 +91,12 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
         _ = c.sqlite3_close(db);
         return .{ .err = .{ .code = rc, .msg = std.mem.span(msg) } };
     }
+    // Rails-adapter default (database.yml timeout): retry a contended lock
+    // for 5s instead of answering SQLITE_BUSY on the spot. A WAL file under
+    // many short-lived per-request connections hits the wal-index attach /
+    // checkpoint-on-close race — without the timeout a *read* returns BUSY
+    // to a server that then has to pick between lying and leaking.
+    _ = c.sqlite3_busy_timeout(db, 5000);
     const conn = std.heap.page_allocator.create(Connection) catch unreachable;
     conn.* = Connection{ .handle = db };
     return .{ .db = conn };
