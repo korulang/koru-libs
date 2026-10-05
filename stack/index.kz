@@ -124,6 +124,15 @@ const std = @import("std");
     var gated_out = std.StringHashMap(void).init(allocator);
     defer gated_out.deinit();
 
+    // The active --build flag name — selects service|X(db) variants and
+    // names .env.<build>. No flag → only base declarations exist.
+    const active_build: ?[]const u8 = blk: {
+        for (RootEnv.flags) |f| {
+            if (std.mem.startsWith(u8, f, "build=")) break :blk f["build=".len..];
+        }
+        break :blk null;
+    };
+
     for (program.items) |item| {
         if (item != .flow) continue;
         const flow = item.flow;
@@ -179,6 +188,10 @@ const std = @import("std");
         env: std.ArrayListUnmanaged(EnvPair) = .{},
         deps: std.ArrayListUnmanaged([]const u8) = .{},
     };
+
+    const Decl = struct { variant: ?[]const u8, svc: Service };
+    var decls = std.ArrayListUnmanaged(Decl){};
+    defer decls.deinit(allocator);
 
     var services = std.ArrayListUnmanaged(Service){};
     defer {
@@ -319,12 +332,54 @@ const std = @import("std");
             }
         }
 
-        services.append(allocator, svc) catch return;
+        decls.append(allocator, .{ .variant = flow.inv().variant, .svc = svc }) catch return;
+    }
+
+    // ------------------------------------------------------------------
+    // Variant selection — service(db)|dev redefines the db slot under
+    // --build=dev; the unmarked decl is the base for every other build.
+    // Two decls sharing (name, variant) refuse. A name whose decls all
+    // miss the active build is absent this build — refs to it refuse as
+    // gated-out.
+    // ------------------------------------------------------------------
+    for (decls.items, 0..) |d, i| {
+        for (decls.items[i + 1 ..]) |o| {
+            const same_variant = (d.variant == null and o.variant == null) or
+                (d.variant != null and o.variant != null and std.mem.eql(u8, d.variant.?, o.variant.?));
+            if (std.mem.eql(u8, d.svc.name, o.svc.name) and same_variant) {
+                std.debug.print("stack: '{s}' declared twice for the same variant\n", .{d.svc.name});
+                std.process.exit(1);
+            }
+        }
+    }
+    for (decls.items) |*d| {
+        const for_active = if (d.variant) |v|
+            if (active_build) |b| std.mem.eql(u8, v, b) else false
+        else
+            true;
+        if (!for_active) continue;
+        // A variant decl of the same name beats the base under its build.
+        if (d.variant == null and active_build != null) {
+            var beaten = false;
+            for (decls.items) |*o| {
+                if (o.variant != null and std.mem.eql(u8, o.variant.?, active_build.?) and
+                    std.mem.eql(u8, o.svc.name, d.svc.name)) beaten = true;
+            }
+            if (beaten) continue;
+        }
+        services.append(allocator, d.svc) catch return;
+    }
+    for (decls.items) |*d| {
+        var found = false;
+        for (services.items) |s| {
+            if (std.mem.eql(u8, s.name, d.svc.name)) found = true;
+        }
+        if (!found) gated_out.put(d.svc.name, {}) catch return;
     }
 
     if (services.items.len == 0) {
         std.debug.print("stack: no services declared.\n", .{});
-        std.debug.print("Use: koru/stack:service(db, image: \"postgres:16\") {{ ... }}\n", .{});
+        std.debug.print("Use: koru/stack:service(db) {{ \"image\": \"postgres:16\" }}\n", .{});
         std.process.exit(1);
     }
 
@@ -371,12 +426,6 @@ const std = @import("std");
     }.call;
 
     loadEnvFile(&env_map, ".env");
-    const active_build: ?[]const u8 = blk: {
-        for (RootEnv.flags) |f| {
-            if (std.mem.startsWith(u8, f, "build=")) break :blk f["build=".len..];
-        }
-        break :blk null;
-    };
     if (active_build) |b| {
         const p = std.fmt.allocPrint(std.heap.page_allocator, ".env.{s}", .{b}) catch return;
         loadEnvFile(&env_map, p);

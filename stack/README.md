@@ -50,6 +50,13 @@ koru/stack:service(db) {
 koru/stack:service(cache) {
     "image": "redis:7"
 }
+
+// per-build redefinition — the |dev decl replaces db's whole spec under
+// --build=dev; the unmarked decl is the base for every other build
+koru/stack:service(db)|dev {
+    "image": "postgres:16-dev",
+    "env": { "POSTGRES_PASSWORD": "dev" }
+}
 ```
 
 ## Commands
@@ -73,7 +80,10 @@ Everything `docker compose up` only discovers at runtime:
   service.
 - **dependency cycles** — exit 1, names the services left unordered.
 - **a service body that isn't valid JSON fields** — exit 1.
-- **a service declaration without `name:`** — exit 1.
+- **a service body without `"image"`** — exit 1, names the service.
+- **`{{ ref }}` to a service the active build gates out** — exit 1.
+- **two declarations of the same `(name, variant)`** — exit 1.
+- **a `{{ env.X }}` / `{{ config.X }}` that doesn't resolve** — exit 1.
 
 ## Semantics
 
@@ -82,10 +92,15 @@ Everything `docker compose up` only discovers at runtime:
   emission order.
 - **Readiness** — a dep that declares `"healthcheck"` emits
   `condition: service_healthy`; without one, `service_started`.
-- **Flag-erased values** — any string field naming a `build:config` key
-  substitutes the flag-gated value; anything else is literal. `[build("x")]`
-  gates whole declarations, so the graph's *shape* and its values both vary
-  per flag — resolved before the artifact exists, never inside it.
+- **Flag-erased values** — `{{ config.x }}` substitutes the flag-gated
+  `build:config` value; `{{ env.x }}` resolves `.env` + `.env.<build>` +
+  process env; `{{ svc.field }}` reads another service's spec *and records
+  the dependency edge*; `{{ "X" | env_late }}` emits `${X}` verbatim for the
+  deploy host.
+- **Variants** — `service(name)|dev` is a *full redefinition* of the slot
+  under `--build=dev`, not a patch. The unmarked decl is the base for every
+  other build; a name whose decls all miss the active build is absent, and
+  references to it refuse as gated-out.
 
 ## Tests
 
@@ -97,3 +112,13 @@ Everything `docker compose up` only discovers at runtime:
   `debug_ui` and resolves the port to `80:80`.
 - `dangling.k` — refusal pin: edge to an undeclared service, exit 1.
 - `cycle.k` — refusal pin: `a → b → a`, exit 1.
+- `refs.k` — `{{ db.name }}`/`{{ db.port }}` derive the depends_on edge.
+- `ref_dangling.k`, `ref_self.k`, `ref_cycle.k`, `ref_unset.k`,
+  `ref_gated.k` — refusal pins for ghost, self, cyclic, unset-env, and
+  gated-out references.
+- `variant_probe.k` — base + `|dev` + `|prod` decls of `db`; `--build=dev`
+  emits `postgres:16-dev`, `--build=prod` emits `registry.internal/db:release`,
+  and `{{ db.image }}` resolves against the selected variant.
+- `dup_variant.k` — refusal pin: two decls share `(name, variant)`, exit 1.
+- `ref_gated_variant.k` — refusal pin: referencing a service whose only decl
+  is `|dev` under `--build=prod`.
