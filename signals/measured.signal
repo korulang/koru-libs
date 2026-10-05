@@ -1,0 +1,8 @@
+name: measured
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a fact about the system established by running it — same shape as
+  `measurement` (kept as its own entry because a commit declared the name
+  before the vocabulary resolved it; prefer `measurement` going forward)
