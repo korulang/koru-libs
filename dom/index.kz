@@ -183,7 +183,7 @@ const std = @import("std");
                 return;
             }
             if (!std.mem.eql(u8, ptype, "string")) {
-                const line = std.fmt.allocPrint(a, "{{ var __nb: [64]u8 = undefined; __o.appendSlice(__a, std.fmt.bufPrint(&__nb, \"{{d}}\", .{{{s}}}) catch unreachable) catch unreachable; }}\n", .{ident}) catch unreachable;
+                const line = std.fmt.allocPrint(a, "{{ var __nb: [64]u8 = undefined; __o.appendSlice(__a, __std.fmt.bufPrint(&__nb, \"{{d}}\", .{{{s}}}) catch unreachable) catch unreachable; }}\n", .{ident}) catch unreachable;
                 w.appendSlice(a, line) catch unreachable;
                 return;
             }
@@ -196,7 +196,7 @@ const std = @import("std");
         }
         fn call(a: std.mem.Allocator, sanit_: anytype, nodes: []const Node) []const u8 {
             var w = std.ArrayList(u8).initCapacity(a, 512) catch unreachable;
-            w.appendSlice(a, "const std = @import(\"std\");\nconst __a = koru_allocator();\nvar __o = std.ArrayList(u8).initCapacity(__a, 256) catch unreachable;\n") catch unreachable;
+            w.appendSlice(a, "const __std = @import(\"std\");\nconst __a = koru_allocator();\nvar __o = __std.ArrayList(u8).initCapacity(__a, 256) catch unreachable;\n") catch unreachable;
             var child_n: usize = 0;
             for (nodes) |node| {
                 if (node.is_child) {
@@ -249,7 +249,8 @@ const std = @import("std");
         prop_type: *std.ArrayList([]const u8),
 
         fn die(s: *@This(), comptime why: []const u8) noreturn {
-            std.debug.panic("koru/dom:component({s}): " ++ why ++ " (dom/index.kz)", .{s.cname});
+            const tail = s.m[@min(s.i, s.m.len)..@min(s.i + 60, s.m.len)];
+            std.debug.panic("koru/dom:component({s}): " ++ why ++ " @byte {d}: '{s}' (dom/index.kz)", .{ s.cname, s.i, tail });
         }
 
         fn ws(s: *@This()) void {
@@ -627,7 +628,24 @@ const std = @import("std");
     }
 
     var synthed = std.ArrayList(ast.Item).initCapacity(allocator, 8) catch unreachable;
-    const cmodule = if (item.* == .flow) item.flow.module else "";
+    // The decl's module is the LOGICAL name, not flow.module — that field is
+    // file-derived ("index" for views/index.k) while the module_decl registers
+    // "views". Synthesized paths must spell the name impl-linking will look up.
+    const cmodule = if (item.* == .flow) blk: {
+        const f = item.flow.location.file;
+        const dir = std.fs.path.dirname(f);
+        for (program.items) |pit| {
+            if (pit != .module_decl) continue;
+            const md = pit.module_decl;
+            if (std.mem.eql(u8, md.canonical_path, f)) break :blk md.logical_name;
+            if (dir) |d| {
+                if (std.mem.eql(u8, md.canonical_path, d)) break :blk md.logical_name;
+            }
+        }
+        // No enclosing module_decl → the decl lives in a single-file module,
+        // whose registered name IS its stem — flow.module is correct there.
+        break :blk item.flow.module;
+    } else "";
     const cloc = if (item.* == .flow) item.flow.location else errors.SourceLocation{ .file = "", .line = 0, .column = 0 };
 
     var prop_name = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
