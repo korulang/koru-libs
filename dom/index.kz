@@ -102,7 +102,11 @@ const std = @import("std");
     // One dynamic assignment the paint performs after cloning the template.
     //   kind 0 — setAttribute(attr, String(ident)) at the element `path` names.
     //   kind 1 — textContent assignment; `parts` is the static/placeholder mix.
-    const Part = struct { is_ident: bool, text: []const u8, ptype: []const u8 };
+    // `raw` marks the `{{ x:h }}` code — a value authored as markup already
+    // (Action Text bodies, a rendered child). Render writes it verbatim;
+    // paint assigns innerHTML. RULED 2026-10-06 (Lars): h = html, the Rails
+    // `raw`/`html_safe` meaning — every other type code stays escaped.
+    const Part = struct { is_ident: bool, text: []const u8, ptype: []const u8, raw: bool = false };
     // `pos` is the byte offset into `html` where this dynamic site belongs —
     // placeholder positions never land in `html` itself, so a string-renderer
     // merge-walks literals and ops by it. Appended in document order, so ops
@@ -165,8 +169,14 @@ const std = @import("std");
             zigLit(a, w, s);
             w.appendSlice(a, "\") catch unreachable;\n") catch unreachable;
         }
-        // One dynamic write: escaped string, formatted number, or bool word.
-        fn dyn(a: std.mem.Allocator, w: *std.ArrayList(u8), ident: []const u8, ptype: []const u8, in_attr: bool) void {
+        // One dynamic write: escaped string, formatted number, bool word, or
+        // (with raw) trusted markup written verbatim — `{{ x:h }}`.
+        fn dyn(a: std.mem.Allocator, w: *std.ArrayList(u8), ident: []const u8, ptype: []const u8, raw: bool, in_attr: bool) void {
+            if (raw) {
+                const line = std.fmt.allocPrint(a, "__o.appendSlice(__a, {s}) catch unreachable;\n", .{ident}) catch unreachable;
+                w.appendSlice(a, line) catch unreachable;
+                return;
+            }
             if (std.mem.eql(u8, ptype, "bool")) {
                 const line = std.fmt.allocPrint(a, "__o.appendSlice(__a, if ({s}) \"true\" else \"false\") catch unreachable;\n", .{ident}) catch unreachable;
                 w.appendSlice(a, line) catch unreachable;
@@ -211,12 +221,12 @@ const std = @import("std");
                         const name_line = std.fmt.allocPrint(a, " {s}=\"", .{op.attr}) catch unreachable;
                         lit(a, &w, name_line);
                         for (op.parts) |p| {
-                            if (p.is_ident) dyn(a, &w, p.text, p.ptype, true) else lit(a, &w, p.text);
+                            if (p.is_ident) dyn(a, &w, p.text, p.ptype, p.raw, true) else lit(a, &w, p.text);
                         }
                         lit(a, &w, "\"");
                     } else {
                         for (op.parts) |p| {
-                            if (p.is_ident) dyn(a, &w, p.text, p.ptype, false) else lit(a, &w, p.text);
+                            if (p.is_ident) dyn(a, &w, p.text, p.ptype, p.raw, false) else lit(a, &w, p.text);
                         }
                     }
                     cursor = op.pos;
@@ -254,19 +264,28 @@ const std = @import("std");
             s.prop_type.append(s.a, s.a.dupe(u8, ktype) catch unreachable) catch unreachable;
         }
 
+        const Ph = struct { ident: []const u8, ktype: []const u8, raw: bool };
+
         // At `{{`. Returns the ident; registers the prop. mt = mapType.
-        fn placeholder(s: *@This(), mt: anytype) [2][]const u8 {
+        // `:h` maps to a string prop that carries raw=true through the part.
+        fn placeholder(s: *@This(), mt: anytype) Ph {
             const pe = std.mem.indexOfPos(u8, s.m, s.i + 2, "}}") orelse s.die("unclosed {{ placeholder");
             const ph = std.mem.trim(u8, s.m[s.i + 2 .. pe], " \t\r\n");
             s.i = pe + 2;
             var ident = ph;
             var ktype: []const u8 = "string";
+            var raw = false;
             if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
                 ident = std.mem.trim(u8, ph[0..cp], " \t");
-                ktype = mt(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                const code = std.mem.trim(u8, ph[cp + 1 ..], " \t");
+                if (std.mem.eql(u8, code, "h")) {
+                    raw = true;
+                } else {
+                    ktype = mt(code);
+                }
             }
             s.register(ident, ktype);
-            return .{ s.a.dupe(u8, ident) catch unreachable, s.a.dupe(u8, ktype) catch unreachable };
+            return .{ .ident = s.a.dupe(u8, ident) catch unreachable, .ktype = s.a.dupe(u8, ktype) catch unreachable, .raw = raw };
         }
 
         fn tagName(s: *@This()) []const u8 {
@@ -308,7 +327,7 @@ const std = @import("std");
                     const it = s.placeholder(mt);
                     list.append(s.a, .{
                         .name = s.a.dupe(u8, aname) catch unreachable,
-                        .value = it[0],
+                        .value = it.ident,
                         .had_explicit_label = true,
                     }) catch unreachable;
                 } else s.die("component attribute value must be \"literal\" or {{ ident:type }}");
@@ -356,14 +375,43 @@ const std = @import("std");
                     while (s.i < s.m.len and s.m[s.i] != '"') s.i += 1;
                     if (s.i >= s.m.len) s.die("unclosed attribute string");
                     s.i += 1;
-                    html.append(s.a, ' ') catch unreachable;
-                    html.appendSlice(s.a, aname) catch unreachable;
-                    html.append(s.a, '=') catch unreachable;
-                    html.appendSlice(s.a, s.m[v0..s.i]) catch unreachable;
+                    const val = s.m[v0 + 1 .. s.i - 1];
+                    if (std.mem.indexOf(u8, val, "{{") == null) {
+                        html.append(s.a, ' ') catch unreachable;
+                        html.appendSlice(s.a, aname) catch unreachable;
+                        html.append(s.a, '=') catch unreachable;
+                        html.appendSlice(s.a, s.m[v0..s.i]) catch unreachable;
+                    } else {
+                        // Mixed value — `id="message_{{ cmid:s }}"`: split the
+                        // quoted run into literal/placeholder parts exactly as
+                        // element text is split; the kind-0 op carries them all.
+                        var parts = std.ArrayList(Part).initCapacity(s.a, 2) catch unreachable;
+                        var sub = @This(){ .a = s.a, .m = val, .i = 0, .cname = s.cname, .prop_name = s.prop_name, .prop_type = s.prop_type };
+                        var last: usize = 0;
+                        while (std.mem.indexOfPos(u8, val, sub.i, "{{")) |ps| {
+                            if (ps > last) {
+                                parts.append(s.a, .{ .is_ident = false, .text = s.a.dupe(u8, val[last..ps]) catch unreachable, .ptype = "" }) catch unreachable;
+                            }
+                            sub.i = ps;
+                            const it = sub.placeholder(mt);
+                            parts.append(s.a, .{ .is_ident = true, .text = it.ident, .ptype = it.ktype, .raw = it.raw }) catch unreachable;
+                            last = sub.i;
+                        }
+                        if (last < val.len) {
+                            parts.append(s.a, .{ .is_ident = false, .text = s.a.dupe(u8, val[last..]) catch unreachable, .ptype = "" }) catch unreachable;
+                        }
+                        ops.append(s.a, .{
+                            .kind = 0,
+                            .path = s.a.dupe(usize, path.items) catch unreachable,
+                            .attr = s.a.dupe(u8, aname) catch unreachable,
+                            .parts = parts.toOwnedSlice(s.a) catch unreachable,
+                            .pos = html.items.len,
+                        }) catch unreachable;
+                    }
                 } else if (s.i + 1 < s.m.len and s.m[s.i] == '{' and s.m[s.i + 1] == '{') {
                     const it = s.placeholder(mt);
                     const parts = s.a.alloc(Part, 1) catch unreachable;
-                    parts[0] = .{ .is_ident = true, .text = it[0], .ptype = it[1] };
+                    parts[0] = .{ .is_ident = true, .text = it.ident, .ptype = it.ktype, .raw = it.raw };
                     ops.append(s.a, .{
                         .kind = 0,
                         .path = s.a.dupe(usize, path.items) catch unreachable,
@@ -419,7 +467,7 @@ const std = @import("std");
                                 }
                                 sub.i = ps;
                                 const it = sub.placeholder(mt);
-                                text_parts.append(s.a, .{ .is_ident = true, .text = it[0], .ptype = it[1] }) catch unreachable;
+                                text_parts.append(s.a, .{ .is_ident = true, .text = it.ident, .ptype = it.ktype, .raw = it.raw }) catch unreachable;
                                 last = sub.i;
                             }
                             if (last < run.len) {
@@ -504,10 +552,23 @@ const std = @import("std");
                     target.appendSlice(a, std.fmt.allocPrint(a, ".children[{d}]", .{idx}) catch unreachable) catch unreachable;
                 }
                 if (op.kind == 0) {
-                    b.appendSlice(a, std.fmt.allocPrint(a, "{s}.setAttribute(\"{s}\", String({s}));\n", .{ target.items, op.attr, op.parts[0].text }) catch unreachable) catch unreachable;
+                    b.appendSlice(a, std.fmt.allocPrint(a, "{s}.setAttribute(\"{s}\", ", .{ target.items, op.attr }) catch unreachable) catch unreachable;
+                    for (op.parts, 0..) |part, k| {
+                        if (k > 0) b.appendSlice(a, " + ") catch unreachable;
+                        if (part.is_ident) {
+                            b.appendSlice(a, std.fmt.allocPrint(a, "String({s})", .{part.text}) catch unreachable) catch unreachable;
+                        } else {
+                            b.appendSlice(a, std.fmt.allocPrint(a, "\"{s}\"", .{esc(a, part.text)}) catch unreachable) catch unreachable;
+                        }
+                    }
+                    b.appendSlice(a, ");\n") catch unreachable;
                 } else {
+                    var any_raw = false;
+                    for (op.parts) |part| {
+                        if (part.is_ident and part.raw) any_raw = true;
+                    }
                     b.appendSlice(a, target.items) catch unreachable;
-                    b.appendSlice(a, ".textContent = ") catch unreachable;
+                    b.appendSlice(a, if (any_raw) ".innerHTML = " else ".textContent = ") catch unreachable;
                     for (op.parts, 0..) |part, k| {
                         if (k > 0) b.appendSlice(a, " + ") catch unreachable;
                         if (part.is_ident) {
