@@ -1,0 +1,1 @@
+bad request: expected `Connection: upgrade` request header

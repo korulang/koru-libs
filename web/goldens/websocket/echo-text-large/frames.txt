@@ -1,0 +1,2 @@
+> text-file echo-1k.txt
+< text-file echo-1k.txt

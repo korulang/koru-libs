@@ -1,0 +1,2 @@
+> ping hex:beef
+< pong hex:beef

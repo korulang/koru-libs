@@ -1,0 +1,2 @@
+> frag-text hello| world|!
+< text hello world!

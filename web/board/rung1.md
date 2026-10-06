@@ -20,11 +20,13 @@ keying the mark on the invoked tor's `allocated!` return phantom.
 
 Third green: path-query-params (`web/app/path-query-params`) — the first
 claimant on the sibling's `http-surface` request surface rather than
-`date-header`. Its orisha path points at that worktree; the `extra_headers`
-the sibling wrote there is an independent implementation of my date-header
-field — a merge collision to settle on the walk, not a code conflict.
-`content_type: null` → omit-header sits UNCOMMITTED in the http-surface
-worktree for the sibling to keep or discard — as does `405 => "Method Not
-Allowed"` in the reason table (added for request-response; was "Unknown").
+`date-header`. Fourth: request-response (`web/app/request-response`) —
+yyjson obligation chains in router arms, multipart boundary walk,
+serde-shaped error emulation. Two http-surface gaps the claimants forced:
+`content_type: null` omits the header (was a hard `text/plain` default) and
+`405` joins the reason table (was "Unknown") — committed `4836e22`.
 
-Rung-1 is fully green: 29/29 cases conform across all four fixtures.
+Rung-1 is fully green: 29/29 cases conform across all four fixtures —
+re-verified against merged orisha `main` (date-header + http-surface
+landed as `cafeb18`/`7b25eba`); all claimants now point at the merged
+library, not the worktrees.

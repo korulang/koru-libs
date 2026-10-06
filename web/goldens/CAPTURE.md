@@ -104,6 +104,37 @@ always vary — but no Orisha response omits it anymore.
   First capture was malformed (0 bytes received); golden re-captured against
   the canonical spec — spec is source of truth, not first capture.
 
+## Fixture 5: `examples/websocket` → `goldens/websocket/` (2026-10-06)
+
+- Package name: `websocket`. **Requires the asset bundle** —
+  `AssetBundle::load()` panics without `target/debug/assets/`:
+  `cargo build -p websocket && cargo build -p topcoat-cli &&
+   ./target/debug/topcoat asset bundle -p websocket`. The bundle holds the
+  page's `echo.js`; the `/echo` route doesn't consult it.
+- Run: `PORT=3199 HOST=127.0.0.1 ./target/debug/websocket`
+- Route: `GET /echo` (module-derived), `WebSocketUpgrade` → echo loop —
+  text/binary echoed verbatim; ping/pong/close framework-handled.
+- 9 cases, all WS on a fixed client key `dGhlIHNhbXBsZSBub25jZQ==`
+  (RFC 6455's example → deterministic `sec-websocket-accept:
+  s3pPLMBiTxaQ9kYGzzhZRbK+xOo=`):
+  `echo-text`, `echo-binary`, `echo-text-large` (1000 B, 16-bit length),
+  `echo-binary-large` (70000 B, 64-bit length), `ping-pong` (payload echoed),
+  `multi-message` (3 sequential echoes, conn persists), `echo-fragmented`
+  (3-frame fin-split text → reassembled single echo),
+  `close` (close 1000 echoed verbatim, then server EOF), `no-upgrade`
+  (plain `GET /echo` → `400`, body `bad request: expected
+  \`Connection: upgrade\` request header`).
+- Authored spec per case: `case.txt` (upgrade request; fixed key),
+  `send.txt` (client sends — masked per spec). Captured oracle:
+  `head.txt` (101 or 400 head), `frames.txt` (ordered `>`/`<` exchange,
+  `< eof` = server hangup), `body.txt` for the HTTP probe.
+- Nondeterminism audit (2 full recaptures, diffed): only `date:` varies.
+  Server frames arrive unmasked, single-frame echoes, no fragmentation of
+  server sends, no compression (`sec-websocket-extensions` absent).
+- Closer: `web/closer/ws_closer.py` — `capture` writes the golden,
+  `close` replays it (client frames masked w/ fixed key, masked server
+  frame = loud fail). Self-certified against the reference: 9/9 pass.
+
 ## Closer (rung 1): `web/closer/bytes_closer.py`
 
 - Stdlib-only replay closer: `case.txt` (request line + headers +

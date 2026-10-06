@@ -1,0 +1,3 @@
+> close 1000 done
+< close 1000 done
+< eof
