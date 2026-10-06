@@ -46,10 +46,9 @@ const std = @import("std");
 
 ~proc component|zig {
     const ast = @import("ast");
+    const errors = @import("errors");
     _ = expr;
     _ = source;
-    _ = invocation;
-    _ = item;
 
     // s→string / d→i64 / f→f64 / b→bool — the vaxis placeholder type codes.
     const mapType = struct {
@@ -528,197 +527,224 @@ const std = @import("std");
         }
     }.call;
 
-    // WHOLE-PROGRAM WALK (the vaxis component shape, vaxis/index.kz:3582):
-    // find every `koru/dom:component(Name){…}` declaration, synthesize, consume,
-    // return the rewritten program so downstream passes see the new events.
-    var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len + 8) catch unreachable;
+    // Site-local answer. The site IS the declaration: a flow whose body is
+    // the `component(Name) { … }` invocation — and the transform runner finds
+    // it wherever it sits, imported module_decl included. `replacement` marks
+    // the decl consumed; `appended` carries the synthesized decls, which
+    // appendItems routes into the decl's own module (the whole-program walk
+    // this replaced iterated program.items one level deep — a decl inside an
+    // imported module was never consumed and died as KORU080 'component
+    // requires input expr', the failure that named this fix).
+    const cinv = invocation;
+    const cpath = cinv.path;
+    if (cpath.segments.len == 0 or !std.mem.eql(u8, cpath.segments[cpath.segments.len - 1], "component")) return .{};
+    // Claim only invocations qualified to this module — the vaxis dialect
+    // keeps its own `component`, and both may be imported.
+    const qual = cpath.module_qualifier orelse return .{};
+    if (!std.mem.eql(u8, qual, "koru/dom") and !std.mem.eql(u8, qual, "koru.dom") and !std.mem.eql(u8, qual, "dom")) return .{};
+
+    const is_js = std.mem.eql(u8, CompilerEnv.lang, "js");
+    if (!is_js and !std.mem.eql(u8, CompilerEnv.lang, "zig")) {
+        std.debug.panic("koru/dom:component has no '{s}' lowering — paint is the JS surface, render is the zig one (dom/index.kz)", .{CompilerEnv.lang});
+    }
+
+    // Name + markup off the declaration (source arg carries the block; the
+    // positional expr arg carries its own value as its name at this stage).
+    var cname: []const u8 = "";
+    var markup: []const u8 = "";
+    for (cinv.args) |arg| {
+        if (std.mem.eql(u8, arg.name, "source")) {
+            markup = arg.value;
+        } else {
+            cname = arg.value;
+            if (cname.len >= 2 and cname[0] == '"' and cname[cname.len - 1] == '"') cname = cname[1 .. cname.len - 1];
+        }
+    }
+    if (cname.len == 0) return .{};
+    if (!(cname[0] >= 'A' and cname[0] <= 'Z')) {
+        std.debug.panic("koru/dom:component({s}): components are capitalized — declaration, call site and markup tag, one spelling throughout (ruled 2026-08-07)", .{cname});
+    }
+
     var synthed = std.ArrayList(ast.Item).initCapacity(allocator, 8) catch unreachable;
-    var found = false;
+    const cmodule = if (item.* == .flow) item.flow.module else "";
+    const cloc = if (item.* == .flow) item.flow.location else errors.SourceLocation{ .file = "", .line = 0, .column = 0 };
 
-    for (program.items) |pi| {
-        const is_component = pi == .flow and blk: {
-            const p = pi.flow.inv().path;
-            const segs = p.segments;
-            if (segs.len == 0 or !std.mem.eql(u8, segs[segs.len - 1], "component")) break :blk false;
-            // Claim only invocations qualified to this module — the vaxis
-            // dialect keeps its own `component`, and both may be imported.
-            const q = p.module_qualifier orelse break :blk false;
-            break :blk std.mem.eql(u8, q, "koru/dom") or std.mem.eql(u8, q, "koru.dom") or std.mem.eql(u8, q, "dom");
-        };
-        if (!is_component) {
-            new_items.append(allocator, pi) catch unreachable;
-            continue;
-        }
+    var prop_name = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
+    var prop_type = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
+    var nodes = std.ArrayList(Node).initCapacity(allocator, 4) catch unreachable;
 
-        const is_js = std.mem.eql(u8, CompilerEnv.lang, "js");
-        if (!is_js and !std.mem.eql(u8, CompilerEnv.lang, "zig")) {
-            std.debug.panic("koru/dom:component has no '{s}' lowering — paint is the JS surface, render is the zig one (dom/index.kz)", .{CompilerEnv.lang});
-        }
-
-        // Name + markup off the declaration (source arg carries the block; the
-        // positional expr arg carries its own value as its name at this stage).
-        const cinv = pi.flow.inv();
-        var cname: []const u8 = "";
-        var markup: []const u8 = "";
-        for (cinv.args) |arg| {
-            if (std.mem.eql(u8, arg.name, "source")) {
-                markup = arg.value;
-            } else {
-                cname = arg.value;
-                if (cname.len >= 2 and cname[0] == '"' and cname[cname.len - 1] == '"') cname = cname[1 .. cname.len - 1];
-            }
-        }
-        if (cname.len == 0) {
-            new_items.append(allocator, pi) catch unreachable;
-            continue;
-        }
-        if (!(cname[0] >= 'A' and cname[0] <= 'Z')) {
-            std.debug.panic("koru/dom:component({s}): components are capitalized — declaration, call site and markup tag, one spelling throughout (ruled 2026-08-07)", .{cname});
-        }
-
-        found = true;
-        const cmodule = pi.flow.module;
-        const cloc = pi.flow.location;
-
-        var prop_name = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
-        var prop_type = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
-        var nodes = std.ArrayList(Node).initCapacity(allocator, 4) catch unreachable;
-
-        var sc = Scanner{ .a = allocator, .m = markup, .i = 0, .cname = cname, .prop_name = &prop_name, .prop_type = &prop_type };
-        while (true) {
+    var sc = Scanner{ .a = allocator, .m = markup, .i = 0, .cname = cname, .prop_name = &prop_name, .prop_type = &prop_type };
+    while (true) {
+        sc.ws();
+        if (sc.i >= sc.m.len) break;
+        if (sc.m[sc.i] != '<') sc.die("text at the top level of component markup must live inside an element");
+        if (sc.i + 1 < sc.m.len and sc.m[sc.i + 1] >= 'A' and sc.m[sc.i + 1] <= 'Z') {
+            // Ours: a child component call.
+            sc.i += 1;
+            const child_name = allocator.dupe(u8, sc.tagName()) catch unreachable;
+            const cargs = sc.childAttrs(mapType);
             sc.ws();
-            if (sc.i >= sc.m.len) break;
-            if (sc.m[sc.i] != '<') sc.die("text at the top level of component markup must live inside an element");
-            if (sc.i + 1 < sc.m.len and sc.m[sc.i + 1] >= 'A' and sc.m[sc.i + 1] <= 'Z') {
-                // Ours: a child component call.
+            if (sc.i < sc.m.len and sc.m[sc.i] == '/') {
                 sc.i += 1;
-                const child_name = allocator.dupe(u8, sc.tagName()) catch unreachable;
-                const cargs = sc.childAttrs(mapType);
+                if (sc.i >= sc.m.len or sc.m[sc.i] != '>') sc.die("malformed self-closing component tag");
+                sc.i += 1;
+            } else if (sc.i < sc.m.len and sc.m[sc.i] == '>') {
+                sc.i += 1;
                 sc.ws();
-                if (sc.i < sc.m.len and sc.m[sc.i] == '/') {
-                    sc.i += 1;
-                    if (sc.i >= sc.m.len or sc.m[sc.i] != '>') sc.die("malformed self-closing component tag");
-                    sc.i += 1;
-                } else if (sc.i < sc.m.len and sc.m[sc.i] == '>') {
-                    sc.i += 1;
-                    sc.ws();
-                    const close = std.fmt.allocPrint(allocator, "</{s}>", .{child_name}) catch unreachable;
-                    if (!std.mem.startsWith(u8, sc.m[sc.i..], close)) sc.die("component tags take no children this rung — use <Name …/> or an empty <Name></Name>");
-                    sc.i += close.len;
-                } else sc.die("malformed component tag");
-                nodes.append(allocator, .{ .is_child = true, .seg = .{ .html = "", .ops = &.{} }, .child = .{ .name = child_name, .args = cargs } }) catch unreachable;
-            } else {
-                // Not ours: passthrough subtree, uninspected beyond structure.
-                var html = std.ArrayList(u8).initCapacity(allocator, 64) catch unreachable;
-                var ops = std.ArrayList(Op).initCapacity(allocator, 4) catch unreachable;
-                var path = std.ArrayList(usize).initCapacity(allocator, 4) catch unreachable;
-                sc.element(mapType, &html, &ops, &path);
-                nodes.append(allocator, .{ .is_child = false, .seg = .{ .html = html.toOwnedSlice(allocator) catch unreachable, .ops = ops.toOwnedSlice(allocator) catch unreachable }, .child = .{ .name = "", .args = &.{} } }) catch unreachable;
-            }
+                const close = std.fmt.allocPrint(allocator, "</{s}>", .{child_name}) catch unreachable;
+                if (!std.mem.startsWith(u8, sc.m[sc.i..], close)) sc.die("component tags take no children this rung — use <Name …/> or an empty <Name></Name>");
+                sc.i += close.len;
+            } else sc.die("malformed component tag");
+            nodes.append(allocator, .{ .is_child = true, .seg = .{ .html = "", .ops = &.{} }, .child = .{ .name = child_name, .args = cargs } }) catch unreachable;
+        } else {
+            // Not ours: passthrough subtree, uninspected beyond structure.
+            var html = std.ArrayList(u8).initCapacity(allocator, 64) catch unreachable;
+            var ops = std.ArrayList(Op).initCapacity(allocator, 4) catch unreachable;
+            var path = std.ArrayList(usize).initCapacity(allocator, 4) catch unreachable;
+            sc.element(mapType, &html, &ops, &path);
+            nodes.append(allocator, .{ .is_child = false, .seg = .{ .html = html.toOwnedSlice(allocator) catch unreachable, .ops = ops.toOwnedSlice(allocator) catch unreachable }, .child = .{ .name = "", .args = &.{} } }) catch unreachable;
         }
-        if (nodes.items.len == 0) sc.die("component markup is empty");
+    }
+    if (nodes.items.len == 0) sc.die("component markup is empty");
 
-        const cname_id = sanit(allocator, cname);
+    const cname_id = sanit(allocator, cname);
 
-        if (!is_js) {
-            // ── Native render: `Name-render(props) -> string` ────────────
-            // The server artifact. No `parent`, no `key` — render is pure;
-            // the caller decides where the bytes go. Children render through
-            // their own `Child-render` tors, called in document order.
-            const rfields = allocator.alloc(ast.Field, prop_name.items.len) catch unreachable;
-            for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
-                rfields[i] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .type = allocator.dupe(u8, pt) catch unreachable };
+    if (!is_js) {
+        // ── Native render: `Name-render(props) -> string` ────────────
+        // The server artifact. No `parent`, no `key` — render is pure;
+        // the caller decides where the bytes go. Children render through
+        // their own `Child-render` tors, called in document order.
+        const rfields = allocator.alloc(ast.Field, prop_name.items.len) catch unreachable;
+        for (prop_name.items, prop_type.items, 0..) |pn, pt, i| {
+            rfields[i] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .type = allocator.dupe(u8, pt) catch unreachable };
+        }
+        const rname = std.fmt.allocPrint(allocator, "{s}-render", .{cname}) catch unreachable;
+        synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+            .path = mkPath(allocator, cmodule, rname),
+            .input = ast.Shape{ .fields = rfields },
+            .branches = &[_]ast.Branch{},
+            .return_type = allocator.dupe(u8, "string") catch unreachable,
+            .return_phantom = allocator.dupe(u8, "std.io:allocated!") catch unreachable,
+            .is_public = false,
+            .is_implicit_flow = false,
+            .annotations = &[_][]const u8{},
+            .location = cloc,
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }) catch unreachable;
+        synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
+            .path = mkPath(allocator, cmodule, rname),
+            .body = ast.Source{
+                .text = renderBody(allocator, sanit, nodes.items),
+                .location = cloc,
+                .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
+                .phantom_type = null,
+            },
+            .annotations = &[_][]const u8{},
+            .target = allocator.dupe(u8, "zig") catch unreachable,
+            .location = cloc,
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }) catch unreachable;
+        const consumed = std.fmt.allocPrint(allocator, "// koru/dom: component '{s}' synthesized → render proc (native)", .{cname}) catch unreachable;
+        return .{ .replacement = ast.Item{ .host_line = ast.HostLine{
+            .content = consumed,
+            .location = cloc,
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }, .appended = synthed.items };
+    }
+
+    // Event input shape: parent selector + every registered prop, and for
+    // a single-root component a `key`.
+    //
+    // `key` is the library's second non-rendered input, exactly what
+    // `parent` already is: the caller supplies it, the markup never shows
+    // it. `parent` says WHERE the element goes; `key` says WHICH ROW owns
+    // it, so the library can find that element again without searching the
+    // page. Pass `[id]h` from a store's lifecycle arm and the association
+    // is the row's handle, which is stable across compaction.
+    //
+    // Only single-root components take one. A component with several roots
+    // has no single element to identify, and inventing a rule for which
+    // one counts would be a guess; without the input, passing `key` to one
+    // is an unknown argument rather than a silently ignored request.
+    const mkFields = struct {
+        fn call(a: std.mem.Allocator, pn: []const []const u8, pt: []const []const u8, with_key: bool) []ast.Field {
+            const extra: usize = if (with_key) 2 else 1;
+            const fields = a.alloc(ast.Field, pn.len + extra) catch unreachable;
+            fields[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .type = a.dupe(u8, "string") catch unreachable };
+            if (with_key) fields[1] = .{ .name = a.dupe(u8, "key") catch unreachable, .type = a.dupe(u8, "i64") catch unreachable };
+            for (pn, pt, 0..) |n, t, i| {
+                fields[i + extra] = .{ .name = a.dupe(u8, n) catch unreachable, .type = a.dupe(u8, t) catch unreachable };
             }
-            const rname = std.fmt.allocPrint(allocator, "{s}-render", .{cname}) catch unreachable;
-            synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
-                .path = mkPath(allocator, cmodule, rname),
-                .input = ast.Shape{ .fields = rfields },
-                .branches = &[_]ast.Branch{},
-                .return_type = allocator.dupe(u8, "string") catch unreachable,
-                .return_phantom = allocator.dupe(u8, "std.io:allocated!") catch unreachable,
-                .is_public = false,
-                .is_implicit_flow = false,
-                .annotations = &[_][]const u8{},
-                .location = cloc,
-                .module = allocator.dupe(u8, cmodule) catch unreachable,
-            } }) catch unreachable;
-            synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
-                .path = mkPath(allocator, cmodule, rname),
-                .body = ast.Source{
-                    .text = renderBody(allocator, sanit, nodes.items),
-                    .location = cloc,
-                    .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
-                    .phantom_type = null,
-                },
-                .annotations = &[_][]const u8{},
-                .target = allocator.dupe(u8, "zig") catch unreachable,
-                .location = cloc,
-                .module = allocator.dupe(u8, cmodule) catch unreachable,
-            } }) catch unreachable;
-            const consumed = std.fmt.allocPrint(allocator, "// koru/dom: component '{s}' synthesized → render proc (native)", .{cname}) catch unreachable;
-            new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
-                .content = consumed,
-                .location = cloc,
-                .module = allocator.dupe(u8, cmodule) catch unreachable,
-            } }) catch unreachable;
+            return fields;
+        }
+    }.call;
+
+    // Per-segment template host lines (JS module scope; routed to the JS
+    // output by their .kjs-spelled synthetic location, exactly the routing
+    // 140_010 pins for authored facets).
+    var seg_tpl = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
+    for (nodes.items, 0..) |node, ni| {
+        if (node.is_child) {
+            seg_tpl.append(allocator, "") catch unreachable;
             continue;
         }
+        const tpl_var = std.fmt.allocPrint(allocator, "__koru_dom_tpl_{s}_{d}", .{ cname_id, ni }) catch unreachable;
+        seg_tpl.append(allocator, tpl_var) catch unreachable;
+        const line = std.fmt.allocPrint(
+            allocator,
+            "const {s} = (() => {{ const t = document.createElement(\"template\"); t.innerHTML = \"{s}\"; return t.content.firstChild; }})();",
+            .{ tpl_var, jsEscape(allocator, node.seg.html) },
+        ) catch unreachable;
+        synthed.append(allocator, ast.Item{ .host_line = ast.HostLine{
+            .content = line,
+            .location = .{ .file = "koru_dom_component.generated.kjs", .line = 0, .column = 0 },
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }) catch unreachable;
+    }
 
-        // Event input shape: parent selector + every registered prop, and for
-        // a single-root component a `key`.
+    if (nodes.items.len == 1 and !nodes.items[0].is_child) {
+        // Single passthrough root — the component IS its paint proc.
+        synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+            .path = mkPath(allocator, cmodule, cname),
+            .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, true) },
+            .branches = &[_]ast.Branch{},
+            .is_public = false,
+            .is_implicit_flow = false,
+            .annotations = &[_][]const u8{},
+            .location = cloc,
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }) catch unreachable;
+        synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
+            .path = mkPath(allocator, cmodule, cname),
+            .body = ast.Source{
+                .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, false, ""),
+                .location = cloc,
+                .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
+                .phantom_type = null,
+            },
+            .annotations = &[_][]const u8{},
+            .target = allocator.dupe(u8, "js") catch unreachable,
+            .location = cloc,
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }) catch unreachable;
+        // ── the repaint siblings, ONE PER PROP ────────────────────────
+        // A keyed component describes a row once, and that description is
+        // enough to CREATE the element and to UPDATE any one value in it.
+        // `Row-repaint-label(key, label)` addresses the element the key
+        // owns and re-runs only the assignments that mention `label`.
         //
-        // `key` is the library's second non-rendered input, exactly what
-        // `parent` already is: the caller supplies it, the markup never shows
-        // it. `parent` says WHERE the element goes; `key` says WHICH ROW owns
-        // it, so the library can find that element again without searching the
-        // page. Pass `[id]h` from a store's lifecycle arm and the association
-        // is the row's handle, which is stable across compaction.
-        //
-        // Only single-root components take one. A component with several roots
-        // has no single element to identify, and inventing a rule for which
-        // one counts would be a guess; without the input, passing `key` to one
-        // is an unknown argument rather than a silently ignored request.
-        const mkFields = struct {
-            fn call(a: std.mem.Allocator, pn: []const []const u8, pt: []const []const u8, with_key: bool) []ast.Field {
-                const extra: usize = if (with_key) 2 else 1;
-                const fields = a.alloc(ast.Field, pn.len + extra) catch unreachable;
-                fields[0] = .{ .name = a.dupe(u8, "parent") catch unreachable, .type = a.dupe(u8, "string") catch unreachable };
-                if (with_key) fields[1] = .{ .name = a.dupe(u8, "key") catch unreachable, .type = a.dupe(u8, "i64") catch unreachable };
-                for (pn, pt, 0..) |n, t, i| {
-                    fields[i + extra] = .{ .name = a.dupe(u8, n) catch unreachable, .type = a.dupe(u8, t) catch unreachable };
-                }
-                return fields;
-            }
-        }.call;
-
-        // Per-segment template host lines (JS module scope; routed to the JS
-        // output by their .kjs-spelled synthetic location, exactly the routing
-        // 140_010 pins for authored facets).
-        var seg_tpl = std.ArrayList([]const u8).initCapacity(allocator, 4) catch unreachable;
-        for (nodes.items, 0..) |node, ni| {
-            if (node.is_child) {
-                seg_tpl.append(allocator, "") catch unreachable;
-                continue;
-            }
-            const tpl_var = std.fmt.allocPrint(allocator, "__koru_dom_tpl_{s}_{d}", .{ cname_id, ni }) catch unreachable;
-            seg_tpl.append(allocator, tpl_var) catch unreachable;
-            const line = std.fmt.allocPrint(
-                allocator,
-                "const {s} = (() => {{ const t = document.createElement(\"template\"); t.innerHTML = \"{s}\"; return t.content.firstChild; }})();",
-                .{ tpl_var, jsEscape(allocator, node.seg.html) },
-            ) catch unreachable;
-            synthed.append(allocator, ast.Item{ .host_line = ast.HostLine{
-                .content = line,
-                .location = .{ .file = "koru_dom_component.generated.kjs", .line = 0, .column = 0 },
-                .module = allocator.dupe(u8, cmodule) catch unreachable,
-            } }) catch unreachable;
-        }
-
-        if (nodes.items.len == 1 and !nodes.items[0].is_child) {
-            // Single passthrough root — the component IS its paint proc.
+        // Per PROP rather than per component, because a whole-row repaint
+        // is five DOM writes where one will do — measured at +13% on
+        // partial update before this split. The markup already knows which
+        // assignments a prop drives; nothing new has to be declared.
+        for (prop_name.items, prop_type.items) |pn, pt| {
+            const rp_name = std.fmt.allocPrint(allocator, "{s}-repaint-{s}", .{ cname, pn }) catch unreachable;
+            const rp_fields = allocator.alloc(ast.Field, 2) catch unreachable;
+            rp_fields[0] = .{ .name = allocator.dupe(u8, "key") catch unreachable, .type = allocator.dupe(u8, "i64") catch unreachable };
+            rp_fields[1] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .type = allocator.dupe(u8, pt) catch unreachable };
             synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
-                .path = mkPath(allocator, cmodule, cname),
-                .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, true) },
+                .path = mkPath(allocator, cmodule, rp_name),
+                .input = ast.Shape{ .fields = rp_fields },
                 .branches = &[_]ast.Branch{},
                 .is_public = false,
                 .is_implicit_flow = false,
@@ -727,9 +753,9 @@ const std = @import("std");
                 .module = allocator.dupe(u8, cmodule) catch unreachable,
             } }) catch unreachable;
             synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
-                .path = mkPath(allocator, cmodule, cname),
+                .path = mkPath(allocator, cmodule, rp_name),
                 .body = ast.Source{
-                    .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, false, ""),
+                    .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, true, pn),
                     .location = cloc,
                     .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                     .phantom_type = null,
@@ -739,24 +765,22 @@ const std = @import("std");
                 .location = cloc,
                 .module = allocator.dupe(u8, cmodule) catch unreachable,
             } }) catch unreachable;
-            // ── the repaint siblings, ONE PER PROP ────────────────────────
-            // A keyed component describes a row once, and that description is
-            // enough to CREATE the element and to UPDATE any one value in it.
-            // `Row-repaint-label(key, label)` addresses the element the key
-            // owns and re-runs only the assignments that mention `label`.
-            //
-            // Per PROP rather than per component, because a whole-row repaint
-            // is five DOM writes where one will do — measured at +13% on
-            // partial update before this split. The markup already knows which
-            // assignments a prop drives; nothing new has to be declared.
-            for (prop_name.items, prop_type.items) |pn, pt| {
-                const rp_name = std.fmt.allocPrint(allocator, "{s}-repaint-{s}", .{ cname, pn }) catch unreachable;
-                const rp_fields = allocator.alloc(ast.Field, 2) catch unreachable;
-                rp_fields[0] = .{ .name = allocator.dupe(u8, "key") catch unreachable, .type = allocator.dupe(u8, "i64") catch unreachable };
-                rp_fields[1] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .type = allocator.dupe(u8, pt) catch unreachable };
+        }
+    } else {
+        // Mixed markup: helper paint events per segment + an impl flow that
+        // chains paints and child-component calls in document order.
+        var ops = std.ArrayList(ast.Invocation).initCapacity(allocator, 4) catch unreachable;
+        for (nodes.items, 0..) |node, ni| {
+            if (node.is_child) {
+                const cargs2 = allocator.alloc(ast.Arg, node.child.args.len + 1) catch unreachable;
+                cargs2[0] = .{ .name = allocator.dupe(u8, "parent") catch unreachable, .value = allocator.dupe(u8, "parent") catch unreachable, .had_explicit_label = true };
+                for (node.child.args, 0..) |ca, ci| cargs2[ci + 1] = ca;
+                ops.append(allocator, .{ .path = mkPath(allocator, cmodule, node.child.name), .args = cargs2 }) catch unreachable;
+            } else {
+                const seg_name = std.fmt.allocPrint(allocator, "__{s}-seg{d}", .{ cname, ni }) catch unreachable;
                 synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
-                    .path = mkPath(allocator, cmodule, rp_name),
-                    .input = ast.Shape{ .fields = rp_fields },
+                    .path = mkPath(allocator, cmodule, seg_name),
+                    .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, false) },
                     .branches = &[_]ast.Branch{},
                     .is_public = false,
                     .is_implicit_flow = false,
@@ -765,9 +789,9 @@ const std = @import("std");
                     .module = allocator.dupe(u8, cmodule) catch unreachable,
                 } }) catch unreachable;
                 synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
-                    .path = mkPath(allocator, cmodule, rp_name),
+                    .path = mkPath(allocator, cmodule, seg_name),
                     .body = ast.Source{
-                        .text = paintBody(allocator, seg_tpl.items[0], nodes.items[0].seg, jsEscape, true, true, pn),
+                        .text = paintBody(allocator, seg_tpl.items[ni], node.seg, jsEscape, false, false, ""),
                         .location = cloc,
                         .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
                         .phantom_type = null,
@@ -777,111 +801,58 @@ const std = @import("std");
                     .location = cloc,
                     .module = allocator.dupe(u8, cmodule) catch unreachable,
                 } }) catch unreachable;
-            }
-        } else {
-            // Mixed markup: helper paint events per segment + an impl flow that
-            // chains paints and child-component calls in document order.
-            var ops = std.ArrayList(ast.Invocation).initCapacity(allocator, 4) catch unreachable;
-            for (nodes.items, 0..) |node, ni| {
-                if (node.is_child) {
-                    const cargs2 = allocator.alloc(ast.Arg, node.child.args.len + 1) catch unreachable;
-                    cargs2[0] = .{ .name = allocator.dupe(u8, "parent") catch unreachable, .value = allocator.dupe(u8, "parent") catch unreachable, .had_explicit_label = true };
-                    for (node.child.args, 0..) |ca, ci| cargs2[ci + 1] = ca;
-                    ops.append(allocator, .{ .path = mkPath(allocator, cmodule, node.child.name), .args = cargs2 }) catch unreachable;
-                } else {
-                    const seg_name = std.fmt.allocPrint(allocator, "__{s}-seg{d}", .{ cname, ni }) catch unreachable;
-                    synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
-                        .path = mkPath(allocator, cmodule, seg_name),
-                        .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, false) },
-                        .branches = &[_]ast.Branch{},
-                        .is_public = false,
-                        .is_implicit_flow = false,
-                        .annotations = &[_][]const u8{},
-                        .location = cloc,
-                        .module = allocator.dupe(u8, cmodule) catch unreachable,
-                    } }) catch unreachable;
-                    synthed.append(allocator, ast.Item{ .proc_decl = ast.ProcDecl{
-                        .path = mkPath(allocator, cmodule, seg_name),
-                        .body = ast.Source{
-                            .text = paintBody(allocator, seg_tpl.items[ni], node.seg, jsEscape, false, false, ""),
-                            .location = cloc,
-                            .scope = .{ .bindings = &[_]ast.ScopeBinding{} },
-                            .phantom_type = null,
-                        },
-                        .annotations = &[_][]const u8{},
-                        .target = allocator.dupe(u8, "js") catch unreachable,
-                        .location = cloc,
-                        .module = allocator.dupe(u8, cmodule) catch unreachable,
-                    } }) catch unreachable;
-                    const sargs = allocator.alloc(ast.Arg, prop_name.items.len + 1) catch unreachable;
-                    sargs[0] = .{ .name = allocator.dupe(u8, "parent") catch unreachable, .value = allocator.dupe(u8, "parent") catch unreachable, .had_explicit_label = true };
-                    for (prop_name.items, 0..) |pn, k| {
-                        sargs[k + 1] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .value = allocator.dupe(u8, pn) catch unreachable, .had_explicit_label = true };
-                    }
-                    ops.append(allocator, .{ .path = mkPath(allocator, cmodule, seg_name), .args = sargs }) catch unreachable;
+                const sargs = allocator.alloc(ast.Arg, prop_name.items.len + 1) catch unreachable;
+                sargs[0] = .{ .name = allocator.dupe(u8, "parent") catch unreachable, .value = allocator.dupe(u8, "parent") catch unreachable, .had_explicit_label = true };
+                for (prop_name.items, 0..) |pn, k| {
+                    sargs[k + 1] = .{ .name = allocator.dupe(u8, pn) catch unreachable, .value = allocator.dupe(u8, pn) catch unreachable, .had_explicit_label = true };
                 }
+                ops.append(allocator, .{ .path = mkPath(allocator, cmodule, seg_name), .args = sargs }) catch unreachable;
             }
-
-            synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
-                .path = mkPath(allocator, cmodule, cname),
-                .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, false) },
-                .branches = &[_]ast.Branch{},
-                .is_public = false,
-                .is_implicit_flow = false,
-                .annotations = &[_][]const u8{},
-                .location = cloc,
-                .module = allocator.dupe(u8, cmodule) catch unreachable,
-            } }) catch unreachable;
-
-            var tail: []const ast.Continuation = &[_]ast.Continuation{};
-            var k: usize = ops.items.len;
-            while (k > 1) {
-                k -= 1;
-                const link = allocator.alloc(ast.Continuation, 1) catch unreachable;
-                link[0] = .{
-                    .branch = allocator.dupe(u8, "") catch unreachable,
-                    .binding = null,
-                    .condition = null,
-                    .kind = .terminal,
-                    .node = .{ .invocation = ops.items[k] },
-                    .indent = 0,
-                    .continuations = tail,
-                    .location = cloc,
-                };
-                tail = link;
-            }
-            synthed.append(allocator, ast.Item{ .flow = ast.Flow{
-                .body = ast.rootSite(ops.items[0], tail, cloc),
-                .impl_of = mkPath(allocator, cmodule, cname),
-                .is_pure = false,
-                .is_transitively_pure = false,
-                .location = cloc,
-                .module = allocator.dupe(u8, cmodule) catch unreachable,
-            } }) catch unreachable;
         }
 
-        // Consume the declaration → a host-line comment in its place.
-        const consumed = std.fmt.allocPrint(allocator, "// koru/dom: component '{s}' synthesized → event + retained-mode paint", .{cname}) catch unreachable;
-        new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
-            .content = consumed,
+        synthed.append(allocator, ast.Item{ .event_decl = ast.EventDecl{
+            .path = mkPath(allocator, cmodule, cname),
+            .input = ast.Shape{ .fields = mkFields(allocator, prop_name.items, prop_type.items, false) },
+            .branches = &[_]ast.Branch{},
+            .is_public = false,
+            .is_implicit_flow = false,
+            .annotations = &[_][]const u8{},
+            .location = cloc,
+            .module = allocator.dupe(u8, cmodule) catch unreachable,
+        } }) catch unreachable;
+
+        var tail: []const ast.Continuation = &[_]ast.Continuation{};
+        var k: usize = ops.items.len;
+        while (k > 1) {
+            k -= 1;
+            const link = allocator.alloc(ast.Continuation, 1) catch unreachable;
+            link[0] = .{
+                .branch = allocator.dupe(u8, "") catch unreachable,
+                .binding = null,
+                .condition = null,
+                .kind = .terminal,
+                .node = .{ .invocation = ops.items[k] },
+                .indent = 0,
+                .continuations = tail,
+                .location = cloc,
+            };
+            tail = link;
+        }
+        synthed.append(allocator, ast.Item{ .flow = ast.Flow{
+            .body = ast.rootSite(ops.items[0], tail, cloc),
+            .impl_of = mkPath(allocator, cmodule, cname),
+            .is_pure = false,
+            .is_transitively_pure = false,
             .location = cloc,
             .module = allocator.dupe(u8, cmodule) catch unreachable,
         } }) catch unreachable;
     }
 
-    if (!found) return .{};
-
-    for (synthed.items) |si| {
-        new_items.append(allocator, si) catch unreachable;
-    }
-
-    const new_prog = allocator.create(ast.Program) catch unreachable;
-    new_prog.* = .{
-        .items = new_items.toOwnedSlice(allocator) catch unreachable,
-        .module_annotations = program.module_annotations,
-        .main_module_name = program.main_module_name,
-        .allocator = program.allocator,
-        .type_registry = program.type_registry,
-    };
-    return .{ .whole_program = new_prog };
+    // Consume the declaration → a host-line comment in its place.
+    const consumed = std.fmt.allocPrint(allocator, "// koru/dom: component '{s}' synthesized → event + retained-mode paint", .{cname}) catch unreachable;
+    return .{ .replacement = ast.Item{ .host_line = ast.HostLine{
+    .content = consumed,
+    .location = cloc,
+    .module = allocator.dupe(u8, cmodule) catch unreachable,
+    } }, .appended = synthed.items };
 }
