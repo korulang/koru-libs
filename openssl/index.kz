@@ -353,6 +353,51 @@ pub fn acceptServerSsl(server: *ServerCtx, fd: c_int, alloc: std.mem.Allocator) 
     return .{ .ok = ssl };
 }
 
+// The non-blocking halves of acceptServerSsl, for a server whose handshake
+// must not hold an accept loop: `acceptBegin` creates and binds the SSL on a
+// descriptor that is about to go non-blocking, and `driveAccept` steps the
+// handshake once per readiness event until it reports `ready`. The caller
+// owns retry-on-WANT; a `failed` step leaves the error queue drained.
+pub const AcceptStep = enum { ready, want_read, want_write, failed };
+
+pub fn acceptBegin(server: *ServerCtx, fd: c_int, alloc: std.mem.Allocator) SslAcceptResult {
+    const ssl_ptr = c.SSL_new(server.ctx);
+    if (ssl_ptr == null) {
+        return .{ .err = drainErr(alloc, "SSL_new failed") };
+    }
+    const ssl = ssl_ptr.?;
+    errdefer c.SSL_free(ssl);
+
+    // A queued-write caller retries a stalled SSL_write with a *moved* slice —
+    // the queue may have grown between attempts. ACCEPT_MOVABLE_WRITE_BUFFER
+    // makes that retry legal; ENABLE_PARTIAL_WRITE makes a short write a
+    // `wrote(n)` instead of an error. SSL_set_mode is a macro over SSL_ctrl,
+    // and the SSL_MODE_* spellings are L-suffixed #defines translate-c drops —
+    // the values are frozen ABI (openssl/ssl.h).
+    const SSL_CTRL_MODE: c_int = 33;
+    const SSL_MODE_ENABLE_PARTIAL_WRITE: c_long = 0x00000001;
+    const SSL_MODE_ACCEPT_MOVABLE_WRITE_BUFFER: c_long = 0x00000002;
+    _ = c.SSL_ctrl(ssl, SSL_CTRL_MODE,
+        SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVABLE_WRITE_BUFFER, null);
+
+    _ = c.SSL_set_fd(ssl, fd);
+
+    return .{ .ok = ssl };
+}
+
+pub fn driveAccept(ssl: *c.SSL) AcceptStep {
+    const rc = c.SSL_accept(ssl);
+    if (rc == 1) return .ready;
+    return switch (c.SSL_get_error(ssl, rc)) {
+        c.SSL_ERROR_WANT_READ => .want_read,
+        c.SSL_ERROR_WANT_WRITE => .want_write,
+        else => {
+            while (c.ERR_get_error() != 0) {}
+            return .failed;
+        },
+    };
+}
+
 pub fn releaseServerSsl(ssl: *c.SSL) void {
     _ = c.SSL_shutdown(ssl);
     c.SSL_free(ssl);
@@ -395,6 +440,30 @@ pub fn sslWriteAll(ssl: *c.SSL, fd: c_int, data: []const u8, alloc: std.mem.Allo
         }
     }
     return true;
+}
+
+// One write attempt against a non-blocking socket — the counterpart of
+// sslWriteAll for a reactor that must never wait. `wrote` carries the byte
+// count consumed; `want_*` asks the caller to re-arm the matching readiness
+// and call again. A `failed` step leaves the error queue drained.
+pub const WriteStep = union(enum) {
+    wrote: usize,
+    want_read,
+    want_write,
+    failed,
+};
+
+pub fn sslWriteSome(ssl: *c.SSL, data: []const u8) WriteStep {
+    const rc = c.SSL_write(ssl, data.ptr, @intCast(data.len));
+    if (rc > 0) return .{ .wrote = @intCast(rc) };
+    return switch (c.SSL_get_error(ssl, rc)) {
+        c.SSL_ERROR_WANT_READ => .want_read,
+        c.SSL_ERROR_WANT_WRITE => .want_write,
+        else => {
+            while (c.ERR_get_error() != 0) {}
+            return .failed;
+        },
+    };
 }
 
 ~[retain]pub tor server.load { cert_path: string, key_path: string, allocator: ?std.mem.Allocator }
