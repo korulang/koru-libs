@@ -423,9 +423,10 @@ const std = @import("std");
                 } else s.die("attribute value must be \"literal\" or {{ ident:type }}");
             }
 
-            // HTML void elements never carry a close tag — `<hr>` or `<hr/>`
-            // both emit bare `<hr>`, the canonical HTML5 form (a real `</hr>`
-            // is ignored by browsers anyway, so the paint DOM is unchanged).
+            // HTML void elements never carry a close tag — a real `</hr>` is
+            // ignored by browsers anyway. Authored form is preserved: `<img/>`
+            // emits `<img />` (the Rails `tag.*` helper style, which the
+            // reference corpus uses) and bare `<img>` emits `<img>`.
             const is_void = std.mem.eql(u8, tag, "area") or std.mem.eql(u8, tag, "base") or std.mem.eql(u8, tag, "br") or
                 std.mem.eql(u8, tag, "col") or std.mem.eql(u8, tag, "embed") or std.mem.eql(u8, tag, "hr") or
                 std.mem.eql(u8, tag, "img") or std.mem.eql(u8, tag, "input") or std.mem.eql(u8, tag, "link") or
@@ -435,7 +436,7 @@ const std = @import("std");
                 s.i += 1;
                 if (s.i >= s.m.len or s.m[s.i] != '>') s.die("malformed self-closing tag");
                 s.i += 1;
-                html.append(s.a, '>') catch unreachable;
+                html.appendSlice(s.a, if (is_void) " />" else ">") catch unreachable;
                 if (!is_void) {
                     html.appendSlice(s.a, "</") catch unreachable;
                     html.appendSlice(s.a, tag) catch unreachable;
