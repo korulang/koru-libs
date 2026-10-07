@@ -1,0 +1,5 @@
+GET /ticks
+host: 127.0.0.1
+accept: text/event-stream
+last-event-id: 5
+stream-read: bytes:210

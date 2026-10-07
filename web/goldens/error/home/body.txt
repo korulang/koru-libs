@@ -1,0 +1,1 @@
+<html><body><h1>Error handling</h1><ul><li><a href="/posts/1">An existing post</a></li><li><a href="/posts/7">A missing post (404)</a></li><li><a href="/admin">The admin area (403)</a></li><li><a href="/rewrite">A page rewrite</a></li><li><a href="/no/such/page">An unrouted URL (404)</a></li></ul><p><a href="/">Home</a></p></body></html>

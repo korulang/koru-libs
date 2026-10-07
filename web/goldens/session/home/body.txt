@@ -1,0 +1,1 @@
+<!DOCTYPE html><html><head><title>Sessions</title></head><body><div>currently not logged in</div><form method="POST" action="/login"><input name="name" placeholder="Username" required="true"><button>log in</button></form></body></html>

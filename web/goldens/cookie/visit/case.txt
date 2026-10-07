@@ -1,0 +1,4 @@
+GET /
+host: 127.0.0.1
+volatile-header-value: set-cookie
+volatile-pattern: [0-9]+

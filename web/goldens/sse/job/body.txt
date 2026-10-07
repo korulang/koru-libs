@@ -1,0 +1,33 @@
+event: progress
+data: {"percent":0}
+
+event: progress
+data: {"percent":10}
+
+event: progress
+data: {"percent":20}
+
+event: progress
+data: {"percent":30}
+
+event: progress
+data: {"percent":40}
+
+event: progress
+data: {"percent":50}
+
+event: progress
+data: {"percent":60}
+
+event: progress
+data: {"percent":70}
+
+event: progress
+data: {"percent":80}
+
+event: progress
+data: {"percent":90}
+
+event: done
+data: finished
+

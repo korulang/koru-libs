@@ -1,0 +1,1 @@
+<!DOCTYPE html><html><head><title>Cx</title></head><body><h1>Cx functions</h1><p>path: /</p><p>user agent: wire-closer/1.0</p></body></html>

@@ -131,9 +131,58 @@ always vary — but no Orisha response omits it anymore.
 - Nondeterminism audit (2 full recaptures, diffed): only `date:` varies.
   Server frames arrive unmasked, single-frame echoes, no fragmentation of
   server sends, no compression (`sec-websocket-extensions` absent).
-- Closer: `web/closer/ws_closer.py` — `capture` writes the golden,
+- Closer: `web/closer/wire_closer.py` — `capture` writes the golden,
   `close` replays it (client frames masked w/ fixed key, masked server
   frame = loud fail). Self-certified against the reference: 9/9 pass.
+
+## Rung-2 sweep (2026-10-06/07) — wire_closer.py grew HTTP+SSE modes
+
+All captures below self-certified (`close` vs the same reference server):
+the oracle replays its own spec and passes every row.
+
+- **`error/`** 8 cases — branded error boundaries: `GET /` 200,
+  `/admin` 403 "Access denied", `/posts/1` 200, `/posts/99` 404 "Page not
+  found", `/posts/abc` 400 (`module_param` bad_request), `/rewrite` 200
+  rendering `/rewritten`'s body at the original URL, `/rewritten` 200,
+  `/no/such/page` 404 via `not_found!()` catch-all.
+- **`manual-router/`** 6 cases — `.page()`/`.route()` registrations mirror
+  module-router's tree (`/`, `/about`, `/docs`, `/docs/install`,
+  `/api/health` → bare `ok`, `/missing` 404) — a conformance pair:
+  explicit registration must produce the same wire surface as derivation.
+- **`context/`** 2 — `GET /` echoes `path:` + `user-agent` (pinned to
+  `wire-closer/1.0` in the spec), `/missing` 404.
+- **`sse/`** 3 — `GET /job` finite stream captured whole via
+  `stream-read: eof` (11 events: `progress`×10 → `done`/`finished`, chunked
+  transfer decoded — chunk boundaries are implementation detail, not
+  oracle); `GET /ticks` bounded `stream-read: bytes:210` (~4s, ticks 0–4 +
+  partial — byte-precise since event sizes are fixed); `GET /ticks` with
+  `last-event-id: 5` → resume at 6. KeepAlive doesn't fire inside the
+  windows (interval > capture horizon).
+- **`asset/`** 3 — `GET /` + `/_topcoat/assets/ferris-<hash>.png` (200,
+  `cache-control: public, max-age=31536000, immutable`, 46286 B) and the
+  same with `accept-encoding: gzip` → identical response: the asset route
+  does not compress PNGs. **Spec-vs-capture lesson landed again:** first
+  capture 404'd on a guessed `/assets/` path and self-certified anyway —
+  the spec was wrong, not the server; the real prefix lives in the
+  rendered page's `src` and `serve.rs::ASSET_ROUTE_PREFIX`.
+- **`cookie/`** 1 — `GET /` with `volatile-header-value: set-cookie`
+  (signature masked, attributes pinned: `HttpOnly; Secure; Path=/`) and
+  `volatile-pattern` masking the visit count. Cookie-round-trip cases
+  (send the signed cookie back) are a stateful-sequence gap — recorded,
+  not capturable in single-request format.
+- **`session/`** 3 — `GET /` unauthenticated (login form), `POST /login`
+  (`name=koru` urlencoded → 303 `/` + session cookie, attributes pinned:
+  `HttpOnly; SameSite=Lax; Secure; Path=/; Max-Age=2592000`),
+  `POST /logout` unauthenticated → 303.
+- **`app-context/`** 1 — `GET /`, `volatile-pattern` masks the
+  `PageViews` counter (per-process state).
+
+Not captured, with reasons: `routerless` renders views at startup and
+`println!`s them — no server exists. `alpine-ajax`, `datastar`, `htmx`,
+`toasty-todo`, `ui`, `suspense`, `font`, `icon`, `mail`, `tailwind`,
+`live`, `runtime` — server surface is a thin asset/page shell; the
+oracle-worthy behavior is client-side or rides the runtime WS channel
+(capturable once the WS seam exists and we revisit `live`/`runtime`).
 
 ## Closer (rung 1): `web/closer/bytes_closer.py`
 

@@ -1,0 +1,6 @@
+HTTP/1.1 303 See Other
+location: /
+set-cookie: <VOLATILE>; HttpOnly; SameSite=Lax; Secure; Path=/; Max-Age=2592000
+content-length: 0
+date: <DATE>
+
