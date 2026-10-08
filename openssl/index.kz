@@ -466,6 +466,92 @@ pub fn sslWriteSome(ssl: *c.SSL, data: []const u8) WriteStep {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Memory-BIO halves — TLS over a buffer, for reactors that own the wire
+// ---------------------------------------------------------------------------
+// A socket-fd SSL insists on reading and writing the descriptor itself, which
+// a completion pump cannot honour: the ring's recv SQE already pulled the
+// ciphertext off the wire. With two memory BIOs the transport is our buffer —
+// ciphertext goes in through sslMemFeedIn, comes out through sslMemDrainOut —
+// and the existing step functions work unchanged: driveAccept, sslWriteSome,
+// and SSL_read's WANT_READ/WANT_WRITE now mean "feed rbio" / "drain wbio".
+pub fn sslMemBegin(server: *ServerCtx, alloc: std.mem.Allocator) SslAcceptResult {
+    const ssl_ptr = c.SSL_new(server.ctx);
+    if (ssl_ptr == null) {
+        return .{ .err = drainErr(alloc, "SSL_new failed") };
+    }
+    const ssl = ssl_ptr.?;
+    errdefer c.SSL_free(ssl);
+
+    const SSL_CTRL_MODE: c_int = 33;
+    const SSL_MODE_ENABLE_PARTIAL_WRITE: c_long = 0x00000001;
+    const SSL_MODE_ACCEPT_MOVABLE_WRITE_BUFFER: c_long = 0x00000002;
+    _ = c.SSL_ctrl(ssl, SSL_CTRL_MODE,
+        SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVABLE_WRITE_BUFFER, null);
+
+    const rbio = c.BIO_new(c.BIO_s_mem());
+    const wbio = c.BIO_new(c.BIO_s_mem());
+    if (rbio == null or wbio == null) {
+        if (rbio != null) _ = c.BIO_free(rbio);
+        if (wbio != null) _ = c.BIO_free(wbio);
+        return .{ .err = drainErr(alloc, "BIO_new failed") };
+    }
+    // SSL_set_bio transfers ownership — SSL_free releases both.
+    c.SSL_set_bio(ssl, rbio, wbio);
+    return .{ .ok = ssl };
+}
+
+// Ciphertext in. A memory BIO accepts the whole slice unconditionally.
+pub fn sslMemFeedIn(ssl: *c.SSL, ciphertext: []const u8) void {
+    if (ciphertext.len == 0) return;
+    _ = c.BIO_write(c.SSL_get_rbio(ssl), ciphertext.ptr, @intCast(ciphertext.len));
+}
+
+// Ciphertext waiting in the write BIO — bytes owed to the wire through the
+// caller's send path. BIO_ctrl_pending is a macro; BIO_CTRL_PENDING itself
+// is a frozen numeric ABI (openssl/bio.h).
+pub fn sslMemOutPending(ssl: *c.SSL) usize {
+    const BIO_CTRL_PENDING: c_int = 10;
+    const n = c.BIO_ctrl(c.SSL_get_wbio(ssl), BIO_CTRL_PENDING, 0, null);
+    return if (n > 0) @intCast(n) else 0;
+}
+
+// Ciphertext out — drains the write BIO into dst, returns bytes moved.
+pub fn sslMemDrainOut(ssl: *c.SSL, dst: []u8) usize {
+    if (dst.len == 0) return 0;
+    const n = c.BIO_read(c.SSL_get_wbio(ssl), dst.ptr, @intCast(dst.len));
+    return if (n > 0) @intCast(n) else 0;
+}
+
+// Plaintext the cipher already decrypted and is holding internally — pull it
+// without waiting for more ciphertext to arrive.
+pub fn sslMemPendingIn(ssl: *c.SSL) usize {
+    const n = c.SSL_pending(ssl);
+    return if (n > 0) @intCast(n) else 0;
+}
+
+pub const MemReadStep = union(enum) { read: usize, want_read, gone, failed };
+
+// Plaintext out — SSL_read over the memory rbio, with the byte count kept
+// (sslFill's `more` drops it). `gone` is a clean peer close (ZERO_RETURN).
+pub fn sslMemRead(ssl: *c.SSL, buf: []u8) MemReadStep {
+    const rc = c.SSL_read(ssl, buf.ptr, @intCast(buf.len));
+    if (rc > 0) return .{ .read = @intCast(rc) };
+    return switch (c.SSL_get_error(ssl, rc)) {
+        c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => .want_read,
+        c.SSL_ERROR_ZERO_RETURN => .gone,
+        else => {
+            while (c.ERR_get_error() != 0) {}
+            return .failed;
+        },
+    };
+}
+
+// Emits close_notify into the write BIO — the caller drains and sends it.
+pub fn sslMemShutdown(ssl: *c.SSL) void {
+    _ = c.SSL_shutdown(ssl);
+}
+
 ~[retain]pub tor server.load { cert_path: string, key_path: string, allocator: ?std.mem.Allocator }
 | ok *ServerCtx<ready!>
 | err Error
