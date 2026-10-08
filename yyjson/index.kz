@@ -231,6 +231,79 @@ pub const Entry = struct {
 }
 
 // ============================================================================
+// array.len — element count of an array value. A non-array is a loud
+// `not-an-array` branch, same as `array.each`.
+// ============================================================================
+
+~pub tor array.len { doc: *Doc<open>, v: *Value }
+| ok i64
+| not-an-array
+
+~proc array.len|zig {
+    _ = doc;
+    if (!c.yyjson_is_arr(v)) return .{ .not_an_array = .{} };
+    return .{ .ok = @intCast(c.yyjson_arr_size(v)) };
+}
+
+// ============================================================================
+// array.snapshot — flatten an array's element pointers into a library-owned
+// index, so indexed reads are O(1) even on non-flat yyjson arrays (where
+// `yyjson_arr_get` walks the array per call — quadratic in a read loop).
+// The snapshot borrows the doc's arena: `snapshot.get` keeps the usual
+// `doc: *Doc<open>` borrow, and `snapshot.free` discharges the `snap`
+// obligation exactly once.
+// ============================================================================
+
+pub const Snap = struct {
+    vals: []*Value,
+};
+
+~pub tor array.snapshot { doc: *Doc<open>, v: *Value }
+| ok *Snap<snap!>
+| not-an-array
+
+~proc array.snapshot|zig {
+    _ = doc;
+    if (!c.yyjson_is_arr(v)) return .{ .not_an_array = .{} };
+    const n = c.yyjson_arr_size(v);
+    const vals = std.heap.page_allocator.alloc(*Value, n) catch @panic("yyjson: OOM allocating snapshot");
+    var iter: c.yyjson_arr_iter = undefined;
+    _ = c.yyjson_arr_iter_init(v, &iter);
+    var i: usize = 0;
+    while (c.yyjson_arr_iter_next(&iter)) |val| {
+        vals[i] = val;
+        i += 1;
+    }
+    const s = std.heap.page_allocator.create(Snap) catch @panic("yyjson: OOM allocating Snap");
+    s.* = .{ .vals = vals };
+    return .{ .ok = s };
+}
+
+~pub tor snapshot.len { doc: *Doc<open>, snap: *Snap<snap> } -> i64
+
+~proc snapshot.len|zig {
+    _ = doc;
+    return @intCast(snap.vals.len);
+}
+
+~pub tor snapshot.get { doc: *Doc<open>, snap: *Snap<snap>, index: i64 }
+| found *Value
+| out-of-range
+
+~proc snapshot.get|zig {
+    _ = doc;
+    if (index < 0 or index >= snap.vals.len) return .{ .out_of_range = .{} };
+    return .{ .found = snap.vals[@intCast(index)] };
+}
+
+~pub tor snapshot.free { snap: *Snap<!snap> }
+
+~proc snapshot.free|zig {
+    std.heap.page_allocator.free(snap.vals);
+    std.heap.page_allocator.destroy(snap);
+}
+
+// ============================================================================
 // object.each — iterate every key/value pair of an object value. `! entry`
 // fires once per member with a reused scratch `Entry{ key, value }` — same
 // stack-scratch convention as `__match`/`__row` above: mutated in place per
@@ -281,6 +354,25 @@ pub const Entry = struct {
         const len = c.yyjson_get_len(v);
         const buf = koru_allocator().dupe(u8, p[0..len]) catch @panic("yyjson: OOM copying string");
         return .{ .ok = buf };
+    }
+    return .{ .wrong_type = .{} };
+}
+
+// as.borrow — the zero-copy sibling of `as.string`: hands back a slice INTO
+// the doc's arena, no allocation, no `allocated` obligation. The same
+// borrow-every-reader-makes rule applies: the string is valid while `doc`
+// carries `open` and dangling after `close` — exactly the window every
+// `*Value` above already lives in. Reach for it in hot loops that read
+// strings the doc outlives by construction (a parse-to-emit pipeline);
+// reach for `as.string` when the string must outlive the doc.
+~pub tor as.borrow { doc: *Doc<open>, v: *Value }
+| ok string
+| wrong-type
+
+~proc as.borrow|zig {
+    _ = doc;
+    if (c.yyjson_get_str(v)) |p| {
+        return .{ .ok = p[0..c.yyjson_get_len(v)] };
     }
     return .{ .wrong_type = .{} };
 }
