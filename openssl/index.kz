@@ -293,6 +293,48 @@ pub const SslAcceptResult = union(enum) {
 
 pub const SslFillResult = enum { more, idle, gone };
 
+// Traffic secrets captured by the keylog callback, stashed per-SSL in
+// ex_data slot 0 so a reactor can hand them to the kernel's TLS ULP —
+// OpenSSL 3.0 never configures kTLS on a TLS 1.3 KeyUpdate (tls13_update_key
+// calls derive_secret_key_and_iv directly, bypassing change_cipher_state),
+// so post-handshake offload has to be installed by hand or not at all.
+pub const KtlsSecrets = extern struct {
+    have: u8 = 0, // bit0 = client_traffic_secret_0, bit1 = server
+    c_len: u8 = 0,
+    c_secret: [48]u8 = undefined,
+    s_len: u8 = 0,
+    s_secret: [48]u8 = undefined,
+};
+
+fn hexByte(hi: u8, lo: u8) u8 {
+    return (std.fmt.charToDigit(hi, 16) catch return 0) * 16 +
+        (std.fmt.charToDigit(lo, 16) catch return 0);
+}
+
+fn keylogCb(ssl: ?*const c.SSL, line_z: ?[*:0]const u8) callconv(.c) void {
+    const s = ssl orelse return;
+    const lz = line_z orelse return;
+    const line = std.mem.span(lz);
+    const ks_ptr = c.SSL_get_ex_data(@constCast(s), 0) orelse return;
+    const ks: *KtlsSecrets = @ptrCast(@alignCast(ks_ptr));
+    const is_client = std.mem.startsWith(u8, line, "CLIENT_TRAFFIC_SECRET_0 ");
+    const is_server = std.mem.startsWith(u8, line, "SERVER_TRAFFIC_SECRET_0 ");
+    if (!is_client and !is_server) return;
+    // Last space-separated field is the hex secret.
+    const sp = std.mem.lastIndexOfScalar(u8, line, ' ') orelse return;
+    const hex = line[sp + 1 ..];
+    const dst: *[48]u8 = if (is_client) &ks.c_secret else &ks.s_secret;
+    const n = @min(hex.len / 2, 48);
+    for (0..n) |i| dst[i] = hexByte(hex[i * 2], hex[i * 2 + 1]);
+    if (is_client) {
+        ks.c_len = @intCast(n);
+        ks.have |= 1;
+    } else {
+        ks.s_len = @intCast(n);
+        ks.have |= 2;
+    }
+}
+
 pub fn loadServerCtx(alloc: std.mem.Allocator, cert_path: []const u8, key_path: []const u8) LoadServerResult {
     const cert_z = alloc.dupeZ(u8, cert_path) catch {
         return .{ .err = .{ .code = 0, .msg = "out of memory duplicating cert_path" } };
@@ -308,6 +350,7 @@ pub fn loadServerCtx(alloc: std.mem.Allocator, cert_path: []const u8, key_path: 
         return .{ .err = drainErr(alloc, "SSL_CTX_new failed") };
     }
     errdefer c.SSL_CTX_free(ctx);
+    c.SSL_CTX_set_keylog_callback(ctx, keylogCb);
 
     _ = c.SSL_CTX_set_min_proto_version(ctx, c.TLS1_3_VERSION);
 
@@ -399,6 +442,7 @@ pub fn driveAccept(ssl: *c.SSL) AcceptStep {
 }
 
 pub fn releaseServerSsl(ssl: *c.SSL) void {
+    freeKeys(ssl);
     _ = c.SSL_shutdown(ssl);
     c.SSL_free(ssl);
 }
@@ -498,10 +542,14 @@ pub fn sslMemBegin(server: *ServerCtx, alloc: std.mem.Allocator) SslAcceptResult
     }
     // SSL_set_bio transfers ownership — SSL_free releases both.
     c.SSL_set_bio(ssl, rbio, wbio);
+    // The ktls secrets slot: the keylog callback fills it during the
+    // handshake; sslKtlsInstall reads it to hand the kernel the session.
+    if (std.heap.c_allocator.create(KtlsSecrets) catch null) |ks| {
+        ks.* = .{};
+        _ = c.SSL_set_ex_data(ssl, 0, ks);
+    }
     return .{ .ok = ssl };
 }
-
-// Ciphertext in. A memory BIO accepts the whole slice unconditionally.
 pub fn sslMemFeedIn(ssl: *c.SSL, ciphertext: []const u8) void {
     if (ciphertext.len == 0) return;
     _ = c.BIO_write(c.SSL_get_rbio(ssl), ciphertext.ptr, @intCast(ciphertext.len));
@@ -550,6 +598,232 @@ pub fn sslMemRead(ssl: *c.SSL, buf: []u8) MemReadStep {
 // Emits close_notify into the write BIO — the caller drains and sends it.
 pub fn sslMemShutdown(ssl: *c.SSL) void {
     _ = c.SSL_shutdown(ssl);
+}
+
+// ---------------------------------------------------------------------------
+// Manual kTLS — handing a live TLS 1.3 session to the kernel's record layer
+// ---------------------------------------------------------------------------
+// OpenSSL 3.0 only configures SOL_TLS inside change_cipher_state, and TLS 1.3
+// key rotation never reaches it (tls13_update_key derives the new key into
+// the existing cipher context). The only moments ktls_configure_crypto runs
+// are the handshake's cipher installs, which demand a socket BIO — and a
+// socket-BIO handshake eats app data bundled with the client Finished. So the
+// win is installed by hand instead: the SSL keeps its memory BIO pair, the
+// keylog callback captured both traffic secrets, the pump counted the
+// app-epoch records each direction already moved, and sslKtlsInstall hands
+// the kernel the real cipher state. On success the SSL is freed without a
+// shutdown and the conn is a plaintext ring conn — the kernel does AEAD.
+//
+// linux/tls.h is absent on macOS, so the uapi constants are written out —
+// they are frozen ABI on Linux.
+const SOL_TLS: c_int = 282;
+const TCP_ULP: u32 = 31;
+const KTLS_TX: u32 = 1;
+const KTLS_RX: u32 = 2;
+const TLS_1_3_KVER: u16 = 0x0304;
+const CT_AES_GCM_128: u16 = 51;
+const CT_AES_GCM_256: u16 = 52;
+const CT_CHACHA20_POLY1305: u16 = 54;
+
+// HKDF-Expand-Label (RFC 8446): out = HMAC(secret, len|label|ctx|0x01)[0..len]
+// for out.len <= hashlen — always true here (32-byte keys, 12-byte ivs).
+fn hkdfExpandLabel(comptime Hmac: type, secret: []const u8, label: []const u8, out: []u8) void {
+    var info: [2 + 1 + 6 + 8 + 1]u8 = undefined;
+    var n: usize = 0;
+    std.mem.writeInt(u16, info[n..][0..2], @intCast(out.len), .big);
+    n += 2;
+    info[n] = @intCast(6 + label.len);
+    n += 1;
+    @memcpy(info[n .. n + 6], "tls13 ");
+    n += 6;
+    @memcpy(info[n .. n + label.len], label);
+    n += label.len;
+    info[n] = 0;
+    n += 1;
+    var mac = Hmac.init(secret);
+    mac.update(info[0..n]);
+    mac.update(&.{1});
+    var t: [64]u8 = undefined;
+    mac.final(t[0..Hmac.mac_length]);
+    @memcpy(out, t[0..out.len]);
+}
+
+fn ktlsDeriveKeyIv(sha384: bool, secret: []const u8, key: []u8, iv: *[12]u8) void {
+    const H256 = std.crypto.auth.hmac.sha2.HmacSha256;
+    const H384 = std.crypto.auth.hmac.sha2.HmacSha384;
+    if (sha384) {
+        hkdfExpandLabel(H384, secret, "key", key);
+        hkdfExpandLabel(H384, secret, "iv", iv);
+    } else {
+        hkdfExpandLabel(H256, secret, "key", key);
+        hkdfExpandLabel(H256, secret, "iv", iv);
+    }
+}
+
+// One direction's crypto state for the kernel: info header, then for GCM
+// salt|iv|key|rec_seq matching tls12_crypto_info_aes_gcm_{128,256}, for
+// chacha20-poly1305 iv[12]|key|rec_seq. rec_seq is big-endian — the count of
+// records already moved in this epoch, so the kernel's nonce continues where
+// userspace's stopped. Fields are laid out as the uapi struct, in buffer.
+fn ktlsSetDir(fd: c_int, dir: u32, cipher: u16, key: []const u8, static_iv: *const [12]u8, seq: u64) bool {
+    var buf: [64]u8 = std.mem.zeroes([64]u8);
+    var len: usize = 4;
+    switch (cipher) {
+        CT_AES_GCM_128, CT_AES_GCM_256 => {
+            @memcpy(buf[4..12], static_iv[4..12]);
+            @memcpy(buf[12 .. 12 + key.len], key);
+            const salt_off = 12 + key.len;
+            @memcpy(buf[salt_off .. salt_off + 4], static_iv[0..4]);
+            std.mem.writeInt(u64, buf[salt_off + 4 ..][0..8], seq, .big);
+            len = salt_off + 12;
+        },
+        CT_CHACHA20_POLY1305 => {
+            @memcpy(buf[4..16], static_iv);
+            @memcpy(buf[16..48], key);
+            std.mem.writeInt(u64, buf[48..56], seq, .big);
+            len = 56;
+        },
+        else => return false,
+    }
+    std.mem.writeInt(u16, buf[0..2], TLS_1_3_KVER, .little);
+    std.mem.writeInt(u16, buf[2..4], cipher, .little);
+    return std.os.linux.setsockopt(fd, SOL_TLS, dir, &buf, @intCast(len)) == 0;
+}
+
+pub const KtlsInstall = enum { ok, pending, unsupported, fatal };
+
+// Attach the TLS ULP and hand the kernel both directions' crypto. Ordering
+// matters: a bare TCP_ULP attach leaves the socket byte-identical, and TLS_RX
+// alone only changes what recv yields — so any failure before TLS_TX leaves
+// the conn valid on its mem BIOs (caller keeps the software path); a failure
+// AT TLS_TX is fatal to the conn — kernel-owned RX plus ciphertext writes
+// would be two record layers on one socket.
+pub fn sslKtlsInstall(ssl: *c.SSL, fd: c_int, rx_seq: u64, tx_seq: u64) KtlsInstall {
+    if (c.SSL_version(ssl) != c.TLS1_3_VERSION) return .unsupported;
+    const ks_ptr = c.SSL_get_ex_data(ssl, 0) orelse return .pending;
+    const ks: *KtlsSecrets = @ptrCast(@alignCast(ks_ptr));
+    if (ks.have != 3) return .pending;
+    // A peer KeyUpdate already in flight rotates the keys these secrets
+    // describe — installing them would hand the kernel a dead epoch. .pending
+    // keeps the conn on its mem BIOs rather than guessing.
+    if (c.SSL_get_key_update_type(ssl) != c.SSL_KEY_UPDATE_NONE) return .pending;
+    const sess = c.SSL_get_session(ssl) orelse return .pending;
+    const ciph = c.SSL_SESSION_get0_cipher(sess) orelse return .pending;
+    const cipher: u16 = switch (c.SSL_CIPHER_get_cipher_nid(ciph)) {
+        895 => CT_AES_GCM_128,       // NID_aes_128_gcm
+        901 => CT_AES_GCM_256,       // NID_aes_256_gcm
+        1018 => CT_CHACHA20_POLY1305, // NID_chacha20_poly1305
+        else => return .unsupported,
+    };
+    const md = c.SSL_CIPHER_get_handshake_digest(ciph);
+    const sha384 = md != null and c.EVP_MD_get_type(md) == 673; // NID_sha384
+    const klen: usize = if (cipher == CT_AES_GCM_128) 16 else 32;
+    var ckey: [32]u8 = undefined;
+    var civ: [12]u8 = undefined;
+    var skey: [32]u8 = undefined;
+    var siv: [12]u8 = undefined;
+    ktlsDeriveKeyIv(sha384, ks.c_secret[0..ks.c_len], ckey[0..klen], &civ);
+    ktlsDeriveKeyIv(sha384, ks.s_secret[0..ks.s_len], skey[0..klen], &siv);
+
+    if (std.os.linux.setsockopt(fd, std.os.linux.IPPROTO.TCP, TCP_ULP, "tls", 4) != 0)
+        return .unsupported;
+    if (!ktlsSetDir(fd, KTLS_RX, cipher, ckey[0..klen], &civ, rx_seq)) {
+        // RX refused — no crypto was installed, the socket is still
+        // ciphertext both ways and the mem-BIO conn carries on untouched.
+        return .unsupported;
+    }
+    if (!ktlsSetDir(fd, KTLS_TX, cipher, skey[0..klen], &siv, tx_seq))
+        return .fatal;
+    return .ok;
+}
+
+// close_notify on a kernel-offloaded socket: a TLS_SET_RECORD_TYPE cmsg asks
+// the kernel to wrap the alert in a real record under its own keys, so the
+// peer sees a clean shutdown rather than a truncated session. cmsghdr is not
+// in this Zig's linux std, so the uapi layout is written out: len:usize |
+// level:i32 | type:i32 = 16 bytes, data aligned to usize.
+pub fn sslKtlsCloseNotify(fd: c_int) void {
+    const payload = [2]u8{ 1, 0 }; // warning, close_notify
+    var iov = std.posix.iovec_const{ .base = &payload, .len = payload.len };
+    // cmsghdr: len:usize | level:i32 | type:i32 — 16 bytes, already aligned.
+    var cbuf: [24]u8 = std.mem.zeroes([24]u8);
+    std.mem.writeInt(usize, cbuf[0..8], 17, .little);
+    std.mem.writeInt(i32, cbuf[8..12], SOL_TLS, .little);
+    std.mem.writeInt(i32, cbuf[12..16], 1, .little); // TLS_SET_RECORD_TYPE
+    cbuf[16] = 21; // record type: alert
+    const msg = std.posix.msghdr_const{
+        .name = null,
+        .namelen = 0,
+        .iov = @ptrCast(&iov),
+        .iovlen = 1,
+        .control = &cbuf,
+        .controllen = 17,
+        .flags = 0,
+    };
+    _ = std.posix.sendmsg(fd, &msg, std.posix.MSG.NOSIGNAL) catch {};
+}
+
+// Per-direction kernel state after a SOL_TLS query:
+//   set         — the kernel owns this direction
+//   pending     — ULP attached but crypto not installed yet (EBUSY/TLS_BASE)
+//   unsupported — the kernel has no TLS ULP at all (EOPNOTSUPP/ENOPROTOOPT)
+pub const KtlsDirState = enum { set, pending, unsupported };
+
+fn ktlsDir(fd: c_int, optname: c_int) KtlsDirState {
+    var info: [64]u8 = undefined;
+    var len: std.posix.socklen_t = @sizeOf(@TypeOf(info));
+    const rc = std.os.linux.getsockopt(fd, SOL_TLS, optname, &info, &len);
+    if (rc == 0) return .set;
+    return switch (std.os.linux.E.init(rc)) {
+        .BUSY, .NODEV => .pending,
+        else => .unsupported,
+    };
+}
+
+// Verification probe — the install only counts when the kernel owns BOTH
+// directions: a half-installed session would put unencrypted records on the
+// wire one way and ciphertext the ring thinks is plaintext the other.
+pub const KtlsState = enum { offloaded, pending, unsupported };
+
+pub fn sslKtlsState(fd: c_int) KtlsState {
+    const tx = ktlsDir(fd, KTLS_TX);
+    if (tx == .unsupported) return .unsupported;
+    const rx = ktlsDir(fd, KTLS_RX);
+    if (tx == .set and rx == .set) return .offloaded;
+    return .pending;
+}
+
+// Free the SSL without SSL_shutdown — the caller that reached this point
+// handed the record layer to the kernel (or is walking away from it), so an
+// emitted close_notify would be a phantom alert mid-stream or dead weight on
+// a conn about to close.
+pub fn sslFreeNoShutdown(ssl: *c.SSL) void {
+    freeKeys(ssl);
+    c.SSL_free(ssl);
+}
+
+// The per-SSL KtlsSecrets slot. Freed with the SSL it rode on.
+fn freeKeys(ssl: *c.SSL) void {
+    if (c.SSL_get_ex_data(ssl, 0)) |p| {
+        std.heap.c_allocator.destroy(@as(*KtlsSecrets, @ptrCast(@alignCast(p))));
+        _ = c.SSL_set_ex_data(ssl, 0, null);
+    }
+}
+
+// Records the cipher pulled off rbio but has not yet surfaced — buffered
+// inside the record layer, invisible to SSL_pending, and unrecoverable the
+// moment the kernel owns the socket (their sequence numbers belong to the
+// kernel's count). Zero is a precondition for offload.
+pub fn sslHasUnprocessed(ssl: *c.SSL) bool {
+    return c.SSL_has_pending(ssl) != 0;
+}
+
+// Ciphertext queued inside the read BIO — must be zero before the kernel
+// takes RX, because those bytes were already pulled off the wire.
+pub fn sslRbioPending(ssl: *c.SSL) usize {
+    const BIO_CTRL_PENDING: c_int = 10;
+    const n = c.BIO_ctrl(c.SSL_get_rbio(ssl), BIO_CTRL_PENDING, 0, null);
+    return if (n > 0) @intCast(n) else 0;
 }
 
 ~[retain]pub tor server.load { cert_path: string, key_path: string, allocator: ?std.mem.Allocator }
