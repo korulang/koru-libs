@@ -53,7 +53,7 @@ export fn response_ptr() [*]const u8   { return out_ptr; }
 
 export fn handle(raw_len: u32) u32 {
     const raw = request_buf[0..@min(raw_len, request_buf.len)];
-    const answer = koru_orisha.answer_event.handler(.{ .raw = raw });
+    const answer = koru_orisha.answer_event.handler(.{ .raw = raw, .fd = 0 });
     if (answer.body.len == 0) {
         // A static route hands back a COMPLETE pre-rendered response in `head`
         // (status, headers, gzip, ETag) and an empty body — pass the zero-copy
