@@ -444,11 +444,11 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
         .segments = impl_segments,
     };
 
-    const new_inv_annotations = allocator.alloc([]const u8, invocation.annotations.len + 1) catch unreachable;
-    for (invocation.annotations, 0..) |ann, idx| {
-        new_inv_annotations[idx] = ann;
+    const new_inv_marks = allocator.alloc([]const u8, invocation.marks.len + 1) catch unreachable;
+    for (invocation.marks, 0..) |m, idx| {
+        new_inv_marks[idx] = m;
     }
-    new_inv_annotations[invocation.annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
+    new_inv_marks[invocation.marks.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
 
     const new_args = allocator.alloc(ast.Arg, 1) catch unreachable;
     // Auto-conn synthesizes the arg so the REWRITTEN site carries the consume
@@ -465,7 +465,8 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     const new_invocation = ast.Invocation{
         .path = impl_path,
         .args = new_args,
-        .annotations = new_inv_annotations,
+        .annotations = invocation.annotations,
+        .marks = new_inv_marks,
         .inline_body = inline_code,
         .inserted_by_tap = invocation.inserted_by_tap,
         .from_opaque_tap = invocation.from_opaque_tap,
@@ -706,11 +707,11 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     };
 
     // Build new invocation with @pass_ran annotation (use the actual invocation, not flow.invocation!)
-    const new_inv_annotations = allocator.alloc([]const u8, invocation.annotations.len + 1) catch unreachable;
-    for (invocation.annotations, 0..) |ann, idx| {
-        new_inv_annotations[idx] = ann;
+    const new_inv_marks = allocator.alloc([]const u8, invocation.marks.len + 1) catch unreachable;
+    for (invocation.marks, 0..) |m, idx| {
+        new_inv_marks[idx] = m;
     }
-    new_inv_annotations[invocation.annotations.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
+    new_inv_marks[invocation.marks.len] = allocator.dupe(u8, "@pass_ran(\"transform\")") catch unreachable;
 
     // Keep only conn arg for the impl event
     const new_args = allocator.alloc(ast.Arg, 1) catch unreachable;
@@ -728,7 +729,8 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     const new_invocation = ast.Invocation{
         .path = impl_path,
         .args = new_args,
-        .annotations = new_inv_annotations,
+        .annotations = invocation.annotations,
+        .marks = new_inv_marks,
         .inline_body = inline_code,
         .inserted_by_tap = invocation.inserted_by_tap,
         .from_opaque_tap = invocation.from_opaque_tap,
