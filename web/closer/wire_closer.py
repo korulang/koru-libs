@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""ws-closer — websocket closer for the web gauntlet.
+"""wire-closer — protocol closer for the web gauntlet.
 
-Replays a captured WebSocket exchange against a server under test and diffs
-it against the captured topcoat golden. Shares bytes-closer's discipline:
-authored spec (case.txt + send.txt) vs captured oracle (head.txt +
-frames.txt), narrow normalization, pass/fail/cant-tell per case.
+Replays captured wire exchanges (plain HTTP, WebSocket, SSE streams)
+against a server under test and diffs them against the captured topcoat
+golden. Shares bytes-closer's discipline: authored spec (case.txt +
+send.txt) vs captured oracle (head.txt + frames.txt), narrow
+normalization, pass/fail/cant-tell per case.
 
 Case layout under goldens/<fixture>/<case>/:
-  case.txt   — the HTTP upgrade request spec (request line + headers).
-               If the spec carries `upgrade: websocket` the case is a WS
-               case; otherwise it replays as plain HTTP (negative probes).
+  case.txt   — request spec (request line + headers). Markers:
+                 upgrade: websocket  → WS case (needs send.txt+frames.txt)
+                 stream-read: eof    → read body until server close (finite SSE)
+                 stream-read: bytes:N→ read exactly N bytes then close (live SSE)
+                 volatile-header: <name>  → normalize that response header to
+                                            <VOLATILE> on both sides
+                 volatile-pattern: <regex>→ mask matching body spans to <VOL>
+               (markers are declared per case — they are authored policy,
+               never wildcards; `date` is always normalized regardless)
   send.txt   — authored client sends, one per line (WS cases only):
                  text <utf8>            masked text frame
                  text-file <name>      masked text frame, payload from file
@@ -18,21 +25,19 @@ Case layout under goldens/<fixture>/<case>/:
                  ping hex:<hex>        masked ping control frame
                  frag-text a|b|c       masked fragmented text (fin-split)
                  close <code> <reason> masked close frame (code "-" = none)
-  head.txt   — captured response head (101 for WS cases, or the HTTP reply
-               for no-upgrade probes).
-  body.txt   — captured HTTP body for no-upgrade probes (optional).
+  head.txt   — captured response head.
+  body.txt   — captured HTTP body (plain cases and stream prefixes).
   frames.txt — captured ordered exchange; `> ` lines echo send.txt,
                `< ` lines are the observed server frames, rendered the same
                way (`< eof` marks server-initiated TCP close). WS cases only.
 
-Normalization policy: `date` response header value only. Frame payloads,
-opcodes, masking rules, and ordering compare raw. Client frames are always
-sent masked (protocol requirement); server frames must arrive unmasked —
-a masked server frame fails the case loudly.
+Normalization policy: `date` plus whatever volatile-* markers the case
+declares. Everything else compares raw. Client WS frames are always sent
+masked (protocol requirement); a masked server frame fails the case loudly.
 
 Usage:
-  ws_closer.py capture --base 127.0.0.1:PORT [--goldens DIR] [--only CASE]
-  ws_closer.py close   --base 127.0.0.1:PORT [--goldens DIR] [--only CASE] [--verbose]
+  wire_closer.py capture --base 127.0.0.1:PORT [--goldens DIR] [--only CASE]
+  wire_closer.py close   --base 127.0.0.1:PORT [--goldens DIR] [--only CASE] [--verbose]
 """
 
 import argparse
@@ -52,8 +57,92 @@ OP_NAMES = {OP_TEXT: "text", OP_BIN: "binary", OP_CLOSE: "close",
             OP_PING: "ping", OP_PONG: "pong"}
 
 
-def norm_head(raw):
-    return DATE_RE.sub("date: <DATE>", raw)
+# Same contract as bytes_closer: status line verbatim, headers compared as a
+# sorted set of `lowercased-name: verbatim-value`, `date` blanked, declared
+# volatile headers masked, and TOLERATED_EXTRAS (same enumerated list)
+# dropped — informational headers a claimant may add without failing.
+TOLERATED_EXTRAS = {"connection", "x-powered-by", "x-orisha"}
+
+
+def norm_head(raw, volatile_headers=(), volatile_header_values=()):
+    text = raw.decode("latin-1") if isinstance(raw, bytes) else raw
+    text = text.replace("\r\n", "\n")
+    status, _, rest = text.partition("\n")
+    headers = []
+    for line in rest.strip().split("\n"):
+        if not line.strip():
+            continue
+        name, _, value = line.partition(":")
+        lname = name.strip().lower()
+        if lname in TOLERATED_EXTRAS:
+            continue
+        if lname == "date":
+            value = "<DATE>"
+        elif lname in {v.lower() for v in volatile_headers}:
+            value = "<VOLATILE>"
+        elif lname in {v.lower() for v in volatile_header_values}:
+            value = "<VOLATILE>;" + value.split(";", 1)[1] if ";" in value \
+                else "<VOLATILE>"
+        headers.append(f"{lname}: {value.strip()}")
+    return status.strip(), sorted(headers)
+
+
+def mask_head_text(raw, volatile_headers=(), volatile_header_values=()):
+    """Mask declared-volatile fields in a head for storage as the golden —
+    the rest of the head stays raw wire bytes."""
+    out = raw
+    for name in volatile_headers:
+        out = re.sub(rf"^{re.escape(name)}:\s*.*$", f"{name}: <VOLATILE>",
+                     out, flags=re.IGNORECASE | re.MULTILINE)
+    for name in volatile_header_values:
+        out = re.sub(rf"^({re.escape(name)}:\s*[^;\r\n]*)",
+                     lambda m: m.group(1).split(":", 1)[0] + ": <VOLATILE>",
+                     out, flags=re.IGNORECASE | re.MULTILINE)
+    return out
+
+
+def mask_volatile(data, patterns):
+    for pat in patterns:
+        data = re.sub(pat.encode() if isinstance(data, bytes) else pat,
+                      b"<VOL>" if isinstance(data, bytes) else "<VOL>", data)
+    return data
+
+
+def decode_chunked(sock, first=b"", limit=None):
+    """Read a chunked body, returning the decoded bytes.
+
+    Reads until the terminating 0-chunk, EOF, or (with limit) until `limit`
+    decoded bytes have accumulated. Wire chunk boundaries are discarded —
+    they are implementation detail, not oracle.
+    """
+    buf = first
+    out = b""
+
+    def need(n):
+        nonlocal buf
+        while len(buf) < n:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return False
+            buf += chunk
+        return True
+
+    while True:
+        while b"\r\n" not in buf:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return out
+            buf += chunk
+        line, _, buf = buf.partition(b"\r\n")
+        size = int(line.split(b";")[0].strip(), 16)
+        if size == 0:
+            return out  # trailing CRLF may remain unread; stream is over
+        if not need(size + 2):
+            return out + buf
+        out += buf[:size]
+        buf = buf[size + 2:]
+        if limit is not None and len(out) >= limit:
+            return out[:limit]
 
 
 # ---------- frame codec ----------
@@ -180,19 +269,34 @@ def render_send(line, case_dir):
 
 # ---------- case machinery ----------
 
+MARKERS = ("stream-read:", "volatile-header:", "volatile-header-value:",
+           "volatile-pattern:")
+
+
 def read_spec(case_dir):
     with open(os.path.join(case_dir, "case.txt")) as f:
         lines = [l.rstrip("\n") for l in f if l.strip()]
     method, path = lines[0].split(" ", 1)
     headers = {}
+    markers = {}
     for line in lines[1:]:
+        marker = next((m for m in MARKERS if line.lower().startswith(m)), None)
+        if marker:
+            markers.setdefault(marker[:-1], []).append(
+                line.split(":", 1)[1].strip())
+            continue
         k, _, v = line.partition(":")
         headers[k.strip()] = v.strip()
-    return method, path, headers
+    return method, path, headers, markers
 
 
 def is_ws(headers):
     return headers.get("upgrade", "").lower() == "websocket"
+
+
+def is_chunked(head):
+    return re.search(r"^transfer-encoding:\s*chunked", head,
+                     re.IGNORECASE | re.MULTILINE) is not None
 
 
 def read_head(sock):
@@ -206,14 +310,45 @@ def read_head(sock):
     return head.decode("utf-8", "replace") + "\r\n\r\n", rest
 
 
-def read_body(sock, head, rest):
-    """Read a plain-HTTP body per content-length / conn close."""
+def read_body(sock, head, rest, markers):
+    """Read the response body per stream-read marker / content-length / close."""
+    stream = (markers.get("stream-read") or [None])[0]
+    if stream:
+        limit = int(stream.split(":", 1)[1]) if stream.startswith("bytes:") else None
+        if is_chunked(head):
+            return decode_chunked(sock, rest, limit)
+        if limit is not None:
+            got = rest + (recv_exact(sock, max(limit - len(rest), 0)) or b"")
+            return got[:limit]
+        out = rest
+        while True:
+            chunk = sock.recv(65536)
+            if not chunk:
+                return out
+            out += chunk
     m = re.search(r"^content-length:\s*(\d+)", head, re.IGNORECASE | re.MULTILINE)
     if m:
         need = int(m.group(1)) - len(rest)
         extra = recv_exact(sock, max(need, 0)) or b""
         return rest + extra
+    if is_chunked(head):
+        return decode_chunked(sock, rest)
     return rest
+
+
+def send_request(case_dir, base):
+    """Build and send the request; return (sock, head, rest)."""
+    host, port = base
+    method, path, headers, markers = read_spec(case_dir)
+    req = f"{method} {path} HTTP/1.1\r\n" + "".join(
+        f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
+    sock = connect(host, port)
+    sock.sendall(req.encode())
+    body_path = os.path.join(case_dir, "req-body.bin")
+    if os.path.isfile(body_path):
+        sock.sendall(open(body_path, "rb").read())
+    head, rest = read_head(sock)
+    return sock, head, rest, markers, headers
 
 
 def connect(host, port):
@@ -225,21 +360,21 @@ def connect(host, port):
 # ---------- capture ----------
 
 def capture_case(base, case_dir):
-    host, port = base
-    method, path, headers = read_spec(case_dir)
-    req = f"{method} {path} HTTP/1.1\r\n" + "".join(
-        f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
-    sock = connect(host, port)
-    sock.sendall(req.encode())
-    head, rest = read_head(sock)
+    sock, head, rest, markers, headers = send_request(case_dir, base)
+    vh = markers.get("volatile-header", [])
+    vhv = markers.get("volatile-header-value", [])
+    vp = markers.get("volatile-pattern", [])
     with open(os.path.join(case_dir, "head.txt"), "w") as f:
-        f.write(head)
+        f.write(mask_head_text(head, vh, vhv) if (vh or vhv) else head)
     if not is_ws(headers):
-        body = read_body(sock, head, rest)
+        try:
+            body = read_body(sock, head, rest, markers)
+        except socket.timeout:
+            body = b""
         sock.close()
-        if body:
+        if body or os.path.isfile(os.path.join(case_dir, "body.txt")):
             with open(os.path.join(case_dir, "body.txt"), "wb") as f:
-                f.write(body)
+                f.write(mask_volatile(body, vp))
         return 0
     send_path = os.path.join(case_dir, "send.txt")
     sends = [l.strip() for l in open(send_path) if l.strip()] \
@@ -287,31 +422,31 @@ def capture_case(base, case_dir):
 # ---------- close ----------
 
 def close_case(base, case_dir, verbose):
-    host, port = base
-    method, path, headers = read_spec(case_dir)
-    req = f"{method} {path} HTTP/1.1\r\n" + "".join(
-        f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n"
-    sock = connect(host, port)
-    sock.sendall(req.encode())
     try:
-        head, rest = read_head(sock)
+        sock, head, rest, markers, headers = send_request(case_dir, base)
     except socket.timeout:
-        sock.close()
         return "cant-tell", "no response head"
+    vh = markers.get("volatile-header", [])
+    vhv = markers.get("volatile-header-value", [])
+    vp = markers.get("volatile-pattern", [])
     exp_head_path = os.path.join(case_dir, "head.txt")
     if not os.path.isfile(exp_head_path):
         sock.close()
         return "cant-tell", "missing head.txt"
     exp_head = open(exp_head_path, "rb").read().decode("utf-8", "replace")
-    if norm_head(head) != norm_head(exp_head):
+    if norm_head(head, vh, vhv) != norm_head(exp_head, vh, vhv):
         sock.close()
         return "fail", f"head mismatch\n  got: {head!r}\n  exp: {exp_head!r}"
     if not is_ws(headers):
-        body = read_body(sock, head, rest)
+        try:
+            body = read_body(sock, head, rest, markers)
+        except socket.timeout:
+            sock.close()
+            return "fail", "timeout reading body/stream"
         sock.close()
         exp_body_path = os.path.join(case_dir, "body.txt")
         exp_body = open(exp_body_path, "rb").read() if os.path.isfile(exp_body_path) else b""
-        if body != exp_body:
+        if mask_volatile(body, vp) != exp_body:
             return "fail", f"body mismatch\n  got: {body[:200]!r}\n  exp: {exp_body[:200]!r}"
         return "pass", ""
     frames_path = os.path.join(case_dir, "frames.txt")

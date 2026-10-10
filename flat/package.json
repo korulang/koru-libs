@@ -1,0 +1,24 @@
+{
+  "name": "@korulang/flat",
+  "version": "0.1.0",
+  "description": "Fixed-capacity flat containers for Koru flow code — indexed i64/i32 arrays, borrowed-string ref tables, emit buffers, and the small algorithms flat storage enables (pair sort, run grouping, packed k-subsets)",
+  "keywords": ["koru", "korulang", "arrays", "flat", "containers", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "flat"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}

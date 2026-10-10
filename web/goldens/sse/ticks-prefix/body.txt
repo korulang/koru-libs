@@ -1,0 +1,27 @@
+event: tick
+data: 0
+id: 0
+retry: 1000
+
+event: tick
+data: 1
+id: 1
+retry: 1000
+
+event: tick
+data: 2
+id: 2
+retry: 1000
+
+event: tick
+data: 3
+id: 3
+retry: 1000
+
+event: tick
+data: 4
+id: 4
+retry: 1000
+
+event: tick
+dat

@@ -1,0 +1,326 @@
+// @korulang/composition — time-first object model + renderer-agnostic projection.
+//
+// Ported from Intranquil's composition/layout laws: the timeline is NOT the
+// base reality; global wall-clock time is. Timelines are objects placed in
+// time; clips live inside timelines; tempo is a beats→seconds convenience;
+// a magnetic reference makes a timeline's start DERIVED — the <bound>
+// obligation means moving it by hand is unexpressible, and only a
+// comp.follow leader can relocate it.
+//
+// Two surfaces in one module:
+//
+//   MODEL       comp/tempo/timeline/clip/follow/shift/resolve — pure seconds.
+//   PROJECTION  view/proj — seconds → pixels. Emits Rect; knows nothing about
+//               Metal, vaxis, or any renderer. The draw surface is the
+//               consumer's seam — a metal ! frame arm, a terminal cell fill,
+//               an SVG emitter all consume the same Rect.
+//
+// Known toolchain gaps this package currently exposes (do NOT route around):
+//   - 330_136: per-arg phantom checking is skipped for part-declared tors.
+//     Package tors are module-declared, so <bound> enforcement at the call
+//     site is measured working for imports — keep it that way.
+//   - User type named `Item` collides with injected ast.Item when a consumer
+//     merges parts into one module — this package's type is Clip (which is
+//     also the better canvas word: .graph-clip).
+
+const std = @import("std");
+
+pub const MAX_ITEMS: usize = 64;
+pub const MAX_TIMELINES: usize = 32;
+pub const MAX_FOLLOWS: usize = 32;
+
+// ---- host types ----
+
+pub const Tempo = struct { bpm: f64, start: f64 };
+
+pub const Clip = struct {
+    start: f64,
+    start_beats: ?f64,
+    duration: f64,
+    beats: ?f64,
+    // The container — set by clip.new. Edit ops (split/move) reach the
+    // parent through this; consumers never write it.
+    parent: ?*Timeline = null,
+};
+
+pub const Timeline = struct {
+    tempo: ?*Tempo,
+    start: f64,
+    start_beats: ?f64,
+    duration: f64,
+    beats: ?f64,
+    items: [MAX_ITEMS]*Clip = undefined,
+    item_count: usize = 0,
+};
+
+const Follow = struct { follower: *Timeline, leader: *Timeline, offset: f64 };
+
+pub const Composition = struct {
+    timelines: [MAX_TIMELINES]*Timeline = undefined,
+    timeline_count: usize = 0,
+    follows: [MAX_FOLLOWS]Follow = undefined,
+    follow_count: usize = 0,
+};
+
+// The projection currency: one screen-space rectangle. Every renderer
+// consumes this; nothing in this package knows who draws it.
+pub const Rect = struct { x: f64, y: f64, w: f64, h: f64 };
+
+// A view onto world time: viewport width, pixels-per-second, and a world
+// origin that pan/zoom move. height lives with the consumer — rows are a
+// layout decision, not a model one.
+pub const View = struct { width: f64, pps: f64, origin: f64 };
+
+// ---- resolution laws (layout.ts, verbatim semantics) ----
+
+// effectiveTimelineStart (layout.ts:9)
+pub fn tlStart(tl: *Timeline) f64 {
+    if (tl.start_beats) |b| {
+        if (tl.tempo) |t| return t.start + b * 60.0 / t.bpm;
+    }
+    return tl.start;
+}
+
+// effectiveTimelineDuration (layout.ts:23)
+pub fn tlDuration(tl: *Timeline) f64 {
+    if (tl.beats) |b| {
+        if (tl.tempo) |t| return b * 60.0 / t.bpm;
+    }
+    return tl.duration;
+}
+
+// effectiveClipStart — itemStart (layout.ts:36)
+pub fn clipStart(tl: *Timeline, clip: *Clip) f64 {
+    if (clip.start_beats) |b| {
+        if (tl.tempo) |t| return b * 60.0 / t.bpm;
+    }
+    return clip.start;
+}
+
+// effectiveClipDuration — itemDuration (layout.ts:46)
+pub fn clipDuration(tl: *Timeline, clip: *Clip) f64 {
+    if (clip.beats) |b| {
+        if (tl.tempo) |t| return b * 60.0 / t.bpm;
+    }
+    return clip.duration;
+}
+
+// propagateMagneticReferences' delta application (layout.ts:101)
+fn applyDelta(tl: *Timeline, delta: f64) void {
+    if (tl.start_beats != null and tl.tempo != null) {
+        tl.start_beats.? += delta / (60.0 / tl.tempo.?.bpm);
+    } else {
+        tl.start += delta;
+    }
+}
+
+// ---- model vocabulary ----
+
+// The composition: everything currently on the canvas. resolve consumes
+// either state and re-mints <resolved!> — idempotent, like the TS
+// $effect re-fire that re-runs propagateMagneticReferences.
+~pub tor comp.new {} -> *Composition<open!>
+~pub tor comp.resolve { comp: *Composition<!open|!resolved> } -> *Composition<resolved!>
+
+~proc comp.new|zig {
+    const c = std.heap.page_allocator.create(Composition) catch @panic("composition: OOM");
+    c.* = .{};
+    return c;
+}
+
+~proc comp.resolve|zig {
+    // propagateMagneticReferences (layout.ts:76) — idempotent re-application.
+    var i: usize = 0;
+    while (i < comp.follow_count) : (i += 1) {
+        const f = comp.follows[i];
+        const desired = tlStart(f.leader) + tlDuration(f.leader) + f.offset;
+        applyDelta(f.follower, desired - tlStart(f.follower));
+    }
+    return comp;
+}
+
+~pub tor tempo.new { bpm: f64, start: f64 } -> *Tempo
+~proc tempo.new|zig {
+    const t = std.heap.page_allocator.create(Tempo) catch @panic("composition: OOM");
+    t.* = .{ .bpm = bpm, .start = start };
+    return t;
+}
+
+// A timeline placed on the canvas. Both placement forms exist in one tor —
+// beats resolve through `tempo`, plain start/duration are wall-clock.
+// (TS splits this across four optional fields with "ignored when" comments;
+// the dual-signature input is the same semantic, named.)
+~pub tor timeline.new {
+    comp: *Composition<open|resolved>,
+    tempo: ?*Tempo,
+    start: f64,
+    start-beats: ?f64,
+    duration: f64,
+    beats: ?f64,
+} -> *Timeline<free!>
+~proc timeline.new|zig {
+    const tl = std.heap.page_allocator.create(Timeline) catch @panic("composition: OOM");
+    tl.* = .{
+        .tempo = tempo,
+        .start = start,
+        .start_beats = start_beats,
+        .duration = duration,
+        .beats = beats,
+    };
+    if (comp.timeline_count < MAX_TIMELINES) {
+        comp.timelines[comp.timeline_count] = tl;
+        comp.timeline_count += 1;
+    }
+    return tl;
+}
+
+// A clip inside a timeline. Clips are placed relative to the parent's
+// effective start; they don't carry magnetic refs (TS: a magnetic source
+// must be a Timeline, never an Item).
+~pub tor clip.new {
+    tl: *Timeline<free|bound>,
+    start: f64,
+    start-beats: ?f64,
+    duration: f64,
+    beats: ?f64,
+} -> *Clip
+~proc clip.new|zig {
+    const it = std.heap.page_allocator.create(Clip) catch @panic("composition: OOM");
+    it.* = .{
+        .start = start,
+        .start_beats = start_beats,
+        .duration = duration,
+        .beats = beats,
+        .parent = tl,
+    };
+    if (tl.item_count < MAX_ITEMS) {
+        tl.items[tl.item_count] = it;
+        tl.item_count += 1;
+    }
+    return it;
+}
+
+// Bind follower's start edge to leader's end edge + offset. Consumes the
+// follower's freedom — the returned token is <bound!>, and nothing in the
+// vocabulary accepts a bound timeline for direct placement.
+~pub tor comp.follow {
+    comp: *Composition<open|resolved>,
+    follower: *Timeline<!free>,
+    leader: *Timeline<free|bound>,
+    offset: f64,
+} -> *Timeline<bound!>
+~proc comp.follow|zig {
+    if (comp.follow_count < MAX_FOLLOWS) {
+        comp.follows[comp.follow_count] = .{ .follower = follower, .leader = leader, .offset = offset };
+        comp.follow_count += 1;
+    }
+    return follower;
+}
+
+// Move a timeline by delta seconds, in whichever unit drives its position
+// (start_beats when tempo-bound, else start — verbatim from
+// propagateMagneticReferences' delta application). Bound timelines refuse:
+// their position is owned by the reference, not the hand.
+~pub tor timeline.shift { tl: *Timeline<free>, delta: f64 }
+~proc timeline.shift|zig {
+    applyDelta(tl, delta);
+}
+
+// Detach + free a timeline. The only tor that accepts <bound> for
+// consumption: releasing a bound timeline also kills its follow edge —
+// otherwise the comp would resolve against a freed pointer.
+~pub tor timeline.release { comp: *Composition<open|resolved>, tl: *Timeline<!free|!bound> }
+~proc timeline.release|zig {
+    var i: usize = 0;
+    while (i < comp.follow_count) {
+        if (comp.follows[i].follower == tl) {
+            comp.follows[i] = comp.follows[comp.follow_count - 1];
+            comp.follow_count -= 1;
+        } else {
+            i += 1;
+        }
+    }
+    std.heap.page_allocator.destroy(tl);
+}
+
+// Free the composition container — consumes whichever lifecycle state it
+// is in. Children are caller-released (their tokens carry no obligation).
+~pub tor comp.free { comp: *Composition<!open|!resolved> }
+~proc comp.free|zig {
+    std.heap.page_allocator.destroy(comp);
+}
+
+// ---- resolution (object forms of the layout laws) ----
+
+~pub tor resolve.timeline-start { tl: *Timeline<free|bound> } -> f64
+~proc resolve.timeline-start|zig {
+    return tlStart(tl);
+}
+
+~pub tor resolve.timeline-end { tl: *Timeline<free|bound> } -> f64
+~proc resolve.timeline-end|zig {
+    return tlStart(tl) + tlDuration(tl);
+}
+
+~pub tor resolve.clip-start { tl: *Timeline<free|bound>, clip: *Clip } -> f64
+~proc resolve.clip-start|zig {
+    return clipStart(tl, clip);
+}
+
+~pub tor resolve.clip-abs-start { tl: *Timeline<free|bound>, clip: *Clip } -> f64
+~proc resolve.clip-abs-start|zig {
+    return tlStart(tl) + clipStart(tl, clip);
+}
+
+// ---- projection vocabulary — the reusable surface ----
+
+// A view: viewport width + pixels-per-second + world origin. Pan shifts the
+// origin; zoom scales pps. A view is viewstate, not canvas state — a plain
+// token with no lifecycle law, so it carries no phantom.
+~pub tor view.new { width: f64, pps: f64 } -> *View
+~proc view.new|zig {
+    const v = std.heap.page_allocator.create(View) catch @panic("composition: OOM");
+    v.* = .{ .width = width, .pps = pps, .origin = 0.0 };
+    return v;
+}
+
+~pub tor view.pan { view: *View, dx-seconds: f64 }
+~proc view.pan|zig {
+    view.origin += dx_seconds;
+}
+
+~pub tor view.zoom { view: *View, factor: f64 }
+~proc view.zoom|zig {
+    view.pps *= factor;
+}
+
+// world→screen, one axis.
+~pub tor proj.x { view: *View, seconds: f64 } -> f64
+~proc proj.x|zig {
+    return (seconds - view.origin) * view.pps;
+}
+
+// Timeline → Rect at a given row. The consumer picks y/h; the model picked
+// start/duration.
+~pub tor proj.timeline-rect { view: *View, tl: *Timeline<free|bound>, y: f64, h: f64 } -> Rect
+~proc proj.timeline-rect|zig {
+    const s = tlStart(tl);
+    return .{
+        .x = (s - view.origin) * view.pps,
+        .y = y,
+        .w = tlDuration(tl) * view.pps,
+        .h = h,
+    };
+}
+
+// Clip → Rect, absolute time (parent start folded in).
+~pub tor proj.clip-rect { view: *View, tl: *Timeline<free|bound>, clip: *Clip, y: f64, h: f64 } -> Rect
+~proc proj.clip-rect|zig {
+    const s = tlStart(tl) + clipStart(tl, clip);
+    return .{
+        .x = (s - view.origin) * view.pps,
+        .y = y,
+        .w = clipDuration(tl, clip) * view.pps,
+        .h = h,
+    };
+}

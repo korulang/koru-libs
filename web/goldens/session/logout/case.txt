@@ -1,0 +1,4 @@
+POST /logout
+host: 127.0.0.1
+content-length: 0
+volatile-header-value: set-cookie

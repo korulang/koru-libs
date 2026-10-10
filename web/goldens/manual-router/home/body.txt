@@ -1,0 +1,1 @@
+<html><head></head><body><nav><a href="/">home</a> | <a href="/about">about</a> | <a href="/docs">docs</a> | <a href="/docs/install">install</a></nav><hr><h1>home</h1><p>registered with .page(home)</p></body></html>

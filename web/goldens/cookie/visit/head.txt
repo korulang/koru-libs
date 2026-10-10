@@ -1,0 +1,8 @@
+HTTP/1.1 200 OK
+content-type: text/html; charset=utf-8
+vary: Accept
+vary: accept-encoding
+set-cookie: <VOLATILE>; HttpOnly; Secure; Path=/
+content-length: 117
+date: <DATE>
+

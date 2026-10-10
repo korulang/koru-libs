@@ -1,0 +1,3 @@
+GET /_topcoat/assets/ferris-5724e4e1afa60914.png
+host: 127.0.0.1
+accept-encoding: gzip

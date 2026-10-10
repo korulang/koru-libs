@@ -1,0 +1,5 @@
+POST /login
+host: 127.0.0.1
+content-type: application/x-www-form-urlencoded
+content-length: 9
+volatile-header-value: set-cookie
