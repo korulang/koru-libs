@@ -1,0 +1,384 @@
+// @korulang/flat — fixed-capacity flat containers for flow code.
+// ==========================================================================
+//
+// The gap this fills: `std/list` is a growable list (push/get/pop) and
+// `std/field` is a bit array — neither spells indexed set on a word cell,
+// and nothing in std carries a string slice's address pair or an emit
+// buffer. Algorithms that want flat, indexed, cache-dense storage had to
+// write `|zig` leaves inline; this package is those leaves, generalized.
+//
+// Shapes, all obligation-tracked the same way (`live!` minted by `new`,
+// discharged by `free` — the parse/close idiom):
+//
+//   I64 / I32   fixed-capacity indexed integer cells (get/set/bump/add/zero)
+//   Refs        string-slice table — packs a slice's ptr+len per slot so a
+//               borrowed string (e.g. a yyjson arena read) is storable in a
+//               flat structure without copying. The referenced memory must
+//               outlive the table's uses — this package stores addresses,
+//               not bytes.
+//   Buf         byte emit buffer with JSON escaping (raw/jesc/closearr/done)
+//
+// Plus the small generic algorithms flat storage makes possible:
+//
+//   pairs.sort   sort parallel (key, payload) arrays by key
+//   runs.each    yield each adjacent-equal-key run as {lo, hi} bounds
+//   combi.each   yield every k-subset of an i64 range as a packed u64 key
+//                (8 bits per element — requires k <= 8 and ids <= 255)
+//   fail         loud abort — std has no refuse-at-runtime tor
+
+~import std/io
+
+const std = @import("std");
+
+// ============================================================================
+// I64 / I32 — indexed integer arrays
+// ============================================================================
+
+pub const I64 = struct {
+    cells: []i64,
+};
+
+pub const I32 = struct {
+    cells: []i32,
+};
+
+~pub tor i64.new { n: i64 } -> *I64<live!>
+
+~proc i64.new|zig {
+    const a = koru_allocator().alloc(i64, @intCast(n)) catch @panic("flat: OOM in i64.new");
+    @memset(a, 0);
+    const h = std.heap.page_allocator.create(I64) catch @panic("flat: OOM");
+    h.* = .{ .cells = a };
+    return h;
+}
+
+~pub tor i64.get { a: *I64<live>, i: i64 } -> i64
+
+~proc i64.get|zig {
+    return a.cells[@intCast(i)];
+}
+
+~pub tor i64.set { a: *I64<live>, i: i64, v: i64 }
+
+~proc i64.set|zig {
+    a.cells[@intCast(i)] = v;
+}
+
+~pub tor i64.bump { a: *I64<live>, i: i64 }
+
+~proc i64.bump|zig {
+    a.cells[@intCast(i)] += 1;
+}
+
+~pub tor i64.add { a: *I64<live>, i: i64, v: i64 }
+
+~proc i64.add|zig {
+    a.cells[@intCast(i)] += v;
+}
+
+~pub tor i64.zero { a: *I64<live> }
+
+~proc i64.zero|zig {
+    @memset(a.cells, 0);
+}
+
+~pub tor i64.len { a: *I64<live> } -> i64
+
+~proc i64.len|zig {
+    return @intCast(a.cells.len);
+}
+
+~pub tor i64.free { a: *I64<!live> }
+
+~proc i64.free|zig {
+    koru_allocator().free(a.cells);
+    std.heap.page_allocator.destroy(a);
+}
+
+~pub tor i32.new { n: i64 } -> *I32<live!>
+
+~proc i32.new|zig {
+    const a = koru_allocator().alloc(i32, @intCast(n)) catch @panic("flat: OOM in i32.new");
+    @memset(a, 0);
+    const h = std.heap.page_allocator.create(I32) catch @panic("flat: OOM");
+    h.* = .{ .cells = a };
+    return h;
+}
+
+~pub tor i32.get { a: *I32<live>, i: i64 } -> i64
+
+~proc i32.get|zig {
+    return a.cells[@intCast(i)];
+}
+
+~pub tor i32.set { a: *I32<live>, i: i64, v: i64 }
+
+~proc i32.set|zig {
+    a.cells[@intCast(i)] = @intCast(v);
+}
+
+~pub tor i32.len { a: *I32<live> } -> i64
+
+~proc i32.len|zig {
+    return @intCast(a.cells.len);
+}
+
+~pub tor i32.free { a: *I32<!live> }
+
+~proc i32.free|zig {
+    koru_allocator().free(a.cells);
+    std.heap.page_allocator.destroy(a);
+}
+
+// ============================================================================
+// Refs — a table of borrowed string slices, stored as ptr+len pairs.
+// `put` records a slice's address; `str` hands the slice back. The table
+// stores addresses, not bytes — the memory behind each `s` (a doc arena, a
+// static, a longer-lived buffer) must outlive every `str` the table serves.
+// ============================================================================
+
+pub const Refs = struct {
+    ptrs: []i64,
+    lens: []i64,
+};
+
+~pub tor ref.new { n: i64 } -> *Refs<live!>
+
+~proc ref.new|zig {
+    const h = std.heap.page_allocator.create(Refs) catch @panic("flat: OOM");
+    h.* = .{
+        .ptrs = koru_allocator().alloc(i64, @intCast(n)) catch @panic("flat: OOM in ref.new"),
+        .lens = koru_allocator().alloc(i64, @intCast(n)) catch @panic("flat: OOM in ref.new"),
+    };
+    @memset(h.ptrs, 0);
+    @memset(h.lens, 0);
+    return h;
+}
+
+~pub tor ref.put { r: *Refs<live>, i: i64, s: string }
+
+~proc ref.put|zig {
+    r.ptrs[@intCast(i)] = @intCast(@intFromPtr(s.ptr));
+    r.lens[@intCast(i)] = @intCast(s.len);
+}
+
+~pub tor ref.str { r: *Refs<live>, i: i64 } -> string
+
+~proc ref.str|zig {
+    const ii: usize = @intCast(i);
+    return @as([*]const u8, @ptrFromInt(@as(usize, @intCast(r.ptrs[ii]))))[0..@as(usize, @intCast(r.lens[ii]))];
+}
+
+~pub tor ref.free { r: *Refs<!live> }
+
+~proc ref.free|zig {
+    koru_allocator().free(r.ptrs);
+    koru_allocator().free(r.lens);
+    std.heap.page_allocator.destroy(r);
+}
+
+// ============================================================================
+// Buf — a byte emit buffer. `raw` appends verbatim, `jesc` appends a
+// JSON-quoted escaped string, `closearr` closes an open `[a,b,` run by
+// dropping the trailing comma and writing `]`. `done` borrows the written
+// slice (the buffer stays `live`; `free` releases it).
+// ============================================================================
+
+pub const Buf = struct {
+    bytes: []u8,
+    pos: usize,
+};
+
+~pub tor buf.new { n: i64 } -> *Buf<live!>
+
+~proc buf.new|zig {
+    const h = std.heap.page_allocator.create(Buf) catch @panic("flat: OOM");
+    h.* = .{ .bytes = koru_allocator().alloc(u8, @intCast(n)) catch @panic("flat: OOM in buf.new"), .pos = 0 };
+    return h;
+}
+
+~pub tor buf.raw { b: *Buf<live>, s: string }
+
+~proc buf.raw|zig {
+    @memcpy(b.bytes[b.pos .. b.pos + s.len], s);
+    b.pos += s.len;
+}
+
+~pub tor buf.jesc { b: *Buf<live>, s: string }
+
+~proc buf.jesc|zig {
+    const hex = "0123456789abcdef";
+    var p = b.pos;
+    b.bytes[p] = '"';
+    p += 1;
+    for (s) |ch| {
+        switch (ch) {
+            '"', '\\' => {
+                b.bytes[p] = '\\';
+                b.bytes[p + 1] = ch;
+                p += 2;
+            },
+            else => {
+                if (ch < 0x20) {
+                    b.bytes[p] = '\\';
+                    b.bytes[p + 1] = 'u';
+                    b.bytes[p + 2] = '0';
+                    b.bytes[p + 3] = '0';
+                    b.bytes[p + 4] = hex[ch >> 4];
+                    b.bytes[p + 5] = hex[ch & 15];
+                    p += 6;
+                } else {
+                    b.bytes[p] = ch;
+                    p += 1;
+                }
+            },
+        }
+    }
+    b.bytes[p] = '"';
+    p += 1;
+    b.pos = p;
+}
+
+~pub tor buf.closearr { b: *Buf<live> }
+
+~proc buf.closearr|zig {
+    var p = b.pos;
+    if (p > 0 and b.bytes[p - 1] == ',') p -= 1;
+    b.bytes[p] = ']';
+    b.pos = p + 1;
+}
+
+~pub tor buf.done { b: *Buf<live> } -> string
+
+~proc buf.done|zig {
+    return b.bytes[0..b.pos];
+}
+
+~pub tor buf.free { b: *Buf<!live> }
+
+~proc buf.free|zig {
+    koru_allocator().free(b.bytes);
+    std.heap.page_allocator.destroy(b);
+}
+
+// ============================================================================
+// pairs.sort — sort parallel (key, payload) arrays by key, ascending, so
+// equal keys land contiguous. Payload stays paired with its key.
+// ============================================================================
+
+~pub tor pairs.sort { keys: *I64<live>, cands: *I32<live>, n: i64 }
+
+~proc pairs.sort|zig {
+    const P = struct { key: i64, post: i32 };
+    const nn: usize = @intCast(n);
+    const buf = koru_allocator().alloc(P, nn) catch @panic("flat: pairs.sort OOM");
+    defer koru_allocator().free(buf);
+    for (0..nn) |i| buf[i] = .{ .key = keys.cells[i], .post = cands.cells[i] };
+    std.mem.sort(P, buf, {}, struct {
+        fn f(_: void, a: P, b: P) bool {
+            return a.key < b.key;
+        }
+    }.f);
+    for (0..nn) |i| {
+        keys.cells[i] = buf[i].key;
+        cands.cells[i] = buf[i].post;
+    }
+}
+
+// ============================================================================
+// runs.each — walk a sorted key array and fire `! run` once per maximal run
+// of equal keys, handing a scratch Run{ lo, hi } (bounds into the parallel
+// payload array). Scratch is reused per firing — same convention as
+// yyjson's Entry and pcre2's __match.
+// ============================================================================
+
+pub const Run = struct {
+    lo: i64,
+    hi: i64,
+};
+
+~pub tor runs.each { keys: *I64<live>, n: i64 }
+! run *Run
+| done
+
+~proc runs.each|zig {
+    const F = @import("root").koru_koru.koru_flat;
+    const nn: usize = @intCast(n);
+    var __run: F.Run = undefined;
+    var i: usize = 0;
+    while (i < nn) {
+        var j = i + 1;
+        while (j < nn and keys.cells[j] == keys.cells[i]) j += 1;
+        __run = .{ .lo = @intCast(i), .hi = @intCast(j) };
+        run(&__run);
+        i = j;
+    }
+    return .{ .done = .{} };
+}
+
+~pub tor run.lo { r: *Run } -> i64
+
+~proc run.lo|zig {
+    return r.lo;
+}
+
+~pub tor run.hi { r: *Run } -> i64
+
+~proc run.hi|zig {
+    return r.hi;
+}
+
+// ============================================================================
+// combi.each — enumerate every k-subset of vals[lo..lo+n], firing `! subset`
+// once per combination with the subset's element ids packed into a u64 key
+// (8 bits per position, in ascending order). Two values share a key iff
+// they picked the same k elements — this is the packed-set-intersection
+// primitive. Requires n <= 64, k <= 8, element ids <= 255.
+// ============================================================================
+
+~pub tor combi.each { vals: *I64<live>, lo: i64, n: i64, k: i64 }
+! subset i64
+| done
+
+~proc combi.each|zig {
+    const base: usize = @intCast(lo);
+    const nn: usize = @intCast(n);
+    const kk: usize = @intCast(k);
+    if (nn < kk) return .{ .done = .{} };
+    if (kk > 8) @panic("flat: combi.each requires k <= 8 (u64 key, 8 bits per element)");
+    var combo: [8]usize = undefined;
+    for (0..kk) |ci| combo[ci] = ci;
+    while (true) {
+        var key: u64 = 0;
+        for (0..kk) |ci| {
+            const id = vals.cells[base + combo[ci]];
+            if (id > 255) @panic("flat: combi.each requires element ids <= 255");
+            key |= @as(u64, @intCast(id)) << @intCast(ci * 8);
+        }
+        subset(@as(i64, @bitCast(key)));
+        var ci: usize = kk;
+        while (true) {
+            if (ci == 0) return .{ .done = .{} };
+            ci -= 1;
+            if (combo[ci] < nn - kk + ci) {
+                combo[ci] += 1;
+                var d = ci + 1;
+                while (d < kk) : (d += 1) combo[d] = combo[d - 1] + 1;
+                break;
+            }
+        }
+    }
+}
+
+// ============================================================================
+// fail — loud abort with a message. std has no refuse-at-runtime tor; a
+// program that detects input it cannot serve should die saying so, never
+// produce quietly wrong output.
+// ============================================================================
+
+~pub tor fail { msg: string }
+
+~proc fail|zig {
+    std.debug.print("{s}\n", .{msg});
+    @panic("flat.fail");
+}

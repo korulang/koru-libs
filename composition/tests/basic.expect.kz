@@ -1,0 +1,20 @@
+// Assertion surface for the composition test — PASS/FAIL print + counter.
+
+const std = @import("std");
+
+var failures: i64 = 0;
+
+~pub tor expect.eq { name: string, got: f64, want: f64 }
+~proc expect.eq|zig {
+    if (got == want) {
+        std.debug.print("PASS {s}\n", .{name});
+    } else {
+        failures += 1;
+        std.debug.print("FAIL {s}: got {d}, want {d}\n", .{ name, got, want });
+    }
+}
+
+~pub tor expect.summary {} -> i64
+~proc expect.summary|zig {
+    return failures;
+}

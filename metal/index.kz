@@ -59,6 +59,9 @@ const MTLClearColor = extern struct { red: f64, green: f64, blue: f64, alpha: f6
 
 // Vertex positions come from [[vertex_id]] — no vertex buffers needed for a
 // static triangle. Compiled at runtime through newLibraryWithSource:.
+// The rect pair takes per-draw RectParams through [[buffer(0)]] —
+// setVertexBytes — and converts pixel-space origin+size to NDC against the
+// drawable viewport carried on the Frame.
 const msl_src: [:0]const u8 =
     \\#include <metal_stdlib>
     \\using namespace metal;
@@ -69,7 +72,36 @@ const msl_src: [:0]const u8 =
     \\fragment float4 fragment_main() {
     \\    return float4(1.0, 0.45, 0.1, 1.0);
     \\}
+    \\struct RectParams {
+    \\    float4 color;
+    \\    float2 origin;
+    \\    float2 size;
+    \\    float2 viewport;
+    \\};
+    \\struct RectOut {
+    \\    float4 pos [[position]];
+    \\    float4 color;
+    \\};
+    \\vertex RectOut rect_vertex(uint vid [[vertex_id]], constant RectParams& p [[buffer(0)]]) {
+    \\    float2 corners[4] = { float2(0.0,0.0), float2(1.0,0.0), float2(0.0,1.0), float2(1.0,1.0) };
+    \\    float2 pix = p.origin + corners[vid] * p.size;
+    \\    RectOut o;
+    \\    o.pos = float4(pix.x / p.viewport.x * 2.0 - 1.0, 1.0 - pix.y / p.viewport.y * 2.0, 0.0, 1.0);
+    \\    o.color = p.color;
+    \\    return o;
+    \\}
+    \\fragment float4 rect_fragment(RectOut in [[stage_in]]) {
+    \\    return in.color;
+    \\}
 ;
+
+// Host twin of the MSL RectParams — float4 first so every float2 still
+// lands on an 8-byte boundary (MSL constant-address-space layout rules).
+const RectParams = extern struct {
+    r: f32, g: f32, b: f32, a: f32,
+    ox: f32, oy: f32, sw: f32, sh: f32,
+    vw: f32, vh: f32,
+};
 
 fn sel(comptime name: [:0]const u8) SEL {
     return objc.sel_registerName(name);
@@ -204,14 +236,22 @@ pub const Window = struct {
     layer: Id,
     queue: Id,
     pso: Id,
+    pso_rect: Id,
+    vp_w: f32,
+    vp_h: f32,
     clear: MTLClearColor,
 };
 
 // A frame in flight — carries the LIVE render encoder, so draw calls inside
 // `! frame` record into the pass the engine ends, presents and commits after
-// the body returns.
+// the body returns. Pipeline states and viewport ride along so draw tors
+// stay one-borrow calls.
 pub const Frame = struct {
     encoder: Id,
+    pso: Id,
+    pso_rect: Id,
+    vp_w: f32,
+    vp_h: f32,
 };
 
 ~pub tor window.open { width: i32, height: i32, title: string }
@@ -311,6 +351,27 @@ pub const Frame = struct {
         return .{ .err = "metal: render pipeline state creation failed" };
     }
 
+    // Second pipeline, same library: the rect pair. Per-draw params ride
+    // through [[buffer(0)]] — no vertex buffer, no descriptor changes.
+    const rvname = cf.CFStringCreateWithCString(null, "rect_vertex", cf.kCFStringEncodingUTF8);
+    const rfname = cf.CFStringCreateWithCString(null, "rect_fragment", cf.kCFStringEncodingUTF8);
+    const rvfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(rvname))));
+    const rffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(rfname))));
+    if (rvfn == null or rffn == null) {
+        return .{ .err = "metal: rect shader functions not found in library" };
+    }
+    const rpdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, rpdesc, sel("setVertexFunction:"), rvfn);
+    send1(void, Id, rpdesc, sel("setFragmentFunction:"), rffn);
+    const rpatts = send(Id, rpdesc, sel("colorAttachments"));
+    const rpatt = send1(Id, u64, rpatts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, rpatt, sel("setPixelFormat:"), 80);
+    var rpsoErr: Id = null;
+    const pso_rect = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), rpdesc, &rpsoErr);
+    if (pso_rect == null) {
+        return .{ .err = "metal: rect pipeline state creation failed" };
+    }
+
     send1(void, Id, wobj, sel("makeKeyAndOrderFront:"), @as(Id, null));
     send1(void, bool, app, sel("activateIgnoringOtherApps:"), true);
 
@@ -321,6 +382,9 @@ pub const Frame = struct {
         .layer = layer,
         .queue = queue,
         .pso = pso,
+        .pso_rect = pso_rect,
+        .vp_w = @floatFromInt(width),
+        .vp_h = @floatFromInt(height),
         .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
     };
     return .{ .win = w };
@@ -397,7 +461,7 @@ pub const Frame = struct {
         const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
         $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
 
-        var __f = $mod.Frame{ .encoder = enc };
+        var __f = $mod.Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .vp_w = win.vp_w, .vp_h = win.vp_h };
         frame(&__f);
 
         $mod.send(void, enc, $mod.sel("endEncoding"));
@@ -445,7 +509,25 @@ pub const Frame = struct {
 ~pub tor draw.triangle { f: *Frame<frame> }
 
 ~proc draw.triangle|zig {
+    send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso);
     send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3);
+}
+
+// One colored quad in PIXEL space — the first real draw surface. The shader
+// reads RectParams through [[buffer(0)]] (setVertexBytes) and maps
+// pixel→NDC against the viewport the window opened with. Y is screen-space:
+// row 0 at the top.
+~pub tor draw.rect { f: *Frame<frame>, x: f64, y: f64, w: f64, h: f64, r: f64, g: f64, b: f64, a: f64 }
+
+~proc draw.rect|zig {
+    send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_rect);
+    var params = RectParams{
+        .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a),
+        .ox = @floatCast(x), .oy = @floatCast(y), .sw = @floatCast(w), .sh = @floatCast(h),
+        .vw = f.vp_w, .vh = f.vp_h,
+    };
+    send3(void, *const RectParams, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &params, @sizeOf(RectParams), 0);
+    send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 4, 0, 4);
 }
 
 // Request the frames loop to exit at the next iteration — same shape as

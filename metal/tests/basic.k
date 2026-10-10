@@ -16,6 +16,8 @@ import std/io
 libs/metal:window.open(width: 640, height: 400, title: "koru metal — esc to quit")
 | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.1, b: 0.2) |> libs/metal:frames(win: w, count: 3600)
     ! frame f |> libs/metal:draw.triangle(f)
+             |> libs/metal:draw.rect(f, x: 40.0, y: 300.0, w: 200.0, h: 60.0, r: 0.2, g: 0.8, b: 0.4, a: 1.0)
+             |> libs/metal:draw.rect(f, x: 300.0, y: 40.0, w: 120.0, h: 120.0, r: 0.8, g: 0.3, b: 0.7, a: 1.0)
     ! key-down k when k.code == 53 |> libs/metal:quit()
     ! close |> libs/metal:quit()
     | done w2 |> libs/metal:window.close(win: w2) |> std/io:print.ln("metal: ran event loop, closed")

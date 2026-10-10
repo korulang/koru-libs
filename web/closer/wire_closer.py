@@ -57,13 +57,44 @@ OP_NAMES = {OP_TEXT: "text", OP_BIN: "binary", OP_CLOSE: "close",
             OP_PING: "ping", OP_PONG: "pong"}
 
 
+# Same contract as bytes_closer: status line verbatim, headers compared as a
+# sorted set of `lowercased-name: verbatim-value`, `date` blanked, declared
+# volatile headers masked, and TOLERATED_EXTRAS (same enumerated list)
+# dropped — informational headers a claimant may add without failing.
+TOLERATED_EXTRAS = {"connection", "x-powered-by", "x-orisha"}
+
+
 def norm_head(raw, volatile_headers=(), volatile_header_values=()):
-    out = DATE_RE.sub("date: <DATE>", raw)
+    text = raw.decode("latin-1") if isinstance(raw, bytes) else raw
+    text = text.replace("\r\n", "\n")
+    status, _, rest = text.partition("\n")
+    headers = []
+    for line in rest.strip().split("\n"):
+        if not line.strip():
+            continue
+        name, _, value = line.partition(":")
+        lname = name.strip().lower()
+        if lname in TOLERATED_EXTRAS:
+            continue
+        if lname == "date":
+            value = "<DATE>"
+        elif lname in {v.lower() for v in volatile_headers}:
+            value = "<VOLATILE>"
+        elif lname in {v.lower() for v in volatile_header_values}:
+            value = "<VOLATILE>;" + value.split(";", 1)[1] if ";" in value \
+                else "<VOLATILE>"
+        headers.append(f"{lname}: {value.strip()}")
+    return status.strip(), sorted(headers)
+
+
+def mask_head_text(raw, volatile_headers=(), volatile_header_values=()):
+    """Mask declared-volatile fields in a head for storage as the golden —
+    the rest of the head stays raw wire bytes."""
+    out = raw
     for name in volatile_headers:
         out = re.sub(rf"^{re.escape(name)}:\s*.*$", f"{name}: <VOLATILE>",
                      out, flags=re.IGNORECASE | re.MULTILINE)
     for name in volatile_header_values:
-        # mask the value token only — attributes after the first `;` stay pinned
         out = re.sub(rf"^({re.escape(name)}:\s*[^;\r\n]*)",
                      lambda m: m.group(1).split(":", 1)[0] + ": <VOLATILE>",
                      out, flags=re.IGNORECASE | re.MULTILINE)
@@ -334,8 +365,7 @@ def capture_case(base, case_dir):
     vhv = markers.get("volatile-header-value", [])
     vp = markers.get("volatile-pattern", [])
     with open(os.path.join(case_dir, "head.txt"), "w") as f:
-        f.write(norm_head(head, vh, vhv)
-                if (vh or vhv) else head)
+        f.write(mask_head_text(head, vh, vhv) if (vh or vhv) else head)
     if not is_ws(headers):
         try:
             body = read_body(sock, head, rest, markers)

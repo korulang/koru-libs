@@ -7,7 +7,7 @@ Conform = claimant exists and closes; oracle = golden + closer only.
 
 | fixture | cases | oracle | conform | notes |
 |---|---|---|---|---|
-| websocket | 9 | yes | unmeasured | 101 + masked frames + ping/pong + close-echo + 400 no-upgrade; needs `ConnState.mode` + `! frame` arm + `ws-accept`/`ws-send` |
+| websocket | 9 | yes | **9/9** | `ConnState.mode` + `! frame` arm + `ws-accept`/`ws-send`/`ws-close` landed; masked in, unmasked out, ping/pong/close at the seam, 16/64-bit lengths, fragmentation, 400 no-upgrade — all conforming |
 | error | 8 | yes | unmeasured | branded 403/404 boundary, `module_param` 400, internal rewrite — all authored-arm-reachable today |
 | manual-router | 6 | yes | unmeasured | same tree as module-router via explicit `.page()`/`.route()` — conformance pair |
 | sse | 3 | yes | unmeasured | finite `job` + bounded `ticks` + `last-event-id` resume; chunked decode in closer; needs conn-outlives-answer write side |
@@ -16,8 +16,14 @@ Conform = claimant exists and closes; oracle = golden + closer only.
 | session | 3 | yes | unmeasured | 303 + volatile session cookie; login form field `name` |
 | app-context | 1 | yes | unmeasured | counter masked via volatile-pattern |
 
-Totals: 36 oracle rows captured + self-certified across 8 fixtures
-(rung-1's 29 run separate, still green on merged main).
+Totals: 36 oracle rows captured + self-certified across 8 fixtures;
+websocket is the first conforming rung-2 fixture (9/9). Rung-1's 29
+re-verified green on the ws-pump build (zero HTTP regression).
+
+Claimant: `web/app/websocket` — `/echo` runs topcoat's full extractor check
+chain (connection/upgrade/version/key/key-validity, same order + message
+text) and `orisha/pump:ws-frame` echoes. Divergence noted: non-GET `/echo`
+hits the `[*]` 404 where topcoat answers 405 (untested by the fixture).
 
 Deferred with reasons in goldens/CAPTURE.md: routerless (no server),
 JS/runtime-shell examples (client-side behavior), cookie/session
