@@ -349,7 +349,10 @@ fn jsonFloat(v: std.json.Value) f64 {
 // feels.map — the binary ask, undecoded. `| map d` binds the whole
 // distribution: d.yes / d.no are probabilities, d.confidence.* the
 // API's per-choice confidence.
-~pub tor feels.map { j: *Judge, text: string, question: string }
+// `j` is `*Judge<*>`: map mutates fuel in place and is forwarded both
+// <greedy> and <chaotic> judges. The `<*>` borrow spelling is ruled
+// (koru 23cbe46c, frag-a-qualifier-is-part-of-the-type, pin 330_137).
+~pub tor feels.map { j: *Judge<*>, text: string, question: string }
 | map FeelsDist
 | exhausted
 | err Err

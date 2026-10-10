@@ -116,7 +116,10 @@ pub const Entry = struct {
 // Never a silent null: a malformed document is a loud `err` carrying
 // yyjson's own error code, the byte offset it choked on, and its message.
 
-~pub tor parse { text: string }
+// `text` is `string<*>` — parse scans the buffer and never owns it, and
+// callers hand it read-file's `string<allocated!>`. Ruled spelling:
+// koru 23cbe46c, std/string:split already declares `string<*>`.
+~pub tor parse { text: string<*> }
 | ok *Doc<open!>
 | err { code: i32, pos: usize, msg: string }
 
