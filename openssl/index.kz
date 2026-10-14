@@ -363,6 +363,19 @@ pub fn loadServerCtx(alloc: std.mem.Allocator, cert_path: []const u8, key_path: 
     const SSL_OP_ENABLE_KTLS: u64 = 1 << 3;
     _ = c.SSL_CTX_set_options(ctx, SSL_OP_ENABLE_KTLS);
 
+    // Read ahead: pull every record the kernel already has instead of one
+    // per socket read — the header-then-body record walk otherwise costs a
+    // read() per fragment plus a guaranteed-EAGAIN probe per request.
+    _ = c.SSL_CTX_set_read_ahead(ctx, 1);
+
+    // Prefer AES-128-GCM when the client offers it: the TLS 1.3 mandatory
+    // cipher, ~15% cheaper per byte than AES-256-GCM on hardware AES, and
+    // the smallest kTLS key size where offload exists. Without
+    // CIPHER_SERVER_PREFERENCE (SSL_OP_BIT(22)) the client's order wins.
+    const SSL_OP_CIPHER_SERVER_PREFERENCE: u64 = 1 << 22;
+    _ = c.SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
+    _ = c.SSL_CTX_set_ciphersuites(ctx, "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256");
+
     if (c.SSL_CTX_use_certificate_file(ctx, cert_z.ptr, c.SSL_FILETYPE_PEM) != 1) {
         return .{ .err = drainErr(alloc, "SSL_CTX_use_certificate_file failed") };
     }
