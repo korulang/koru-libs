@@ -3,7 +3,7 @@
 ```koru
 ~import unikraft/pages
 
-~unikraft/pages:default
+~unikraft/pages
 | ready pager |> unikraft/pages:take(pager, count: 2)
     | pages region |> unikraft/pages:write(pages: region, at: 0, bytes: "…")
         | ok written |> unikraft/pages:read(pages: written, at: 0, len: 39)

@@ -1,4 +1,4 @@
-// Test: the per-connection statement cache in libs/sqlite3:default.
+// Test: the per-connection statement cache in libs/sqlite3's default door.
 // Two sites with byte-identical SQL: the first prepares and caches, the
 // second is a guaranteed cache hit — same rows must come back, and the
 // statement must be reset (not finalized) between calls or the second
@@ -12,15 +12,15 @@ import std/io
 libs/sqlite3:open(path: ":memory:")
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE t (id INTEGER)")
     | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO t VALUES (1), (2)")
-        | ok |> libs/sqlite3:default(conn: d) {
+        | ok |> libs/sqlite3(conn: d) {
                 SELECT id FROM t ORDER BY id
             }
             ! row r |> libs/sqlite3:col.int(stmt: r, index: 0): id |> std/io:print.ln("a{{ id:d }}")
-            | done d2 |> libs/sqlite3:default(conn: d2) {
+            | done d2 |> libs/sqlite3(conn: d2) {
                     SELECT id FROM t ORDER BY id
                 }
                 ! row r2 |> libs/sqlite3:col.int(stmt: r2, index: 0): id2 |> std/io:print.ln("b{{ id2:d }}")
-                | done d3 |> libs/sqlite3:default(conn: d3) {
+                | done d3 |> libs/sqlite3(conn: d3) {
                         SELECT COUNT(*) FROM t
                     }
                     ! row r3 |> libs/sqlite3:col.int(stmt: r3, index: 0): n |> std/io:print.ln("count={{ n:d }}")

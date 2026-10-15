@@ -108,6 +108,14 @@ So the rule is not "delete old notes." It is:
 - **A writeup may describe what it changed. It may not describe what it left
   alone.** The first is a closed record; the second is an uncheckable assertion
   about a moving repo, and it will be wrong before anyone reads it.
+
+Applied 2026-10-15, as the intended case rather than the failure: the KORU208
+migration (spelled `:default` door calls refused in koru `7afa385`) swept
+`.k/.kz` call sites **and** the teaching surface in the same pass — unikraft
+READMEs, sqlite3 test headers, and the stale `sqlite3/index.kz` note that still
+claimed the door rewrite was flow-root-only. A refusal this strong makes
+teaching-side stragglers worse than dead code: the compiler rejects what the
+docs demonstrate.
 - **A deferred TODO in prose is the worst case of this**, because it is a claim
   about the future state of work someone else will do. "X is still broken, a
   separate pass" is false the moment that pass lands, and the person who lands it

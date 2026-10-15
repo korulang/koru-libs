@@ -3,7 +3,7 @@
 ```koru
 ~import unikraft/alloc
 
-~unikraft/alloc:default
+~unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 64)
     | block scratch |> unikraft/alloc:write(block: scratch, bytes: "…")
         | ok filled |> unikraft/alloc:read(block: filled, at: 0, len: 47)

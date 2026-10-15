@@ -47,7 +47,7 @@ std/compiler:paths {
 import unikraft/alloc
 import std/io
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 64)
     | block scratch |> unikraft/alloc:read(block: scratch, at: 0, len: 64)
         | view seen |> std/io:print.ln("should never get here: {{ seen.bytes:s }}")

@@ -45,7 +45,7 @@ std/compiler:paths {
 import unikraft/alloc
 import std/io
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 64)
     | block scratch |> unikraft/alloc:free(block: scratch)
         |> std/io:print.ln("should never get here")

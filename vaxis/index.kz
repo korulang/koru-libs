@@ -2987,7 +2987,7 @@ const VaxisEvent = union(enum) {
 //   ! draw w |> …
 //   | err e |> …
 //
-//   koru/vaxis(demo)                  // ≡ koru/vaxis:default(demo)
+//   koru/vaxis(demo)                  // the default door (spelled `koru/vaxis:default` is refused — KORU208)
 //   ! key k when k.ch == 'q' |> quit()
 //
 // Sugar only: attach sites contribute effect branches spliced onto the

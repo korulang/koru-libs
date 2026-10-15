@@ -31,7 +31,7 @@ std/compiler:paths {
 import unikraft/pages
 import std/io
 
-unikraft/pages:default
+unikraft/pages
 | ready pager |> unikraft/pages:take(pager, count: 2)
     | pages region |> unikraft/pages:read(pages: region, at: 0, len: 64)
         | view seen |> std/io:print.ln("should never get here: {{ seen.bytes:s }}")

@@ -63,7 +63,7 @@ std/compiler:paths {
 import unikraft/alloc
 import std/io
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 64)
     | block scratch |> unikraft/alloc:write(block: scratch, bytes: "sixty-four bytes about to be asked to become eight mib")
         | ok filled |> unikraft/alloc:resize(block: filled, bytes: 8388608)

@@ -182,16 +182,16 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
 // default — the module's voice: `libs/sqlite3 { SQL }`
 // ============================================================================
 // The default-event rule rewrites a bare `libs/sqlite3 { ... }` call to
-// `libs/sqlite3:default { ... }` — but only at flow-root position today
-// (koru gap: the rewrite doesn't recurse into continuations). The explicit
-// `:default` spelling works everywhere now.
+// `libs/sqlite3:default { ... }` at any flow position — flow roots and
+// continuations alike. The `:default` segment is compiler-manufactured:
+// spelling `libs/sqlite3:default(...)` is refused (KORU208).
 //
 // Semantics: per-row iteration. `! row` fires once per result row (the row
 // handle is a scoped borrow, auto-released at the row-body boundary); the
 // statement is finalized exactly once. `{{name:hint}}` interpolation binds
 // scope variables — :d = int64, :f = float64, :s = text (default).
 //
-//   libs/sqlite3:default(conn: d) { SELECT id, name FROM users }
+//   libs/sqlite3(conn: d) { SELECT id, name FROM users }
 //   ! row r |> libs/sqlite3:col.int(stmt: r, index: 0): id |> ...
 //   | done d2 |> libs/sqlite3:close(conn: d2)
 //   | err e |> libs/sqlite3:close(e.conn)

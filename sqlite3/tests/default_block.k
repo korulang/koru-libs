@@ -1,4 +1,4 @@
-// Test: libs/sqlite3:default { SQL } — the module's voice.
+// Test: libs/sqlite3 { SQL } — the module's voice.
 // Per-row `! row` iteration + {{var:hint}} scope interpolation, in
 // continuation position (the site-local transform path).
 
@@ -8,7 +8,7 @@ import std/io
 libs/sqlite3:open(path: ":memory:")
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE users (id INTEGER, name TEXT)")
     | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')")
-        | ok |> libs/sqlite3:default(conn: d) {
+        | ok |> libs/sqlite3(conn: d) {
                 SELECT id FROM users ORDER BY id
             }
             ! row r |> libs/sqlite3:col.int(stmt: r, index: 0): id |> std/io:print.ln("id={{ id:d }}")

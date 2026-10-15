@@ -331,7 +331,7 @@ var arena_hosted: bool = false;
 // `uk_allocpool_alloc` — a pool whose slab comes from the default allocator, so
 // the pool owns it. Mints `<owned!>`, the ONE state `free` accepts.
 //
-// Three arms, not two, and for the reason `unikraft/alloc:default` splits its
+// Three arms, not two, and for the reason `unikraft/alloc`'s default door splits its
 // own: `uk_allocpool_alloc` answers "ukboot never registered an allocator" and
 // "the allocator could not find the bytes" with the same NULL, and they are
 // different problems with different fixes. Conflating them would be a silent

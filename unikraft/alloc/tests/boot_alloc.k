@@ -62,7 +62,7 @@ unikraft:kconfig {
 
 unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start: {{ at_start:d }} bytes free")
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 64)
     | block scratch |> unikraft/alloc:write(block: scratch, bytes: "koru put these 48 bytes into a ukalloc block ok")
         | ok filled |> unikraft/alloc:read(block: filled, at: 0, len: 47)
@@ -82,7 +82,7 @@ unikraft/alloc:default
     | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
 | unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take.zeroed(heap, bytes: 32)
     | block zeroed |> unikraft/alloc:read(block: zeroed, at: 0, len: 32)
         | view fresh |> std/io:print.ln("take.zeroed(32): read 32 bytes with no write first — calloc mints live")
@@ -92,7 +92,7 @@ unikraft/alloc:default
     | exhausted e |> std/io:print.ln("take.zeroed({{ e.bytes:d }}) failed: {{ e.reason:s }}")
 | unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take.aligned(heap, bytes: 512, alignment: 4096)
     | block dma |> unikraft/alloc:write(block: dma, bytes: "a 4096-aligned DMA buffer, header in front of it")
         | ok ready |> unikraft/alloc:read(block: ready, at: 0, len: 48)

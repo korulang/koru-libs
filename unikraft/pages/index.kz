@@ -238,7 +238,7 @@ fn addr(p: anytype) usize {
 // The default allocator's page interface, proven, or an explicit refusal naming
 // which proof failed.
 //
-// Same two-arm split as `unikraft/alloc:default`, for the same reason: "no
+// Same two-arm split as `unikraft/alloc`'s default door, for the same reason: "no
 // allocator registered" and "this allocator cannot do pages" are different
 // problems from "out of pages", and the C reports all three as one NULL.
 ~pub tor default { }

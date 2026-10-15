@@ -36,7 +36,7 @@ std/compiler:paths {
 import unikraft/alloc
 import std/io
 
-unikraft/alloc:default
+unikraft/alloc
 | ready heap |> unikraft/alloc:take.zeroed(heap, bytes: 64)
     | block filled |> unikraft/alloc:resize(block: filled, bytes: 4096)
         | ok grown |> std/io:print.ln("grown")

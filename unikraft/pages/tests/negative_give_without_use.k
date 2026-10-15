@@ -38,7 +38,7 @@ std/compiler:paths {
 import unikraft/pages
 import std/io
 
-unikraft/pages:default
+unikraft/pages
 | ready pager |> unikraft/pages:take(pager, count: 2)
     | pages region |> unikraft/pages:give(pages: region)
         |> std/io:print.ln("should never get here")

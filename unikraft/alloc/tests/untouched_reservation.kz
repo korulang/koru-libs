@@ -49,7 +49,7 @@
 
 ~unikraft/alloc:available(): at_start |> std/io:print.ln("heap at start: {{ at_start:d }} bytes free")
 
-~unikraft/alloc:default
+~unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 4096)
     | block reserved |> unikraft/alloc:untouched(block: reserved): spoken
         |> std/io:print.ln("4 KiB reserved and released without a write, on purpose")
@@ -57,7 +57,7 @@
     | exhausted e |> std/io:print.ln("take({{ e.bytes:d }}) failed: {{ e.reason:s }}")
 | unavailable why |> std/io:print.ln("no allocator: {{ why:s }}")
 
-~unikraft/alloc:default
+~unikraft/alloc
 | ready heap |> unikraft/alloc:take(heap, bytes: 4096)
     | block used |> unikraft/alloc:write(block: used, bytes: "and this one really was written")
         | ok w |> std/io:print.ln("4 KiB written and released the ordinary way")

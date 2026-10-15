@@ -57,7 +57,7 @@ unikraft:kconfig {
     CONFIG_LIBUKALLOCBBUDDY: 'y'
 }
 
-unikraft/pages:default
+unikraft/pages
 | ready pager |> unikraft/pages:available(pager)
     | ok before |> std/io:print.ln("pages at start: {{ before.pages:d }} free x {{ before.page_size:d }} B/page (size derived, not assumed)")
         |> unikraft/pages:take(pager, count: 2)

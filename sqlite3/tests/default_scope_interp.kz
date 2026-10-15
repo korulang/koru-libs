@@ -12,7 +12,7 @@
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE t (id INTEGER, name TEXT)")
     | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO t VALUES (1, 'alice'), (2, 'bob')")
         | ok |> pick(x: 2): uid
-            |> libs/sqlite3:default(conn: d) {
+            |> libs/sqlite3(conn: d) {
                 SELECT name FROM t WHERE id = {{ uid }}
             }
             ! row r |> libs/sqlite3:col.text(stmt: r, index: 0): name |> std/io:print.ln("scope-interp name={{ name:s }}")
