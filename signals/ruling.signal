@@ -1,0 +1,6 @@
+name: ruling
+kind: inferred
+shape: categorical
+face: in
+membrane: true
+note: a deliberate design call was made between live options — not a defect fix, not a new capability; a named authority picked the contract
