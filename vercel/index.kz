@@ -15,6 +15,10 @@ const DeployConfig = struct {
     name: []const u8 = "site",
     root: []const u8 = "public",
     fallback: ?[]const u8 = null,
+    // RULED 2026-10-15 (Lars): `gzip_only` is the spelling — ?bool-optional,
+    // absent means the negotiated identity+gzip pair. A host's artifact cap
+    // is a site property, not a library policy.
+    gzip_only: bool = false,
     routes: [][]const u8 = &.{},
     backend: ?[]const u8 = null,
     dynamic: [][]const u8 = &.{},
@@ -230,6 +234,8 @@ fn readDeployConfig(allocator: std.mem.Allocator, program: *const @import("ast")
                     cfg.root = stripQ(arg.value);
                 } else if (std.mem.eql(u8, arg.name, "fallback")) {
                     cfg.fallback = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
+                } else if (std.mem.eql(u8, arg.name, "gzip_only")) {
+                    cfg.gzip_only = std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "true");
                 } else if (std.mem.eql(u8, arg.name, "backend")) {
                     cfg.backend = if (std.mem.eql(u8, std.mem.trim(u8, arg.value, " \t\r\n"), "null")) null else stripQ(arg.value);
                 } else if (std.mem.eql(u8, arg.name, "routes")) {
@@ -541,7 +547,10 @@ fn runBuild(a: std.mem.Allocator, program: *const @import("ast").Program) bool {
         return false;
     };
     const e = S.mem.indexOf(u8, reactor_src, end) orelse return false;
-    const static_line = S.fmt.allocPrint(a, "~orisha:static(name: \"{s}\", root: \"{s}\")", .{ cfg.name, root_abs }) catch return false;
+    const static_line = if (cfg.gzip_only)
+        S.fmt.allocPrint(a, "~orisha:static(name: \"{s}\", root: \"{s}\", gzip_only: true)", .{ cfg.name, root_abs }) catch return false
+    else
+        S.fmt.allocPrint(a, "~orisha:static(name: \"{s}\", root: \"{s}\")", .{ cfg.name, root_abs }) catch return false;
     const handler_line = buildHandlerLine(a, cfg) orelse return false;
     // Site modules the handler branches target — imported into the reactor
     // entry so the branch invocations resolve. The library never names them;
