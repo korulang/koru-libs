@@ -95,3 +95,9 @@ koru/regressions:case(signal two models build) {
   "tags": ["signal-processing", "build"]
 }
 
+
+koru/regressions:case(qr svg smoke) {
+  "file": "qr/tests/svg_smoke.k",
+  "category": ["qr"],
+  "tags": ["svg", "encoder"]
+}
