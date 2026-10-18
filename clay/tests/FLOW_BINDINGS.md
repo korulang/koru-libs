@@ -52,10 +52,32 @@ level deeper. For `image.load` that meant reindenting ~200 lines of frame
 arms, so the tor became `-> i64` with `@panic` on failure instead
 (fail-loud, no degraded path — fits the no-fallbacks rule for a spike).
 
-**Open question for the language:** is this intended (arms own the
-remainder, use nesting) or should there be a join spelling? A Koru surface
-where every failable mid-chain verb forces either nesting or panic is a
-real ergonomics gap worth a design call, not just a bugfix.
+**Ruled 2026-10-18 — landed in koru `092264fb2`:** an unnamed `|>` at a
+step's own level, after that step's arms, is the step's JOIN for every tor
+(previously only keyword tors `if`/`for`). Both arms fall into it; arm
+bindings stay arm-local, so a value an arm produces reaches the remainder
+through the store:
+
+```koru
+| win w |> clear.color(...)
+        |> image.load(win: w, path)
+            | img i |> stored { world.tex: i.tex }
+            | err e |> ...
+        |> frames(win: w)
+            ! frame f |> ...
+```
+
+Pins: koru `400_210` / `400_211` / `400_212`. Referencing an arm binding at
+the join is refused today only by the host (`use of undeclared identifier`);
+a koruc-level unbound-reference check is the open follow-up.
+
+**The spike can't adopt it yet — blocked on §3.** The join route means the
+texture reaches `! frame` via the store instead of the `texh` capture, and
+dropping that capture is exactly what trips §3: measured 2026-10-18 by
+moving `texh` into `stored { world.tex: texh }` before `frames` and removing
+it from the `! frame` store write — `KORU030: binding 'w' was already
+discharged` at `window.size(win: w)`. `image.load` stays `-> i64` + `@panic`
+until 330_145 is fixed.
 
 ## 3. KORU030 phantom: ambient `w` inside `! frame` — non-compositional verdict
 
