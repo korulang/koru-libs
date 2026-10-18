@@ -80,7 +80,10 @@ extern fn CTLineGetGlyphRuns(line: CId) callconv(.c) Id;
 extern fn CTRunGetGlyphCount(run: CId) callconv(.c) isize;
 extern fn CTRunGetGlyphs(run: CId, range: NSRange, out: [*]u16) callconv(.c) void;
 extern fn CTRunGetPositions(run: CId, range: NSRange, out: [*]NSPoint) callconv(.c) void;
+extern fn CTRunGetAdvances(run: CId, range: NSRange, out: [*]NSSize) callconv(.c) void;
+extern fn CTRunGetStringIndices(run: CId, range: NSRange, out: [*]isize) callconv(.c) void;
 extern fn CTRunGetAttributes(run: CId) callconv(.c) Id;
+extern fn CFStringGetCString(s: CId, buf: [*]u8, max: isize, enc: u32) callconv(.c) bool;
 extern fn CFArrayGetCount(arr: CId) callconv(.c) isize;
 extern fn CFArrayGetValueAtIndex(arr: CId, i: isize) callconv(.c) Id;
 extern fn CFDictionaryGetValue(dict: CId, key: ?*const anyopaque) callconv(.c) Id;
@@ -518,9 +521,11 @@ const GlyphAtlas = struct {
     }
 };
 
-// One shaped glyph: `font` indexes TextSystem.run_fonts; x/y is the pen
-// offset from the run's origin on the baseline (y up, as CoreText gives it).
-const Glyph = struct { font: u16, glyph: u16, x: f32, y: f32 };
+// One shaped glyph: `font` indexes TextSystem.run_fonts; x/y the pen
+// offset on the baseline, `adv` the pen advance, `str_idx` the string
+// index the glyph's cluster starts at (UTF-16 units — byte-equal for
+// ASCII, the v1 hit-testing contract).
+const Glyph = struct { font: u16, glyph: u16, x: f32, y: f32, adv: f32, str_idx: u32 };
 const Layout = struct { width: f32, glyphs: []Glyph };
 const Font = struct { ref: Id, ascent: f32, descent: f32, leading: f32 };
 
@@ -533,6 +538,8 @@ const TextSystem = struct {
     previous: std.AutoHashMapUnmanaged(u64, Layout) = .empty,
     scratch_glyphs: std.ArrayList(u16) = .empty,
     scratch_points: std.ArrayList(NSPoint) = .empty,
+    scratch_adv: std.ArrayList(NSSize) = .empty,
+    scratch_idx: std.ArrayList(isize) = .empty,
 
     fn init(device: Id, scale: f32) TextSystem {
         return .{ .atlas = .init(device, scale), .scale = scale };
@@ -552,6 +559,8 @@ const TextSystem = struct {
         ts.previous.deinit(std.heap.page_allocator);
         ts.scratch_glyphs.deinit(std.heap.page_allocator);
         ts.scratch_points.deinit(std.heap.page_allocator);
+        ts.scratch_adv.deinit(std.heap.page_allocator);
+        ts.scratch_idx.deinit(std.heap.page_allocator);
         ts.atlas.deinit();
     }
 
@@ -641,11 +650,15 @@ const TextSystem = struct {
             const fid = ts.fontId(run_font);
             ts.scratch_glyphs.resize(std.heap.page_allocator, count) catch @panic("metal: OOM shaping text");
             ts.scratch_points.resize(std.heap.page_allocator, count) catch @panic("metal: OOM shaping text");
+            ts.scratch_adv.resize(std.heap.page_allocator, count) catch @panic("metal: OOM shaping text");
+            ts.scratch_idx.resize(std.heap.page_allocator, count) catch @panic("metal: OOM shaping text");
             const all: NSRange = .{ .location = 0, .length = 0 };
             CTRunGetGlyphs(run, all, ts.scratch_glyphs.items.ptr);
             CTRunGetPositions(run, all, ts.scratch_points.items.ptr);
-            for (ts.scratch_glyphs.items, ts.scratch_points.items) |g, p| {
-                glyphs.append(std.heap.page_allocator, .{ .font = fid, .glyph = g, .x = @floatCast(p.x), .y = @floatCast(p.y) }) catch @panic("metal: OOM shaping text");
+            CTRunGetAdvances(run, all, ts.scratch_adv.items.ptr);
+            CTRunGetStringIndices(run, all, ts.scratch_idx.items.ptr);
+            for (ts.scratch_glyphs.items, ts.scratch_points.items, ts.scratch_adv.items, ts.scratch_idx.items) |g, p, adv, si| {
+                glyphs.append(std.heap.page_allocator, .{ .font = fid, .glyph = g, .x = @floatCast(p.x), .y = @floatCast(p.y), .adv = @floatCast(adv.width), .str_idx = @intCast(@max(0, si)) }) catch @panic("metal: OOM shaping text");
             }
         }
         return .{ .width = w, .glyphs = glyphs.toOwnedSlice(std.heap.page_allocator) catch @panic("metal: OOM shaping text") };
@@ -796,6 +809,10 @@ fn cstr(title: []const u8, buf: []u8) [*:0]const u8 {
 
 pub const KeyData = struct {
     code: u16,
+    // The characters this keypress types — empty for keys that type
+    // nothing (arrows, backspace, function keys; filtered at the IMP).
+    // The slice points into ev_chars — valid until its slot wraps.
+    chars: []const u8 = &.{},
 };
 
 pub const MouseData = struct {
@@ -809,8 +826,20 @@ const Event = union(enum) {
 };
 
 var ev_buf: [64]Event = undefined;
+// Char backing for key_down events — a ring parallel to ev_buf so a
+// KeyData's chars slice stays valid after the Event is copied out.
+var ev_chars: [64][16]u8 = undefined;
 var ev_head: usize = 0;
 var ev_tail: usize = 0;
+
+fn pushKey(kc: u16, chars: []const u8) void {
+    const next = (ev_tail + 1) % ev_buf.len;
+    if (next == ev_head) return;
+    const n = @min(chars.len, ev_chars[0].len);
+    @memcpy(ev_chars[ev_tail][0..n], chars[0..n]);
+    ev_buf[ev_tail] = .{ .key_down = .{ .code = kc, .chars = ev_chars[ev_tail][0..n] } };
+    ev_tail = next;
+}
 
 fn pushEvent(e: Event) void {
     const next = (ev_tail + 1) % ev_buf.len;
@@ -902,7 +931,16 @@ fn dumpDrawable(drawable: Id, win: *Window) void {
 ~pub tor input.key { code: i64 }
 
 ~proc input.key|zig {
-    pushEvent(.{ .key_down = .{ .code = @intCast(code) } });
+    pushKey(@intCast(code), &.{});
+}
+
+// Injects a key-down carrying typable text — the automation twin of a real
+// keypress, so probes can exercise the chars path deterministically. The
+// sentinel keycode 0xFFFF names no physical key.
+~pub tor input.type { chars: string }
+
+~proc input.type|zig {
+    pushKey(0xFFFF, chars);
 }
 
 ~pub tor input.mouse { x: f64, y: f64 }
@@ -948,14 +986,31 @@ fn impKeyDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
     _ = recv;
     _ = _s;
     const kc = send(u16, ev, sel("keyCode"));
-    pushEvent(.{ .key_down = .{ .code = kc } });
+    // The typable characters — [NSEvent characters] applies modifiers
+    // (shift → "A"). Control bytes, DEL, and the private-use range AppKit
+    // gives arrows/function keys (U+F700–F8FF → EF 9C..EF A3) type
+    // nothing, so chars stays empty for them.
+    var tmp: [16]u8 = undefined;
+    var chars: []const u8 = &.{};
+    const ns = send(Id, ev, sel("characters"));
+    if (ns != null and CFStringGetCString(ns, &tmp, tmp.len, cf.kCFStringEncodingUTF8)) {
+        const got = tmp[0..std.mem.len(@as([*:0]u8, @ptrCast(&tmp)))];
+        const control = got[0] < 0x20 or got[0] == 0x7F;
+        const private_use = got.len >= 3 and got[0] == 0xEF and got[1] >= 0x9C and got[1] <= 0xA3;
+        if (!control and !private_use) chars = got;
+    }
+    pushKey(kc, chars);
 }
 
 fn impMouseDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
-    _ = recv;
     _ = _s;
-    const p = send(NSPoint, ev, sel("locationInWindow"));
-    pushEvent(.{ .mouse_down = .{ .x = p.x, .y = p.y } });
+    // Window coords are bottom-left origin and include the titlebar;
+    // convert to the view and flip — consumers get the same top-left
+    // pixel space draw calls use.
+    const pw = send(NSPoint, ev, sel("locationInWindow"));
+    const pv = send2(NSPoint, NSPoint, Id, recv, sel("convertPoint:fromView:"), pw, @as(Id, null));
+    const bounds = send(NSRect, recv, sel("bounds"));
+    pushEvent(.{ .mouse_down = .{ .x = pv.x, .y = bounds.size.height - pv.y } });
 }
 
 fn impAcceptsFirstResponder(recv: Id, _s: SEL) callconv(.c) bool {
@@ -1669,6 +1724,45 @@ pub const Frame = struct {
             .clip_round = 0,
         });
     }
+}
+
+// ============================================================================
+// Text hit-testing — caret math over the SHAPED layout, so it can be called
+// from `! mouse-down` arms where no Frame exists. Both take the window for
+// its TextSystem and reuse the layout cache — hit-testing a string you're
+// drawing every frame is a cache hit.
+//
+// v1 contract: str_idx counts UTF-16 units, so index math is byte-exact
+// for ASCII only; a multi-byte run through caret verbs is unmeasured.
+// ============================================================================
+
+// The caret index for a click at `x` points into the run — the midpoint
+// rule: a click left of a glyph's advance midpoint puts the caret before
+// that glyph's cluster.
+~pub tor text.index { win: *Window<opened|active>, text: string, size: f64, x: f64 } -> i64
+
+~proc text.index|zig {
+    const lay = win.text.layout(text, @floatCast(size));
+    const click: f32 = @floatCast(x);
+    for (lay.glyphs) |g| {
+        if (click < g.x + g.adv * 0.5) return @intCast(g.str_idx);
+    }
+    return @intCast(text.len);
+}
+
+// The pen x at caret `index` — where a caret rect or a second draw.text
+// continuation goes. Past-the-end lands after the last advance.
+~pub tor text.offset { win: *Window<opened|active>, text: string, size: f64, index: i64 } -> f64
+
+~proc text.offset|zig {
+    const lay = win.text.layout(text, @floatCast(size));
+    const idx: u32 = @intCast(@max(0, index));
+    var pen: f32 = 0;
+    for (lay.glyphs) |g| {
+        if (g.str_idx >= idx) return g.x;
+        pen = g.x + g.adv;
+    }
+    return pen;
 }
 
 // ============================================================================
