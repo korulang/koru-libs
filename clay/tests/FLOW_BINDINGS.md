@@ -67,9 +67,10 @@ through the store:
             ! frame f |> ...
 ```
 
-Pins: koru `400_210` / `400_211` / `400_212`. Referencing an arm binding at
-the join is refused today only by the host (`use of undeclared identifier`);
-a koruc-level unbound-reference check is the open follow-up.
+Pins: koru `400_210` / `400_211` / `400_212`. Referencing an arm binding in
+a plain call argument is refused by `KORU108` (koru `72e868c21`); inside
+library syntax (`{{ }}`, `stored {}`) the host error still applies —
+the core checker must not know the library (ruled).
 
 **Adopted 2026-10-18 — verified at runtime.** §3 is resolved (330_145
 fixed in koru `fdfb39c`: a `!` arm runs inside the callee's custody, so
