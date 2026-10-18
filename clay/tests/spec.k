@@ -87,26 +87,20 @@ libs/clay:init(width: 640, height: 400)
             // measure: seed scratch, then sweep deepest→root — each row
             // finalizes mw/mh (fix = declared; else children folded along
             // dir with gap+pad) then adds itself into its parent's
-            // accumulators via pid. Depth-bounded: covers d ≤ 2.
+            // accumulators via pid. The depth list is authored ({2, 1} —
+            // the spec's real depth); ! each lv carries it into both sweeps.
             |> std/store:query(spec)
                 ! query s
                     |> std/store:stored { s.mw: 0.0, s.mh: 0.0, s.cw: 0.0, s.ch: 0.0, s.cc: 0 }
-            |> std/store:query(spec)
-                ! query s when s.pid != 0 and s.d == 2
-                    |> std/store:stored { s.mw: if (s.ws == "fix") s.w else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.cw + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.cw - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0, s.mh: if (s.hs == "fix") s.h else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.ch - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.ch + @as(f64, @floatFromInt(s.pad)) * 2.0 }
-            |> std/store:query(spec)
-                ! query s when s.pid != 0 and s.d == 2
+            |> for(&[_]i64{ 2, 1 })
+                ! each lv |> std/store:query(spec)
+                    ! query s when s.pid != 0 and s.d == lv
+                        |> std/store:stored { s.mw: if (s.ws == "fix") s.w else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.cw + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.cw - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0, s.mh: if (s.hs == "fix") s.h else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.ch - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.ch + @as(f64, @floatFromInt(s.pad)) * 2.0 }
                     |> std/store:query(spec)
-                        ! query p when p.id == s.pid
-                            |> std/store:stored { p.cc: p.cc + 1, p.cw: if (p.dir == "ttb") (if (s.mw > p.cw) s.mw else p.cw) else p.cw + s.mw + @as(f64, @floatFromInt(p.gap)), p.ch: if (p.dir == "ttb") p.ch + s.mh + @as(f64, @floatFromInt(p.gap)) else (if (s.mh > p.ch) s.mh else p.ch) }
-            |> std/store:query(spec)
-                ! query s when s.pid != 0 and s.d == 1
-                    |> std/store:stored { s.mw: if (s.ws == "fix") s.w else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.cw + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.cw - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0, s.mh: if (s.hs == "fix") s.h else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.ch - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.ch + @as(f64, @floatFromInt(s.pad)) * 2.0 }
-            |> std/store:query(spec)
-                ! query s when s.pid != 0 and s.d == 1
-                    |> std/store:query(spec)
-                        ! query p when p.id == s.pid
-                            |> std/store:stored { p.cc: p.cc + 1, p.cw: if (p.dir == "ttb") (if (s.mw > p.cw) s.mw else p.cw) else p.cw + s.mw + @as(f64, @floatFromInt(p.gap)), p.ch: if (p.dir == "ttb") p.ch + s.mh + @as(f64, @floatFromInt(p.gap)) else (if (s.mh > p.ch) s.mh else p.ch) }
+                        ! query s when s.pid != 0 and s.d == lv
+                            |> std/store:query(spec)
+                                ! query p when p.id == s.pid
+                                    |> std/store:stored { p.cc: p.cc + 1, p.cw: if (p.dir == "ttb") (if (s.mw > p.cw) s.mw else p.cw) else p.cw + s.mw + @as(f64, @floatFromInt(p.gap)), p.ch: if (p.dir == "ttb") p.ch + s.mh + @as(f64, @floatFromInt(p.gap)) else (if (s.mh > p.ch) s.mh else p.ch) }
             |> libs/clay:layout(cl: h)
                 ! tree t
                     |> std/store:clear(gtrk)
