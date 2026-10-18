@@ -49,7 +49,9 @@ libs/metal:window.open(width: 720, height: 460, title: "omni drift — → to to
                 |> libs/metal:draw.rect(f, x: r.rx + r.rw / 2.0 - 4.0, y: r.ry - 14.0, w: 8.0, h: 8.0, r: if (r.id == world.focus) 1.0 else 0.10, g: if (r.id == world.focus) 1.0 else 0.10, b: if (r.id == world.focus) 1.0 else 0.15, a: 1.0)
     ! key-down k when k.code == 124
         |> std/store:stored { world.focus: if (world.focus + 1 >= world.n) 0 else world.focus + 1 }
-        |> std/store:stored { res[world.focus].touched: world.frame }
+        |> std/store:query(res)
+            ! query r when r.id == world.focus
+                |> std/store:stored { r.touched: world.frame }
     ! key-down k when k.code == 53 |> libs/metal:quit()
     ! close |> libs/metal:quit()
     | done w2 |> libs/metal:window.close(win: w2) |> std/io:print.ln("drift: closed")
