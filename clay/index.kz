@@ -29,6 +29,8 @@
 
 ~std/build:requires {
     exe.linkLibC();
+    exe.linkFramework("CoreText");
+    exe.linkFramework("CoreFoundation");
     exe.addIncludePath(.{ .cwd_relative = "/Users/larsde/src/koru-libs/clay" });
     exe.addCSourceFile(.{ .file = .{ .cwd_relative = "/Users/larsde/src/koru-libs/clay/clay_impl.c" }, .flags = &.{} });
 }
@@ -40,6 +42,12 @@ const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
 });
+
+// Rendered-content metric — implemented in clay_impl.c over Core Text and
+// installed as clay's MeasureTextFunction at init. measure.text calls the
+// same function directly.
+extern fn koru_clay_measure(chars: [*c]const u8, len: i32, size: f64) c.Clay_Dimensions;
+extern fn koru_clay_install_measure() void;
 
 // The solver handle — context + the arena's memory + the last solved command
 // array (valid until the next layout bracket ends).
@@ -81,6 +89,8 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
         $mod.std.heap.page_allocator.free(mem);
         return .{ .err = "clay: $mod.Clay_Initialize failed" };
     }
+    $mod.c.Clay_SetCurrentContext(ctx);
+    $mod.koru_clay_install_measure();
     const h = $mod.std.heap.page_allocator.create($mod.Clay) catch @panic("clay: OOM allocating $mod.Clay token");
     h.* = .{ .ctx = ctx, .mem = mem.ptr, .cap = cap, .cmds = $mod.std.mem.zeroes($mod.c.Clay_RenderCommandArray) };
     return .{ .cl = h };
@@ -223,6 +233,23 @@ pub const CmdView = struct {
     b: f64,
     a: f64,
 };
+
+// Rendered-content dims — what a string occupies at a point size under the
+// OS's own font metrics. The verb a spec walk calls when a row's natural
+// size IS its text.
+pub const Dims = struct {
+    w: f64,
+    h: f64,
+};
+
+// Standalone measure — calls the same function clay is registered to use for
+// CLAY_TEXT, so an outside walk and an inside text element agree on size.
+~pub tor measure.text { tx: string, fs: f64 } -> koru/clay:Dims
+
+~proc measure.text|zig {
+    const d = $mod.koru_clay_measure(tx.ptr, @intCast(tx.len), fs);
+    return .{ .w = @floatCast(d.width), .h = @floatCast(d.height) };
+}
 
 ~pub tor cmd.count { cl: *Clay<solved|ready> } -> i64
 
