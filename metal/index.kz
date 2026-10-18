@@ -310,7 +310,6 @@ pub const Frame = struct {
     send1(void, Id, wobj, sel("setContentView:"), view);
     send1(void, Id, view, sel("setLayer:"), layer);
     send1(void, bool, view, sel("setWantsLayer:"), true);
-    _ = send1(bool, Id, wobj, sel("makeFirstResponder:"), view);
 
     const queue = send(Id, device, sel("newCommandQueue"));
     if (queue == null) {
@@ -372,8 +371,17 @@ pub const Frame = struct {
         return .{ .err = "metal: rect pipeline state creation failed" };
     }
 
+    // We own the release: releasedWhenClosed (default YES) frees wobj the
+    // moment the user hits the close button, leaving win.win dangling for
+    // the `| done` -> window.close path to message. NO keeps the object
+    // alive; window.close sends the matching release.
+    send1(void, bool, wobj, sel("setReleasedWhenClosed:"), false);
+
     send1(void, Id, wobj, sel("makeKeyAndOrderFront:"), @as(Id, null));
     send1(void, bool, app, sel("activateIgnoringOtherApps:"), true);
+    // First responder only sticks on an onscreen window — ordering in resets
+    // it, so this must come after orderFront, not beside content-view setup.
+    _ = send1(bool, Id, wobj, sel("makeFirstResponder:"), view);
 
     const w = std.heap.page_allocator.create(Window) catch @panic("metal: OOM allocating Window token");
     w.* = Window{
@@ -484,6 +492,7 @@ pub const Frame = struct {
     const pool = objc_autoreleasePoolPush();
     defer objc_autoreleasePoolPop(pool);
     send(void, win.win, sel("close"));
+    send(void, win.win, sel("release"));
     std.heap.page_allocator.destroy(win);
 }
 
