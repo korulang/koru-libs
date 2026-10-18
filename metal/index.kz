@@ -122,6 +122,119 @@ const msl_src: [:0]const u8 =
     \\                            sampler smp [[sampler(0)]]) {
     \\    return tex.sample(smp, in.uv);
     \\}
+    \\// Instanced quads — ported from nanoui's shader.metal (MIT,
+    \\// github.com/justrach/nanoui). One instance = one rounded rectangle
+    \\// with optional border (kind 0) or a Gaussian-blurred shadow box
+    \\// (kind 2); kinds 1 (atlas glyph) and 3 (atlas image) are reserved for
+    \\// the text/image atlas work — unbound until it lands. Each instance
+    \\// clips to its clip rect; clip corners may be rounded.
+    \\struct Inst {
+    \\    float4 rect;          // x, y, w, h in points
+    \\    float4 color;         // straight alpha
+    \\    float4 border_color;
+    \\    float4 uv;            // atlas u0,v0,u1,v1 — reserved, unused today
+    \\    float4 clip;          // x0, y0, x1, y1 — huge when unclipped
+    \\    float radius;
+    \\    float border_width;   // blur sigma for kind 2
+    \\    float kind;
+    \\    float clip_round;     // corners * 4096 + radius, 0 = square clip
+    \\};
+    \\struct InstOut {
+    \\    float4 pos [[position]];
+    \\    float2 local;
+    \\    float2 world;
+    \\    float2 uv;
+    \\    uint inst [[flat]];
+    \\};
+    \\vertex InstOut inst_vertex(uint vid [[vertex_id]], uint iid [[instance_id]],
+    \\                          constant Inst *insts [[buffer(0)]],
+    \\                          constant float2 &vp [[buffer(1)]]) {
+    \\    Inst i = insts[iid];
+    \\    float2 corner = float2(vid & 1, vid >> 1);
+    \\    // Shadows reach three standard deviations past their box.
+    \\    float grow = i.kind == 2 ? i.border_width * 3.0 : 0.0;
+    \\    float2 p = i.rect.xy - grow + corner * (i.rect.zw + 2.0 * grow);
+    \\    InstOut o;
+    \\    o.pos = float4(p.x / vp.x * 2.0 - 1.0, 1.0 - p.y / vp.y * 2.0, 0.0, 1.0);
+    \\    o.local = p - i.rect.xy;
+    \\    o.world = p;
+    \\    o.uv = mix(i.uv.xy, i.uv.zw, corner);
+    \\    o.inst = iid;
+    \\    return o;
+    \\}
+    \\// Shadow coverage after Evan Wallace's fast rounded-rectangle shadows:
+    \\// the box's coverage blurred by a Gaussian, exact along x with erf,
+    \\// sampled four times along y.
+    \\static float inst_gaussian(float x, float sigma) {
+    \\    return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * M_PI_F) * sigma);
+    \\}
+    \\static float2 inst_erf2(float2 x) {
+    \\    float2 s = sign(x), a = abs(x);
+    \\    x = 1.0 + (0.278393 + (0.230389 + 0.078108 * (a * a)) * a) * a;
+    \\    x *= x;
+    \\    return s - s / (x * x);
+    \\}
+    \\static float inst_blur_along_x(float x, float y, float sigma, float corner, float2 half_size) {
+    \\    float delta = min(half_size.y - corner - abs(y), 0.0);
+    \\    float curved = half_size.x - corner + sqrt(max(0.0, corner * corner - delta * delta));
+    \\    float2 integral = 0.5 + 0.5 * inst_erf2((x + float2(-curved, curved)) * (sqrt(0.5) / sigma));
+    \\    return integral.y - integral.x;
+    \\}
+    \\static float inst_shadow_alpha(float2 p, float2 half_size, float corner, float sigma) {
+    \\    float low = p.y - half_size.y;
+    \\    float high = p.y + half_size.y;
+    \\    float start = clamp(-3.0 * sigma, low, high);
+    \\    float end = clamp(3.0 * sigma, low, high);
+    \\    float step = (end - start) / 4.0;
+    \\    float y = start + step * 0.5;
+    \\    float alpha = 0.0;
+    \\    for (int k = 0; k < 4; k++) {
+    \\        alpha += inst_blur_along_x(p.x, p.y - y, sigma, corner, half_size) * inst_gaussian(y, sigma) * step;
+    \\        y += step;
+    \\    }
+    \\    return alpha;
+    \\}
+    \\static float inst_rounded_box(float2 p, float2 half_size, float r) {
+    \\    float2 q = abs(p) - half_size + r;
+    \\    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+    \\}
+    \\fragment float4 inst_fragment(InstOut in [[stage_in]],
+    \\                             constant Inst *insts [[buffer(0)]]) {
+    \\    Inst i = insts[in.inst];
+    \\    if (in.world.x < i.clip.x || in.world.y < i.clip.y || in.world.x > i.clip.z || in.world.y > i.clip.w)
+    \\        discard_fragment();
+    \\    float clip_cover = 1.0;
+    \\    if (i.clip_round > 0.0) {
+    \\        float corners = floor(i.clip_round / 4096.0);
+    \\        float rad = i.clip_round - corners * 4096.0;
+    \\        float2 ch = (i.clip.zw - i.clip.xy) * 0.5;
+    \\        float2 q = in.world - i.clip.xy - ch;
+    \\        float cd = inst_rounded_box(q, ch, min(rad, min(ch.x, ch.y)));
+    \\        float caa = max(fwidth(cd), 0.0001) * 0.5;
+    \\        uint bit = q.y < 0.0 ? (q.x < 0.0 ? 1u : 2u) : (q.x < 0.0 ? 8u : 4u);
+    \\        if ((uint(corners) & bit) != 0u) clip_cover = 1.0 - smoothstep(-caa, caa, cd);
+    \\        if (clip_cover <= 0.0) discard_fragment();
+    \\    }
+    \\    float2 half_size = i.rect.zw * 0.5;
+    \\    float2 p = in.local - half_size;
+    \\    float r = min(i.radius, min(half_size.x, half_size.y));
+    \\    float d = inst_rounded_box(p, half_size, r);
+    \\    if (i.kind == 2.0) {
+    \\        float sigma = max(i.border_width, 0.25);
+    \\        float a = inst_shadow_alpha(p, half_size, r, sigma) * i.color.a;
+    \\        return float4(i.color.rgb, a) * clip_cover;
+    \\    }
+    \\    float aa = max(fwidth(d), 0.0001) * 0.5;
+    \\    float coverage = 1.0 - smoothstep(-aa, aa, d);
+    \\    float4 c = i.color;
+    \\    if (i.border_width > 0.0 && i.border_color.a > 0.0) {
+    \\        float inner = smoothstep(-i.border_width - aa, -i.border_width + aa, d);
+    \\        c = mix(c, i.border_color, inner);
+    \\    }
+    \\    float a = c.a * coverage;
+    \\    // Straight alpha out — the pipeline blends SourceAlpha/1-SourceAlpha.
+    \\    return float4(c.rgb, a) * clip_cover;
+    \\}
 ;
 
 // Host twin of the MSL RectParams — float4 first so every float2 still
@@ -131,6 +244,76 @@ const RectParams = extern struct {
     ox: f32, oy: f32, sw: f32, sh: f32,
     vw: f32, vh: f32,
 };
+
+// ============================================================================
+// Instanced quads — ported from nanoui's gpu.zig + metal.zig (MIT,
+// github.com/justrach/nanoui). Draw tors APPEND GpuInstances to the frame's
+// list instead of drawing; the frame flushes once per run of instanced work
+// (before any non-instanced draw, and at frame end) as a single instanced
+// triangle-strip draw. Ordering against textured-quad draws is preserved by
+// flushing first — image draws interleave exactly where they were called.
+//
+// The buffer is a fresh shared-storage MTLBuffer per flush, autoreleased:
+// the encoder retains bound resources until the command buffer completes,
+// so transient per-frame buffers are correct without a ring (nanoui's
+// offscreen path does the same).
+// ============================================================================
+
+// Host twin of the MSL Inst — [4]f32 fields are 16-byte members either way,
+// so offsets match the constant-address-space layout.
+const GpuInstance = extern struct {
+    rect: [4]f32,
+    color: [4]f32,
+    border_color: [4]f32,
+    uv: [4]f32,
+    clip: [4]f32,
+    radius: f32,
+    border_width: f32,
+    kind: f32,
+    clip_round: f32,
+};
+
+const inst_quad: f32 = 0;
+const inst_shadow: f32 = 2;
+
+// A clip rect as the shader reads it: x0,y0,x1,y1. An empty stack means the
+// huge unclipped rect — cheap in the fragment (four compares).
+const no_clip: [4]f32 = .{ -1e6, -1e6, 1e6, 1e6 };
+
+fn curClip(f: *const Frame) [4]f32 {
+    if (f.clip_depth == 0) return no_clip;
+    return f.clip_stack[f.clip_depth - 1];
+}
+
+fn instPush(f: *Frame, inst: GpuInstance) void {
+    f.insts.append(std.heap.page_allocator, inst) catch return;
+}
+
+// Records any pending instances through the instanced pipeline. Called by
+// the frame's own end bracket and by any draw that is NOT an instance —
+// so ordering against textured quads survives the split path.
+fn instFlush(f: *Frame) void {
+    if (f.insts.items.len == 0) return;
+    const n = f.insts.items.len;
+    const device = send(Id, f.layer, sel("device"));
+    const buf = send3(
+        Id, ?*const anyopaque, u64, u64,
+        device, sel("newBufferWithBytes:length:options:"),
+        f.insts.items.ptr, n * @sizeOf(GpuInstance), 0, // MTLStorageModeShared
+    );
+    if (buf == null) {
+        f.insts.clearRetainingCapacity();
+        return;
+    }
+    send(void, buf, sel("autorelease"));
+    send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_inst);
+    send3(void, Id, u64, u64, f.encoder, sel("setVertexBuffer:offset:atIndex:"), buf, 0, 0);
+    const vp: [2]f32 = .{ f.vp_w, f.vp_h };
+    send3(void, *const [2]f32, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &vp, 8, 1);
+    send3(void, Id, u64, u64, f.encoder, sel("setFragmentBuffer:offset:atIndex:"), buf, 0, 0);
+    send4(void, u64, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, n);
+    f.insts.clearRetainingCapacity();
+}
 
 fn sel(comptime name: [:0]const u8) SEL {
     return objc.sel_registerName(name);
@@ -396,8 +579,9 @@ fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
     const buf = send(Id, win.queue, sel("commandBuffer"));
     const enc = send1(Id, Id, buf, sel("renderCommandEncoderWithDescriptor:"), desc);
     send1(void, Id, enc, sel("setRenderPipelineState:"), win.pso);
-    var f = Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h };
+    var f = Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0 };
     cb(&f);
+    instFlush(&f);
     send(void, enc, sel("endEncoding"));
     if (in_live_resize) {
         // The Zed/gpui ordering under presentsWithTransaction: commit the
@@ -516,26 +700,35 @@ pub const Window = struct {
     pso: Id,
     pso_rect: Id,
     pso_tex: Id,
+    pso_inst: Id,
     samp: Id,
     vp_w: f32,
     vp_h: f32,
     lr_w: f32,
     lr_h: f32,
     clear: MTLClearColor,
+    insts: std.ArrayList(GpuInstance),
 };
 
 // A frame in flight — carries the LIVE render encoder, so draw calls inside
 // `! frame` record into the pass the engine ends, presents and commits after
 // the body returns. Pipeline states and viewport ride along so draw tors
-// stay one-borrow calls.
+// stay one-borrow calls. `insts` points at the window's persistent instance
+// list; the clip stack is per-frame — a clip pushed inside `! frame` ends
+// with the frame.
 pub const Frame = struct {
     encoder: Id,
+    layer: Id,
     pso: Id,
     pso_rect: Id,
     pso_tex: Id,
+    pso_inst: Id,
     samp: Id,
     vp_w: f32,
     vp_h: f32,
+    insts: *std.ArrayList(GpuInstance),
+    clip_stack: [16][4]f32,
+    clip_depth: u8,
 };
 
 ~pub tor window.open { width: i32, height: i32, title: string }
@@ -708,6 +901,33 @@ pub const Frame = struct {
         return .{ .err = "metal: tex pipeline state creation failed" };
     }
 
+    // Fourth pipeline: the instanced quad vocabulary — one instanced draw
+    // per run of recorded instances (nanoui's model). Same blend as the
+    // rect/tex pipelines.
+    const ivname = cf.CFStringCreateWithCString(null, "inst_vertex", cf.kCFStringEncodingUTF8);
+    const ifname = cf.CFStringCreateWithCString(null, "inst_fragment", cf.kCFStringEncodingUTF8);
+    const ivfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ivname))));
+    const iffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ifname))));
+    if (ivfn == null or iffn == null) {
+        return .{ .err = "metal: inst shader functions not found in library" };
+    }
+    const ipdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, ipdesc, sel("setVertexFunction:"), ivfn);
+    send1(void, Id, ipdesc, sel("setFragmentFunction:"), iffn);
+    const ipatts = send(Id, ipdesc, sel("colorAttachments"));
+    const ipatt = send1(Id, u64, ipatts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, ipatt, sel("setPixelFormat:"), 80);
+    send1(void, bool, ipatt, sel("setBlendingEnabled:"), true);
+    send1(void, u64, ipatt, sel("setSourceRGBBlendFactor:"), 4);
+    send1(void, u64, ipatt, sel("setDestinationRGBBlendFactor:"), 5);
+    send1(void, u64, ipatt, sel("setSourceAlphaBlendFactor:"), 1);
+    send1(void, u64, ipatt, sel("setDestinationAlphaBlendFactor:"), 5);
+    var ipsoErr: Id = null;
+    const pso_inst = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), ipdesc, &ipsoErr);
+    if (pso_inst == null) {
+        return .{ .err = "metal: inst pipeline state creation failed" };
+    }
+
     // One shared sampler: linear min/mag, clamp — enough for image quads.
     const sdesc = send(Id, cls("MTLSamplerDescriptor"), sel("new"));
     send1(void, u64, sdesc, sel("setMinFilter:"), 1); // MTLSamplerMinMagFilterLinear
@@ -749,12 +969,14 @@ pub const Frame = struct {
         .pso = pso,
         .pso_rect = pso_rect,
         .pso_tex = pso_tex,
+        .pso_inst = pso_inst,
         .samp = samp,
         .vp_w = @floatFromInt(width),
         .vp_h = @floatFromInt(height),
         .lr_w = -1,
         .lr_h = -1,
         .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
+        .insts = .empty,
     };
     live_win = w;
     return .{ .win = w };
@@ -840,9 +1062,10 @@ pub const Frame = struct {
         const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
         $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
 
-        var __f = $mod.Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h };
+        var __f = $mod.Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0 };
         frame(&__f);
 
+        $mod.instFlush(&__f);
         $mod.send(void, enc, $mod.sel("endEncoding"));
         $mod.send1(void, $mod.Id, buf, $mod.sel("presentDrawable:"), drawable);
         $mod.send(void, buf, $mod.sel("commit"));
@@ -870,6 +1093,7 @@ pub const Frame = struct {
     defer objc_autoreleasePoolPop(pool);
     send(void, win.win, sel("close"));
     send(void, win.win, sel("release"));
+    win.insts.deinit(std.heap.page_allocator);
     std.heap.page_allocator.destroy(win);
 }
 
@@ -895,6 +1119,7 @@ pub const Frame = struct {
 ~pub tor draw.triangle { f: *Frame<frame> }
 
 ~proc draw.triangle|zig {
+    instFlush(f);
     send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso);
     send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 3, 0, 3);
 }
@@ -906,14 +1131,101 @@ pub const Frame = struct {
 ~pub tor draw.rect { f: *Frame<frame>, x: f64, y: f64, w: f64, h: f64, r: f64, g: f64, b: f64, a: f64 }
 
 ~proc draw.rect|zig {
-    send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_rect);
-    var params = RectParams{
-        .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a),
-        .ox = @floatCast(x), .oy = @floatCast(y), .sw = @floatCast(w), .sh = @floatCast(h),
-        .vw = f.vp_w, .vh = f.vp_h,
-    };
-    send3(void, *const RectParams, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &params, @sizeOf(RectParams), 0);
-    send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 4, 0, 4);
+    instPush(f, .{
+        .rect = .{ @floatCast(x), @floatCast(y), @floatCast(w), @floatCast(h) },
+        .color = .{ @floatCast(r), @floatCast(g), @floatCast(b), @floatCast(a) },
+        .border_color = .{ 0, 0, 0, 0 },
+        .uv = .{ 0, 0, 0, 0 },
+        .clip = curClip(f),
+        .radius = 0,
+        .border_width = 0,
+        .kind = inst_quad,
+        .clip_round = 0,
+    });
+}
+
+// A rounded-rect fill — same quad, SDF corners. `radius` is clamped to the
+// half-extents in the fragment.
+~pub tor draw.roundrect { f: *Frame<frame>, x: f64, y: f64, w: f64, h: f64, radius: f64, r: f64, g: f64, b: f64, a: f64 }
+
+~proc draw.roundrect|zig {
+    instPush(f, .{
+        .rect = .{ @floatCast(x), @floatCast(y), @floatCast(w), @floatCast(h) },
+        .color = .{ @floatCast(r), @floatCast(g), @floatCast(b), @floatCast(a) },
+        .border_color = .{ 0, 0, 0, 0 },
+        .uv = .{ 0, 0, 0, 0 },
+        .clip = curClip(f),
+        .radius = @floatCast(radius),
+        .border_width = 0,
+        .kind = inst_quad,
+        .clip_round = 0,
+    });
+}
+
+// A rounded rect carrying fill AND border in one instance — the panel
+// primitive. `bw` is the border thickness in points; the border color is
+// ignored (and the border skipped) when bw is 0.
+~pub tor draw.panel { f: *Frame<frame>, x: f64, y: f64, w: f64, h: f64, radius: f64, r: f64, g: f64, b: f64, a: f64, bw: f64, br: f64, bg: f64, bb: f64, ba: f64 }
+
+~proc draw.panel|zig {
+    instPush(f, .{
+        .rect = .{ @floatCast(x), @floatCast(y), @floatCast(w), @floatCast(h) },
+        .color = .{ @floatCast(r), @floatCast(g), @floatCast(b), @floatCast(a) },
+        .border_color = .{ @floatCast(br), @floatCast(bg), @floatCast(bb), @floatCast(ba) },
+        .uv = .{ 0, 0, 0, 0 },
+        .clip = curClip(f),
+        .radius = @floatCast(radius),
+        .border_width = @floatCast(bw),
+        .kind = inst_quad,
+        .clip_round = 0,
+    });
+}
+
+// A Gaussian-blurred shadow box — Evan Wallace's fast rounded-rect shadow,
+// after nanoui. `blur` is sigma in points; the drawn quad extends 3*sigma
+// past the box in every direction.
+~pub tor draw.shadow { f: *Frame<frame>, x: f64, y: f64, w: f64, h: f64, radius: f64, blur: f64, r: f64, g: f64, b: f64, a: f64 }
+
+~proc draw.shadow|zig {
+    instPush(f, .{
+        .rect = .{ @floatCast(x), @floatCast(y), @floatCast(w), @floatCast(h) },
+        .color = .{ @floatCast(r), @floatCast(g), @floatCast(b), @floatCast(a) },
+        .border_color = .{ 0, 0, 0, 0 },
+        .uv = .{ 0, 0, 0, 0 },
+        .clip = curClip(f),
+        .radius = @floatCast(radius),
+        .border_width = @floatCast(blur),
+        .kind = inst_shadow,
+        .clip_round = 0,
+    });
+}
+
+// The clip stack — every instance records the clip live when it is pushed,
+// so a group of draws bounded by push/pop clip together. Nesting is by
+// INTERSECTION: the pushed rect is clamped to the parent clip.
+~pub tor draw.clip.push { f: *Frame<frame>, x: f64, y: f64, w: f64, h: f64 }
+
+~proc draw.clip.push|zig {
+    if (f.clip_depth >= f.clip_stack.len) return;
+    var x0: f32 = @floatCast(x);
+    var y0: f32 = @floatCast(y);
+    var x1: f32 = x0 + @as(f32, @floatCast(w));
+    var y1: f32 = y0 + @as(f32, @floatCast(h));
+    if (f.clip_depth > 0) {
+        const parent = f.clip_stack[f.clip_depth - 1];
+        x0 = @max(x0, parent[0]);
+        y0 = @max(y0, parent[1]);
+        x1 = @min(x1, parent[2]);
+        y1 = @min(y1, parent[3]);
+    }
+    f.clip_stack[f.clip_depth] = .{ x0, y0, x1, y1 };
+    f.clip_depth += 1;
+}
+
+~pub tor draw.clip.pop { f: *Frame<frame> }
+
+~proc draw.clip.pop|zig {
+    if (f.clip_depth > 0) f.clip_depth -= 1;
 }
 
 // ============================================================================
@@ -980,6 +1292,7 @@ pub const Frame = struct {
 ~pub tor draw.image { f: *Frame<frame>, tex: i64, x: f64, y: f64, w: f64, h: f64 }
 
 ~proc draw.image|zig {
+    instFlush(f);
     const tid: Id = @ptrFromInt(@as(usize, @intCast(tex)));
     send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_tex);
     var params = RectParams{
