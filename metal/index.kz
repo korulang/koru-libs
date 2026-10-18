@@ -459,6 +459,11 @@ pub const Frame = struct {
     const rpatts = send(Id, rpdesc, sel("colorAttachments"));
     const rpatt = send1(Id, u64, rpatts, sel("objectAtIndexedSubscript:"), 0);
     send1(void, u64, rpatt, sel("setPixelFormat:"), 80);
+    send1(void, bool, rpatt, sel("setBlendingEnabled:"), true);
+    send1(void, u64, rpatt, sel("setSourceRGBBlendFactor:"), 4);
+    send1(void, u64, rpatt, sel("setDestinationRGBBlendFactor:"), 5);
+    send1(void, u64, rpatt, sel("setSourceAlphaBlendFactor:"), 1);
+    send1(void, u64, rpatt, sel("setDestinationAlphaBlendFactor:"), 5);
     var rpsoErr: Id = null;
     const pso_rect = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), rpdesc, &rpsoErr);
     if (pso_rect == null) {
