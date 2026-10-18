@@ -1,0 +1,253 @@
+// @korulang/clay — the Clay layout solver (clay.h vendored, zlib) bound for
+// Koru. Clay answers "where do children go inside a box"; it does NOT decide
+// where boxes go — the field owns that. The surface mirrors the shape clay.h
+// actually has, with the CLAY() macro's for-loop trick unfolded into honest
+// open/cfg/close calls:
+//
+//   clay:init(w, h)        -> *Clay<ready!>     arena + context
+//   clay:layout(cl)                           BeginLayout … EndLayout bracket
+//     ! tree *Tree<tree!>                     elements legal only in here:
+//       clay:el.open(t)   / clay:el.cfg(t, …) / clay:el.close(t)
+//       clay:el.close-to(t, d)                pop the open stack to depth d —
+//                                             the primitive a DATA-driven walk
+//                                             needs (spec rows carry `d`)
+//     | done *Clay<solved!>                   render commands now readable
+//   clay:each(cl)  ! cmd koru/clay:CmdView   drain the solved command array
+//   clay:drop(cl)                             release arena + token
+//
+// Obligations mirror clay's real contract: elements can only be declared
+// inside a layout bracket (the *Tree borrow is the only route to el.*), and
+// render commands exist only at <solved> — no binding site can read a box
+// before EndLayout produced it.
+//
+// The binding is deliberately dumb about vocabulary: wk/hk/dir/align are the
+// raw clay enums as i64 (0=fit 1=grow 2=percent 3=fixed; 0=LTR 1=TTB;
+// 0=left/top 1=right/bottom 2=center). A panel dialect (stack/dock/grid)
+// belongs ABOVE this — in a transform or spec walker — not in the binding.
+
+~import std/build
+
+~std/build:requires {
+    exe.linkLibC();
+    exe.addIncludePath(.{ .cwd_relative = "/Users/larsde/src/koru-libs/clay" });
+    exe.addCSourceFile(.{ .file = .{ .cwd_relative = "/Users/larsde/src/koru-libs/clay/clay_impl.c" }, .flags = &.{} });
+}
+
+const std = @import("std");
+
+// Declarations only — the implementation compiles as real C (clay_impl.c);
+// translate-c's emitted *_DEFAULT globals don't link as externs.
+const c = @cImport({
+    @cInclude("clay.h");
+});
+
+// The solver handle — context + the arena's memory + the last solved command
+// array (valid until the next layout bracket ends).
+pub const Clay = struct {
+    ctx: ?*c.Clay_Context,
+    mem: [*]u8,
+    cap: usize,
+    cmds: c.Clay_RenderCommandArray,
+};
+
+// The live layout bracket — element ops borrow this and the open-depth rides
+// here, so close_to(d) is host-side bookkeeping, not a Koru loop.
+pub const Tree = struct {
+    depth: i64,
+};
+
+fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
+    const len: usize = @intCast(@max(ed.errorText.length, 0));
+    std.debug.print("clay: error {d}: {s}\n", .{ @as(u32, ed.errorType), ed.errorText.chars[0..len] });
+}
+
+// ============================================================================
+// Lifecycle
+// ============================================================================
+
+~pub tor init { width: f64, height: f64 }
+| cl *Clay<ready!>
+| err string
+
+~proc init|zig {
+    const cap: usize = @intCast($mod.c.Clay_MinMemorySize());
+    const mem = $mod.std.heap.page_allocator.alloc(u8, cap) catch return .{ .err = "clay: arena OOM" };
+    const arena = $mod.c.Clay_CreateArenaWithCapacityAndMemory(cap, mem.ptr);
+    const ctx = $mod.c.Clay_Initialize(arena, .{
+        .width = @floatCast(width),
+        .height = @floatCast(height),
+    }, .{ .errorHandlerFunction = $mod.clayErr, .userData = null });
+    if (ctx == null) {
+        $mod.std.heap.page_allocator.free(mem);
+        return .{ .err = "clay: $mod.Clay_Initialize failed" };
+    }
+    const h = $mod.std.heap.page_allocator.create($mod.Clay) catch @panic("clay: OOM allocating $mod.Clay token");
+    h.* = .{ .ctx = ctx, .mem = mem.ptr, .cap = cap, .cmds = $mod.std.mem.zeroes($mod.c.Clay_RenderCommandArray) };
+    return .{ .cl = h };
+}
+
+~pub tor dims { cl: *Clay<ready|solved>, width: f64, height: f64 }
+
+~proc dims|zig {
+    $mod.c.Clay_SetCurrentContext(cl.ctx);
+    $mod.c.Clay_SetLayoutDimensions(.{ .width = @floatCast(width), .height = @floatCast(height) });
+}
+
+~pub tor drop { cl: *Clay<!solved|!ready> }
+
+~proc drop|zig {
+    $mod.std.heap.page_allocator.free(cl.mem[0..cl.cap]);
+    $mod.std.heap.page_allocator.destroy(cl);
+}
+
+// ============================================================================
+// The layout bracket — BeginLayout before the tree arm, EndLayout after, and
+// the solved array lands on the handle at <solved!>.
+// ============================================================================
+
+// `cl` is a borrow, not a consumption: layout runs once per frame INSIDE a
+// `! frame` arm, and KORU032 bars discharging an outer-scope obligation
+// there. The tree token is the produced obligation instead — minted inside
+// the bracket, discharged by release.tree before it ends.
+~pub tor layout { cl: *Clay<ready|solved> }
+! tree *Tree<tree!>
+| solved *Clay<solved>
+
+~proc layout|zig {
+    $mod.c.Clay_SetCurrentContext(cl.ctx);
+    $mod.c.Clay_BeginLayout();
+    var __t = $mod.Tree{ .depth = 0 };
+    tree(&__t);
+    while (__t.depth > 0) : (__t.depth -= 1) $mod.c.Clay__CloseElement();
+    cl.cmds = $mod.c.Clay_EndLayout(0.016);
+    return .{ .solved = cl };
+}
+
+// ============================================================================
+// Element ops — legal only under `! tree` (the *Tree<tree> borrow).
+// open pushes, cfg configures the just-opened element, close pops.
+// ============================================================================
+
+~pub tor el.open { t: *Tree<tree> }
+
+~proc el.open|zig {
+    $mod.c.Clay__OpenElement();
+    t.depth += 1;
+}
+
+// One declaration, all v0 fields — clay's ConfigureOpenElement applies a WHOLE
+// ElementDeclaration, so partial config calls would erase each other; the
+// honest seam is one call with every field present.
+~pub tor el.cfg {
+    t: *Tree<tree>,
+    wk: i64, w: f64, hk: i64, h: f64,
+    dir: i64, gap: i64, pad: i64, ax: i64, ay: i64,
+    r: f64, g: f64, b: f64, a: f64,
+    fl: i64, fx: f64, fy: f64,
+}
+
+~proc el.cfg|zig {
+    var decl: $mod.c.Clay_ElementDeclaration = $mod.std.mem.zeroes($mod.c.Clay_ElementDeclaration);
+    decl.layout = .{
+        .sizing = .{
+            .width = $mod.sizing(wk, w),
+            .height = $mod.sizing(hk, h),
+        },
+        .padding = .{
+            .left = @intCast(@max(pad, 0)),
+            .right = @intCast(@max(pad, 0)),
+            .top = @intCast(@max(pad, 0)),
+            .bottom = @intCast(@max(pad, 0)),
+        },
+        .childGap = @intCast(@max(gap, 0)),
+        .childAlignment = .{ .x = @intCast(ax), .y = @intCast(ay) },
+        .layoutDirection = @intCast(dir),
+    };
+    decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    if (fl != 0) {
+        decl.floating = .{
+            .offset = .{ .x = @floatCast(fx), .y = @floatCast(fy) },
+            .attachTo = $mod.c.CLAY_ATTACH_TO_ROOT,
+            .attachPoints = .{ .element = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP, .parent = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP },
+        };
+    }
+    $mod.c.Clay__ConfigureOpenElement(decl);
+}
+
+fn sizing(kind: i64, v: f64) c.Clay_SizingAxis {
+    const f: f32 = @floatCast(v);
+    return switch (kind) {
+        1 => .{ .size = .{ .minMax = .{ .min = f, .max = f } }, .type = c.CLAY__SIZING_TYPE_GROW },
+        2 => .{ .size = .{ .percent = f }, .type = c.CLAY__SIZING_TYPE_PERCENT },
+        3 => .{ .size = .{ .minMax = .{ .min = f, .max = f } }, .type = c.CLAY__SIZING_TYPE_FIXED },
+        else => .{ .size = .{ .minMax = .{ .min = 0, .max = f } }, .type = c.CLAY__SIZING_TYPE_FIT },
+    };
+}
+
+~pub tor el.close { t: *Tree<tree> }
+
+~proc el.close|zig {
+    $mod.c.Clay__CloseElement();
+    t.depth -= 1;
+}
+
+// Pop the open stack down to depth d — the data-walk primitive: a spec row
+// carries the depth it lives at, the walker emits close_to(d) then open.
+~pub tor el.close-to { t: *Tree<tree>, d: i64 }
+
+~proc el.close-to|zig {
+    while (t.depth > d) : (t.depth -= 1) $mod.c.Clay__CloseElement();
+}
+
+// No-op consumer of the tree borrow — auto-inserted release, mirror of
+// metal's release.frame.
+~pub tor release.tree { t: *Tree<!tree> }
+
+~proc release.tree|zig { _ = &t; }
+
+// ============================================================================
+// Command drain — reads the array EndLayout produced. `each` iterates it as
+// an effect arm (same idiom as metal's `! frame`): one `! cmd` firing per
+// render command, carrying a normalized view — colors arrive 0-1, kind is the
+// clay command-type ordinal (1 = RECTANGLE).
+// ============================================================================
+
+pub const CmdView = struct {
+    kind: i64,
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    a: f64,
+};
+
+~pub tor cmd.count { cl: *Clay<solved|ready> } -> i64
+
+~proc cmd.count|zig {
+    return cl.cmds.length;
+}
+
+~pub tor each { cl: *Clay<solved> }
+! cmd koru/clay:CmdView
+| drained
+
+~proc each|zig {
+    for (0..@intCast(cl.cmds.length)) |__ci| {
+        const __rc = &cl.cmds.internalArray[__ci];
+        cmd(.{
+            .kind = @as(i64, __rc.commandType),
+            .x = __rc.boundingBox.x,
+            .y = __rc.boundingBox.y,
+            .w = __rc.boundingBox.width,
+            .h = __rc.boundingBox.height,
+            .r = __rc.renderData.rectangle.backgroundColor.r / 255.0,
+            .g = __rc.renderData.rectangle.backgroundColor.g / 255.0,
+            .b = __rc.renderData.rectangle.backgroundColor.b / 255.0,
+            .a = __rc.renderData.rectangle.backgroundColor.a / 255.0,
+        });
+    }
+    return .{ .drained = .{} };
+}

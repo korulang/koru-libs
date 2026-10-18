@@ -1,0 +1,25 @@
+{
+  "name": "@korulang/clay",
+  "version": "0.0.1",
+  "description": "Clay layout solver binding — layout as data, solved per-chunk, drawn by whoever borrows the frame",
+  "keywords": ["koru", "korulang", "clay", "layout", "ui", "panels"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "clay"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.kz",
+    "clay.h",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz"
+  }
+}
