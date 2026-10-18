@@ -41,6 +41,13 @@ libs/metal:window.open(width: 720, height: 460, title: "omni tilt — automation
         |> std/store:stored { world.frame: world.frame + 1 }
         |> std/store:stored { cam.tilt: cam.tilt + (@as(f64, @floatFromInt(world.tiltT)) - cam.tilt) * 0.10 }
         |> libs/metal:draw.rect(f, x: 0.0, y: 228.0, w: 720.0, h: 2.0, r: 0.45, g: 0.45, b: 0.55, a: cam.tilt * 0.5)
+        |> std/store:query(res)
+            ! query r
+                |> std/store:stored { r.t: if (world.drift == 0) 0.0 else if (world.frame - r.touched > 240) 1.0 else @as(f64, @floatFromInt(world.frame - r.touched)) / 240.0 }
+                |> std/store:stored { r.s: 1.0 - 0.78 * r.t }
+                |> std/store:stored { r.rx: r.cx * (1.0 - r.t) + 360.0 * r.t - 70.0 * r.s, r.ry: r.cy * (1.0 - r.t) + 230.0 * r.t - 45.0 * r.s + (230.0 - r.cy) * 0.55 * cam.tilt - r.t * 150.0 * cam.tilt, r.rw: 140.0 * r.s, r.rh: 90.0 * r.s * (1.0 - 0.35 * cam.tilt), r.rr: r.br * (1.0 - r.t) + 0.10 * r.t, r.rg: r.bg * (1.0 - r.t) + 0.10 * r.t, r.rb: r.bb * (1.0 - r.t) + 0.15 * r.t }
+                |> libs/metal:draw.rect(f, x: r.rx, y: r.ry, w: r.rw, h: r.rh, r: r.rr, g: r.rg, b: r.rb, a: 1.0)
+                |> libs/metal:draw.rect(f, x: r.rx + r.rw / 2.0 - 4.0, y: r.ry - 14.0, w: 8.0, h: 8.0, r: if (r.id == world.focus) 1.0 else 0.10, g: if (r.id == world.focus) 1.0 else 0.10, b: if (r.id == world.focus) 1.0 else 0.15, a: 1.0)
         |> if (world.frame == 60)
             | then |> libs/metal:input.key(code: 124)
         |> if (world.frame == 140)
@@ -55,13 +62,6 @@ libs/metal:window.open(width: 720, height: 460, title: "omni tilt — automation
             | then |> libs/metal:window.snap(path: "/tmp/omni_tilt_tilted.bmp")
         |> if (world.frame == 345)
             | then |> libs/metal:quit()
-        |> std/store:query(res)
-            ! query r
-                |> std/store:stored { r.t: if (world.drift == 0) 0.0 else if (world.frame - r.touched > 240) 1.0 else @as(f64, @floatFromInt(world.frame - r.touched)) / 240.0 }
-                |> std/store:stored { r.s: 1.0 - 0.78 * r.t }
-                |> std/store:stored { r.rx: r.cx * (1.0 - r.t) + 360.0 * r.t - 70.0 * r.s, r.ry: r.cy * (1.0 - r.t) + 230.0 * r.t - 45.0 * r.s + (230.0 - r.cy) * 0.55 * cam.tilt - r.t * 150.0 * cam.tilt, r.rw: 140.0 * r.s, r.rh: 90.0 * r.s * (1.0 - 0.35 * cam.tilt), r.rr: r.br * (1.0 - r.t) + 0.10 * r.t, r.rg: r.bg * (1.0 - r.t) + 0.10 * r.t, r.rb: r.bb * (1.0 - r.t) + 0.15 * r.t }
-                |> libs/metal:draw.rect(f, x: r.rx, y: r.ry, w: r.rw, h: r.rh, r: r.rr, g: r.rg, b: r.rb, a: 1.0)
-                |> libs/metal:draw.rect(f, x: r.rx + r.rw / 2.0 - 4.0, y: r.ry - 14.0, w: 8.0, h: 8.0, r: if (r.id == world.focus) 1.0 else 0.10, g: if (r.id == world.focus) 1.0 else 0.10, b: if (r.id == world.focus) 1.0 else 0.15, a: 1.0)
     ! key-down k when k.code == 124
         |> std/store:stored { world.focus: if (world.focus + 1 >= world.n) 0 else world.focus + 1 }
         |> std/store:query(res)
