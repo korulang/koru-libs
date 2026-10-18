@@ -11,11 +11,14 @@
 // the requested point size (advance width, ascent+descent+leading height).
 // Registered as clay's own MeasureTextFunction AND called directly by the
 // clay:measure.text verb, so a spec walk and any future CLAY_TEXT element
-// read the identical metric.
+// read the identical metric. The font is the system face — the same face
+// metal's draw.text shapes through NSFont systemFontOfSize:, so measured
+// boxes and drawn glyphs agree. If metal's text font ever becomes
+// configurable this must become a shared measure bridge, not a twin.
 Clay_Dimensions koru_clay_measure(const char *chars, int32_t len, double size) {
     Clay_Dimensions d = { 0.0f, 0.0f };
     if (!chars || len <= 0 || size <= 0.0) return d;
-    CTFontRef font = CTFontCreateWithName(CFSTR("Helvetica"), (CGFloat)size, NULL);
+    CTFontRef font = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, (CGFloat)size, NULL);
     if (!font) return d;
     CFStringRef str = CFStringCreateWithBytes(kCFAllocatorDefault,
         (const UInt8 *)chars, (CFIndex)len, kCFStringEncodingUTF8, false);

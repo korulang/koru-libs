@@ -241,7 +241,10 @@ fn sizing(kind: i64, v: f64) c.Clay_SizingAxis {
 // Command drain — reads the array EndLayout produced. `each` iterates it as
 // an effect arm (same idiom as metal's `! frame`): one `! cmd` firing per
 // render command, carrying a normalized view — colors arrive 0-1, kind is the
-// clay command-type ordinal (1 = RECTANGLE).
+// clay command-type ordinal (1 = RECTANGLE, 3 = TEXT, 4 = IMAGE, 5/6 =
+// SCISSOR_START/END). TEXT commands fill tx (the string slice, valid only
+// inside the arm — it points into clay's arena) and fs (fontSize), and
+// r..a carry the text color.
 // ============================================================================
 
 pub const CmdView = struct {
@@ -256,6 +259,8 @@ pub const CmdView = struct {
     a: f64,
     img: i64,
     ud: i64,
+    tx: []const u8,
+    fs: f64,
 };
 
 // Rendered-content dims — what a string occupies at a point size under the
@@ -288,21 +293,27 @@ pub const Dims = struct {
 ~proc each|zig {
     for (0..@intCast(cl.cmds.length)) |__ci| {
         const __rc = &cl.cmds.internalArray[__ci];
+        const is_text = __rc.commandType == $mod.c.CLAY_RENDER_COMMAND_TYPE_TEXT;
         cmd(.{
             .kind = @as(i64, __rc.commandType),
             .x = __rc.boundingBox.x,
             .y = __rc.boundingBox.y,
             .w = __rc.boundingBox.width,
             .h = __rc.boundingBox.height,
-            .r = __rc.renderData.rectangle.backgroundColor.r / 255.0,
-            .g = __rc.renderData.rectangle.backgroundColor.g / 255.0,
-            .b = __rc.renderData.rectangle.backgroundColor.b / 255.0,
-            .a = __rc.renderData.rectangle.backgroundColor.a / 255.0,
+            .r = (if (is_text) __rc.renderData.text.textColor.r else __rc.renderData.rectangle.backgroundColor.r) / 255.0,
+            .g = (if (is_text) __rc.renderData.text.textColor.g else __rc.renderData.rectangle.backgroundColor.g) / 255.0,
+            .b = (if (is_text) __rc.renderData.text.textColor.b else __rc.renderData.rectangle.backgroundColor.b) / 255.0,
+            .a = (if (is_text) __rc.renderData.text.textColor.a else __rc.renderData.rectangle.backgroundColor.a) / 255.0,
             .img = if (__rc.commandType == $mod.c.CLAY_RENDER_COMMAND_TYPE_IMAGE)
                 @as(i64, @intCast(@intFromPtr(__rc.renderData.image.imageData)))
             else
                 0,
             .ud = @as(i64, @intCast(@intFromPtr(__rc.userData))),
+            .tx = if (is_text)
+                __rc.renderData.text.stringContents.chars[0..@intCast(@max(0, __rc.renderData.text.stringContents.length))]
+            else
+                "",
+            .fs = if (is_text) @as(f64, @floatFromInt(__rc.renderData.text.fontSize)) else 0.0,
         });
     }
     return .{ .drained = .{} };

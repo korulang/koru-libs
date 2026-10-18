@@ -1765,6 +1765,17 @@ pub const Frame = struct {
     return pen;
 }
 
+// The font's ascent at `size` — the distance from a line box's top edge
+// down to the baseline draw.text wants. Consumers holding a top-left
+// box (a clay TEXT command's boundingBox) place the baseline at
+// box.y + text.ascent. Same font path draw.text shapes with, so the
+// metric can't drift from the renderer.
+~pub tor text.ascent { win: *Window<opened|active>, size: f64 } -> f64
+
+~proc text.ascent|zig {
+    return @floatCast(win.text.font(@floatCast(size)).ascent);
+}
+
 // ============================================================================
 // Images — decode to BGRA premultiplied via NSImage + CGBitmapContext (pure
 // Cocoa/CoreGraphics, no extra frameworks), then pack into the window's

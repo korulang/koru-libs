@@ -259,6 +259,11 @@ libs/clay:init(width: 640, height: 400)
                             |> if (s.kind != "grid" and s.kind != "cell" and s.kind != "col" and s.kind != "row")
                                 | then |> libs/clay:el.close-to(t, s.d)
                                     |> libs/ui:panel(t, s.dock, s.ws, s.w, s.hs, s.h, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, s.fl, s.fx, s.fy)
+                            // Rendered content — a tx row emits a text leaf
+                            // inside the panel its kind branch just opened;
+                            // the TEXT command is drawn in the drain below.
+                            |> if (s.tx != "")
+                                | then |> libs/ui:text(t, s.tx, s.fs, r: 232.0, g: 236.0, b: 248.0, a: 255.0, eid: o + 1)
                     // Tool chrome emit — every visible tools row is a root-
                     // floating element; chips ride the slide via px + cx.
                     // Emitted after the spec sweep so chrome draws on top.
@@ -269,6 +274,9 @@ libs/clay:init(width: 640, height: 400)
                 | solved cls |> libs/clay:each(cl: cls)
                     ! cmd rc |> if (rc.kind == 1)
                         | then |> libs/metal:draw.rect(f, rc.x, rc.y, rc.w, rc.h, rc.r, rc.g, rc.b, rc.a)
+                    ! cmd rc |> if (rc.kind == 3)
+                        | then |> libs/metal:text.ascent(win: w, size: rc.fs): asc
+                            |> libs/metal:draw.text(f, x: @round(rc.x), y: @round(rc.y + asc), size: rc.fs, rc.r, rc.g, rc.b, rc.a, text: rc.tx)
                     | drained |> std/store:stored { world.drew: 1 }
         ! key-down k when k.code == 48
             |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }

@@ -284,7 +284,7 @@ libs/clay:init(width: 640, height: 400)
                             |> libs/ui:panel(t, dock: "", tl.ws, tl.w, tl.hs, tl.h, tl.dir, tl.gap, tl.pad, tl.ax, tl.ay, tl.r, tl.g, tl.b, tl.a, fl: 1, fx: tl.px + tl.cx, fy: 70.0 + tl.cy)
                 | solved cls |> libs/clay:each(cl: cls)
                     ! cmd rc |> if (rc.kind == 1)
-                        | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
+                        | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
                             // Quantize to the pixel grid — edges, not sizes:
                             // x/w round independently so a box's left AND
                             // right both snap instead of the box breathing.
@@ -293,7 +293,7 @@ libs/clay:init(width: 640, height: 400)
                             // command-less rows can't shift the mapping.
                             |> libs/metal:draw.rect(f, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y), rc.r, rc.g, rc.b, rc.a)
                     ! cmd rc |> if (rc.kind == 4)
-                        | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
+                        | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
                             |> libs/metal:draw.image(f, tex: rc.img, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y))
                     | drained |> std/store:stored { world.drew: 1 }
         ! key-down k when k.code == 48

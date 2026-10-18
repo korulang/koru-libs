@@ -162,6 +162,33 @@ fn axis(a: []const u8) i64 {
     t.depth += 1;
 }
 
+// text — a leaf element whose content IS a string. Clay measures it via
+// the installed MeasureTextFunction (koru_clay_measure, system face) and
+// emits a TEXT render command carrying the string slice, fontSize, and
+// textColor. Not a container — no depth change, no children. `eid` lands
+// in the text config's userData like panelx's, so a click on rendered
+// text maps back to the spec row that declared it. Position and wrapping
+// come from the enclosing element's layout: the text's own box is the
+// measured size.
+~pub tor text {
+    t: *koru/clay:Tree<tree>,
+    tx: string, fs: f64,
+    r: f64, g: f64, b: f64, a: f64,
+    eid: i64,
+}
+
+~proc text|zig {
+    var cfg: $mod.c.Clay_TextElementConfig = $mod.std.mem.zeroes($mod.c.Clay_TextElementConfig);
+    cfg.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
+    cfg.textColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    cfg.fontSize = @intFromFloat(@max(0.0, @round(fs)));
+    $mod.c.Clay__OpenTextElement(.{
+        .isStaticallyAllocated = false,
+        .length = @intCast(tx.len),
+        .chars = tx.ptr,
+    }, cfg);
+}
+
 // imgpanel — panel's image sibling: same dock-slot sizing and floating
 // contract, decl.image carrying `data` as the transparent imageData
 // handle (i64 pointer bits — Clay hands it back in the IMAGE command).

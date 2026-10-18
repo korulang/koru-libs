@@ -81,12 +81,10 @@ std/store:new(tools, capacity: 32) {
     r: f64, g: f64, b: f64, a: f64,
     tk: i64, cx: f64, cy: f64, px: f64, vis: i64,
 }
-// Hit map — one row per RECTANGLE command drained this frame, recorded in
-// WINDOW coordinates. Clay rects live in the pinned 640x400 layout space
-// and the shader stretches that space to fill the drawable (vp_w/vp_h are
-// fixed at open — NDC maps layout px straight onto the whole framebuffer),
-// so window-space rect = layout rect scaled by win/layout, then y flipped
-// (locationInWindow is bottom-up, layout is top-down). seq is the spec
+// Hit map — one row per render command drained this frame, recorded in
+// the same top-left pixel space mouse-down events and draw calls share:
+// clay:dims is re-fed the live window size each frame, so layout space IS
+// window space. seq is the spec
 // ORDINAL stamped into the element via decl.userData (ud - 1; ud 0 =
 // chrome) — command order never enters the mapping, so rows that emit
 // no render command (col/row) cannot shift it. Cleared and re-recorded
@@ -274,6 +272,13 @@ libs/clay:init(width: 640, height: 400)
                                     |> if (s.kind != "grid" and s.kind != "cell" and s.kind != "col" and s.kind != "row" and s.kind != "img")
                                         | then |> libs/clay:el.close-to(t, s.d)
                                             |> libs/ui:panelx(t, s.dock, s.ws, s.w, s.hs, s.h, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, s.fl, s.fx, s.fy, eid: o + 1)
+                                    // Rendered content — a tx row emits a text
+                                    // leaf INSIDE the panel its kind branch
+                                    // just opened (still open at this depth).
+                                    // Clay wraps/aligns it; the TEXT command
+                                    // it becomes is drawn below.
+                                    |> if (s.tx != "")
+                                        | then |> libs/ui:text(t, s.tx, s.fs, r: 232.0, g: 236.0, b: 248.0, a: 255.0, eid: o + 1)
                             // Tool chrome emit — every visible tools row is a root-
                             // floating element; chips ride the slide via px + cx.
                             // Emitted after the spec sweep so chrome draws on top.
@@ -283,7 +288,7 @@ libs/clay:init(width: 640, height: 400)
                                     |> libs/ui:panel(t, dock: "", tl.ws, tl.w, tl.hs, tl.h, tl.dir, tl.gap, tl.pad, tl.ax, tl.ay, tl.r, tl.g, tl.b, tl.a, fl: 1, fx: tl.px + tl.cx, fy: 70.0 + tl.cy)
                         | solved cls |> libs/clay:each(cl: cls)
                             ! cmd rc |> if (rc.kind == 1)
-                                | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
+                                | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
                                     // Quantize to the pixel grid — edges, not sizes:
                                     // x/w round independently so a box's left AND
                                     // right both snap instead of the box breathing.
@@ -291,8 +296,14 @@ libs/clay:init(width: 640, height: 400)
                                     // via decl.userData (ud - 1; ud 0 = chrome), so
                                     // command-less rows can't shift the mapping.
                                     |> libs/metal:draw.rect(f, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y), rc.r, rc.g, rc.b, rc.a)
+                            ! cmd rc |> if (rc.kind == 3)
+                                | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
+                                    // Clay's box is top-left; draw.text wants a
+                                    // baseline — ascent of the SAME font path.
+                                    |> libs/metal:text.ascent(win: w, size: rc.fs): asc
+                                        |> libs/metal:draw.text(f, x: @round(rc.x), y: @round(rc.y + asc), size: rc.fs, rc.r, rc.g, rc.b, rc.a, text: rc.tx)
                             ! cmd rc |> if (rc.kind == 4)
-                                | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
+                                | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
                                     |> libs/metal:draw.image(f, tex: rc.img, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y))
                             | drained |> std/store:stored { world.drew: 1 }
                 ! key-down k when k.code == 48
