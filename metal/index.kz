@@ -183,6 +183,100 @@ fn popEvent() ?Event {
 var should_quit: bool = false;
 
 // ============================================================================
+// Automation verbs — synthesized input and framebuffer capture. First-class
+// package surface, not test scaffolding: an agent driving a shared workspace
+// injects through the SAME mailbox the ObjC IMPs write, and a snapshot reads
+// the SAME drawable the encoder just presented. What automation sees and does
+// is what a user's hands see and do — that equivalence is the point.
+// ============================================================================
+
+var snap_pending: bool = false;
+var snap_path: [512]u8 = undefined;
+var snap_len: usize = 0;
+
+const MTLOrigin = extern struct { x: u64, y: u64, z: u64 };
+const MTLSize = extern struct { width: u64, height: u64, depth: u64 };
+
+// Uncompressed 32-bit BMP — BGRA byte order, bottom-up rows. Zero deps; the
+// caller converts to PNG with `sips` when it needs a portable artifact.
+fn writeBmp(path: []const u8, px: []const u8, w: u32, h: u32) void {
+    const row_bytes = w * 4;
+    const img_bytes = row_bytes * h;
+    const file_bytes = 14 + 40 + img_bytes;
+    var f = std.fs.cwd().createFile(path, .{}) catch return;
+    defer f.close();
+    var hdr: [54]u8 = std.mem.zeroes([54]u8);
+    hdr[0] = 'B';
+    hdr[1] = 'M';
+    std.mem.writeInt(u32, hdr[2..6], file_bytes, .little);
+    std.mem.writeInt(u32, hdr[10..14], 54, .little);
+    std.mem.writeInt(u32, hdr[14..18], 40, .little);
+    std.mem.writeInt(u32, hdr[18..22], w, .little);
+    std.mem.writeInt(u32, hdr[22..26], h, .little);
+    std.mem.writeInt(u16, hdr[26..28], 1, .little);
+    std.mem.writeInt(u16, hdr[28..30], 32, .little);
+    std.mem.writeInt(u32, hdr[34..38], img_bytes, .little);
+    f.writeAll(&hdr) catch return;
+    var row: usize = h;
+    while (row > 0) : (row -= 1) {
+        const off = (row - 1) * row_bytes;
+        f.writeAll(px[off .. off + row_bytes]) catch return;
+    }
+}
+
+fn dumpDrawable(drawable: Id, win: *Window) void {
+    const tex = send(Id, drawable, sel("texture"));
+    const tw: u64 = send(u64, tex, sel("width"));
+    const th: u64 = send(u64, tex, sel("height"));
+    const len: usize = @intCast(tw * th * 4);
+
+    // Drawable textures are storageModePrivate — CPU getBytes crashes in the
+    // driver. Readback is a blit copy into a shared-mode MTLBuffer, synced.
+    const device = send(Id, win.layer, sel("device"));
+    const mtlbuf = send2(Id, usize, u64, device, sel("newBufferWithLength:options:"), len, 0);
+    const cmd = send(Id, win.queue, sel("commandBuffer"));
+    const blit = send(Id, cmd, sel("blitCommandEncoder"));
+    const Blit = *const fn (Id, SEL, Id, u64, u64, MTLOrigin, MTLSize, Id, u64, u64, u64) callconv(.c) void;
+    const copy: Blit = @ptrCast(&objc.objc_msgSend);
+    copy(
+        blit,
+        sel("copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:"),
+        tex, 0, 0,
+        .{ .x = 0, .y = 0, .z = 0 },
+        .{ .width = tw, .height = th, .depth = 1 },
+        mtlbuf, 0, tw * 4, len,
+    );
+    send(void, blit, sel("endEncoding"));
+    send(void, cmd, sel("commit"));
+    send(void, cmd, sel("waitUntilCompleted"));
+
+    const contents: [*]u8 = @ptrCast(send(?*anyopaque, mtlbuf, sel("contents")));
+    writeBmp(snap_path[0..snap_len], contents[0..len], @intCast(tw), @intCast(th));
+    send(void, mtlbuf, sel("release"));
+}
+
+~pub tor input.key { code: i64 }
+
+~proc input.key|zig {
+    pushEvent(.{ .key_down = .{ .code = @intCast(code) } });
+}
+
+~pub tor input.mouse { x: f64, y: f64 }
+
+~proc input.mouse|zig {
+    pushEvent(.{ .mouse_down = .{ .x = x, .y = y } });
+}
+
+~pub tor window.snap { path: string }
+
+~proc window.snap|zig {
+    const n = @min(path.len, snap_path.len - 1);
+    @memcpy(snap_path[0..n], path[0..n]);
+    snap_len = n;
+    snap_pending = true;
+}
+
+// ============================================================================
 // Subclassing-as-a-library: KoruMetalView, an NSView subclass minted at
 // runtime. IMPs are module fns that write the mailbox — they carry no Koru
 // knowledge, just C ABI and a queue.
@@ -475,6 +569,12 @@ pub const Frame = struct {
         $mod.send(void, enc, $mod.sel("endEncoding"));
         $mod.send1(void, $mod.Id, buf, $mod.sel("presentDrawable:"), drawable);
         $mod.send(void, buf, $mod.sel("commit"));
+        // A snapshot request issued inside the frame body is serviced here —
+        // same iteration, after commit, while the drawable is still ours.
+        if ($mod.snap_pending) {
+            $mod.snap_pending = false;
+            $mod.dumpDrawable(drawable, win);
+        }
 
         $mod.std.Thread.sleep(16 * $mod.std.time.ns_per_ms);
     }
