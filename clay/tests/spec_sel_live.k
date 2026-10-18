@@ -35,7 +35,7 @@ import libs/ui
 import std/store
 import std/io
 
-std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], selkind: 0[i64], dirty: 0[i64], cmdi: 0[i64], hitool: 0[i64] }
+std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], selkind: 0[i64], dirty: 0[i64], hitool: 0[i64], tex: 0[i64] }
 // wins carries the LIVE window size in points (world is i64-only — value
 // stores are single-scalar-type). Updated every frame from window.size;
 // hit rows flip y against wins.h, the palette docks to wins.w.
@@ -86,18 +86,20 @@ std/store:new(tools, capacity: 32) {
 // and the shader stretches that space to fill the drawable (vp_w/vp_h are
 // fixed at open — NDC maps layout px straight onto the whole framebuffer),
 // so window-space rect = layout rect scaled by win/layout, then y flipped
-// (locationInWindow is bottom-up, layout is top-down). seq is the running
-// rect index; spec emits
-// first, so seq < 25 is a spec row (25 = the seed block's insert count)
-// and seq >= 25 is chrome. Cleared and re-recorded every frame — mailbox
-// drains before ! frame, so mouse arms always see a complete table.
+// (locationInWindow is bottom-up, layout is top-down). seq is the spec
+// ORDINAL stamped into the element via decl.userData (ud - 1; ud 0 =
+// chrome) — command order never enters the mapping, so rows that emit
+// no render command (col/row) cannot shift it. Cleared and re-recorded
+// every frame — mailbox drains before ! frame, so mouse arms always see
+// a complete table.
 std/store:new(hit, capacity: 64) { seq: i64, tool: i64, x: f64, y: f64, w: f64, h: f64 }
 libs/clay:init(width: 640, height: 400)
 | cl h |> libs/metal:window.open(width: 640, height: 400, title: "omni s5 — spec-driven layout")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
+            |> libs/metal:image.load(win: w, path: "test.png"): texh
             |> libs/metal:frames(win: w, count: 9999)
         ! frame f
-            |> std/store:stored { world.frame: world.frame + 1, world.cmdi: 0 }
+            |> std/store:stored { world.frame: world.frame + 1, world.tex: if (world.tex == 0) texh else world.tex }
             |> std/store:clear(hit)
             |> libs/metal:window.size(win: w): wh
             |> std/store:stored { wins.w: wh.w, wins.h: wh.h }
@@ -111,7 +113,7 @@ libs/clay:init(width: 640, height: 400)
                     |> std/store:query(spec)
                         ! query { [row]s, [ordinal]o }
                             |> if (o == world.sel)
-                                | then |> std/store:stored { world.selkind: if (s.kind == "dock") 1 else if (s.kind == "leaf") 2 else if (s.kind == "stack") 3 else if (s.kind == "grid") 4 else if (s.kind == "cell") 7 else 5 }
+                                | then |> std/store:stored { world.selkind: if (s.kind == "dock") 1 else if (s.kind == "leaf") 2 else if (s.kind == "stack") 3 else if (s.kind == "grid") 4 else if (s.kind == "cell") 7 else if (s.kind == "img") 8 else 5 }
                     |> std/store:query(tools)
                         ! query tl
                             |> std/store:stored { tl.vis: if (tl.tk == world.selkind or tl.tk == -1) 1 else 0 }
@@ -166,6 +168,7 @@ libs/clay:init(width: 640, height: 400)
                                                                                                                         |> std/store:stored { spec[h22].parent: h11 }
                                                                                                                         |> std/store:stored { spec[h23].parent: h11 }
                                                                                                                         |> std/store:stored { spec[h24].parent: h11 }
+                                                                                                                        |> std/store:insert(spec) { d: 0, kind: "img", dock: "", ws: "fix", w: 96.0, hs: "fix", h: 96.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 1, fx: 340.0, fy: 190.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 0, gc: 0, gr: 0, tx: "", fs: 0.0 }
             // Tool chrome seed — the palette backdrop plus two-column chip
             // sets per kind code (leaf 2 ×4, stack 3 ×2, grid 4 ×2, track
             // 5 ×2 for col/row defs, cell 7 ×4, dock 1 ×1). Chips seed
@@ -219,7 +222,7 @@ libs/clay:init(width: 640, height: 400)
                         ! query { [row]s, [ordinal]o }
                             |> if (s.kind == "grid")
                                 | then |> libs/clay:el.close-to(t, s.d)
-                                    |> libs/ui:panel(t, s.dock, s.ws, s.w, s.hs, s.h, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, s.fl, s.fx, s.fy)
+                                    |> libs/ui:panelx(t, s.dock, s.ws, s.w, s.hs, s.h, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, s.fl, s.fx, s.fy, eid: o + 1)
                                     |> std/store:stored { gs.cf: 0.0, gs.cs: 0.0, gs.cn: 0.0, gs.rf: 0.0, gs.rs: 0.0, gs.rn: 0.0 }
                                     |> std/store:query(spec)
                                         ! query d when d.pid == s.id and d.kind == "col"
@@ -262,10 +265,13 @@ libs/clay:init(width: 640, height: 400)
                                         |> std/store:query(gtrk)
                                             ! query tr when tr.pid == s.pid and tr.axis == 1 and tr.i == s.gr
                                                 |> libs/clay:el.close-to(t, s.d)
-                                                |> libs/ui:panel(t, dock: "", ws: "fix", w: if (s.ws == "fix") s.w else tc.size, hs: "fix", h: if (s.hs == "fix") s.h else tr.size, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, fl: 1, fx: tc.off + if (s.ax == "center") (tc.size - (if (s.ws == "fix") s.w else tc.size)) / 2.0 else if (s.ax == "end") tc.size - (if (s.ws == "fix") s.w else tc.size) else 0.0, fy: tr.off + if (s.ay == "center") (tr.size - (if (s.hs == "fix") s.h else tr.size)) / 2.0 else if (s.ay == "end") tr.size - (if (s.hs == "fix") s.h else tr.size) else 0.0)
-                            |> if (s.kind != "grid" and s.kind != "cell" and s.kind != "col" and s.kind != "row")
+                                                |> libs/ui:panelx(t, dock: "", ws: "fix", w: if (s.ws == "fix") s.w else tc.size, hs: "fix", h: if (s.hs == "fix") s.h else tr.size, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, fl: 1, fx: tc.off + if (s.ax == "center") (tc.size - (if (s.ws == "fix") s.w else tc.size)) / 2.0 else if (s.ax == "end") tc.size - (if (s.ws == "fix") s.w else tc.size) else 0.0, fy: tr.off + if (s.ay == "center") (tr.size - (if (s.hs == "fix") s.h else tr.size)) / 2.0 else if (s.ay == "end") tr.size - (if (s.hs == "fix") s.h else tr.size) else 0.0, eid: o + 1)
+                            |> if (s.kind == "img")
                                 | then |> libs/clay:el.close-to(t, s.d)
-                                    |> libs/ui:panel(t, s.dock, s.ws, s.w, s.hs, s.h, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, s.fl, s.fx, s.fy)
+                                    |> libs/ui:imgpanel(t, s.dock, s.ws, s.w, s.hs, s.h, data: world.tex, s.fl, s.fx, s.fy, eid: o + 1)
+                            |> if (s.kind != "grid" and s.kind != "cell" and s.kind != "col" and s.kind != "row" and s.kind != "img")
+                                | then |> libs/clay:el.close-to(t, s.d)
+                                    |> libs/ui:panelx(t, s.dock, s.ws, s.w, s.hs, s.h, s.dir, s.gap, s.pad, s.ax, s.ay, r: s.r + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), g: s.g + (if (o == world.sel) @as(f64, 90.0) else @as(f64, 0.0)), s.b, s.a, s.fl, s.fx, s.fy, eid: o + 1)
                     // Tool chrome emit — every visible tools row is a root-
                     // floating element; chips ride the slide via px + cx.
                     // Emitted after the spec sweep so chrome draws on top.
@@ -275,15 +281,20 @@ libs/clay:init(width: 640, height: 400)
                             |> libs/ui:panel(t, dock: "", tl.ws, tl.w, tl.hs, tl.h, tl.dir, tl.gap, tl.pad, tl.ax, tl.ay, tl.r, tl.g, tl.b, tl.a, fl: 1, fx: tl.px + tl.cx, fy: 70.0 + tl.cy)
                 | solved cls |> libs/clay:each(cl: cls)
                     ! cmd rc |> if (rc.kind == 1)
-                        | then |> std/store:insert(hit) { seq: world.cmdi, tool: if (world.cmdi < 25) 0 else 1, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
-                            |> std/store:stored { world.cmdi: world.cmdi + 1 }
+                        | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
                             // Quantize to the pixel grid — edges, not sizes:
                             // x/w round independently so a box's left AND
                             // right both snap instead of the box breathing.
+                            // Hit rows key on rc.ud — the spec ordinal stamped
+                            // via decl.userData (ud - 1; ud 0 = chrome), so
+                            // command-less rows can't shift the mapping.
                             |> libs/metal:draw.rect(f, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y), rc.r, rc.g, rc.b, rc.a)
+                    ! cmd rc |> if (rc.kind == 4)
+                        | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
+                            |> libs/metal:draw.image(f, tex: rc.img, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y))
                     | drained |> std/store:stored { world.drew: 1 }
         ! key-down k when k.code == 48
-            |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }
+            |> std/store:stored { world.sel: if (world.sel >= 25) 0 else world.sel + 1, world.dirty: 1 }
         ! mouse-down e  // chrome pass first (palette click swallowed via
                         // hitool); spec pass takes the LAST match — later
                         // draws sit on top

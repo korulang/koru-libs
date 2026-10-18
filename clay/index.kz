@@ -184,6 +184,28 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     $mod.c.Clay__ConfigureOpenElement(decl);
 }
 
+// An image element — the full decl shape of el.cfg minus color/direction
+// fields, plus decl.image carrying `data` as the transparent imageData
+// pointer (i64 bits of whatever handle the renderer wants back — metal's
+// Image.tex, an index, anything).
+~pub tor el.img {
+    t: *Tree<tree>,
+    wk: i64, w: f64, hk: i64, h: f64,
+    data: i64,
+}
+
+~proc el.img|zig {
+    var decl: $mod.c.Clay_ElementDeclaration = $mod.std.mem.zeroes($mod.c.Clay_ElementDeclaration);
+    decl.layout = .{
+        .sizing = .{
+            .width = $mod.sizing(wk, w),
+            .height = $mod.sizing(hk, h),
+        },
+    };
+    decl.image = .{ .imageData = @ptrFromInt(@as(usize, @intCast(data))) };
+    $mod.c.Clay__ConfigureOpenElement(decl);
+}
+
 fn sizing(kind: i64, v: f64) c.Clay_SizingAxis {
     const f: f32 = @floatCast(v);
     return switch (kind) {
@@ -232,6 +254,8 @@ pub const CmdView = struct {
     g: f64,
     b: f64,
     a: f64,
+    img: i64,
+    ud: i64,
 };
 
 // Rendered-content dims — what a string occupies at a point size under the
@@ -274,6 +298,11 @@ pub const Dims = struct {
             .g = __rc.renderData.rectangle.backgroundColor.g / 255.0,
             .b = __rc.renderData.rectangle.backgroundColor.b / 255.0,
             .a = __rc.renderData.rectangle.backgroundColor.a / 255.0,
+            .img = if (__rc.commandType == $mod.c.CLAY_RENDER_COMMAND_TYPE_IMAGE)
+                @as(i64, @intCast(@intFromPtr(__rc.renderData.image.imageData)))
+            else
+                0,
+            .ud = @as(i64, @intCast(@intFromPtr(__rc.userData))),
         });
     }
     return .{ .drained = .{} };

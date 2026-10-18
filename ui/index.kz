@@ -107,3 +107,100 @@ fn axis(a: []const u8) i64 {
     $mod.c.Clay__ConfigureOpenElement(decl);
     t.depth += 1;
 }
+
+// panelx — panel plus an element tag: `eid` lands in decl.userData and
+// comes back on every render command as CmdView.ud. The consumer stamps
+// spec ordinals through it so hit-testing maps a command to the row that
+// declared it — immune to Clay dropping command-less rows (col/row) or
+// reordering, which a running command index cannot survive.
+~pub tor panelx {
+    t: *koru/clay:Tree<tree>,
+    dock: string, ws: string, w: f64, hs: string, h: f64,
+    dir: string, gap: i64, pad: i64, ax: string, ay: string,
+    r: f64, g: f64, b: f64, a: f64,
+    fl: i64, fx: f64, fy: f64,
+    eid: i64,
+}
+
+~proc panelx|zig {
+    var wk: i64 = $mod.sizeKind(ws);
+    var hk: i64 = $mod.sizeKind(hs);
+    if ($mod.std.mem.eql(u8, dock, "top") or $mod.std.mem.eql(u8, dock, "bottom")) {
+        wk = 1; hk = 3;
+    } else if ($mod.std.mem.eql(u8, dock, "left") or $mod.std.mem.eql(u8, dock, "right")) {
+        wk = 3; hk = 1;
+    } else if ($mod.std.mem.eql(u8, dock, "fill")) {
+        wk = 1; hk = 1;
+    }
+    var decl: $mod.c.Clay_ElementDeclaration = $mod.std.mem.zeroes($mod.c.Clay_ElementDeclaration);
+    decl.layout = .{
+        .sizing = .{
+            .width = $mod.sizing(wk, w),
+            .height = $mod.sizing(hk, h),
+        },
+        .padding = .{
+            .left = @intCast(@max(pad, 0)),
+            .right = @intCast(@max(pad, 0)),
+            .top = @intCast(@max(pad, 0)),
+            .bottom = @intCast(@max(pad, 0)),
+        },
+        .childGap = @intCast(@max(gap, 0)),
+        .childAlignment = .{ .x = @intCast($mod.axis(ax)), .y = @intCast($mod.axis(ay)) },
+        .layoutDirection = @intCast(if ($mod.std.mem.eql(u8, dir, "ttb")) @as(i64, 1) else 0),
+    };
+    decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
+    if (fl != 0) {
+        decl.floating = .{
+            .offset = .{ .x = @floatCast(fx), .y = @floatCast(fy) },
+            .attachTo = $mod.c.CLAY_ATTACH_TO_ROOT,
+            .attachPoints = .{ .element = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP, .parent = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP },
+        };
+    }
+    $mod.c.Clay__OpenElement();
+    $mod.c.Clay__ConfigureOpenElement(decl);
+    t.depth += 1;
+}
+
+// imgpanel — panel's image sibling: same dock-slot sizing and floating
+// contract, decl.image carrying `data` as the transparent imageData
+// handle (i64 pointer bits — Clay hands it back in the IMAGE command).
+// `eid` stamps decl.userData the same way panelx does.
+~pub tor imgpanel {
+    t: *koru/clay:Tree<tree>,
+    dock: string, ws: string, w: f64, hs: string, h: f64,
+    data: i64,
+    fl: i64, fx: f64, fy: f64,
+    eid: i64,
+}
+
+~proc imgpanel|zig {
+    var wk: i64 = $mod.sizeKind(ws);
+    var hk: i64 = $mod.sizeKind(hs);
+    if ($mod.std.mem.eql(u8, dock, "top") or $mod.std.mem.eql(u8, dock, "bottom")) {
+        wk = 1; hk = 3;
+    } else if ($mod.std.mem.eql(u8, dock, "left") or $mod.std.mem.eql(u8, dock, "right")) {
+        wk = 3; hk = 1;
+    } else if ($mod.std.mem.eql(u8, dock, "fill")) {
+        wk = 1; hk = 1;
+    }
+    var decl: $mod.c.Clay_ElementDeclaration = $mod.std.mem.zeroes($mod.c.Clay_ElementDeclaration);
+    decl.layout = .{
+        .sizing = .{
+            .width = $mod.sizing(wk, w),
+            .height = $mod.sizing(hk, h),
+        },
+    };
+    decl.image = .{ .imageData = @ptrFromInt(@as(usize, @intCast(data))) };
+    decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
+    if (fl != 0) {
+        decl.floating = .{
+            .offset = .{ .x = @floatCast(fx), .y = @floatCast(fy) },
+            .attachTo = $mod.c.CLAY_ATTACH_TO_ROOT,
+            .attachPoints = .{ .element = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP, .parent = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP },
+        };
+    }
+    $mod.c.Clay__OpenElement();
+    $mod.c.Clay__ConfigureOpenElement(decl);
+    t.depth += 1;
+}

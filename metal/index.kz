@@ -50,6 +50,12 @@ const SEL = objc.SEL;
 extern fn MTLCreateSystemDefaultDevice() callconv(.c) Id;
 extern fn objc_autoreleasePoolPush() callconv(.c) *anyopaque;
 extern fn objc_autoreleasePoolPop(*anyopaque) callconv(.c) void;
+extern fn CGImageGetWidth(image: Id) callconv(.c) usize;
+extern fn CGImageGetHeight(image: Id) callconv(.c) usize;
+extern fn CGColorSpaceCreateDeviceRGB() callconv(.c) Id;
+extern fn CGBitmapContextCreate(data: ?*anyopaque, width: usize, height: usize, bitsPerComponent: usize, bytesPerRow: usize, space: Id, bitmapInfo: u32) callconv(.c) Id;
+extern fn CGBitmapContextGetData(c: Id) callconv(.c) ?*anyopaque;
+extern fn CGContextDrawImage(c: Id, rect: NSRect, image: Id) callconv(.c) void;
 extern var NSDefaultRunLoopMode: Id;
 extern var NSWindowDidResizeNotification: Id;
 extern var NSWindowWillStartLiveResizeNotification: Id;
@@ -59,6 +65,9 @@ const NSPoint = extern struct { x: f64, y: f64 };
 const NSSize = extern struct { width: f64, height: f64 };
 const NSRect = extern struct { origin: NSPoint, size: NSSize };
 const MTLClearColor = extern struct { red: f64, green: f64, blue: f64, alpha: f64 };
+const MTLOrigin = extern struct { x: u64, y: u64, z: u64 };
+const MTLSize = extern struct { width: u64, height: u64, depth: u64 };
+const MTLRegion = extern struct { origin: MTLOrigin, size: MTLSize };
 
 // Vertex positions come from [[vertex_id]] — no vertex buffers needed for a
 // static triangle. Compiled at runtime through newLibraryWithSource:.
@@ -95,6 +104,23 @@ const msl_src: [:0]const u8 =
     \\}
     \\fragment float4 rect_fragment(RectOut in [[stage_in]]) {
     \\    return in.color;
+    \\}
+    \\struct TexOut {
+    \\    float4 pos [[position]];
+    \\    float2 uv;
+    \\};
+    \\vertex TexOut tex_vertex(uint vid [[vertex_id]], constant RectParams& p [[buffer(0)]]) {
+    \\    float2 corners[4] = { float2(0.0,0.0), float2(1.0,0.0), float2(0.0,1.0), float2(1.0,1.0) };
+    \\    float2 pix = p.origin + corners[vid] * p.size;
+    \\    TexOut o;
+    \\    o.pos = float4(pix.x / p.viewport.x * 2.0 - 1.0, 1.0 - pix.y / p.viewport.y * 2.0, 0.0, 1.0);
+    \\    o.uv = corners[vid];
+    \\    return o;
+    \\}
+    \\fragment float4 tex_fragment(TexOut in [[stage_in]],
+    \\                            texture2d<float> tex [[texture(0)]],
+    \\                            sampler smp [[sampler(0)]]) {
+    \\    return tex.sample(smp, in.uv);
     \\}
 ;
 
@@ -196,9 +222,6 @@ var should_quit: bool = false;
 var snap_pending: bool = false;
 var snap_path: [512]u8 = undefined;
 var snap_len: usize = 0;
-
-const MTLOrigin = extern struct { x: u64, y: u64, z: u64 };
-const MTLSize = extern struct { width: u64, height: u64, depth: u64 };
 
 // Uncompressed 32-bit BMP — BGRA byte order, bottom-up rows. Zero deps; the
 // caller converts to PNG with `sips` when it needs a portable artifact.
@@ -373,7 +396,7 @@ fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
     const buf = send(Id, win.queue, sel("commandBuffer"));
     const enc = send1(Id, Id, buf, sel("renderCommandEncoderWithDescriptor:"), desc);
     send1(void, Id, enc, sel("setRenderPipelineState:"), win.pso);
-    var f = Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .vp_w = win.vp_w, .vp_h = win.vp_h };
+    var f = Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h };
     cb(&f);
     send(void, enc, sel("endEncoding"));
     if (in_live_resize) {
@@ -492,6 +515,8 @@ pub const Window = struct {
     queue: Id,
     pso: Id,
     pso_rect: Id,
+    pso_tex: Id,
+    samp: Id,
     vp_w: f32,
     vp_h: f32,
     lr_w: f32,
@@ -507,6 +532,8 @@ pub const Frame = struct {
     encoder: Id,
     pso: Id,
     pso_rect: Id,
+    pso_tex: Id,
+    samp: Id,
     vp_w: f32,
     vp_h: f32,
 };
@@ -655,6 +682,41 @@ pub const Frame = struct {
         return .{ .err = "metal: rect pipeline state creation failed" };
     }
 
+    // Third pipeline: textured quads — same corner expansion plus uv out,
+    // fragment samples [[texture(0)]] through [[sampler(0)]].
+    const tvname = cf.CFStringCreateWithCString(null, "tex_vertex", cf.kCFStringEncodingUTF8);
+    const tfname = cf.CFStringCreateWithCString(null, "tex_fragment", cf.kCFStringEncodingUTF8);
+    const tvfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(tvname))));
+    const tffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(tfname))));
+    if (tvfn == null or tffn == null) {
+        return .{ .err = "metal: tex shader functions not found in library" };
+    }
+    const tpdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, tpdesc, sel("setVertexFunction:"), tvfn);
+    send1(void, Id, tpdesc, sel("setFragmentFunction:"), tffn);
+    const tpatts = send(Id, tpdesc, sel("colorAttachments"));
+    const tpatt = send1(Id, u64, tpatts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, tpatt, sel("setPixelFormat:"), 80);
+    send1(void, bool, tpatt, sel("setBlendingEnabled:"), true);
+    send1(void, u64, tpatt, sel("setSourceRGBBlendFactor:"), 4);
+    send1(void, u64, tpatt, sel("setDestinationRGBBlendFactor:"), 5);
+    send1(void, u64, tpatt, sel("setSourceAlphaBlendFactor:"), 1);
+    send1(void, u64, tpatt, sel("setDestinationAlphaBlendFactor:"), 5);
+    var tpsoErr: Id = null;
+    const pso_tex = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), tpdesc, &tpsoErr);
+    if (pso_tex == null) {
+        return .{ .err = "metal: tex pipeline state creation failed" };
+    }
+
+    // One shared sampler: linear min/mag, clamp — enough for image quads.
+    const sdesc = send(Id, cls("MTLSamplerDescriptor"), sel("new"));
+    send1(void, u64, sdesc, sel("setMinFilter:"), 1); // MTLSamplerMinMagFilterLinear
+    send1(void, u64, sdesc, sel("setMagFilter:"), 1);
+    const samp = send1(Id, Id, device, sel("newSamplerStateWithDescriptor:"), sdesc);
+    if (samp == null) {
+        return .{ .err = "metal: sampler state creation failed" };
+    }
+
     // We own the release: releasedWhenClosed (default YES) frees wobj the
     // moment the user hits the close button, leaving win.win dangling for
     // the `| done` -> window.close path to message. NO keeps the object
@@ -686,6 +748,8 @@ pub const Frame = struct {
         .queue = queue,
         .pso = pso,
         .pso_rect = pso_rect,
+        .pso_tex = pso_tex,
+        .samp = samp,
         .vp_w = @floatFromInt(width),
         .vp_h = @floatFromInt(height),
         .lr_w = -1,
@@ -776,7 +840,7 @@ pub const Frame = struct {
         const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
         $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
 
-        var __f = $mod.Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .vp_w = win.vp_w, .vp_h = win.vp_h };
+        var __f = $mod.Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h };
         frame(&__f);
 
         $mod.send(void, enc, $mod.sel("endEncoding"));
@@ -849,6 +913,83 @@ pub const Frame = struct {
         .vw = f.vp_w, .vh = f.vp_h,
     };
     send3(void, *const RectParams, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &params, @sizeOf(RectParams), 0);
+    send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 4, 0, 4);
+}
+
+// ============================================================================
+// Images — decode to BGRA premultiplied via NSImage + CGBitmapContext (pure
+// Cocoa/CoreGraphics, no extra frameworks), upload once into an MTLTexture.
+// The texture handle is the value handed to Clay as imageData — it comes
+// back out of the IMAGE render command verbatim for draw.image.
+// ============================================================================
+
+// Fail-loud single-return load: any missing step panics with the cause —
+// no degraded/placeholder path. Returns the texture handle as i64 pointer
+// bits — the same value Clay hands back as imageData for draw.image.
+~pub tor image.load { win: *Window<opened|active>, path: string } -> i64
+
+~proc image.load|zig {
+    const pool = objc_autoreleasePoolPush();
+    defer objc_autoreleasePoolPop(pool);
+
+    var pbuf: [1024]u8 = undefined;
+    const pstr = cf.CFStringCreateWithCString(null, cstr(path, &pbuf), cf.kCFStringEncodingUTF8);
+    const nsimg = send1(
+        Id, Id,
+        send(Id, cls("NSImage"), sel("alloc")),
+        sel("initWithContentsOfFile:"),
+        @as(Id, @ptrCast(@constCast(pstr))),
+    );
+    if (nsimg == null) @panic("metal: image file not readable");
+    var prop: NSRect = undefined;
+    const cg = send3(Id, *NSRect, Id, Id, nsimg, sel("CGImageForProposedRect:context:hints:"), &prop, @as(Id, null), @as(Id, null));
+    if (cg == null) @panic("metal: no CGImage in file");
+    const w = CGImageGetWidth(cg);
+    const h = CGImageGetHeight(cg);
+    if (w == 0 or h == 0) @panic("metal: zero-size image");
+
+    // Rasterize into a BGRA-premultiplied buffer — the layer's pixel format
+    // (BGRA8Unorm) expects premultiplied alpha; kCGImageAlphaPremultipliedFirst
+    // | kCGBitmapByteOrder32Little is exactly that byte order.
+    const cs = CGColorSpaceCreateDeviceRGB();
+    const bctx = CGBitmapContextCreate(null, w, h, 8, w * 4, cs, 2 | (2 << 12));
+    if (bctx == null) @panic("metal: bitmap context failed");
+    CGContextDrawImage(bctx, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = @floatFromInt(w), .height = @floatFromInt(h) } }, cg);
+    const px = CGBitmapContextGetData(bctx) orelse @panic("metal: no bitmap data");
+
+    const device = send(Id, win.layer, sel("device"));
+    const tdesc = send4(
+        Id, u64, u64, u64, bool,
+        cls("MTLTextureDescriptor"),
+        sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
+        80, w, h, false,
+    );
+    const tex = send1(Id, Id, device, sel("newTextureWithDescriptor:"), tdesc);
+    if (tex == null) @panic("metal: texture creation failed");
+    const region = MTLRegion{
+        .origin = .{ .x = 0, .y = 0, .z = 0 },
+        .size = .{ .width = w, .height = h, .depth = 1 },
+    };
+    send4(void, MTLRegion, u64, ?*const anyopaque, u64, tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), region, 0, px, w * 4);
+
+    return @as(i64, @intCast(@intFromPtr(tex)));
+}
+
+// One textured quad in PIXEL space — tex is a texture handle as i64
+// pointer bits (or any imageData Clay hands back verbatim).
+~pub tor draw.image { f: *Frame<frame>, tex: i64, x: f64, y: f64, w: f64, h: f64 }
+
+~proc draw.image|zig {
+    const tid: Id = @ptrFromInt(@as(usize, @intCast(tex)));
+    send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_tex);
+    var params = RectParams{
+        .r = 1, .g = 1, .b = 1, .a = 1,
+        .ox = @floatCast(x), .oy = @floatCast(y), .sw = @floatCast(w), .sh = @floatCast(h),
+        .vw = f.vp_w, .vh = f.vp_h,
+    };
+    send3(void, *const RectParams, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &params, @sizeOf(RectParams), 0);
+    send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), tid, 0);
+    send2(void, Id, u64, f.encoder, sel("setFragmentSamplerState:atIndex:"), f.samp, 0);
     send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 4, 0, 4);
 }
 
