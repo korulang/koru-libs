@@ -26,12 +26,6 @@ std/store:new(world) { n: 0[i64], count: 2500[i64], ph: -1[i64], cellh: -1[i64] 
 
 std/store:new(gs) { cf: 0.0[f64], cs: 0.0[f64], cn: 0.0[f64], rf: 0.0[f64], rs: 0.0[f64], rn: 0.0[f64], cstar: 0.0[f64], rstar: 0.0[f64], co: 0.0[f64], ro: 0.0[f64], amax: 0.0[f64], res: 0.0[f64] }
 std/store:new(gtrk, capacity: 16) { pid: i64, axis: i64, i: i64, off: f64, size: f64 }
-// pscratch: single-row staging for a parent's char fields — an indexed
-// read (spec[h].dir) reaches stored targets as an rvalue but cannot be
-// string-compared; re-reading through a real row binding keeps `==` on
-// the lowered path. Seeded once below the spec cascade.
-std/store:new(pscratch, capacity: 4) { dir: char[8] }
-
 std/store:insert(spec) { d: 0, kind: "dock", dock: "", ws: "fix", w: 220.0, hs: "auto", h: 0.0, dir: "ttb", gap: 0, pad: 0, ax: "start", ay: "start", r: 30.0, g: 32.0, b: 42.0, a: 255.0, fl: 1, fx: 60.0, fy: 70.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 0, gc: 0, gr: 0, tx: "", fs: 0.0 }
     | row h0 |> std/store:insert(spec) { d: 1, kind: "leaf", dock: "top", ws: "", w: 0.0, hs: "fix", h: 24.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 62.0, g: 74.0, b: 96.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 0, gc: 0, gr: 0, tx: "", fs: 0.0 }
         | row h1 |> std/store:insert(spec) { d: 1, kind: "stack", dock: "fill", ws: "", w: 0.0, hs: "", h: 0.0, dir: "ttb", gap: 6, pad: 10, ax: "start", ay: "start", r: 24.0, g: 26.0, b: 34.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 0, gc: 0, gr: 0, tx: "", fs: 0.0 }
@@ -58,7 +52,6 @@ std/store:insert(spec) { d: 0, kind: "dock", dock: "", ws: "fix", w: 220.0, hs: 
                                                                                             | row h22 |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 80.0, g: 110.0, b: 200.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 1, gc: 1, gr: 1, tx: "", fs: 0.0 }
                                                                                                 | row h23 |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "fix", w: 18.0, hs: "fix", h: 14.0, dir: "", gap: 0, pad: 0, ax: "center", ay: "center", r: 90.0, g: 180.0, b: 90.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 1, gc: 1, gr: 2, tx: "", fs: 0.0 }
                                                                                                         | row h24 |> std/store:stored { world.cellh: h17 }
-                                                                                                            |> std/store:insert(pscratch) { dir: "" }
                                                                                                             |> std/store:stored { spec[h1].parent: h0 }
                                                                                                             |> std/store:stored { spec[h2].parent: h0 }
                                                                                                             |> std/store:stored { spec[h3].parent: h2 }
@@ -110,12 +103,9 @@ libs/clay:init(width: 640, height: 400)
                     ! query { [row]s, [id]sh } when s.d == lv
                         |> if (spec[sh].parent != -1)
                             | then |> std/store:stored { world.ph: spec[sh].parent }
-                                |> std/store:query(pscratch)
-                                    ! query pr
-                                        |> std/store:stored { pr.dir: &spec[world.ph].dir }
-                                        |> if (pr.dir == "ttb")
-                                            | then |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: if (s.mw > spec[world.ph].cw) s.mw else spec[world.ph].cw, spec[world.ph].ch: spec[world.ph].ch + s.mh + @as(f64, @floatFromInt(spec[world.ph].gap)) }
-                                            | else |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: spec[world.ph].cw + s.mw + @as(f64, @floatFromInt(spec[world.ph].gap)), spec[world.ph].ch: if (s.mh > spec[world.ph].ch) s.mh else spec[world.ph].ch }
+                                |> if (spec[world.ph].dir == "ttb")
+                                    | then |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: if (s.mw > spec[world.ph].cw) s.mw else spec[world.ph].cw, spec[world.ph].ch: spec[world.ph].ch + s.mh + @as(f64, @floatFromInt(spec[world.ph].gap)) }
+                                    | else |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: spec[world.ph].cw + s.mw + @as(f64, @floatFromInt(spec[world.ph].gap)), spec[world.ph].ch: if (s.mh > spec[world.ph].ch) s.mh else spec[world.ph].ch }
         |> libs/clay:layout(cl: h)
             ! tree t
                 |> std/store:clear(gtrk)

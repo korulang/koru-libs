@@ -1,14 +1,10 @@
 // OMNI spike S5 — the [tree]-store twin of spec_snap.k. Same dialect
-// vocabulary, same seed rows, same walk shape — but tree linkage is the
-// store's: [tree] synthesizes an invisible `parent` self-FK (handle =
-// i64 row index, -1 = root). The fold's per-child parent lookup becomes
-// spec[s.parent] — an O(1) indexed write instead of a nested
-// `! query p when p.id == s.pid` scan — and the emit sweep rides
-// preorder (structural DFS, parents before children) instead of relying
-// on insertion order. id/pid columns are gone: a cell's grid is its
-// parent; a container cell's members name it by handle. `d` stays —
-// preorder carries no depth and close-to needs it; gc/gr stay for
-// track placement.
+// vocabulary, same seed rows, same walk shape — but the fold edge is
+// the store's: [tree] synthesizes an invisible `parent` self-FK
+// (handle = i64 row index, -1 = root). The fold's per-child parent
+// lookup becomes spec[sh].parent — an O(1) indexed read/write instead
+// of a nested `! query p when p.id == s.pid` scan. id/pid stay as
+// dialect-level grid membership; `d` stays — close-to needs it.
 //
 // Seed: `| row hN` binds each insert's handle; the deepest
 // continuation stamps every non-root `parent` in one block.
@@ -50,13 +46,6 @@ std/store:new(world) { frame: 0[i64], drew: 0[i64], ph: -1[i64] }
 // axis 0 = column track, 1 = row track. Cleared and re-solved each frame.
 std/store:new(gs) { cf: 0.0[f64], cs: 0.0[f64], cn: 0.0[f64], rf: 0.0[f64], rs: 0.0[f64], rn: 0.0[f64], cstar: 0.0[f64], rstar: 0.0[f64], co: 0.0[f64], ro: 0.0[f64], amax: 0.0[f64], res: 0.0[f64] }
 std/store:new(gtrk, capacity: 16) { pid: i64, axis: i64, i: i64, off: f64, size: f64 }
-// pscratch: single-row staging for a parent's char fields. Indexed reads
-// (spec[h].dir) reach stored targets as rvalues, but a char compare off an
-// indexed read does not get the row-binding string lowering — staging the
-// field into a scratch row and re-reading it as pr.dir keeps the compare
-// on a real row binding.
-std/store:new(pscratch, capacity: 4) { dir: char[8] }
-
 libs/clay:init(width: 640, height: 400)
 | cl h |> libs/metal:window.open(width: 640, height: 400, title: "omni s5 — spec-driven layout")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
@@ -111,8 +100,6 @@ libs/clay:init(width: 640, height: 400)
                                                                                                                         |> std/store:stored { spec[h22].parent: h11 }
                                                                                                                         |> std/store:stored { spec[h23].parent: h11 }
                                                                                                                         |> std/store:stored { spec[h24].parent: h11 }
-                                                                                                                        |> std/store:insert(pscratch) { dir: "" }
-                                                                                                                            | row _
             // measure: seed scratch, then sweep deepest→root — each row
             // finalizes mw/mh (fix = declared; else children folded along
             // dir with gap+pad) then adds itself into its parent's
@@ -136,12 +123,9 @@ libs/clay:init(width: 640, height: 400)
                         ! query { [row]s, [id]sh } when s.d == lv
                             |> if (spec[sh].parent != -1)
                                 | then |> std/store:stored { world.ph: spec[sh].parent }
-                                    |> std/store:query(pscratch)
-                                        ! query pr
-                                            |> std/store:stored { pr.dir: &spec[world.ph].dir }
-                                            |> if (pr.dir == "ttb")
-                                                | then |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: if (s.mw > spec[world.ph].cw) s.mw else spec[world.ph].cw, spec[world.ph].ch: spec[world.ph].ch + s.mh + @as(f64, @floatFromInt(spec[world.ph].gap)) }
-                                                | else |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: spec[world.ph].cw + s.mw + @as(f64, @floatFromInt(spec[world.ph].gap)), spec[world.ph].ch: if (s.mh > spec[world.ph].ch) s.mh else spec[world.ph].ch }
+                                    |> if (spec[world.ph].dir == "ttb")
+                                        | then |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: if (s.mw > spec[world.ph].cw) s.mw else spec[world.ph].cw, spec[world.ph].ch: spec[world.ph].ch + s.mh + @as(f64, @floatFromInt(spec[world.ph].gap)) }
+                                        | else |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: spec[world.ph].cw + s.mw + @as(f64, @floatFromInt(spec[world.ph].gap)), spec[world.ph].ch: if (s.mh > spec[world.ph].ch) s.mh else spec[world.ph].ch }
             |> if (world.frame == 30)
                 | then |> libs/metal:window.snap(path: "/tmp/omni_spec_tree.bmp")
             |> if (world.frame == 45)
