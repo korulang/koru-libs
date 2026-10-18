@@ -17,10 +17,21 @@ hack.
 
 - `input.key(code: i64)` — synthesize a key-down; pushes `KeyData` into
   the event mailbox.
+- `input.type(text: string)` — synthesize typable characters through the
+  same chars ring real `keyDown` fills.
 - `input.mouse(x: f64, y: f64)` — synthesize a mouse-down.
+- `input.up(x: f64, y: f64)` — synthesize a mouse-up.
+- `input.move(x: f64, y: f64)` — synthesize pointer motion.
+- `input.drag(x: f64, y: f64)` — synthesize a button-held drag.
+- `input.scroll(x: f64, y: f64, dx: f64, dy: f64)` — synthesize a wheel
+  event at a point.
 - `window.snap(path: string)` — request a framebuffer capture; the
   `frames` loop services it after `presentDrawable`+`commit`, blit-copying
   the drawable into a shared MTLBuffer and writing a 32-bit BMP.
+
+Every verb pushes the same event kind its real-Input twin pushes — the
+mailbox, not the arm, is the injection point, so a scripted probe proves
+a pipeline a hand also takes.
 
 ## Why the seam matters more than the name
 

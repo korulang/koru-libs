@@ -206,6 +206,43 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     $mod.c.Clay__ConfigureOpenElement(decl);
 }
 
+// A clip element — decl.clip set, so children emit inside a SCISSOR_START/
+// END pair. ox/oy is childOffset: scroll position — clay shifts every
+// child's rendered position by it, so the consumer's scroll delta becomes
+// childOffset = (0, -scroll). horiz/vert flag the clipped axes.
+~pub tor el.clip {
+    t: *Tree<tree>,
+    wk: i64, w: f64, hk: i64, h: f64,
+    dir: i64, gap: i64, pad: i64,
+    r: f64, g: f64, b: f64, a: f64,
+    ox: f64, oy: f64, horiz: i64, vert: i64,
+}
+
+~proc el.clip|zig {
+    var decl: $mod.c.Clay_ElementDeclaration = $mod.std.mem.zeroes($mod.c.Clay_ElementDeclaration);
+    decl.layout = .{
+        .sizing = .{
+            .width = $mod.sizing(wk, w),
+            .height = $mod.sizing(hk, h),
+        },
+        .padding = .{
+            .left = @intCast(@max(pad, 0)),
+            .right = @intCast(@max(pad, 0)),
+            .top = @intCast(@max(pad, 0)),
+            .bottom = @intCast(@max(pad, 0)),
+        },
+        .childGap = @intCast(@max(gap, 0)),
+        .layoutDirection = @intCast(dir),
+    };
+    decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    decl.clip = .{
+        .horizontal = horiz != 0,
+        .vertical = vert != 0,
+        .childOffset = .{ .x = @floatCast(ox), .y = @floatCast(oy) },
+    };
+    $mod.c.Clay__ConfigureOpenElement(decl);
+}
+
 fn sizing(kind: i64, v: f64) c.Clay_SizingAxis {
     const f: f32 = @floatCast(v);
     return switch (kind) {

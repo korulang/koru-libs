@@ -820,9 +820,23 @@ pub const MouseData = struct {
     y: f64,
 };
 
+// A wheel turn — dx/dy in points (line-based wheels scaled ×12, the nanoui
+// convention), x/y the pointer location in top-left space so consumers can
+// scope the scroll to the region under it.
+pub const ScrollData = struct {
+    x: f64,
+    y: f64,
+    dx: f64,
+    dy: f64,
+};
+
 const Event = union(enum) {
     key_down: KeyData,
     mouse_down: MouseData,
+    mouse_up: MouseData,
+    mouse_move: MouseData,
+    mouse_drag: MouseData,
+    scroll: ScrollData,
 };
 
 var ev_buf: [64]Event = undefined;
@@ -842,6 +856,22 @@ fn pushKey(kc: u16, chars: []const u8) void {
 }
 
 fn pushEvent(e: Event) void {
+    // Moves and drags coalesce onto the tail — a pointer flood must not
+    // starve clicks queued behind it; only the freshest position matters.
+    if (ev_tail != ev_head) {
+        const last = if (ev_tail == 0) ev_buf.len - 1 else ev_tail - 1;
+        switch (e) {
+            .mouse_move => if (ev_buf[last] == .mouse_move) {
+                ev_buf[last] = e;
+                return;
+            },
+            .mouse_drag => if (ev_buf[last] == .mouse_drag) {
+                ev_buf[last] = e;
+                return;
+            },
+            else => {},
+        }
+    }
     const next = (ev_tail + 1) % ev_buf.len;
     if (next != ev_head) {
         ev_buf[ev_tail] = e;
@@ -949,6 +979,30 @@ fn dumpDrawable(drawable: Id, win: *Window) void {
     pushEvent(.{ .mouse_down = .{ .x = x, .y = y } });
 }
 
+~pub tor input.move { x: f64, y: f64 }
+
+~proc input.move|zig {
+    pushEvent(.{ .mouse_move = .{ .x = x, .y = y } });
+}
+
+~pub tor input.up { x: f64, y: f64 }
+
+~proc input.up|zig {
+    pushEvent(.{ .mouse_up = .{ .x = x, .y = y } });
+}
+
+~pub tor input.drag { x: f64, y: f64 }
+
+~proc input.drag|zig {
+    pushEvent(.{ .mouse_drag = .{ .x = x, .y = y } });
+}
+
+~pub tor input.scroll { x: f64, y: f64, dx: f64, dy: f64 }
+
+~proc input.scroll|zig {
+    pushEvent(.{ .scroll = .{ .x = x, .y = y, .dx = dx, .dy = dy } });
+}
+
 // Live content size in points — locationInWindow's space. vp_w/vp_h are
 // pinned at open for the shader viewport; hit-testing and layout-on-resize
 // need the size NOW, not the size at open.
@@ -1002,15 +1056,47 @@ fn impKeyDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
     pushKey(kc, chars);
 }
 
-fn impMouseDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
-    _ = _s;
-    // Window coords are bottom-left origin and include the titlebar;
-    // convert to the view and flip — consumers get the same top-left
-    // pixel space draw calls use.
+// Window coords are bottom-left origin and include the titlebar; convert
+// to the view and flip — consumers get the same top-left pixel space draw
+// calls use. Shared by every pointer IMP.
+fn viewPoint(recv: Id, ev: Id) MouseData {
     const pw = send(NSPoint, ev, sel("locationInWindow"));
     const pv = send2(NSPoint, NSPoint, Id, recv, sel("convertPoint:fromView:"), pw, @as(Id, null));
     const bounds = send(NSRect, recv, sel("bounds"));
-    pushEvent(.{ .mouse_down = .{ .x = pv.x, .y = bounds.size.height - pv.y } });
+    return .{ .x = pv.x, .y = bounds.size.height - pv.y };
+}
+
+fn impMouseDown(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = _s;
+    pushEvent(.{ .mouse_down = viewPoint(recv, ev) });
+}
+
+fn impMouseUp(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = _s;
+    pushEvent(.{ .mouse_up = viewPoint(recv, ev) });
+}
+
+fn impMouseMoved(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = _s;
+    pushEvent(.{ .mouse_move = viewPoint(recv, ev) });
+}
+
+fn impMouseDragged(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = _s;
+    pushEvent(.{ .mouse_drag = viewPoint(recv, ev) });
+}
+
+fn impScrollWheel(recv: Id, _s: SEL, ev: Id) callconv(.c) void {
+    _ = _s;
+    const p = viewPoint(recv, ev);
+    var dx = send(f64, ev, sel("scrollingDeltaX"));
+    var dy = send(f64, ev, sel("scrollingDeltaY"));
+    // Non-precise deltas are in lines — scale to points (nanoui's ×12).
+    if (!send(bool, ev, sel("hasPreciseScrollingDeltas"))) {
+        dx *= 12;
+        dy *= 12;
+    }
+    pushEvent(.{ .scroll = .{ .x = p.x, .y = p.y, .dx = dx, .dy = dy } });
 }
 
 fn impAcceptsFirstResponder(recv: Id, _s: SEL) callconv(.c) bool {
@@ -1164,6 +1250,10 @@ fn ensureViewClass() ?objc.Class {
     const c = objc.objc_allocateClassPair(sup, "KoruMetalView", 0) orelse return null;
     _ = objc.class_addMethod(c, sel("keyDown:"), @ptrCast(&impKeyDown), "v@:@");
     _ = objc.class_addMethod(c, sel("mouseDown:"), @ptrCast(&impMouseDown), "v@:@");
+    _ = objc.class_addMethod(c, sel("mouseUp:"), @ptrCast(&impMouseUp), "v@:@");
+    _ = objc.class_addMethod(c, sel("mouseMoved:"), @ptrCast(&impMouseMoved), "v@:@");
+    _ = objc.class_addMethod(c, sel("mouseDragged:"), @ptrCast(&impMouseDragged), "v@:@");
+    _ = objc.class_addMethod(c, sel("scrollWheel:"), @ptrCast(&impScrollWheel), "v@:@");
     _ = objc.class_addMethod(c, sel("acceptsFirstResponder"), @ptrCast(&impAcceptsFirstResponder), "B@:");
     _ = objc.class_addMethod(c, sel("windowResized:"), @ptrCast(&impWindowResized), "v@:@");
     const orig_ss = objc.class_getMethodImplementation(sup, sel("setFrameSize:"));
@@ -1252,6 +1342,8 @@ pub const Frame = struct {
     var tbuf: [256]u8 = undefined;
     const titleStr = cf.CFStringCreateWithCString(null, cstr(title, &tbuf), cf.kCFStringEncodingUTF8);
     send1(void, Id, wobj, sel("setTitle:"), @as(Id, @ptrCast(@constCast(titleStr))));
+    // mouseMoved: delivery is opt-in; hover state depends on it.
+    send1(void, bool, wobj, sel("setAcceptsMouseMovedEvents:"), true);
 
     // Do NOT preserve content during live resize — "preserve" is the
     // window server stretching the previous surface onto each new step.
@@ -1455,6 +1547,10 @@ pub const Frame = struct {
 ! frame *Frame<frame!>
 ! ?key-down koru/metal:KeyData
 ! ?mouse-down koru/metal:MouseData
+! ?mouse-up koru/metal:MouseData
+! ?mouse-move koru/metal:MouseData
+! ?mouse-drag koru/metal:MouseData
+! ?scroll koru/metal:ScrollData
 ! ?close
 | done *Window<active!>
 
@@ -1487,6 +1583,10 @@ pub const Frame = struct {
             switch (mev) {
                 .key_down => |k| key_down(k),
                 .mouse_down => |m| mouse_down(m),
+                .mouse_up => |m| mouse_up(m),
+                .mouse_move => |m| mouse_move(m),
+                .mouse_drag => |m| mouse_drag(m),
+                .scroll => |s| scroll(s),
             }
         }
         if ($mod.should_quit) break;
