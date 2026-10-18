@@ -51,6 +51,9 @@ extern fn MTLCreateSystemDefaultDevice() callconv(.c) Id;
 extern fn objc_autoreleasePoolPush() callconv(.c) *anyopaque;
 extern fn objc_autoreleasePoolPop(*anyopaque) callconv(.c) void;
 extern var NSDefaultRunLoopMode: Id;
+extern var NSWindowDidResizeNotification: Id;
+extern var NSWindowWillStartLiveResizeNotification: Id;
+extern var NSWindowDidEndLiveResizeNotification: Id;
 
 const NSPoint = extern struct { x: f64, y: f64 };
 const NSSize = extern struct { width: f64, height: f64 };
@@ -320,6 +323,124 @@ fn impAcceptsFirstResponder(recv: Id, _s: SEL) callconv(.c) bool {
     return true;
 }
 
+// Live-resize plumbing. During an edge drag AppKit runs a modal tracking
+// loop INSIDE sendEvent: — the frames loop is parked in that call, so no
+// ! frame fires and the compositor stretches a stale drawable until
+// mouse-up. NSWindowDidResizeNotification posts per drag step and
+// delivers synchronously, so a `windowResized:` IMP can draw a real frame
+// right there — continuous relayout. The consumer's `! frame` body rides
+// frame_cb, installed when `frames` starts; live_win is the open Window.
+var live_win: ?*Window = null;
+var frame_cb: ?*const fn (*Frame) void = null;
+
+fn syncSurfaceSize(win: *Window) void {
+    const cv = send(Id, win.win, sel("contentView"));
+    const cb = send(NSRect, cv, sel("bounds"));
+    win.vp_w = @floatCast(cb.size.width);
+    win.vp_h = @floatCast(cb.size.height);
+    const bs = send(f64, win.win, sel("backingScaleFactor"));
+    // contentsScale must track the display's backingScaleFactor — left at
+    // the 1.0 default, CA allocates bounds×1 backing and RESAMPLES our
+    // 2× drawable into it: every edge re-rasterizes per frame = shimmer
+    // on all static geometry, independent of layout.
+    const cs = send(f64, win.layer, sel("contentsScale"));
+    if (cs != bs) send1(void, f64, win.layer, sel("setContentsScale:"), bs);
+    const cur = send(NSSize, win.layer, sel("drawableSize"));
+    // Integral pixels only — fractional-point bounds during a live drag
+    // would hand setDrawableSize sizes it truncates differently per step:
+    // a ±1px compositor stretch oscillation.
+    const dw = @round(cb.size.width * bs);
+    const dh = @round(cb.size.height * bs);
+    if (cur.width != dw or cur.height != dh) {
+        send1(void, NSSize, win.layer, sel("setDrawableSize:"), .{ .width = dw, .height = dh });
+    }
+}
+
+fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
+    const pool = objc_autoreleasePoolPush();
+    defer objc_autoreleasePoolPop(pool);
+    const drawable = send(Id, win.layer, sel("nextDrawable"));
+    if (drawable == null) return;
+    const desc = send(Id, cls("MTLRenderPassDescriptor"), sel("renderPassDescriptor"));
+    const atts = send(Id, desc, sel("colorAttachments"));
+    const att = send1(Id, u64, atts, sel("objectAtIndexedSubscript:"), 0);
+    const tex = send(Id, drawable, sel("texture"));
+    send1(void, Id, att, sel("setTexture:"), tex);
+    send1(void, u64, att, sel("setLoadAction:"), 2); // MTLLoadActionClear
+    send1(void, u64, att, sel("setStoreAction:"), 1); // MTLStoreActionStore
+    send1(void, MTLClearColor, att, sel("setClearColor:"), win.clear);
+    const buf = send(Id, win.queue, sel("commandBuffer"));
+    const enc = send1(Id, Id, buf, sel("renderCommandEncoderWithDescriptor:"), desc);
+    send1(void, Id, enc, sel("setRenderPipelineState:"), win.pso);
+    var f = Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .vp_w = win.vp_w, .vp_h = win.vp_h };
+    cb(&f);
+    send(void, enc, sel("endEncoding"));
+    send1(void, Id, buf, sel("presentDrawable:"), drawable);
+    send(void, buf, sel("commit"));
+}
+
+// One draw per dims change: setFrameSize: AND the resize notification
+// both fire per drag step at the same dims — dedupe by vp size so each
+// step renders once, not twice.
+fn liveDraw(win: *Window, cb: *const fn (*Frame) void) void {
+    syncSurfaceSize(win);
+    if (win.lr_w == win.vp_w and win.lr_h == win.vp_h) return;
+    win.lr_w = win.vp_w;
+    win.lr_h = win.vp_h;
+    drawLiveFrame(win, cb);
+}
+
+fn impWindowResized(recv: Id, _s: SEL, note: Id) callconv(.c) void {
+    _ = recv;
+    _ = _s;
+    _ = note;
+    const win = live_win orelse return;
+    const cb = frame_cb orelse return;
+    liveDraw(win, cb);
+}
+
+// During a live drag AppKit calls setFrameSize: on the content view
+// synchronously per step — BEFORE the CATransaction commits the layer's
+// new bounds. NSWindowDidResizeNotification can arrive one commit late:
+// the stretched old texture shows first, then our relayout snaps in —
+// the "stretch then repaint" judder. Drawing here puts our present into
+// the same commit as the bounds change (presentsWithTransaction), so the
+// stretched frame never reaches the screen.
+var orig_setFrameSize: ?*const fn (Id, SEL, NSSize) callconv(.c) void = null;
+
+fn impSetFrameSize(recv: Id, _s: SEL, size: NSSize) callconv(.c) void {
+    if (orig_setFrameSize) |orig| orig(recv, _s, size);
+    const win = live_win orelse return;
+    const cb = frame_cb orelse return;
+    liveDraw(win, cb);
+}
+
+// Live-resize brackets: liveStart marks the drag, liveEnd re-draws once
+// at final dims and clears the dedupe cache.
+fn impLiveStart(recv: Id, _s: SEL, note: Id) callconv(.c) void {
+    _ = recv;
+    _ = _s;
+    _ = note;
+    const win = live_win orelse return;
+    win.lr_w = -1;
+}
+
+// Presents stay IMMEDIATE even inside live resize. presentsWithTransaction
+// made every drag-queued drawable wait for a CATransaction commit — those
+// presents outlive the drag and keep nextDrawable blocked in the frames
+// loop: the event pump starves and clicks throttle, exactly the coupling
+// observed. The setFrameSize: draw lands early enough that an immediate
+// present still beats the stretched-texture commit most steps.
+fn impLiveEnd(recv: Id, _s: SEL, note: Id) callconv(.c) void {
+    _ = recv;
+    _ = _s;
+    _ = note;
+    const win = live_win orelse return;
+    const cb = frame_cb orelse return;
+    win.lr_w = -1;
+    liveDraw(win, cb);
+}
+
 fn ensureViewClass() ?objc.Class {
     if (view_class) |c| return c;
     const sup: objc.Class = @ptrCast(cls("NSView"));
@@ -327,6 +448,12 @@ fn ensureViewClass() ?objc.Class {
     _ = objc.class_addMethod(c, sel("keyDown:"), @ptrCast(&impKeyDown), "v@:@");
     _ = objc.class_addMethod(c, sel("mouseDown:"), @ptrCast(&impMouseDown), "v@:@");
     _ = objc.class_addMethod(c, sel("acceptsFirstResponder"), @ptrCast(&impAcceptsFirstResponder), "B@:");
+    _ = objc.class_addMethod(c, sel("windowResized:"), @ptrCast(&impWindowResized), "v@:@");
+    const orig_ss = objc.class_getMethodImplementation(sup, sel("setFrameSize:"));
+    orig_setFrameSize = @ptrCast(orig_ss);
+    _ = objc.class_addMethod(c, sel("setFrameSize:"), @ptrCast(&impSetFrameSize), "v@:{_NSSize=dd}");
+    _ = objc.class_addMethod(c, sel("liveStart:"), @ptrCast(&impLiveStart), "v@:@");
+    _ = objc.class_addMethod(c, sel("liveEnd:"), @ptrCast(&impLiveEnd), "v@:@");
     objc.objc_registerClassPair(c);
     view_class = c;
     return c;
@@ -349,6 +476,8 @@ pub const Window = struct {
     pso_rect: Id,
     vp_w: f32,
     vp_h: f32,
+    lr_w: f32,
+    lr_h: f32,
     clear: MTLClearColor,
 };
 
@@ -394,6 +523,13 @@ pub const Frame = struct {
     const titleStr = cf.CFStringCreateWithCString(null, cstr(title, &tbuf), cf.kCFStringEncodingUTF8);
     send1(void, Id, wobj, sel("setTitle:"), @as(Id, @ptrCast(@constCast(titleStr))));
 
+    // Do NOT preserve content during live resize — "preserve" is the
+    // window server stretching the previous surface onto each new step.
+    // We draw a correctly-sized frame per step in setFrameSize:, so a
+    // stretched intermediate is pure artifact: static geometry appears to
+    // shift then snap back each step.
+    send1(void, bool, wobj, sel("setPreservesContentDuringLiveResize:"), false);
+
     const device = MTLCreateSystemDefaultDevice();
     if (device == null) {
         return .{ .err = "metal: MTLCreateSystemDefaultDevice returned null" };
@@ -402,9 +538,16 @@ pub const Frame = struct {
     const layer = send(Id, cls("CAMetalLayer"), sel("layer"));
     send1(void, Id, layer, sel("setDevice:"), device);
     send1(void, u64, layer, sel("setPixelFormat:"), 80); // MTLPixelFormatBGRA8Unorm
+    // NOT presentsWithTransaction: presents outside a CATransaction (our
+    // frames loop) queue waiting for a commit that rarely comes — the
+    // drawable pool fills, nextDrawable blocks, everything grays out.
+    // contentsScale + drawableSize in BACKING pixels from the start —
+    // drawableSize is pixels, not points.
+    const bs0 = send(f64, wobj, sel("backingScaleFactor"));
+    send1(void, f64, layer, sel("setContentsScale:"), bs0);
     send1(void, NSSize, layer, sel("setDrawableSize:"), NSSize{
-        .width = @floatFromInt(width),
-        .height = @floatFromInt(height),
+        .width = @as(f64, @floatFromInt(width)) * bs0,
+        .height = @as(f64, @floatFromInt(height)) * bs0,
     });
 
     // Our own NSView subclass carries the responder IMPs — it becomes the
@@ -498,6 +641,17 @@ pub const Frame = struct {
     // it, so this must come after orderFront, not beside content-view setup.
     _ = send1(bool, Id, wobj, sel("makeFirstResponder:"), view);
 
+    // Resize notifications post per drag step of a live resize — the view
+    // observes them so impWindowResized can draw inside AppKit's tracking
+    // loop instead of stretching until mouse-up.
+    const nc = send(Id, cls("NSNotificationCenter"), sel("defaultCenter"));
+    send4(void, Id, SEL, Id, Id, nc, sel("addObserver:selector:name:object:"),
+        view, sel("windowResized:"), NSWindowDidResizeNotification, wobj);
+    send4(void, Id, SEL, Id, Id, nc, sel("addObserver:selector:name:object:"),
+        view, sel("liveStart:"), NSWindowWillStartLiveResizeNotification, wobj);
+    send4(void, Id, SEL, Id, Id, nc, sel("addObserver:selector:name:object:"),
+        view, sel("liveEnd:"), NSWindowDidEndLiveResizeNotification, wobj);
+
     const w = std.heap.page_allocator.create(Window) catch @panic("metal: OOM allocating Window token");
     w.* = Window{
         .app = app,
@@ -508,8 +662,11 @@ pub const Frame = struct {
         .pso_rect = pso_rect,
         .vp_w = @floatFromInt(width),
         .vp_h = @floatFromInt(height),
+        .lr_w = -1,
+        .lr_h = -1,
         .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
     };
+    live_win = w;
     return .{ .win = w };
 }
 
@@ -534,6 +691,9 @@ pub const Frame = struct {
 
 ~proc frames|zig {
     const __cap = @as(?i32, count) orelse 2147483647;
+    // Live-resize path: during an edge drag this loop is parked inside
+    // sendEvent:, so the windowResized: IMP draws through frame_cb instead.
+    $mod.frame_cb = frame;
     var i: i32 = 0;
     while (i < __cap) : (i += 1) {
         const pool = $mod.objc_autoreleasePoolPush();
@@ -565,6 +725,12 @@ pub const Frame = struct {
             close();
             break;
         }
+
+        // Track the live size every iteration: vp is layout points so the
+        // shader maps 1:1 (no stretch), drawableSize is pixels so the
+        // layer reallocates instead of letting the compositor scale a
+        // stale surface. Both derive from contentView bounds.
+        $mod.syncSurfaceSize(win);
 
         const drawable = $mod.send($mod.Id, win.layer, $mod.sel("nextDrawable"));
         if (drawable == null) break; // window closed or invisible

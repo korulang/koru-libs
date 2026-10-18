@@ -36,6 +36,10 @@ import std/store
 import std/io
 
 std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], selkind: 0[i64], dirty: 0[i64], cmdi: 0[i64], hitool: 0[i64] }
+// wins carries the LIVE window size in points (world is i64-only — value
+// stores are single-scalar-type). Updated every frame from window.size;
+// hit rows flip y against wins.h, the palette docks to wins.w.
+std/store:new(wins) { w: 640.0[f64], h: 400.0[f64] }
 
 // One row = one element in the dialect. d: tree depth. kind: stack|leaf|
 // grid|cell|col|row. dock: ""|top|bottom|left|right|fill (a dock slot
@@ -95,6 +99,9 @@ libs/clay:init(width: 640, height: 400)
         ! frame f
             |> std/store:stored { world.frame: world.frame + 1, world.cmdi: 0 }
             |> std/store:clear(hit)
+            |> libs/metal:window.size(win: w): wh
+            |> std/store:stored { wins.w: wh.w, wins.h: wh.h }
+            |> libs/clay:dims(cl: h, width: wh.w, height: wh.h)
             // Selection drivers: Tab and click are the only writers.
             // Every writer sets dirty — the refresh below is the single
             // site, same shape as the scripted sibling.
@@ -110,7 +117,7 @@ libs/clay:init(width: 640, height: 400)
                             |> std/store:stored { tl.vis: if (tl.tk == world.selkind or tl.tk == -1) 1 else 0 }
             |> std/store:query(tools)
                         ! query tl
-                            |> std/store:stored { tl.px: tl.px + ((if (world.sel != -1) @as(f64, 496.0) else @as(f64, 660.0)) - tl.px) * 0.22 }
+                            |> std/store:stored { tl.px: tl.px + ((if (world.sel != -1) wins.w - 144.0 else wins.w + 20.0) - tl.px) * 0.22 }
             |> if (world.frame == 1)
                 | then |> std/store:insert(spec) { d: 0, kind: "dock", dock: "", ws: "fix", w: 220.0, hs: "auto", h: 0.0, dir: "ttb", gap: 0, pad: 0, ax: "start", ay: "start", r: 30.0, g: 32.0, b: 42.0, a: 255.0, fl: 1, fx: 60.0, fy: 70.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 0, gc: 0, gr: 0, tx: "", fs: 0.0 }
                     | row h0 |> std/store:insert(spec) { d: 1, kind: "leaf", dock: "top", ws: "", w: 0.0, hs: "fix", h: 24.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 62.0, g: 74.0, b: 96.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, mw: 0.0, mh: 0.0, cw: 0.0, ch: 0.0, cc: 0, id: 0, pid: 0, gc: 0, gr: 0, tx: "", fs: 0.0 }
@@ -268,10 +275,12 @@ libs/clay:init(width: 640, height: 400)
                             |> libs/ui:panel(t, dock: "", tl.ws, tl.w, tl.hs, tl.h, tl.dir, tl.gap, tl.pad, tl.ax, tl.ay, tl.r, tl.g, tl.b, tl.a, fl: 1, fx: tl.px + tl.cx, fy: 70.0 + tl.cy)
                 | solved cls |> libs/clay:each(cl: cls)
                     ! cmd rc |> if (rc.kind == 1)
-                        | then |> libs/metal:window.size(win: w): wh
-                            |> std/store:insert(hit) { seq: world.cmdi, tool: if (world.cmdi < 25) 0 else 1, x: rc.x * wh.w / 640.0, y: wh.h - (rc.y + rc.h) * wh.h / 400.0, w: rc.w * wh.w / 640.0, h: rc.h * wh.h / 400.0 }
+                        | then |> std/store:insert(hit) { seq: world.cmdi, tool: if (world.cmdi < 25) 0 else 1, rc.x, y: wins.h - rc.y - rc.h, rc.w, rc.h }
                             |> std/store:stored { world.cmdi: world.cmdi + 1 }
-                            |> libs/metal:draw.rect(f, rc.x, rc.y, rc.w, rc.h, rc.r, rc.g, rc.b, rc.a)
+                            // Quantize to the pixel grid — edges, not sizes:
+                            // x/w round independently so a box's left AND
+                            // right both snap instead of the box breathing.
+                            |> libs/metal:draw.rect(f, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y), rc.r, rc.g, rc.b, rc.a)
                     | drained |> std/store:stored { world.drew: 1 }
         ! key-down k when k.code == 48
             |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }
