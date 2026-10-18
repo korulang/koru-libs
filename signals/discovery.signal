@@ -1,0 +1,7 @@
+name: discovery
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a fact about the system measured for the first time — nothing prior
+  believed otherwise; the commit is the finding's first record
