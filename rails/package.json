@@ -1,0 +1,25 @@
+{
+  "name": "@korulang/rails",
+  "version": "0.0.1",
+  "description": "ActiveSupport-compatible message signing for Koru — SignedId, Turbo stream names, signed cookies, masked CSRF tokens",
+  "keywords": ["koru", "korulang", "rails", "activesupport", "signing", "turbo", "csrf", "signed-cookies"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "rails"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.k",
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.k"
+  }
+}

@@ -1,0 +1,101 @@
+~import koru/regressions
+
+~koru/regressions:run()
+~koru/regressions:expect(text: "id sign/verify roundtrip: 42")
+~koru/regressions:expect(text: "id wrong purpose refused: 0")
+~koru/regressions:expect(text: "id expired refused: 0")
+~koru/regressions:expect(text: "stream roundtrip: rooms")
+~koru/regressions:expect(text: "stream tampered rejected")
+~koru/regressions:expect(text: "cookie roundtrip: sess-tok-xyz")
+~koru/regressions:expect(text: "cookie wrong name refused")
+~koru/regressions:expect(text: "csrf masked accepted")
+~koru/regressions:expect(text: "csrf wrong real rejected")
+~koru/regressions:expect(text: "gid-param: Z2lkOi8vY2FtcGZpcmUvUm9vbS83")
+
+// rails — ActiveSupport-compatible signing, exercised end to end with a
+// fixture SECRET_KEY_BASE (the Rails secret source; the lib refuses to
+// substitute one silently when unset).
+
+~import koru/rails
+~import koru/yyjson
+~import std/io
+
+const std = @import("std");
+
+extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
+
+~tor setsecret { }
+~proc setsecret|zig {
+    _ = setenv("SECRET_KEY_BASE", "rails-regression-secret", 1);
+}
+
+// ?string → string for interpolation.
+~tor unopt { v: ?string } -> string
+~proc unopt|zig { return v orelse ""; }
+
+~setsecret()
+
+// SignedId: sign under one purpose, verify under it and under another.
+~koru/rails:id.sign(data: 42, purpose: "user/avatar", ttl-secs: 0): sg
+|> koru/rails:id.verify(raw: sg, purpose: "user/avatar"): v1
+|> std/io:print.ln("id sign/verify roundtrip: {{ v1:d }}")
+|> koru/rails:id.verify(raw: sg, purpose: "user/other"): v2
+|> std/io:print.ln("id wrong purpose refused: {{ v2:d }}")
+
+// SignedId with ttl in the past — the exp field is honored on verify.
+~koru/rails:id.sign(data: 7, purpose: "user/transfer", ttl-secs: -10): ex
+|> koru/rails:id.verify(raw: ex, purpose: "user/transfer"): v3
+|> std/io:print.ln("id expired refused: {{ v3:d }}")
+
+// Turbo stream name: sign + verify roundtrip, then a forged signature.
+~koru/rails:stream.sign(name: "rooms"): st
+|> koru/rails:stream.verify(signed: st): sv
+|> unopt(v: sv): sname
+|> std/io:print.ln("stream roundtrip: {{ sname:s }}")
+
+// "InJvb21zIg==" is strict-b64 of "rooms" — real payload, forged sig.
+~koru/rails:stream.verify(signed: "InJvb21zIg==--0000000000000000000000000000000000000000000000000000000000000000"): tv
+|> if(tv == null)
+   | then |> std/io:print.ln("stream tampered rejected")
+   | else |> std/io:print.ln("stream tampered ACCEPTED")
+
+// yyjson is rails's envelope parser — a module's Zig lands in the emitted
+// root only when one of its tors is INVOKED (emission follows invocation,
+// not import), so this parse is also the dep wiring.
+~koru/yyjson:parse(text: "{\"rails\":true}")
+| ok d |> koru/yyjson:close(doc: d)
+| err e |> std/io:print.ln("yyjson parse failed")
+
+// Signed cookie: raw signed value verifies under the same name, and
+// refuses under another — `if` closes a chain, so the refusal arm is last.
+~koru/rails:cookie.sign(name: "session_token", value: "sess-tok-xyz", ttl-secs: 3600): cv
+|> koru/rails:cookie.verify(name: "session_token", raw: cv): cvv
+|> unopt(v: cvv): cval
+|> std/io:print.ln("cookie roundtrip: {{ cval:s }}")
+|> koru/rails:cookie.verify(name: "other_cookie", raw: cv): cw
+|> if(cw == null)
+   | then |> std/io:print.ln("cookie wrong name refused")
+   | else |> std/io:print.ln("cookie wrong name accepted")
+
+// Masked CSRF: derive a real via keyed-hmac, mask, check accepts the
+// presented form.
+~koru/rails:keyed-hmac(salt: "app/csrf_token", data: "sess-tok-xyz"): real
+|> koru/rails:csrf.mask(real): masked
+|> koru/rails:csrf.check(real, presented: masked): ok1
+|> if(ok1)
+   | then |> std/io:print.ln("csrf masked accepted")
+   | else |> std/io:print.ln("csrf masked rejected")
+
+// A different session token derives a different real — the same masked
+// presentation must refuse.
+~koru/rails:keyed-hmac(salt: "app/csrf_token", data: "sess-tok-xyz"): r1
+|> koru/rails:csrf.mask(real: r1): m1
+|> koru/rails:keyed-hmac(salt: "app/csrf_token", data: "other-session"): r2
+|> koru/rails:csrf.check(real: r2, presented: m1): ok2
+|> if(ok2)
+   | then |> std/io:print.ln("csrf wrong real accepted")
+   | else |> std/io:print.ln("csrf wrong real rejected")
+
+// GlobalID.to_param — known-answer: b64url-nopad of gid://campfire/Room/7.
+~koru/rails:gid-param(app: "campfire", rtype: "Room", rid: "7"): gp
+|> std/io:print.ln("gid-param: {{ gp:s }}")

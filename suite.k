@@ -101,3 +101,9 @@ koru/regressions:case(qr svg smoke) {
   "category": ["qr"],
   "tags": ["svg", "encoder"]
 }
+
+koru/regressions:case(rails signing roundtrip) {
+  "file": "rails/tests/signing_roundtrip.kz",
+  "category": ["rails"],
+  "tags": ["signing", "cookies", "csrf"]
+}

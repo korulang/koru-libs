@@ -1,0 +1,585 @@
+// rails — ActiveSupport-compatible message signing.
+//
+// Implements the wire protocols a Rails twin speaks, parameterized over
+// the application's purposes and names:
+//   - id.sign / id.verify: ActiveRecord::SignedId — envelope
+//     {"_rails":{"data":N,"pur":P[,"exp"→ordering per upstream]}} as
+//     urlsafe-base64 unpadded, HMAC-SHA256 hex sig, joined "--". Key
+//     PBKDF2-HMAC-SHA256(SECRET_KEY_BASE, "active_record/signed_id",
+//     1000, 64).
+//   - stream.sign / stream.verify: Turbo::StreamsChannel
+//     signed_stream_name / verified_stream_name — the name JSON-dumped,
+//     strict-base64'd (no metadata envelope), signed HMAC-SHA256 with
+//     the key derived under "turbo/signed_stream_verifier_key".
+//   - cookie.*: ActionDispatch::Cookies legacy envelope (NullSerializer)
+//     — {"_rails":{"message":<strict-b64 of JSON-dumped value>,
+//     "exp":<iso8601(3) utc>|null,"pur":"cookie.<name>"}} strict-b64'd,
+//     "--"-joined to a HEX HMAC-SHA1 digest (signed_cookie_digest unset
+//     — SHA1 — even though the key is PBKDF2-SHA256-derived, salt
+//     "signed cookie", 1000 iters, 64B). Rack-escaped on the wire.
+//   - csrf.*: Rails's masked-authenticity-token discipline — one-time-pad
+//     XOR over a 32-byte real secret; the binding of `real` (session,
+//     derived key, …) is the caller's.
+//
+// SECRET_KEY_BASE comes from the environment like the reference; unset
+// renders an empty signature — a visibly broken URL, never a silent
+// substitute.
+
+const std = @import("std");
+const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+
+// Keys derive once per thread — Rails likewise builds a verifier once and
+// reuses it; PBKDF2's 1000 iterations are a derivation cost, not per-sign.
+threadlocal var sgid_key: [64]u8 = undefined;
+threadlocal var sgid_key_ok: bool = false;
+threadlocal var stream_key: [64]u8 = undefined;
+threadlocal var stream_key_ok: bool = false;
+
+fn derivedKey(salt: []const u8, cache: *[64]u8, ok: *bool) ?*const [64]u8 {
+    if (ok.*) return cache;
+    const secret = std.posix.getenv("SECRET_KEY_BASE") orelse return null;
+    std.crypto.pwhash.pbkdf2(cache, secret, salt, 1000, HmacSha256) catch return null;
+    ok.* = true;
+    return cache;
+}
+
+// keyed-hmac's cache is parameterized on salt — one slot, last-salt wins;
+// a caller holding a single binding salt (the common case) pays PBKDF2 once.
+threadlocal var misc_salt: [128]u8 = undefined;
+threadlocal var misc_salt_len: usize = 0;
+threadlocal var misc_key: [64]u8 = undefined;
+threadlocal var misc_ok: bool = false;
+
+fn keyedKey(salt: []const u8) ?*const [64]u8 {
+    if (misc_ok and misc_salt_len == salt.len and
+        std.mem.eql(u8, misc_salt[0..salt.len], salt)) return &misc_key;
+    if (salt.len > misc_salt.len) return null;
+    const secret = std.posix.getenv("SECRET_KEY_BASE") orelse return null;
+    std.crypto.pwhash.pbkdf2(&misc_key, secret, salt, 1000, HmacSha256) catch return null;
+    @memcpy(misc_salt[0..salt.len], salt);
+    misc_salt_len = salt.len;
+    misc_ok = true;
+    return &misc_key;
+}
+
+fn hmacHex(key: []const u8, msg: []const u8) [64]u8 {
+    var mac: [32]u8 = undefined;
+    HmacSha256.create(&mac, msg, key);
+    return std.fmt.bytesToHex(mac, .lower);
+}
+
+// `"<s>"` — the JSON-dumped form of a string, with the escapes
+// JSON.generate produces for the characters these payloads can carry.
+fn jsonDumpStr(out: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    if (n >= out.len) return out[0..n];
+    out[n] = '"';
+    n += 1;
+    for (s) |ch| {
+        const esc: ?[]const u8 = switch (ch) {
+            '"' => "\\\"",
+            '\\' => "\\\\",
+            '\n' => "\\n",
+            '\r' => "\\r",
+            '\t' => "\\t",
+            else => null,
+        };
+        if (esc) |e| {
+            if (n + e.len > out.len) return out[0..n];
+            @memcpy(out[n .. n + e.len], e);
+            n += e.len;
+        } else if (ch < 0x20) {
+            if (n + 6 > out.len) return out[0..n];
+            _ = std.fmt.bufPrint(out[n .. n + 6], "\\u{x:0>4}", .{ch}) catch return out[0..n];
+            n += 6;
+        } else {
+            if (n >= out.len) return out[0..n];
+            out[n] = ch;
+            n += 1;
+        }
+    }
+    if (n >= out.len) return out[0..n];
+    out[n] = '"';
+    n += 1;
+    return out[0..n];
+}
+
+// ============================================================================
+// ActiveRecord::SignedId — <b64url-nopad envelope>--<hmac-sha256 hex>
+// ============================================================================
+
+threadlocal var sgid_buf: [512]u8 = undefined;
+
+~proc id.sign|zig {
+    const key = derivedKey("active_record/signed_id", &sgid_key, &sgid_key_ok) orelse return "";
+    var env_buf: [256]u8 = undefined;
+    const envelope = if (ttl_secs != 0) blk: {
+        var ebuf: [40]u8 = undefined;
+        const exp = iso8601(&ebuf, std.time.timestamp() + ttl_secs);
+        break :blk std.fmt.bufPrint(&env_buf,
+            "{{\"_rails\":{{\"data\":{d},\"exp\":\"{s}\",\"pur\":\"{s}\"}}}}",
+            .{ data, exp, purpose }) catch return "";
+    } else std.fmt.bufPrint(&env_buf,
+        "{{\"_rails\":{{\"data\":{d},\"pur\":\"{s}\"}}}}",
+        .{ data, purpose }) catch return "";
+    const enc_len = std.base64.url_safe_no_pad.Encoder.calcSize(envelope.len);
+    if (enc_len + 66 > sgid_buf.len) return "";
+    const enc = sgid_buf[0..enc_len];
+    _ = std.base64.url_safe_no_pad.Encoder.encode(enc, envelope);
+    const sig = hmacHex(key, enc);
+    sgid_buf[enc_len] = '-';
+    sgid_buf[enc_len + 1] = '-';
+    @memcpy(sgid_buf[enc_len + 2 .. enc_len + 66], &sig);
+    return sgid_buf[0 .. enc_len + 66];
+}
+
+threadlocal var verify_buf: [512]u8 = undefined;
+
+~proc id.verify|zig {
+    const key = derivedKey("active_record/signed_id", &sgid_key, &sgid_key_ok) orelse return 0;
+    if (raw.len < 67) return 0;
+    const idx = raw.len - 66;
+    if (raw[idx] != '-' or raw[idx + 1] != '-') return 0;
+    const encoded = raw[0..idx];
+    const digest = raw[idx + 2 ..];
+    const want = hmacHex(key, encoded);
+    if (!std.crypto.timing_safe.eql([64]u8, want, digest[0..64].*)) return 0;
+
+    var dbuf: [256]u8 = undefined;
+    const dlen = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(encoded) catch return 0;
+    if (dlen > dbuf.len) return 0;
+    std.base64.url_safe_no_pad.Decoder.decode(dbuf[0..dlen], encoded) catch return 0;
+
+    const doc = yyjson.c.yyjson_read_opts(&dbuf, dlen, 0, null, null) orelse return 0;
+    defer yyjson.c.yyjson_doc_free(doc);
+    const root = yyjson.c.yyjson_doc_get_root(doc) orelse return 0;
+    const rails = yyjson.c.yyjson_obj_getn(root, "_rails", 6) orelse return 0;
+    const pur = yyjson.c.yyjson_obj_getn(rails, "pur", 3) orelse return 0;
+    const ps = yyjson.c.yyjson_get_str(pur) orelse return 0;
+    if (!std.mem.eql(u8, ps[0..yyjson.c.yyjson_get_len(pur)], purpose)) return 0;
+    const expv = yyjson.c.yyjson_obj_getn(rails, "exp", 3);
+    if (expv != null and !yyjson.c.yyjson_is_null(expv)) {
+        const es = yyjson.c.yyjson_get_str(expv) orelse return 0;
+        const exp_secs = parseIso(es[0..yyjson.c.yyjson_get_len(expv)]) orelse return 0;
+        if (std.time.timestamp() >= exp_secs) return 0;
+    }
+    const data = yyjson.c.yyjson_obj_getn(rails, "data", 4) orelse return 0;
+    if (!yyjson.c.yyjson_is_num(data)) return 0;
+    // positive ids parse as yyjson UINT — get_int handles either subtype,
+    // get_sint would answer 0 and we'd refuse a perfectly valid token.
+    return yyjson.c.yyjson_get_int(data);
+}
+
+// ============================================================================
+// Turbo signed stream names — JSON-dump, strict-b64 (PADDED), "--", hex
+// HMAC-SHA256 under the turbo verifier salt.
+// ============================================================================
+
+threadlocal var stream_buf: [1024]u8 = undefined;
+
+~proc stream.sign|zig {
+    const key = derivedKey("turbo/signed_stream_verifier_key", &stream_key, &stream_key_ok) orelse return "";
+    var dumped_buf: [384]u8 = undefined;
+    const dumped = jsonDumpStr(&dumped_buf, name);
+    const enc_len = std.base64.standard.Encoder.calcSize(dumped.len);
+    if (enc_len + 66 > stream_buf.len) return "";
+    const enc = stream_buf[0..enc_len];
+    _ = std.base64.standard.Encoder.encode(enc, dumped);
+    const sig = hmacHex(key, enc);
+    stream_buf[enc_len] = '-';
+    stream_buf[enc_len + 1] = '-';
+    @memcpy(stream_buf[enc_len + 2 .. enc_len + 66], &sig);
+    return stream_buf[0 .. enc_len + 66];
+}
+
+// The READ side: split at "--", recompute the HMAC over the encoded
+// payload, constant-time compare, base64-decode, and read the JSON string.
+// Any failure is nil — a verifier answers "no", never an error.
+const yyjson = @import("root").koru_koru.koru_yyjson;
+
+~proc stream.verify|zig {
+    const key = derivedKey("turbo/signed_stream_verifier_key", &stream_key, &stream_key_ok) orelse return null;
+    const sep = std.mem.indexOf(u8, signed, "--") orelse return null;
+    const encoded = signed[0..sep];
+    const sig_hex = signed[sep + 2 ..];
+    if (sig_hex.len != 64) return null;
+    var want: [32]u8 = undefined;
+    _ = std.fmt.hexToBytes(&want, sig_hex) catch return null;
+    var mac: [32]u8 = undefined;
+    HmacSha256.create(&mac, encoded, key);
+    if (!std.crypto.timing_safe.eql([32]u8, mac, want)) return null;
+    const dec_len = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return null;
+    if (dec_len > verify_buf.len) return null;
+    std.base64.standard.Decoder.decode(verify_buf[0..dec_len], encoded) catch return null;
+    const doc = yyjson.c.yyjson_read_opts(&verify_buf, dec_len, 0, null, null) orelse return null;
+    defer yyjson.c.yyjson_doc_free(doc);
+    const root = yyjson.c.yyjson_doc_get_root(doc) orelse return null;
+    const s = yyjson.c.yyjson_get_str(root) orelse return null;
+    const slen = yyjson.c.yyjson_get_len(root);
+    if (slen > verify_buf.len) return null;
+    @memcpy(verify_buf[0..slen], s[0..slen]);
+    return verify_buf[0..slen];
+}
+
+// ============================================================================
+// masked CSRF tokens — one-time-pad XOR over a 32-byte real secret.
+// `real`'s binding (a session token, a derived key) is the caller's;
+// mask emits the presented token, check accepts the masked form or the
+// raw secret, constant-time.
+// ============================================================================
+
+threadlocal var csrf_emit_buf: [128]u8 = undefined;
+
+~proc csrf.mask|zig {
+    if (real.len != 32) return "";
+    var masked: [64]u8 = undefined;
+    std.crypto.random.bytes(masked[0..32]);
+    for (0..32) |i| masked[32 + i] = masked[i] ^ real[i];
+    const n = std.base64.url_safe_no_pad.Encoder.calcSize(masked.len);
+    _ = std.base64.url_safe_no_pad.Encoder.encode(csrf_emit_buf[0..n], &masked);
+    return csrf_emit_buf[0..n];
+}
+
+// 64 decoded bytes = masked (otp ++ otp^real); 32 = the raw real token,
+// also accepted upstream.
+~proc csrf.check|zig {
+    if (real.len != 32 or presented.len == 0) return false;
+    const dlen = std.base64.url_safe_no_pad.Decoder.calcSizeForSlice(presented) catch return false;
+    if (dlen != 32 and dlen != 64) return false;
+    var decoded: [64]u8 = undefined;
+    std.base64.url_safe_no_pad.Decoder.decode(decoded[0..dlen], presented) catch return false;
+    var candidate: [32]u8 = undefined;
+    if (dlen == 64) {
+        for (0..32) |i| candidate[i] = decoded[32 + i] ^ decoded[i];
+    } else {
+        @memcpy(&candidate, decoded[0..32]);
+    }
+    return std.crypto.timing_safe.eql([32]u8, candidate, real[0..32].*);
+}
+
+// ============================================================================
+// signed cookies — ActionDispatch::Cookies legacy envelope, both directions
+// ============================================================================
+//
+//   {"_rails":{"message":<strict-b64 of json-dumped value>,
+//              "exp":"<iso8601(3) utc, now+ttl>"|null,"pur":"cookie.<name>"}}
+// strict-base64'd, "--"-joined to a HEX HMAC-SHA1 digest (signed_cookie_
+// digest is unset — SHA1 — even though the key is PBKDF2-SHA256-derived,
+// salt "signed cookie", 1000 iters, 64B). On Set-Cookie the value is
+// Rack-escaped; on Cookie it arrives escaped and is unescaped.
+//
+// verify tries purpose "cookie.<name>" — an envelope naming another
+// purpose fails; an envelope with no pur passes (purpose-less form).
+
+threadlocal var cookie_key: [64]u8 = undefined;
+threadlocal var cookie_key_ok: bool = false;
+
+fn cookieKey() ?*const [64]u8 {
+    return derivedKey("signed cookie", &cookie_key, &cookie_key_ok);
+}
+
+// -- civil date math (Howard Hinnant's days-from-civil) ----------------------
+
+const Civil = struct { y: i64, m: u8, d: u8, hh: u8, mm: u8, ss: u8, ms: u16 };
+
+fn daysFromCivil(y_in: i64, m: i64, d: i64) i64 {
+    const y = if (m <= 2) y_in - 1 else y_in;
+    const era = @divFloor(if (y >= 0) y else y - 399, 400);
+    const yoe = y - era * 400;
+    const mp = @mod(m + 9, 12);
+    const doy = @divFloor(153 * mp + 2, 5) + d - 1;
+    const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
+    return era * 146097 + doe - 719468;
+}
+
+fn civilFromDays(z_in: i64) struct { y: i64, m: i64, d: i64 } {
+    const z = z_in + 719468;
+    const era = @divFloor(if (z >= 0) z else z - 146096, 146097);
+    const doe = z - era * 146097;
+    const yoe = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
+    const y = yoe + era * 400;
+    const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+    const mp = @divFloor(5 * doy + 2, 153);
+    const d = doy - @divFloor(153 * mp + 2, 5) + 1;
+    const m = if (mp < 10) mp + 3 else mp - 9;
+    return .{ .y = if (m <= 2) y + 1 else y, .m = m, .d = d };
+}
+
+fn civilOf(secs: i64) Civil {
+    const days = @divFloor(secs, 86400);
+    const rem = @mod(secs, 86400);
+    const ymd = civilFromDays(days);
+    return .{
+        .y = ymd.y, .m = @intCast(ymd.m), .d = @intCast(ymd.d),
+        .hh = @intCast(@divFloor(rem, 3600)), .mm = @intCast(@mod(@divFloor(rem, 60), 60)),
+        .ss = @intCast(@mod(rem, 60)), .ms = 0,
+    };
+}
+
+// `Time#iso8601(3)` in UTC.
+fn iso8601(buf: []u8, secs: i64) []const u8 {
+    const c = civilOf(secs);
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}.000Z",
+        .{ @as(u64, @intCast(c.y)), c.m, c.d, c.hh, c.mm, c.ss }) catch "";
+}
+
+// IMF-fixdate for Set-Cookie `expires=`.
+fn httpdate(buf: []u8, secs: i64) []const u8 {
+    const wdays = [_][]const u8{ "Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed" };
+    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const c = civilOf(secs);
+    const wd = wdays[@intCast(@mod(@divFloor(secs, 86400), 7))];
+    return std.fmt.bufPrint(buf, "{s}, {d:0>2} {s} {d:0>4} {d:0>2}:{d:0>2}:{d:0>2} GMT",
+        .{ wd, c.d, months[c.m - 1], @as(u64, @intCast(c.y)), c.hh, c.mm, c.ss }) catch "";
+}
+
+// `"2046-01-01T12:00:00.000Z"` → epoch seconds; the only shapes the
+// envelope's exp field takes.
+fn parseIso(s: []const u8) ?i64 {
+    if (s.len < 20 or s[4] != '-' or s[7] != '-' or s[10] != 'T' or s[13] != ':' or s[16] != ':') return null;
+    const y = std.fmt.parseInt(i64, s[0..4], 10) catch return null;
+    const mo = std.fmt.parseInt(i64, s[5..7], 10) catch return null;
+    const d = std.fmt.parseInt(i64, s[8..10], 10) catch return null;
+    const hh = std.fmt.parseInt(i64, s[11..13], 10) catch return null;
+    const mi = std.fmt.parseInt(i64, s[14..16], 10) catch return null;
+    const ss = std.fmt.parseInt(i64, s[17..19], 10) catch return null;
+    if (mo < 1 or mo > 12 or d < 1 or d > 31 or hh > 23 or mi > 59 or ss > 60) return null;
+    return daysFromCivil(y, mo, d) * 86400 + hh * 3600 + mi * 60 + ss;
+}
+
+// -- Rack escaping -----------------------------------------------------------
+
+// `URI.encode_www_form_component`: `*-._` + alphanumerics pass, a space is
+// `+`, the rest is `%XX`.
+fn rackEscape(out: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    const hex = "0123456789ABCDEF";
+    for (s) |ch| {
+        const keep = (ch >= 'A' and ch <= 'Z') or (ch >= 'a' and ch <= 'z') or
+            (ch >= '0' and ch <= '9') or ch == '*' or ch == '-' or ch == '.' or ch == '_';
+        if (keep) {
+            if (n >= out.len) return out[0..n];
+            out[n] = ch;
+            n += 1;
+        } else if (ch == ' ') {
+            if (n >= out.len) return out[0..n];
+            out[n] = '+';
+            n += 1;
+        } else {
+            if (n + 3 > out.len) return out[0..n];
+            out[n] = '%';
+            out[n + 1] = hex[ch >> 4];
+            out[n + 2] = hex[ch & 15];
+            n += 3;
+        }
+    }
+    return out[0..n];
+}
+
+// `Rack::Utils.unescape`: `+` is a space, `%XX` decodes, malformed escapes
+// pass through raw.
+fn rackUnescape(out: []u8, s: []const u8) []const u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < s.len) : (i += 1) {
+        const ch = s[i];
+        if (ch == '+') {
+            if (n >= out.len) return out[0..n];
+            out[n] = ' ';
+            n += 1;
+        } else if (ch == '%' and i + 2 < s.len) {
+            const hi = std.fmt.charToDigit(s[i + 1], 16) catch {
+                if (n >= out.len) return out[0..n];
+                out[n] = ch;
+                n += 1;
+                continue;
+            };
+            const lo = std.fmt.charToDigit(s[i + 2], 16) catch {
+                if (n >= out.len) return out[0..n];
+                out[n] = ch;
+                n += 1;
+                continue;
+            };
+            if (n >= out.len) return out[0..n];
+            out[n] = hi * 16 + lo;
+            n += 1;
+            i += 2;
+        } else {
+            if (n >= out.len) return out[0..n];
+            out[n] = ch;
+            n += 1;
+        }
+    }
+    return out[0..n];
+}
+
+// -- the signed value --------------------------------------------------------
+
+threadlocal var csign_buf: [2048]u8 = undefined;
+threadlocal var gen_buf: [2048]u8 = undefined;
+
+fn cookieEnvelope(buf: []u8, name: []const u8, dumped_json: []const u8, ttl_secs: i64) ?[]const u8 {
+    const mlen = std.base64.standard.Encoder.calcSize(dumped_json.len);
+    var mbuf: [512]u8 = undefined;
+    if (mlen > mbuf.len) return null;
+    _ = std.base64.standard.Encoder.encode(mbuf[0..mlen], dumped_json);
+    if (ttl_secs != 0) {
+        var ebuf: [48]u8 = undefined;
+        const exp = iso8601(&ebuf, std.time.timestamp() + ttl_secs);
+        return std.fmt.bufPrint(buf,
+            "{{\"_rails\":{{\"message\":\"{s}\",\"exp\":\"{s}\",\"pur\":\"cookie.{s}\"}}}}",
+            .{ mbuf[0..mlen], exp, name }) catch null;
+    }
+    return std.fmt.bufPrint(buf,
+        "{{\"_rails\":{{\"message\":\"{s}\",\"exp\":null,\"pur\":\"cookie.{s}\"}}}}",
+        .{ mbuf[0..mlen], name }) catch null;
+}
+
+fn hmacSha1Hex(key: []const u8, msg: []const u8) [40]u8 {
+    var mac: [20]u8 = undefined;
+    std.crypto.auth.hmac.Hmac(std.crypto.hash.Sha1).create(&mac, msg, key);
+    return std.fmt.bytesToHex(mac, .lower);
+}
+
+// `<strict-b64>--<sha1 hex>`, unescaped — shared by the sign/header faces.
+fn cookieSignRaw(name: []const u8, value: []const u8, ttl_secs: i64) ?[]const u8 {
+    const key = cookieKey() orelse return null;
+    var dbuf: [512]u8 = undefined;
+    const dumped = jsonDumpStr(&dbuf, value);
+    const env = cookieEnvelope(&gen_buf, name, dumped, ttl_secs) orelse return null;
+    const elen = std.base64.standard.Encoder.calcSize(env.len);
+    if (elen + 2 + 40 > csign_buf.len) return null;
+    _ = std.base64.standard.Encoder.encode(csign_buf[0..elen], env);
+    const sig = hmacSha1Hex(key, csign_buf[0..elen]);
+    csign_buf[elen] = '-';
+    csign_buf[elen + 1] = '-';
+    @memcpy(csign_buf[elen + 2 .. elen + 42], &sig);
+    return csign_buf[0 .. elen + 42];
+}
+
+// The signed value itself — before Rack escapes it into the header.
+~proc cookie.sign|zig {
+    return cookieSignRaw(name, value, ttl_secs) orelse "";
+}
+
+// The whole Set-Cookie header value, Rack's shape:
+// `<name>=<escaped>; path=/; [expires=<+ttl>;] httponly; samesite=lax`.
+threadlocal var hdr_cbuf: [2048]u8 = undefined;
+
+~proc cookie.header|zig {
+    const raw = cookieSignRaw(name, value, ttl_secs) orelse return "";
+    const escaped = rackEscape(hdr_cbuf[0..1500], raw);
+    if (ttl_secs != 0) {
+        var ebuf: [64]u8 = undefined;
+        const exp = httpdate(&ebuf, std.time.timestamp() + ttl_secs);
+        return std.fmt.bufPrint(hdr_cbuf[1500..],
+            "{s}={s}; path=/; expires={s}; httponly; samesite=lax",
+            .{ name, escaped, exp }) catch "";
+    }
+    return std.fmt.bufPrint(hdr_cbuf[1500..],
+        "{s}={s}; path=/; httponly; samesite=lax",
+        .{ name, escaped }) catch "";
+}
+
+// The delete form — empty value + epoch expiry, the way Rack spells it.
+threadlocal var clr_buf: [128]u8 = undefined;
+
+~proc cookie.clear|zig {
+    return std.fmt.bufPrint(&clr_buf,
+        "{s}=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax",
+        .{name}) catch "";
+}
+
+// -- the read side --------------------------------------------------------------
+
+threadlocal var cverify_buf: [1024]u8 = undefined;
+
+// From the wire value (still Rack-escaped). nil for every failure —
+// a verifier answers no, never an error.
+~proc cookie.verify|zig {
+    const key = cookieKey() orelse return null;
+    const w = raw orelse return null;
+    var ubuf: [1024]u8 = undefined;
+    const signed = rackUnescape(&ubuf, w);
+
+    // extract_encoded: last 42 bytes are "--" + 40-hex SHA1.
+    if (signed.len < 42) return null;
+    const idx = signed.len - 42;
+    if (signed[idx] != '-' or signed[idx + 1] != '-') return null;
+    const encoded = signed[0..idx];
+    const digest = signed[idx + 2 ..];
+    if (encoded.len == 0) return null;
+    const want = hmacSha1Hex(key, encoded);
+    if (!std.crypto.timing_safe.eql([40]u8, want, digest[0..40].*)) return null;
+
+    const dlen = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return null;
+    if (dlen > cverify_buf.len) return null;
+    var dbuf: [1024]u8 = undefined;
+    std.base64.standard.Decoder.decode(dbuf[0..dlen], encoded) catch return null;
+
+    // Legacy envelope: {"_rails":{"message":"<b64>","exp":...,"pur":...}}.
+    const doc = yyjson.c.yyjson_read_opts(&dbuf, dlen, 0, null, null) orelse return null;
+    defer yyjson.c.yyjson_doc_free(doc);
+    const root = yyjson.c.yyjson_doc_get_root(doc) orelse return null;
+    const rails = yyjson.c.yyjson_obj_getn(root, "_rails", 6) orelse return null;
+    const pur = yyjson.c.yyjson_obj_getn(rails, "pur", 3);
+    if (pur != null) {
+        const ps = yyjson.c.yyjson_get_str(pur);
+        if (ps == null) return null;
+        var pbuf: [64]u8 = undefined;
+        const want_pur = std.fmt.bufPrint(&pbuf, "cookie.{s}", .{name}) catch return null;
+        if (!std.mem.eql(u8, ps[0..yyjson.c.yyjson_get_len(pur)], want_pur)) return null;
+    }
+    const expv = yyjson.c.yyjson_obj_getn(rails, "exp", 3);
+    if (expv != null and !yyjson.c.yyjson_is_null(expv)) {
+        const es = yyjson.c.yyjson_get_str(expv) orelse return null;
+        const exp_secs = parseIso(es[0..yyjson.c.yyjson_get_len(expv)]) orelse return null;
+        if (std.time.timestamp() >= exp_secs) return null;
+    }
+    const msg = yyjson.c.yyjson_obj_getn(rails, "message", 7) orelse return null;
+    const mb64 = yyjson.c.yyjson_get_str(msg) orelse return null;
+    const mlen0 = yyjson.c.yyjson_get_len(msg);
+    const mlen = std.base64.standard.Decoder.calcSizeForSlice(mb64[0..mlen0]) catch return null;
+    var mbuf: [512]u8 = undefined;
+    if (mlen > mbuf.len) return null;
+    std.base64.standard.Decoder.decode(mbuf[0..mlen], mb64[0..mlen0]) catch return null;
+
+    // The dumped value is itself JSON — parse "\"token\"" → token.
+    const doc2 = yyjson.c.yyjson_read_opts(&mbuf, mlen, 0, null, null) orelse return null;
+    defer yyjson.c.yyjson_doc_free(doc2);
+    const root2 = yyjson.c.yyjson_doc_get_root(doc2) orelse return null;
+    const tok = yyjson.c.yyjson_get_str(root2) orelse return null;
+    const tlen = yyjson.c.yyjson_get_len(root2);
+    if (tlen > cverify_buf.len) return null;
+    @memcpy(cverify_buf[0..tlen], tok[0..tlen]);
+    return cverify_buf[0..tlen];
+}
+
+// ============================================================================
+// primitives
+// ============================================================================
+
+// PBKDF2(SECRET_KEY_BASE, salt, 1000) → HMAC-SHA256(data) — the 32 raw
+// bytes, for callers binding a key to app state (e.g. a CSRF `real`
+// derived from a session token).
+threadlocal var khmac_buf: [32]u8 = undefined;
+
+~proc keyed-hmac|zig {
+    const key = keyedKey(salt) orelse return "";
+    var mac: [32]u8 = undefined;
+    HmacSha256.create(&mac, data, key);
+    @memcpy(&khmac_buf, &mac);
+    return khmac_buf[0..32];
+}
+
+// GlobalID.to_param: urlsafe-b64-nopad of gid://<app>/<rtype>/<rid>.
+threadlocal var gid_buf: [256]u8 = undefined;
+
+~proc gid-param|zig {
+    var gbuf: [128]u8 = undefined;
+    const gid = std.fmt.bufPrint(&gbuf, "gid://{s}/{s}/{s}", .{ app, rtype, rid }) catch return "";
+    const gp_len = std.base64.url_safe_no_pad.Encoder.calcSize(gid.len);
+    if (gp_len > gid_buf.len) return "";
+    _ = std.base64.url_safe_no_pad.Encoder.encode(gid_buf[0..gp_len], gid);
+    return gid_buf[0..gp_len];
+}
