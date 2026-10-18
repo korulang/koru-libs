@@ -1,0 +1,8 @@
+name: capability-added
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a commit gave the system a surface it did not have before — new
+verb, new primitive, new reach. Distinct from capability-pinned (an
+existing boundary recorded) and measured (a claim evidenced).
