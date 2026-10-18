@@ -295,7 +295,6 @@ libs/clay:init(width: 640, height: 400)
                 ! query hi when hi.tool == 0 and world.hitool == 0 and e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
                     |> std/store:stored { world.sel: hi.seq }
             |> std/store:stored { world.dirty: 1 }
-            |> std/io:print.ln("click {{ e.x:f }},{{ e.y:f }} -> sel {{ world.sel:d }} chrome {{ world.hitool:d }}")
         ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("spec: closed (snapped)")

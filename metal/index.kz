@@ -326,9 +326,9 @@ fn impAcceptsFirstResponder(recv: Id, _s: SEL) callconv(.c) bool {
 // Live-resize plumbing. During an edge drag AppKit runs a modal tracking
 // loop INSIDE sendEvent: — the frames loop is parked in that call, so no
 // ! frame fires and the compositor stretches a stale drawable until
-// mouse-up. NSWindowDidResizeNotification posts per drag step and
-// delivers synchronously, so a `windowResized:` IMP can draw a real frame
-// right there — continuous relayout. The consumer's `! frame` body rides
+// mouse-up. The view's setFrameSize: IMP and NSWindowDidResizeNotification
+// both fire per drag step inside the tracking loop — liveDraw dedupes them
+// by dims so each step renders once. The consumer's `! frame` body rides
 // frame_cb, installed when `frames` starts; live_win is the open Window.
 var live_win: ?*Window = null;
 var frame_cb: ?*const fn (*Frame) void = null;
@@ -556,9 +556,11 @@ pub const Frame = struct {
     const layer = send(Id, cls("CAMetalLayer"), sel("layer"));
     send1(void, Id, layer, sel("setDevice:"), device);
     send1(void, u64, layer, sel("setPixelFormat:"), 80); // MTLPixelFormatBGRA8Unorm
-    // NOT presentsWithTransaction: presents outside a CATransaction (our
-    // frames loop) queue waiting for a commit that rarely comes — the
-    // drawable pool fills, nextDrawable blocks, everything grays out.
+    // presentsWithTransaction stays OFF here — it's flipped on only during
+    // live resize (impLiveStart/impLiveEnd), where every draw sits inside
+    // an open CATransaction. On at all times, presents outside a
+    // transaction (the frames loop) queue for commits that rarely come:
+    // the drawable pool fills, nextDrawable blocks, everything grays out.
     // contentsScale + drawableSize in BACKING pixels from the start —
     // drawableSize is pixels, not points.
     const bs0 = send(f64, wobj, sel("backingScaleFactor"));
