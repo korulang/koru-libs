@@ -11,7 +11,7 @@ import std/store
 import std/io
 import std/benchmarking
 
-std/store:new(world) { n: 0[i64], count: 2500[i64], ph: -1[i64], cellh: -1[i64] }
+std/store:new(world) { n: 0[i64], count: 2500[i64], cellh: -1[i64] }
 
 [tree]std/store:new(spec, capacity: 4096) {
     d: i64, kind: char[8], dock: char[8],
@@ -96,16 +96,15 @@ libs/clay:init(width: 640, height: 400)
                 |> std/store:stored { s.w: dims.w, s.h: dims.h, s.mw: dims.w, s.mh: dims.h }
         |> for(&[_]i64{ 2, 1 })
             ! each lv |> std/store:query(spec)
-                ! query { [row]s, [id]sh } when s.d == lv
-                    |> if (spec[sh].parent != -1)
+                ! query { [row]s } when s.d == lv
+                    |> if (s.parent != -1)
                         | then |> std/store:stored { s.mw: if (s.ws == "fix") s.w else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.cw + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.cw - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0, s.mh: if (s.hs == "fix") s.h else if (s.cc == 0) 0.0 else if (s.dir == "ttb") s.ch - @as(f64, @floatFromInt(s.gap)) + @as(f64, @floatFromInt(s.pad)) * 2.0 else s.ch + @as(f64, @floatFromInt(s.pad)) * 2.0 }
                 |> std/store:query(spec)
-                    ! query { [row]s, [id]sh } when s.d == lv
-                        |> if (spec[sh].parent != -1)
-                            | then |> std/store:stored { world.ph: spec[sh].parent }
-                                |> if (spec[world.ph].dir == "ttb")
-                                    | then |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: if (s.mw > spec[world.ph].cw) s.mw else spec[world.ph].cw, spec[world.ph].ch: spec[world.ph].ch + s.mh + @as(f64, @floatFromInt(spec[world.ph].gap)) }
-                                    | else |> std/store:stored { spec[world.ph].cc: spec[world.ph].cc + 1, spec[world.ph].cw: spec[world.ph].cw + s.mw + @as(f64, @floatFromInt(spec[world.ph].gap)), spec[world.ph].ch: if (s.mh > spec[world.ph].ch) s.mh else spec[world.ph].ch }
+                    ! query { [row]s } when s.d == lv
+                        |> if (s.parent != -1)
+                            | then |> if (spec[s.parent].dir == "ttb")
+                                | then |> std/store:stored { spec[s.parent].cc: spec[s.parent].cc + 1, spec[s.parent].cw: if (s.mw > spec[s.parent].cw) s.mw else spec[s.parent].cw, spec[s.parent].ch: spec[s.parent].ch + s.mh + @as(f64, @floatFromInt(spec[s.parent].gap)) }
+                                | else |> std/store:stored { spec[s.parent].cc: spec[s.parent].cc + 1, spec[s.parent].cw: spec[s.parent].cw + s.mw + @as(f64, @floatFromInt(spec[s.parent].gap)), spec[s.parent].ch: if (s.mh > spec[s.parent].ch) s.mh else spec[s.parent].ch }
         |> libs/clay:layout(cl: h)
             ! tree t
                 |> std/store:clear(gtrk)
