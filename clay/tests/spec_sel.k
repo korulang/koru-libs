@@ -270,11 +270,9 @@ libs/clay:init(width: 640, height: 400)
                     ! cmd rc |> if (rc.kind == 1)
                         | then |> libs/metal:draw.rect(f, rc.x, rc.y, rc.w, rc.h, rc.r, rc.g, rc.b, rc.a)
                     | drained |> std/store:stored { world.drew: 1 }
-        ! key-down k
-            |> if (k.code == 48)
-                | then |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }
-            |> if (k.code == 53)
-                | then |> libs/metal:quit()
+        ! key-down k when k.code == 48
+            |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }
+        ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("spec: closed (snapped)")
     | err e |> std/io:print.ln("metal init failed: {{ e:s }}")
