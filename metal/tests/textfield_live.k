@@ -25,7 +25,7 @@ std/string:from-page(text: "edit me here")
                     // the caret bar is the line box itself (same top, asc+desc tall).
                     |> libs/metal:text.ascent(win: w, size: 18.0): asc
                         |> libs/metal:text.descent(win: w, size: 18.0): desc
-                            |> libs/metal:draw.text(f, x: 80.0, y: 140.0 + (60.0 - asc - desc) / 2.0 + asc, size: 18.0, r: 0.92, g: 0.94, b: 0.98, a: 1.0, text: txt.data)
+                            |> libs/metal:draw.text(f, x: 80.0, y: 140.0 + (60.0 - asc - desc) / 2.0, size: 18.0, r: 0.92, g: 0.94, b: 0.98, a: 1.0, text: txt.data)
                             |> libs/metal:text.offset(win: w, text: txt.data, size: 18.0, index: world.caret) : cx
                                 |> libs/metal:draw.rect(f, x: 80.0 + cx, y: 140.0 + (60.0 - asc - desc) / 2.0, w: 1.5, h: asc + desc, r: 0.95, g: 0.85, b: 0.4, a: 1.0)
                 ! key-down k when k.chars.len > 0

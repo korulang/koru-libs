@@ -275,8 +275,7 @@ libs/clay:init(width: 640, height: 400)
                     ! cmd rc |> if (rc.kind == 1)
                         | then |> libs/metal:draw.rect(f, rc.x, rc.y, rc.w, rc.h, rc.r, rc.g, rc.b, rc.a)
                     ! cmd rc |> if (rc.kind == 3)
-                        | then |> libs/metal:text.ascent(win: w, size: rc.fs): asc
-                            |> libs/metal:draw.text(f, x: @round(rc.x), y: @round(rc.y + asc), size: rc.fs, rc.r, rc.g, rc.b, rc.a, text: rc.tx)
+                        | then |> libs/metal:draw.text(f, x: @round(rc.x), y: @round(rc.y), size: rc.fs, rc.r, rc.g, rc.b, rc.a, text: rc.tx)  // rc.x/rc.y are the line box's top-left — draw.text's exact input
                     | drained |> std/store:stored { world.drew: 1 }
         ! key-down k when k.code == 48
             |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }

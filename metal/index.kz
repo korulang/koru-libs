@@ -1765,20 +1765,20 @@ pub const Frame = struct {
     return pen;
 }
 
-// The font's ascent at `size` — the distance from a line box's top edge
-// down to the baseline draw.text wants. Consumers holding a top-left
-// box (a clay TEXT command's boundingBox) place the baseline at
-// box.y + text.ascent. Same font path draw.text shapes with, so the
-// metric can't drift from the renderer.
+// The font's ascent at `size` — top of the line box down to the baseline.
+// draw.text already takes the box's top (it adds ascent internally), so
+// consumers holding a top-left box (a clay TEXT command's boundingBox)
+// pass box.y directly; ascent matters for sizing the line box — with
+// text.descent a consumer can center a line: box_top = y + (h - asc -
+// desc) / 2. Same font path draw.text shapes with, so the metric can't
+// drift from the renderer.
 ~pub tor text.ascent { win: *Window<opened|active>, size: f64 } -> f64
 
 ~proc text.ascent|zig {
     return @floatCast(win.text.font(@floatCast(size)).ascent);
 }
 
-// The font's descent at `size` — baseline to line-box bottom. Together
-// with text.ascent a consumer can center a line vertically:
-// baseline = box.top + (box.h - asc - desc) / 2 + asc.
+// The font's descent at `size` — baseline to line-box bottom.
 ~pub tor text.descent { win: *Window<opened|active>, size: f64 } -> f64
 
 ~proc text.descent|zig {

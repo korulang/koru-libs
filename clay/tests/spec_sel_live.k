@@ -298,10 +298,9 @@ libs/clay:init(width: 640, height: 400)
                                     |> libs/metal:draw.rect(f, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y), rc.r, rc.g, rc.b, rc.a)
                             ! cmd rc |> if (rc.kind == 3)
                                 | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
-                                    // Clay's box is top-left; draw.text wants a
-                                    // baseline — ascent of the SAME font path.
-                                    |> libs/metal:text.ascent(win: w, size: rc.fs): asc
-                                        |> libs/metal:draw.text(f, x: @round(rc.x), y: @round(rc.y + asc), size: rc.fs, rc.r, rc.g, rc.b, rc.a, text: rc.tx)
+                                    // draw.text takes the line box's top-left —
+                                    // the command's boundingBox is already that.
+                                    |> libs/metal:draw.text(f, x: @round(rc.x), y: @round(rc.y), size: rc.fs, rc.r, rc.g, rc.b, rc.a, text: rc.tx)
                             ! cmd rc |> if (rc.kind == 4)
                                 | then |> std/store:insert(hit) { seq: rc.ud - 1, tool: if (rc.ud == 0) 1 else 0, rc.x, rc.y, rc.w, rc.h }
                                     |> libs/metal:draw.image(f, tex: rc.img, x: @round(rc.x), y: @round(rc.y), w: @round(rc.x + rc.w) - @round(rc.x), h: @round(rc.y + rc.h) - @round(rc.y))
