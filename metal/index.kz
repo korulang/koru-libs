@@ -142,29 +142,12 @@ const msl_src: [:0]const u8 =
     \\fragment float4 rect_fragment(RectOut in [[stage_in]]) {
     \\    return in.color;
     \\}
-    \\struct TexOut {
-    \\    float4 pos [[position]];
-    \\    float2 uv;
-    \\};
-    \\vertex TexOut tex_vertex(uint vid [[vertex_id]], constant RectParams& p [[buffer(0)]]) {
-    \\    float2 corners[4] = { float2(0.0,0.0), float2(1.0,0.0), float2(0.0,1.0), float2(1.0,1.0) };
-    \\    float2 pix = p.origin + corners[vid] * p.size;
-    \\    TexOut o;
-    \\    o.pos = float4(pix.x / p.viewport.x * 2.0 - 1.0, 1.0 - pix.y / p.viewport.y * 2.0, 0.0, 1.0);
-    \\    o.uv = corners[vid];
-    \\    return o;
-    \\}
-    \\fragment float4 tex_fragment(TexOut in [[stage_in]],
-    \\                            texture2d<float> tex [[texture(0)]],
-    \\                            sampler smp [[sampler(0)]]) {
-    \\    return tex.sample(smp, in.uv);
-    \\}
     \\// Instanced quads — ported from nanoui's shader.metal (MIT,
     \\// github.com/justrach/nanoui). One instance = one rounded rectangle
     \\// with optional border (kind 0), an atlas glyph (kind 1 — R8 coverage
-    \\// sampled at uv), or a Gaussian-blurred shadow box (kind 2); kind 3
-    \\// (image atlas) is reserved for the image-atlas work. Each instance
-    \\// clips to its clip rect; clip corners may be rounded.
+    \\// sampled at uv), a Gaussian-blurred shadow box (kind 2), or an
+    \\// image-atlas rect (kind 3 — RGBA sampled at uv, tinted by color).
+    \\// Each instance clips to its clip rect; clip corners may be rounded.
     \\struct Inst {
     \\    float4 rect;          // x, y, w, h in points
     \\    float4 color;         // straight alpha
@@ -237,7 +220,8 @@ const msl_src: [:0]const u8 =
     \\}
     \\fragment float4 inst_fragment(InstOut in [[stage_in]],
     \\                             constant Inst *insts [[buffer(0)]],
-    \\                             texture2d<float> atlas [[texture(0)]]) {
+    \\                             texture2d<float> atlas [[texture(0)]],
+    \\                             texture2d<float> images [[texture(1)]]) {
     \\    Inst i = insts[in.inst];
     \\    if (in.world.x < i.clip.x || in.world.y < i.clip.y || in.world.x > i.clip.z || in.world.y > i.clip.w)
     \\        discard_fragment();
@@ -266,6 +250,14 @@ const msl_src: [:0]const u8 =
     \\        float sigma = max(i.border_width, 0.25);
     \\        float a = inst_shadow_alpha(p, half_size, r, sigma) * i.color.a;
     \\        return float4(i.color.rgb, a) * clip_cover;
+    \\    }
+    \\    if (i.kind == 3.0) {
+    \\        constexpr sampler s(filter::linear, address::clamp_to_edge);
+    \\        float4 c = images.sample(s, in.uv);
+    \\        // Atlas pixels are BGRA-PREMULTIPLIED; the pipeline blends
+    \\        // SourceAlpha/1-SourceAlpha, so straighten before tinting.
+    \\        c.rgb /= max(c.a, 1e-5);
+    \\        return c * i.color * clip_cover;
     \\    }
     \\    float aa = max(fwidth(d), 0.0001) * 0.5;
     \\    float coverage = 1.0 - smoothstep(-aa, aa, d);
@@ -319,6 +311,7 @@ const GpuInstance = extern struct {
 const inst_quad: f32 = 0;
 const inst_text: f32 = 1;
 const inst_shadow: f32 = 2;
+const inst_image: f32 = 3;
 
 // A clip rect as the shader reads it: x0,y0,x1,y1. An empty stack means the
 // huge unclipped rect — cheap in the fragment (four compares).
@@ -353,6 +346,7 @@ fn instFlush(f: *Frame) void {
     send3(void, *const [2]f32, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &vp, 8, 1);
     send3(void, Id, u64, u64, f.encoder, sel("setFragmentBuffer:offset:atIndex:"), buf, 0, 0);
     send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), f.text.atlas.texture, 0);
+    send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), f.images.texture, 1);
     send4(void, u64, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, n);
     f.insts.clearRetainingCapacity();
 }
@@ -372,6 +366,39 @@ const atlas_max: u32 = 4096;
 const atlas_pad: u32 = 1;
 const atlas_bins: u8 = 4; // subpixel bins per pixel, horizontal
 
+// Shelf packer shared by both atlases: rows bottom-up, each new entry
+// extends the current shelf or starts a new one. Geometry only — the
+// owning atlas decides texture format, key space, and what resets mean.
+const Shelf = struct {
+    size: u32,
+    x: u32 = 0,
+    y: u32 = 0,
+    h: u32 = 0,
+
+    fn allocate(s: *Shelf, w: u32, h: u32) ?[2]u32 {
+        if (s.x + w > s.size) {
+            s.y += s.h;
+            s.x = 0;
+            s.h = 0;
+        }
+        if (s.y + h > s.size) return null;
+        const at: [2]u32 = .{ s.x, s.y };
+        s.x += w;
+        s.h = @max(s.h, h);
+        return at;
+    }
+
+    // Doubles the shelf side up to atlas_max, restarting the pack. The
+    // owner rebuilds its texture and clears its key map — every entry
+    // must re-rasterize/re-pack against the NEW texel space.
+    fn grow(s: *Shelf) void {
+        if (s.size < atlas_max) s.size *= 2;
+        s.x = 0;
+        s.y = 0;
+        s.h = 0;
+    }
+};
+
 // One glyph's picture in the atlas — uv texels, and x/y/w/h in points
 // relative to the pen position on the baseline.
 const Sprite = struct { uv: [4]f32, x: f32, y: f32, w: f32, h: f32 };
@@ -380,12 +407,9 @@ const SpriteKey = struct { font: u16, glyph: u16, bin: u8 };
 const GlyphAtlas = struct {
     device: Id,
     texture: Id,
-    size: u32,
+    shelf: Shelf,
     scale: f32,
     sprites: std.AutoHashMapUnmanaged(SpriteKey, ?Sprite) = .empty,
-    shelf_x: u32 = 0,
-    shelf_y: u32 = 0,
-    shelf_h: u32 = 0,
     pixels: std.ArrayList(u8) = .empty,
     // Set when a glyph didn't fit this frame — beginFrame grows the
     // atlas before the next frame body runs. The reset is DEFERRED, not
@@ -401,7 +425,7 @@ const GlyphAtlas = struct {
     }
 
     fn init(device: Id, scale: f32) GlyphAtlas {
-        return .{ .device = device, .texture = makeTexture(device, atlas_initial), .size = atlas_initial, .scale = scale };
+        return .{ .device = device, .texture = makeTexture(device, atlas_initial), .shelf = .{ .size = atlas_initial }, .scale = scale };
     }
 
     fn deinit(a: *GlyphAtlas) void {
@@ -411,28 +435,13 @@ const GlyphAtlas = struct {
     }
 
     fn makeRoom(a: *GlyphAtlas) void {
-        if (a.size < atlas_max) {
-            a.size *= 2;
+        const grew = a.shelf.size < atlas_max;
+        a.shelf.grow();
+        if (grew) {
             send(void, a.texture, sel("release"));
-            a.texture = makeTexture(a.device, a.size);
+            a.texture = makeTexture(a.device, a.shelf.size);
         }
         a.sprites.clearRetainingCapacity();
-        a.shelf_x = 0;
-        a.shelf_y = 0;
-        a.shelf_h = 0;
-    }
-
-    fn allocate(a: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
-        if (a.shelf_x + w > a.size) {
-            a.shelf_y += a.shelf_h;
-            a.shelf_x = 0;
-            a.shelf_h = 0;
-        }
-        if (a.shelf_y + h > a.size) return null;
-        const at: [2]u32 = .{ a.shelf_x, a.shelf_y };
-        a.shelf_x += w;
-        a.shelf_h = @max(a.shelf_h, h);
-        return at;
     }
 
     fn upload(a: *GlyphAtlas, origin: [2]u32, w: u32, h: u32) void {
@@ -469,7 +478,7 @@ const GlyphAtlas = struct {
         const w: u32 = @as(u32, @intFromFloat(x1 - x0)) + 2 * atlas_pad;
         const h: u32 = @as(u32, @intFromFloat(y1 - y0)) + 2 * atlas_pad;
         if (w > atlas_max or h > atlas_max) return null;
-        const origin = a.allocate(w, h) orelse {
+        const origin = a.shelf.allocate(w, h) orelse {
             a.needs_reset = true;
             return null;
         };
@@ -491,7 +500,7 @@ const GlyphAtlas = struct {
         CTFontDrawGlyphs(font, &glyphs, &at, 1, ctx);
 
         a.upload(origin, w, h);
-        const as: f32 = @floatFromInt(a.size);
+        const as: f32 = @floatFromInt(a.shelf.size);
         const fw: f32 = @floatFromInt(w);
         const fh: f32 = @floatFromInt(h);
         return .{
@@ -640,6 +649,104 @@ const TextSystem = struct {
             }
         }
         return .{ .width = w, .glyphs = glyphs.toOwnedSlice(std.heap.page_allocator) catch @panic("metal: OOM shaping text") };
+    }
+};
+
+// ============================================================================
+// Images — decoded once to BGRA-premultiplied pixels at load, packed into
+// a per-window RGBA atlas (kind 3). The handle Clay carries through
+// imageData is a 1-based index into `decoded_images`, NOT a texture
+// pointer: the atlas slot is per-window and per-generation, re-pinned
+// lazily after every deferred shelf growth clears it.
+// ============================================================================
+
+const DecodedImage = struct { pixels: []u8, w: u32, h: u32 };
+var decoded_images: std.ArrayList(DecodedImage) = .empty;
+
+const img_atlas_pad: u32 = 2; // gutter ring — keeps linear filtering off neighbors
+
+const ImageAtlas = struct {
+    device: Id,
+    texture: Id,
+    shelf: Shelf,
+    slots: std.AutoHashMapUnmanaged(u32, [4]f32) = .empty, // handle → uv rect
+    zeros: std.ArrayList(u8) = .empty, // gutter scratch — pad ring must be zero, not whatever the texture held
+    // Same deferred contract as GlyphAtlas.needs_reset — a full shelf
+    // grows at beginFrame, never mid-encode.
+    needs_reset: bool = false,
+
+    fn makeTexture(device: Id, side: u32) Id {
+        const desc = send4(Id, u64, u64, u64, bool, cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 80, side, side, false); // BGRA8Unorm
+        return send1(Id, Id, device, sel("newTextureWithDescriptor:"), desc) orelse @panic("metal: image atlas texture failed");
+    }
+
+    fn init(device: Id) ImageAtlas {
+        return .{ .device = device, .texture = makeTexture(device, atlas_initial), .shelf = .{ .size = atlas_initial } };
+    }
+
+    fn deinit(a: *ImageAtlas) void {
+        a.slots.deinit(std.heap.page_allocator);
+        a.zeros.deinit(std.heap.page_allocator);
+        send(void, a.texture, sel("release"));
+    }
+
+    // Frame start: a full shelf from last frame grows before any
+    // draw.image looks a slot up. Clearing `slots` drops only the uv
+    // RECORD — re-pinning re-uploads from the decoded registry.
+    fn beginFrame(a: *ImageAtlas) void {
+        if (!a.needs_reset) return;
+        a.needs_reset = false;
+        if (a.shelf.size < atlas_max) {
+            a.shelf.grow();
+            send(void, a.texture, sel("release"));
+            a.texture = makeTexture(a.device, a.shelf.size);
+        } else {
+            a.shelf.x = 0;
+            a.shelf.y = 0;
+            a.shelf.h = 0;
+        }
+        a.slots.clearRetainingCapacity();
+    }
+
+    // The uv rect `handle` occupies — uploading the decoded pixels on
+    // first ask or after a reset cleared the slot. null = didn't fit;
+    // the caller skips the instance and it draws one frame late.
+    fn slot(a: *ImageAtlas, handle: u32, img: DecodedImage) ?[4]f32 {
+        if (a.slots.get(handle)) |uv| return uv;
+        const pw = img.w + 2 * img_atlas_pad;
+        const ph = img.h + 2 * img_atlas_pad;
+        if (pw > a.shelf.size or ph > a.shelf.size) {
+            a.needs_reset = true;
+            return null;
+        }
+        const origin = a.shelf.allocate(pw, ph) orelse {
+            a.needs_reset = true;
+            return null;
+        };
+        // Zero the whole slot (gutter included) before the inner upload —
+        // a fresh slot's pad ring is undefined texels, and linear
+        // filtering bleeds ±0.5px of it into the image edge.
+        a.zeros.resize(std.heap.page_allocator, pw * ph * 4) catch @panic("metal: OOM in image atlas");
+        @memset(a.zeros.items, 0);
+        const slot_region = MTLRegion{
+            .origin = .{ .x = origin[0], .y = origin[1], .z = 0 },
+            .size = .{ .width = pw, .height = ph, .depth = 1 },
+        };
+        send4(void, MTLRegion, u64, *const anyopaque, u64, a.texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), slot_region, 0, a.zeros.items.ptr, pw * 4);
+        const region = MTLRegion{
+            .origin = .{ .x = origin[0] + img_atlas_pad, .y = origin[1] + img_atlas_pad, .z = 0 },
+            .size = .{ .width = img.w, .height = img.h, .depth = 1 },
+        };
+        send4(void, MTLRegion, u64, *const anyopaque, u64, a.texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), region, 0, img.pixels.ptr, img.w * 4);
+        const s: f32 = @floatFromInt(a.shelf.size);
+        const uv: [4]f32 = .{
+            @as(f32, @floatFromInt(origin[0] + img_atlas_pad)) / s,
+            @as(f32, @floatFromInt(origin[1] + img_atlas_pad)) / s,
+            @as(f32, @floatFromInt(origin[0] + img_atlas_pad + img.w)) / s,
+            @as(f32, @floatFromInt(origin[1] + img_atlas_pad + img.h)) / s,
+        };
+        a.slots.put(std.heap.page_allocator, handle, uv) catch @panic("metal: OOM in image atlas");
+        return uv;
     }
 };
 
@@ -907,8 +1014,9 @@ fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
     const buf = send(Id, win.queue, sel("commandBuffer"));
     const enc = send1(Id, Id, buf, sel("renderCommandEncoderWithDescriptor:"), desc);
     send1(void, Id, enc, sel("setRenderPipelineState:"), win.pso);
-    var f = Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text };
+    var f = Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_inst = win.pso_inst, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text, .images = &win.images };
     win.text.beginFrame();
+    win.images.beginFrame();
     cb(&f);
     instFlush(&f);
     send(void, enc, sel("endEncoding"));
@@ -1028,9 +1136,7 @@ pub const Window = struct {
     queue: Id,
     pso: Id,
     pso_rect: Id,
-    pso_tex: Id,
     pso_inst: Id,
-    samp: Id,
     vp_w: f32,
     vp_h: f32,
     lr_w: f32,
@@ -1038,6 +1144,7 @@ pub const Window = struct {
     clear: MTLClearColor,
     insts: std.ArrayList(GpuInstance),
     text: TextSystem,
+    images: ImageAtlas,
 };
 
 // A frame in flight — carries the LIVE render encoder, so draw calls inside
@@ -1051,15 +1158,14 @@ pub const Frame = struct {
     layer: Id,
     pso: Id,
     pso_rect: Id,
-    pso_tex: Id,
     pso_inst: Id,
-    samp: Id,
     vp_w: f32,
     vp_h: f32,
     insts: *std.ArrayList(GpuInstance),
     clip_stack: [16][4]f32,
     clip_depth: u8,
     text: *TextSystem,
+    images: *ImageAtlas,
 };
 
 ~pub tor window.open { width: i32, height: i32, title: string }
@@ -1206,35 +1312,9 @@ pub const Frame = struct {
         return .{ .err = "metal: rect pipeline state creation failed" };
     }
 
-    // Third pipeline: textured quads — same corner expansion plus uv out,
-    // fragment samples [[texture(0)]] through [[sampler(0)]].
-    const tvname = cf.CFStringCreateWithCString(null, "tex_vertex", cf.kCFStringEncodingUTF8);
-    const tfname = cf.CFStringCreateWithCString(null, "tex_fragment", cf.kCFStringEncodingUTF8);
-    const tvfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(tvname))));
-    const tffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(tfname))));
-    if (tvfn == null or tffn == null) {
-        return .{ .err = "metal: tex shader functions not found in library" };
-    }
-    const tpdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
-    send1(void, Id, tpdesc, sel("setVertexFunction:"), tvfn);
-    send1(void, Id, tpdesc, sel("setFragmentFunction:"), tffn);
-    const tpatts = send(Id, tpdesc, sel("colorAttachments"));
-    const tpatt = send1(Id, u64, tpatts, sel("objectAtIndexedSubscript:"), 0);
-    send1(void, u64, tpatt, sel("setPixelFormat:"), 80);
-    send1(void, bool, tpatt, sel("setBlendingEnabled:"), true);
-    send1(void, u64, tpatt, sel("setSourceRGBBlendFactor:"), 4);
-    send1(void, u64, tpatt, sel("setDestinationRGBBlendFactor:"), 5);
-    send1(void, u64, tpatt, sel("setSourceAlphaBlendFactor:"), 1);
-    send1(void, u64, tpatt, sel("setDestinationAlphaBlendFactor:"), 5);
-    var tpsoErr: Id = null;
-    const pso_tex = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), tpdesc, &tpsoErr);
-    if (pso_tex == null) {
-        return .{ .err = "metal: tex pipeline state creation failed" };
-    }
-
-    // Fourth pipeline: the instanced quad vocabulary — one instanced draw
+    // Third pipeline: the instanced quad vocabulary — one instanced draw
     // per run of recorded instances (nanoui's model). Same blend as the
-    // rect/tex pipelines.
+    // rect pipeline.
     const ivname = cf.CFStringCreateWithCString(null, "inst_vertex", cf.kCFStringEncodingUTF8);
     const ifname = cf.CFStringCreateWithCString(null, "inst_fragment", cf.kCFStringEncodingUTF8);
     const ivfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ivname))));
@@ -1257,15 +1337,6 @@ pub const Frame = struct {
     const pso_inst = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), ipdesc, &ipsoErr);
     if (pso_inst == null) {
         return .{ .err = "metal: inst pipeline state creation failed" };
-    }
-
-    // One shared sampler: linear min/mag, clamp — enough for image quads.
-    const sdesc = send(Id, cls("MTLSamplerDescriptor"), sel("new"));
-    send1(void, u64, sdesc, sel("setMinFilter:"), 1); // MTLSamplerMinMagFilterLinear
-    send1(void, u64, sdesc, sel("setMagFilter:"), 1);
-    const samp = send1(Id, Id, device, sel("newSamplerStateWithDescriptor:"), sdesc);
-    if (samp == null) {
-        return .{ .err = "metal: sampler state creation failed" };
     }
 
     // We own the release: releasedWhenClosed (default YES) frees wobj the
@@ -1299,9 +1370,7 @@ pub const Frame = struct {
         .queue = queue,
         .pso = pso,
         .pso_rect = pso_rect,
-        .pso_tex = pso_tex,
         .pso_inst = pso_inst,
-        .samp = samp,
         .vp_w = @floatFromInt(width),
         .vp_h = @floatFromInt(height),
         .lr_w = -1,
@@ -1309,6 +1378,7 @@ pub const Frame = struct {
         .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
         .insts = .empty,
         .text = .init(device, @floatCast(bs0)),
+        .images = .init(device),
     };
     live_win = w;
     return .{ .win = w };
@@ -1394,8 +1464,9 @@ pub const Frame = struct {
         const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
         $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
 
-        var __f = $mod.Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text };
+        var __f = $mod.Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_inst = win.pso_inst, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text, .images = &win.images };
         win.text.beginFrame();
+        win.images.beginFrame();
         frame(&__f);
 
         $mod.instFlush(&__f);
@@ -1428,6 +1499,7 @@ pub const Frame = struct {
     send(void, win.win, sel("release"));
     win.insts.deinit(std.heap.page_allocator);
     win.text.deinit();
+    win.images.deinit();
     std.heap.page_allocator.destroy(win);
 }
 
@@ -1601,13 +1673,13 @@ pub const Frame = struct {
 
 // ============================================================================
 // Images — decode to BGRA premultiplied via NSImage + CGBitmapContext (pure
-// Cocoa/CoreGraphics, no extra frameworks), upload once into an MTLTexture.
-// The texture handle is the value handed to Clay as imageData — it comes
-// back out of the IMAGE render command verbatim for draw.image.
+// Cocoa/CoreGraphics, no extra frameworks), then pack into the window's
+// image atlas as a kind-3 instance instead of owning a texture. The value
+// handed to Clay as imageData is a 1-based index into `decoded_images` —
+// it comes back out of the IMAGE render command verbatim for draw.image.
 // ============================================================================
 
-// Two-arm load — `| img` hands back the texture handle as i64 pointer
-// bits (the same value Clay hands back as imageData for draw.image);
+// Two-arm load — `| img` hands back the decoded-image handle as i64;
 // `| err` names which step failed. No degraded/placeholder path.
 ~pub tor image.load { win: *Window<opened|active>, path: string } | img i64 | err string
 
@@ -1631,50 +1703,51 @@ pub const Frame = struct {
     const h = CGImageGetHeight(cg);
     if (w == 0 or h == 0) return .{ .err = "metal: zero-size image" };
 
-    // Rasterize into a BGRA-premultiplied buffer — the layer's pixel format
-    // (BGRA8Unorm) expects premultiplied alpha; kCGImageAlphaPremultipliedFirst
-    // | kCGBitmapByteOrder32Little is exactly that byte order.
+    // Rasterize into a BGRA-premultiplied buffer — the atlas texture's
+    // pixel format (BGRA8Unorm) takes the bytes as-is;
+    // kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little is
+    // exactly that byte order.
     const cs = CGColorSpaceCreateDeviceRGB();
     const bctx = CGBitmapContextCreate(null, w, h, 8, w * 4, cs, 2 | (2 << 12));
     if (bctx == null) return .{ .err = "metal: bitmap context failed" };
     CGContextDrawImage(bctx, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = @floatFromInt(w), .height = @floatFromInt(h) } }, cg);
     const px = CGBitmapContextGetData(bctx) orelse return .{ .err = "metal: no bitmap data" };
+    // The bitmap context owns `px` and dies with it — copy before release.
+    const buf = std.heap.page_allocator.alloc(u8, w * h * 4) catch @panic("metal: OOM decoding image");
+    @memcpy(buf, @as([*]u8, @ptrCast(px))[0 .. w * h * 4]);
+    CGContextRelease(bctx);
+    cf.CFRelease(cs);
+    send(void, nsimg, sel("release"));
 
-    const device = send(Id, win.layer, sel("device"));
-    const tdesc = send4(
-        Id, u64, u64, u64, bool,
-        cls("MTLTextureDescriptor"),
-        sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
-        80, w, h, false,
-    );
-    const tex = send1(Id, Id, device, sel("newTextureWithDescriptor:"), tdesc);
-    if (tex == null) return .{ .err = "metal: texture creation failed" };
-    const region = MTLRegion{
-        .origin = .{ .x = 0, .y = 0, .z = 0 },
-        .size = .{ .width = w, .height = h, .depth = 1 },
-    };
-    send4(void, MTLRegion, u64, ?*const anyopaque, u64, tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), region, 0, px, w * 4);
-
-    return .{ .img = @as(i64, @intCast(@intFromPtr(tex))) };
+    const img: DecodedImage = .{ .pixels = buf, .w = @intCast(w), .h = @intCast(h) };
+    decoded_images.append(std.heap.page_allocator, img) catch @panic("metal: OOM registering image");
+    const handle: u32 = @intCast(decoded_images.items.len);
+    // Eager pack into this window's atlas — if it doesn't fit the slot
+    // records needs_reset and draw.image re-pins it after the grow.
+    _ = win.images.slot(handle, img);
+    return .{ .img = @as(i64, handle) };
 }
 
-// One textured quad in PIXEL space — tex is a texture handle as i64
-// pointer bits (or any imageData Clay hands back verbatim).
+// One image-atlas rect in PIXEL space — `tex` is the 1-based handle
+// image.load returned (or any imageData Clay hands back verbatim).
 ~pub tor draw.image { f: *Frame<frame>, tex: i64, x: f64, y: f64, w: f64, h: f64 }
 
 ~proc draw.image|zig {
-    instFlush(f);
-    const tid: Id = @ptrFromInt(@as(usize, @intCast(tex)));
-    send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_tex);
-    var params = RectParams{
-        .r = 1, .g = 1, .b = 1, .a = 1,
-        .ox = @floatCast(x), .oy = @floatCast(y), .sw = @floatCast(w), .sh = @floatCast(h),
-        .vw = f.vp_w, .vh = f.vp_h,
-    };
-    send3(void, *const RectParams, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &params, @sizeOf(RectParams), 0);
-    send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), tid, 0);
-    send2(void, Id, u64, f.encoder, sel("setFragmentSamplerState:atIndex:"), f.samp, 0);
-    send3(void, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:"), 4, 0, 4);
+    const handle: u32 = @intCast(tex);
+    if (handle == 0 or handle > decoded_images.items.len) @panic("metal: draw.image with an invalid image handle");
+    const img = decoded_images.items[handle - 1];
+    const uv = f.images.slot(handle, img) orelse return; // shelf full — draws one frame late
+    instPush(f, .{
+        .rect = .{ @floatCast(x), @floatCast(y), @floatCast(w), @floatCast(h) },
+        .color = .{ 1, 1, 1, 1 },
+        .border_color = .{ 0, 0, 0, 0 },
+        .uv = uv,
+        .clip = curClip(f),
+        .radius = 0,
+        .border_width = 0,
+        .kind = inst_image,
+        .clip_round = 0,
+    });
 }
 
 // Request the frames loop to exit at the next iteration — same shape as
