@@ -1,9 +1,33 @@
 # Live-resize jitter — investigation record
 
-A handoff for the next agent. The symptom is *almost* nailed. What follows is
-everything that was tried, measured, exonerated, and rejected, plus the leads
-that were never explored. Do not re-run an experiment whose result is recorded
-here unless you suspect the recording is wrong — that is wasted effort.
+**RESOLVED — rock steady as of the Zed/gpui recipe below.** This file stays as
+the record of what was tried, measured, exonerated, and rejected, in case the
+symptom ever resurfaces on a different configuration.
+
+## The fix that nailed it (from Zed's gpui_macos/src/metal_renderer.rs)
+
+`presentsWithTransaction` was not the wrong mechanism — it was the wrong
+*ordering*. The correct sequence during live resize:
+
+1. PwT flips ON at `NSWindowWillStartLiveResizeNotification`, OFF after the
+   final `DidEnd` draw (drawn *before* the flag drops, so it lands in the
+   closing transaction).
+2. In `drawLiveFrame`, when in live resize: `commit` the command buffer →
+   `waitUntilScheduled` → `drawable.present()`. `waitUntilScheduled` bounds
+   the wait to GPU scheduling — the drawable presents directly into the open
+   CATransaction and lands atomically with the bounds commit.
+3. `contentsGravity = topLeft` — CAMetalLayer's default gravity *stretches*
+   content to fill new bounds per step; pinning it anchors static geometry so
+   only the growing edge can show a strip.
+4. `setPreservesContentDuringLiveResize: NO` — no window-server scaling of the
+   previous surface.
+
+Our earlier PwT attempts used `buf presentDrawable:` + `commit`, which parks
+the drawable *waiting for a commit* — the pool (3 drawables) drained, the
+pump starved, clicks throttled. The present-after-scheduled ordering keeps
+each drawable's transaction wait bounded to the current step's commit.
+
+## Prior state (pre-resolution)
 
 ## The artifact under test
 

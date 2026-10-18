@@ -332,6 +332,7 @@ fn impAcceptsFirstResponder(recv: Id, _s: SEL) callconv(.c) bool {
 // frame_cb, installed when `frames` starts; live_win is the open Window.
 var live_win: ?*Window = null;
 var frame_cb: ?*const fn (*Frame) void = null;
+var in_live_resize: bool = false;
 
 fn syncSurfaceSize(win: *Window) void {
     const cv = send(Id, win.win, sel("contentView"));
@@ -375,8 +376,21 @@ fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
     var f = Frame{ .encoder = enc, .pso = win.pso, .pso_rect = win.pso_rect, .vp_w = win.vp_w, .vp_h = win.vp_h };
     cb(&f);
     send(void, enc, sel("endEncoding"));
-    send1(void, Id, buf, sel("presentDrawable:"), drawable);
-    send(void, buf, sel("commit"));
+    if (in_live_resize) {
+        // The Zed/gpui ordering under presentsWithTransaction: commit the
+        // buffer, waitUntilScheduled bounds the wait to GPU scheduling (NOT
+        // the commit), then the drawable presents directly — it lands with
+        // the current CATransaction commit, atomically with the bounds
+        // change. Unlike buf presentDrawable:+commit, the drawable is not
+        // parked waiting on a commit that may never come — so the pool
+        // doesn't drain and the event pump keeps breathing.
+        send(void, buf, sel("commit"));
+        send(void, buf, sel("waitUntilScheduled"));
+        send(void, drawable, sel("present"));
+    } else {
+        send1(void, Id, buf, sel("presentDrawable:"), drawable);
+        send(void, buf, sel("commit"));
+    }
 }
 
 // One draw per dims change: setFrameSize: AND the resize notification
@@ -400,12 +414,10 @@ fn impWindowResized(recv: Id, _s: SEL, note: Id) callconv(.c) void {
 }
 
 // During a live drag AppKit calls setFrameSize: on the content view
-// synchronously per step — BEFORE the CATransaction commits the layer's
-// new bounds. NSWindowDidResizeNotification can arrive one commit late:
-// the stretched old texture shows first, then our relayout snaps in —
-// the "stretch then repaint" judder. Drawing here puts our present into
-// the same commit as the bounds change (presentsWithTransaction), so the
-// stretched frame never reaches the screen.
+// synchronously per step, while a CATransaction is still open — drawing
+// here with the drawable.present() path puts our frame into the SAME
+// commit as the bounds change (see drawLiveFrame), so no mismatched
+// intermediate reaches the screen.
 var orig_setFrameSize: ?*const fn (Id, SEL, NSSize) callconv(.c) void = null;
 
 fn impSetFrameSize(recv: Id, _s: SEL, size: NSSize) callconv(.c) void {
@@ -415,22 +427,24 @@ fn impSetFrameSize(recv: Id, _s: SEL, size: NSSize) callconv(.c) void {
     liveDraw(win, cb);
 }
 
-// Live-resize brackets: liveStart marks the drag, liveEnd re-draws once
-// at final dims and clears the dedupe cache.
+// Live-resize brackets: PwT goes ON only inside the drag, where every
+// draw happens inside an open CATransaction — the drawable.present()
+// path lands each frame atomically with the bounds commit. Outside the
+// drag it stays OFF: transaction-pinned presents in the frames loop
+// starve the drawable pool and throttle the event pump.
 fn impLiveStart(recv: Id, _s: SEL, note: Id) callconv(.c) void {
     _ = recv;
     _ = _s;
     _ = note;
     const win = live_win orelse return;
+    in_live_resize = true;
     win.lr_w = -1;
+    send1(void, bool, win.layer, sel("setPresentsWithTransaction:"), true);
 }
 
-// Presents stay IMMEDIATE even inside live resize. presentsWithTransaction
-// made every drag-queued drawable wait for a CATransaction commit — those
-// presents outlive the drag and keep nextDrawable blocked in the frames
-// loop: the event pump starves and clicks throttle, exactly the coupling
-// observed. The setFrameSize: draw lands early enough that an immediate
-// present still beats the stretched-texture commit most steps.
+// The flag drops AFTER the final draw so that frame lands in the closing
+// transaction; from then on presents are immediate again and the pool
+// can't be held hostage by queued transaction-pinned presents.
 fn impLiveEnd(recv: Id, _s: SEL, note: Id) callconv(.c) void {
     _ = recv;
     _ = _s;
@@ -438,7 +452,11 @@ fn impLiveEnd(recv: Id, _s: SEL, note: Id) callconv(.c) void {
     const win = live_win orelse return;
     const cb = frame_cb orelse return;
     win.lr_w = -1;
+    // Final frame BEFORE the flag drops: the end-of-resize transaction is
+    // still open, so this present lands in the closing commit.
     liveDraw(win, cb);
+    in_live_resize = false;
+    send1(void, bool, win.layer, sel("setPresentsWithTransaction:"), false);
 }
 
 fn ensureViewClass() ?objc.Class {
@@ -545,6 +563,12 @@ pub const Frame = struct {
     // drawableSize is pixels, not points.
     const bs0 = send(f64, wobj, sel("backingScaleFactor"));
     send1(void, f64, layer, sel("setContentsScale:"), bs0);
+    // Pin content top-left: CAMetalLayer's default gravity stretches its
+    // content to fill new bounds on every resize step — the "texture
+    // resized then repainted" artifact. topLeft keeps static geometry
+    // anchored; only the growing edge can show a brief unpainted strip.
+    const grav = cf.CFStringCreateWithCString(null, "topLeft", cf.kCFStringEncodingUTF8);
+    send1(void, Id, layer, sel("setContentsGravity:"), @as(Id, @ptrCast(@constCast(grav))));
     send1(void, NSSize, layer, sel("setDrawableSize:"), NSSize{
         .width = @as(f64, @floatFromInt(width)) * bs0,
         .height = @as(f64, @floatFromInt(height)) * bs0,
