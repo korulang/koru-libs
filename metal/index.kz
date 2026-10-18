@@ -30,6 +30,8 @@
     exe.linkFramework("QuartzCore");
     exe.linkFramework("Metal");
     exe.linkFramework("CoreFoundation");
+    exe.linkFramework("CoreText");
+    exe.linkFramework("CoreGraphics");
 }
 
 const std = @import("std");
@@ -61,9 +63,44 @@ extern var NSWindowDidResizeNotification: Id;
 extern var NSWindowWillStartLiveResizeNotification: Id;
 extern var NSWindowDidEndLiveResizeNotification: Id;
 
+// CoreText/CoreGraphics for the glyph atlas + shaping (nanoui port) —
+// declared raw, same style as the Metal externs above. CId is the
+// const-qualified ref the translated CoreFoundation headers produce —
+// CF objects are opaque handles, and a ?*const param accepts them
+// without casts.
+const CId = ?*const anyopaque;
+extern fn CTFontGetAscent(font: CId) callconv(.c) f64;
+extern fn CTFontGetDescent(font: CId) callconv(.c) f64;
+extern fn CTFontGetLeading(font: CId) callconv(.c) f64;
+extern fn CTFontGetBoundingRectsForGlyphs(font: CId, orientation: u32, glyphs: [*]const u16, rects: ?*NSRect, count: isize) callconv(.c) NSRect;
+extern fn CTFontDrawGlyphs(font: CId, glyphs: [*]const u16, positions: [*]const NSPoint, count: usize, ctx: CId) callconv(.c) void;
+extern fn CTLineCreateWithAttributedString(s: CId) callconv(.c) Id;
+extern fn CTLineGetTypographicBounds(line: CId, ascent: ?*f64, descent: ?*f64, leading: ?*f64) callconv(.c) f64;
+extern fn CTLineGetGlyphRuns(line: CId) callconv(.c) Id;
+extern fn CTRunGetGlyphCount(run: CId) callconv(.c) isize;
+extern fn CTRunGetGlyphs(run: CId, range: NSRange, out: [*]u16) callconv(.c) void;
+extern fn CTRunGetPositions(run: CId, range: NSRange, out: [*]NSPoint) callconv(.c) void;
+extern fn CTRunGetAttributes(run: CId) callconv(.c) Id;
+extern fn CFArrayGetCount(arr: CId) callconv(.c) isize;
+extern fn CFArrayGetValueAtIndex(arr: CId, i: isize) callconv(.c) Id;
+extern fn CFDictionaryGetValue(dict: CId, key: ?*const anyopaque) callconv(.c) Id;
+extern fn CFHash(ref: ?*const anyopaque) callconv(.c) usize;
+extern fn CFEqual(a: ?*const anyopaque, b: ?*const anyopaque) callconv(.c) bool;
+extern fn CGContextRelease(ctx: CId) callconv(.c) void;
+extern fn CGContextScaleCTM(ctx: CId, sx: f64, sy: f64) callconv(.c) void;
+extern fn CGContextTranslateCTM(ctx: CId, tx: f64, ty: f64) callconv(.c) void;
+extern fn CGContextSetGrayFillColor(ctx: CId, gray: f64, alpha: f64) callconv(.c) void;
+extern fn CGContextSetShouldAntialias(ctx: CId, v: bool) callconv(.c) void;
+extern fn CGContextSetShouldSmoothFonts(ctx: CId, v: bool) callconv(.c) void;
+extern fn CGContextSetAllowsFontSubpixelPositioning(ctx: CId, v: bool) callconv(.c) void;
+extern fn CGContextSetShouldSubpixelPositionFonts(ctx: CId, v: bool) callconv(.c) void;
+extern var kCTFontAttributeName: Id;
+extern var kCTForegroundColorFromContextAttributeName: Id;
+
 const NSPoint = extern struct { x: f64, y: f64 };
 const NSSize = extern struct { width: f64, height: f64 };
 const NSRect = extern struct { origin: NSPoint, size: NSSize };
+const NSRange = extern struct { location: isize, length: isize };
 const MTLClearColor = extern struct { red: f64, green: f64, blue: f64, alpha: f64 };
 const MTLOrigin = extern struct { x: u64, y: u64, z: u64 };
 const MTLSize = extern struct { width: u64, height: u64, depth: u64 };
@@ -124,9 +161,9 @@ const msl_src: [:0]const u8 =
     \\}
     \\// Instanced quads — ported from nanoui's shader.metal (MIT,
     \\// github.com/justrach/nanoui). One instance = one rounded rectangle
-    \\// with optional border (kind 0) or a Gaussian-blurred shadow box
-    \\// (kind 2); kinds 1 (atlas glyph) and 3 (atlas image) are reserved for
-    \\// the text/image atlas work — unbound until it lands. Each instance
+    \\// with optional border (kind 0), an atlas glyph (kind 1 — R8 coverage
+    \\// sampled at uv), or a Gaussian-blurred shadow box (kind 2); kind 3
+    \\// (image atlas) is reserved for the image-atlas work. Each instance
     \\// clips to its clip rect; clip corners may be rounded.
     \\struct Inst {
     \\    float4 rect;          // x, y, w, h in points
@@ -199,7 +236,8 @@ const msl_src: [:0]const u8 =
     \\    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
     \\}
     \\fragment float4 inst_fragment(InstOut in [[stage_in]],
-    \\                             constant Inst *insts [[buffer(0)]]) {
+    \\                             constant Inst *insts [[buffer(0)]],
+    \\                             texture2d<float> atlas [[texture(0)]]) {
     \\    Inst i = insts[in.inst];
     \\    if (in.world.x < i.clip.x || in.world.y < i.clip.y || in.world.x > i.clip.z || in.world.y > i.clip.w)
     \\        discard_fragment();
@@ -219,6 +257,11 @@ const msl_src: [:0]const u8 =
     \\    float2 p = in.local - half_size;
     \\    float r = min(i.radius, min(half_size.x, half_size.y));
     \\    float d = inst_rounded_box(p, half_size, r);
+    \\    if (i.kind == 1.0) {
+    \\        constexpr sampler s(filter::linear, address::clamp_to_edge);
+    \\        float a = atlas.sample(s, in.uv).r * i.color.a;
+    \\        return float4(i.color.rgb, a) * clip_cover;
+    \\    }
     \\    if (i.kind == 2.0) {
     \\        float sigma = max(i.border_width, 0.25);
     \\        float a = inst_shadow_alpha(p, half_size, r, sigma) * i.color.a;
@@ -274,6 +317,7 @@ const GpuInstance = extern struct {
 };
 
 const inst_quad: f32 = 0;
+const inst_text: f32 = 1;
 const inst_shadow: f32 = 2;
 
 // A clip rect as the shader reads it: x0,y0,x1,y1. An empty stack means the
@@ -286,7 +330,7 @@ fn curClip(f: *const Frame) [4]f32 {
 }
 
 fn instPush(f: *Frame, inst: GpuInstance) void {
-    f.insts.append(std.heap.page_allocator, inst) catch return;
+    f.insts.append(std.heap.page_allocator, inst) catch @panic("metal: OOM pushing instance");
 }
 
 // Records any pending instances through the instanced pipeline. Called by
@@ -301,19 +345,303 @@ fn instFlush(f: *Frame) void {
         device, sel("newBufferWithBytes:length:options:"),
         f.insts.items.ptr, n * @sizeOf(GpuInstance), 0, // MTLStorageModeShared
     );
-    if (buf == null) {
-        f.insts.clearRetainingCapacity();
-        return;
-    }
+    if (buf == null) @panic("metal: instance buffer allocation failed");
     send(void, buf, sel("autorelease"));
     send1(void, Id, f.encoder, sel("setRenderPipelineState:"), f.pso_inst);
     send3(void, Id, u64, u64, f.encoder, sel("setVertexBuffer:offset:atIndex:"), buf, 0, 0);
     const vp: [2]f32 = .{ f.vp_w, f.vp_h };
     send3(void, *const [2]f32, u64, u64, f.encoder, sel("setVertexBytes:length:atIndex:"), &vp, 8, 1);
     send3(void, Id, u64, u64, f.encoder, sel("setFragmentBuffer:offset:atIndex:"), buf, 0, 0);
+    send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), f.text.atlas.texture, 0);
     send4(void, u64, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, n);
     f.insts.clearRetainingCapacity();
 }
+
+// ============================================================================
+// Text — CoreText shaping over a shelf-packed R8 glyph atlas, ported from
+// nanoui's atlas.zig + text_mac.zig (MIT, github.com/justrach/nanoui).
+// draw.text shapes a run once per (string, size) — layouts live two
+// frames — then each glyph rasterizes once per font and quarter-pixel
+// subpixel bin into the atlas; every glyph becomes one kind-1 instance
+// the shader samples as coverage. Fonts are NSFont (toll-free CTFont)
+// at the system's face; a run's fallback font joins run_fonts by index.
+// ============================================================================
+
+const atlas_initial: u32 = 2048;
+const atlas_max: u32 = 4096;
+const atlas_pad: u32 = 1;
+const atlas_bins: u8 = 4; // subpixel bins per pixel, horizontal
+
+// One glyph's picture in the atlas — uv texels, and x/y/w/h in points
+// relative to the pen position on the baseline.
+const Sprite = struct { uv: [4]f32, x: f32, y: f32, w: f32, h: f32 };
+const SpriteKey = struct { font: u16, glyph: u16, bin: u8 };
+
+const GlyphAtlas = struct {
+    device: Id,
+    texture: Id,
+    size: u32,
+    scale: f32,
+    sprites: std.AutoHashMapUnmanaged(SpriteKey, ?Sprite) = .empty,
+    shelf_x: u32 = 0,
+    shelf_y: u32 = 0,
+    shelf_h: u32 = 0,
+    pixels: std.ArrayList(u8) = .empty,
+    // Set when a glyph didn't fit this frame — beginFrame grows the
+    // atlas before the next frame body runs. The reset is DEFERRED, not
+    // mid-frame: instances always bind the atlas they were rasterized
+    // against (nanoui resets mid-frame and repaints; our instance stream
+    // is already recorded, so the growth happens between frames). A
+    // skipped glyph draws one frame late.
+    needs_reset: bool = false,
+
+    fn makeTexture(device: Id, side: u32) Id {
+        const desc = send4(Id, u64, u64, u64, bool, cls("MTLTextureDescriptor"), sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"), 10, side, side, false); // R8Unorm
+        return send1(Id, Id, device, sel("newTextureWithDescriptor:"), desc) orelse @panic("metal: glyph atlas texture failed");
+    }
+
+    fn init(device: Id, scale: f32) GlyphAtlas {
+        return .{ .device = device, .texture = makeTexture(device, atlas_initial), .size = atlas_initial, .scale = scale };
+    }
+
+    fn deinit(a: *GlyphAtlas) void {
+        a.sprites.deinit(std.heap.page_allocator);
+        a.pixels.deinit(std.heap.page_allocator);
+        if (a.texture != null) send(void, a.texture, sel("release"));
+    }
+
+    fn makeRoom(a: *GlyphAtlas) void {
+        if (a.size < atlas_max) {
+            a.size *= 2;
+            send(void, a.texture, sel("release"));
+            a.texture = makeTexture(a.device, a.size);
+        }
+        a.sprites.clearRetainingCapacity();
+        a.shelf_x = 0;
+        a.shelf_y = 0;
+        a.shelf_h = 0;
+    }
+
+    fn allocate(a: *GlyphAtlas, w: u32, h: u32) ?[2]u32 {
+        if (a.shelf_x + w > a.size) {
+            a.shelf_y += a.shelf_h;
+            a.shelf_x = 0;
+            a.shelf_h = 0;
+        }
+        if (a.shelf_y + h > a.size) return null;
+        const at: [2]u32 = .{ a.shelf_x, a.shelf_y };
+        a.shelf_x += w;
+        a.shelf_h = @max(a.shelf_h, h);
+        return at;
+    }
+
+    fn upload(a: *GlyphAtlas, origin: [2]u32, w: u32, h: u32) void {
+        const region = MTLRegion{
+            .origin = .{ .x = origin[0], .y = origin[1], .z = 0 },
+            .size = .{ .width = w, .height = h, .depth = 1 },
+        };
+        send4(void, MTLRegion, u64, *const anyopaque, u64, a.texture, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), region, 0, a.pixels.items.ptr, w);
+    }
+
+    // The sprite of `g` in `font` drawn at `bin` quarters of a pixel —
+    // null is a DESIGNED absence, not a failure: blank glyphs (spaces)
+    // have no bounds, oversized ones can't fit, and full-atlas skips set
+    // needs_reset and draw one frame late.
+    fn glyph(a: *GlyphAtlas, font_id: u16, font: Id, g: u16, bin: u8) ?Sprite {
+        const key: SpriteKey = .{ .font = font_id, .glyph = g, .bin = bin };
+        if (a.sprites.get(key)) |sp| return sp;
+        const sp = a.rasterize(font, g, bin);
+        a.sprites.put(std.heap.page_allocator, key, sp) catch @panic("metal: OOM in glyph atlas");
+        return sp;
+    }
+
+    fn rasterize(a: *GlyphAtlas, font: Id, g: u16, bin: u8) ?Sprite {
+        const scale = a.scale;
+        var glyphs = [1]u16{g};
+        const bounds = CTFontGetBoundingRectsForGlyphs(font, 0, &glyphs, null, 1);
+        if (bounds.size.width <= 0 or bounds.size.height <= 0) return null;
+        const sub: f64 = @as(f64, @floatFromInt(bin)) / atlas_bins;
+        const s: f64 = scale;
+        const x0 = @floor(bounds.origin.x * s + sub);
+        const y0 = @floor(bounds.origin.y * s);
+        const x1 = @ceil((bounds.origin.x + bounds.size.width) * s + sub);
+        const y1 = @ceil((bounds.origin.y + bounds.size.height) * s);
+        const w: u32 = @as(u32, @intFromFloat(x1 - x0)) + 2 * atlas_pad;
+        const h: u32 = @as(u32, @intFromFloat(y1 - y0)) + 2 * atlas_pad;
+        if (w > atlas_max or h > atlas_max) return null;
+        const origin = a.allocate(w, h) orelse {
+            a.needs_reset = true;
+            return null;
+        };
+
+        a.pixels.resize(std.heap.page_allocator, w * h) catch @panic("metal: OOM in glyph atlas");
+        @memset(a.pixels.items, 0);
+        // 7 = kCGImageAlphaOnly — an 8-bit coverage mask, no color space.
+        const ctx = CGBitmapContextCreate(a.pixels.items.ptr, w, h, 8, w, null, 7) orelse @panic("metal: glyph bitmap context failed");
+        defer CGContextRelease(ctx);
+        CGContextSetShouldAntialias(ctx, true);
+        CGContextSetShouldSmoothFonts(ctx, false);
+        CGContextSetAllowsFontSubpixelPositioning(ctx, true);
+        CGContextSetShouldSubpixelPositionFonts(ctx, true);
+        CGContextSetGrayFillColor(ctx, 1, 1);
+        // The glyph's origin, in pixels from the bitmap's bottom left.
+        CGContextTranslateCTM(ctx, @as(f64, atlas_pad) - x0 + sub, @as(f64, atlas_pad) - y0);
+        CGContextScaleCTM(ctx, s, s);
+        const at = [1]NSPoint{.{ .x = 0, .y = 0 }};
+        CTFontDrawGlyphs(font, &glyphs, &at, 1, ctx);
+
+        a.upload(origin, w, h);
+        const as: f32 = @floatFromInt(a.size);
+        const fw: f32 = @floatFromInt(w);
+        const fh: f32 = @floatFromInt(h);
+        return .{
+            .uv = .{
+                @as(f32, @floatFromInt(origin[0])) / as,
+                @as(f32, @floatFromInt(origin[1])) / as,
+                @as(f32, @floatFromInt(origin[0] + w)) / as,
+                @as(f32, @floatFromInt(origin[1] + h)) / as,
+            },
+            .x = (@as(f32, @floatCast(x0)) - @as(f32, atlas_pad)) / scale,
+            .y = -(@as(f32, @floatCast(y0)) - @as(f32, atlas_pad) + fh) / scale,
+            .w = fw / scale,
+            .h = fh / scale,
+        };
+    }
+};
+
+// One shaped glyph: `font` indexes TextSystem.run_fonts; x/y is the pen
+// offset from the run's origin on the baseline (y up, as CoreText gives it).
+const Glyph = struct { font: u16, glyph: u16, x: f32, y: f32 };
+const Layout = struct { width: f32, glyphs: []Glyph };
+const Font = struct { ref: Id, ascent: f32, descent: f32, leading: f32 };
+
+const TextSystem = struct {
+    atlas: GlyphAtlas,
+    scale: f32,
+    fonts: std.AutoHashMapUnmanaged(u32, Font) = .empty, // key: size bits
+    run_fonts: std.ArrayList(Id) = .empty,
+    layouts: std.AutoHashMapUnmanaged(u64, Layout) = .empty,
+    previous: std.AutoHashMapUnmanaged(u64, Layout) = .empty,
+    scratch_glyphs: std.ArrayList(u16) = .empty,
+    scratch_points: std.ArrayList(NSPoint) = .empty,
+
+    fn init(device: Id, scale: f32) TextSystem {
+        return .{ .atlas = .init(device, scale), .scale = scale };
+    }
+
+    fn deinit(ts: *TextSystem) void {
+        var fit = ts.fonts.valueIterator();
+        while (fit.next()) |f| cf.CFRelease(f.ref);
+        ts.fonts.deinit(std.heap.page_allocator);
+        for (ts.run_fonts.items) |f| cf.CFRelease(f);
+        ts.run_fonts.deinit(std.heap.page_allocator);
+        var lit = ts.layouts.valueIterator();
+        while (lit.next()) |l| std.heap.page_allocator.free(l.glyphs);
+        ts.layouts.deinit(std.heap.page_allocator);
+        var pit = ts.previous.valueIterator();
+        while (pit.next()) |l| std.heap.page_allocator.free(l.glyphs);
+        ts.previous.deinit(std.heap.page_allocator);
+        ts.scratch_glyphs.deinit(std.heap.page_allocator);
+        ts.scratch_points.deinit(std.heap.page_allocator);
+        ts.atlas.deinit();
+    }
+
+    // Frame start: layouts unused last frame die, this frame's become
+    // last; a deferred atlas reset grows before any glyph looks up.
+    fn beginFrame(ts: *TextSystem) void {
+        if (ts.atlas.needs_reset) {
+            ts.atlas.needs_reset = false;
+            ts.atlas.makeRoom();
+        }
+        var it = ts.previous.valueIterator();
+        while (it.next()) |l| std.heap.page_allocator.free(l.glyphs);
+        ts.previous.clearRetainingCapacity();
+        std.mem.swap(std.AutoHashMapUnmanaged(u64, Layout), &ts.layouts, &ts.previous);
+    }
+
+    // The system font at `size` — v1 is regular weight only; the cache
+    // key is the size bits so a heavier face later joins the same map.
+    fn font(ts: *TextSystem, size: f32) Font {
+        const key: u32 = @bitCast(size);
+        if (ts.fonts.get(key)) |f| return f;
+        const nsfont = send2(Id, f64, f64, cls("NSFont"), sel("systemFontOfSize:weight:"), @as(f64, size), 0.0) orelse @panic("metal: NSFont creation failed");
+        const ref: Id = send(Id, nsfont, sel("retain"));
+        const f: Font = .{
+            .ref = ref,
+            .ascent = @floatCast(CTFontGetAscent(ref)),
+            .descent = @floatCast(CTFontGetDescent(ref)),
+            .leading = @floatCast(CTFontGetLeading(ref)),
+        };
+        ts.fonts.put(std.heap.page_allocator, key, f) catch @panic("metal: OOM caching font");
+        return f;
+    }
+
+    // The index of `f` among the run fonts, retaining it if new.
+    fn fontId(ts: *TextSystem, f: Id) u16 {
+        const h = CFHash(f);
+        for (ts.run_fonts.items, 0..) |known, i| {
+            if (known == f or (CFHash(known) == h and CFEqual(known, f))) return @intCast(i);
+        }
+        ts.run_fonts.append(std.heap.page_allocator, @ptrCast(@constCast(cf.CFRetain(f)))) catch @panic("metal: OOM tracking run font");
+        return @intCast(ts.run_fonts.items.len - 1);
+    }
+
+    fn layoutKey(text: []const u8, size: f32) u64 {
+        var h = std.hash.Wyhash.init(0);
+        h.update(text);
+        h.update(std.mem.asBytes(&size));
+        return h.final();
+    }
+
+    // `text` shaped on one line — the cache serves two frames.
+    fn layout(ts: *TextSystem, text: []const u8, size: f32) Layout {
+        if (text.len == 0) return .{ .width = 0, .glyphs = &.{} };
+        const k = layoutKey(text, size);
+        if (ts.layouts.get(k)) |l| return l;
+        if (ts.previous.fetchRemove(k)) |kv| {
+            ts.layouts.put(std.heap.page_allocator, k, kv.value) catch @panic("metal: OOM promoting text layout");
+            return kv.value;
+        }
+        const l = ts.shape(text, size);
+        ts.layouts.put(std.heap.page_allocator, k, l) catch @panic("metal: OOM caching text layout");
+        return l;
+    }
+
+    fn shape(ts: *TextSystem, text: []const u8, size: f32) Layout {
+        const f = ts.font(size);
+        const str = cf.CFStringCreateWithBytes(null, text.ptr, @intCast(text.len), cf.kCFStringEncodingUTF8, 0) orelse @panic("metal: CFString creation failed");
+        defer cf.CFRelease(str);
+        const keys = [_]?*const anyopaque{ kCTFontAttributeName, kCTForegroundColorFromContextAttributeName };
+        const values = [_]?*const anyopaque{ f.ref, cf.kCFBooleanTrue };
+        const attrs = cf.CFDictionaryCreate(null, @ptrCast(@constCast(keys[0..].ptr)), @ptrCast(@constCast(values[0..].ptr)), 2, &cf.kCFTypeDictionaryKeyCallBacks, &cf.kCFTypeDictionaryValueCallBacks) orelse @panic("metal: CFDictionary creation failed");
+        defer cf.CFRelease(attrs);
+        const astr = cf.CFAttributedStringCreate(null, str, attrs) orelse @panic("metal: CFAttributedString creation failed");
+        defer cf.CFRelease(astr);
+        const line = CTLineCreateWithAttributedString(astr) orelse @panic("metal: CTLine creation failed");
+        defer cf.CFRelease(line);
+        const w: f32 = @floatCast(CTLineGetTypographicBounds(line, null, null, null));
+
+        var glyphs: std.ArrayList(Glyph) = .empty;
+        const runs = CTLineGetGlyphRuns(line);
+        var r: isize = 0;
+        while (r < CFArrayGetCount(runs)) : (r += 1) {
+            const run = CFArrayGetValueAtIndex(runs, r);
+            const count: usize = @intCast(@max(0, CTRunGetGlyphCount(run)));
+            if (count == 0) continue;
+            const run_font = CFDictionaryGetValue(CTRunGetAttributes(run), kCTFontAttributeName) orelse @panic("metal: glyph run carried no font");
+            const fid = ts.fontId(run_font);
+            ts.scratch_glyphs.resize(std.heap.page_allocator, count) catch @panic("metal: OOM shaping text");
+            ts.scratch_points.resize(std.heap.page_allocator, count) catch @panic("metal: OOM shaping text");
+            const all: NSRange = .{ .location = 0, .length = 0 };
+            CTRunGetGlyphs(run, all, ts.scratch_glyphs.items.ptr);
+            CTRunGetPositions(run, all, ts.scratch_points.items.ptr);
+            for (ts.scratch_glyphs.items, ts.scratch_points.items) |g, p| {
+                glyphs.append(std.heap.page_allocator, .{ .font = fid, .glyph = g, .x = @floatCast(p.x), .y = @floatCast(p.y) }) catch @panic("metal: OOM shaping text");
+            }
+        }
+        return .{ .width = w, .glyphs = glyphs.toOwnedSlice(std.heap.page_allocator) catch @panic("metal: OOM shaping text") };
+    }
+};
 
 fn sel(comptime name: [:0]const u8) SEL {
     return objc.sel_registerName(name);
@@ -579,7 +907,8 @@ fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
     const buf = send(Id, win.queue, sel("commandBuffer"));
     const enc = send1(Id, Id, buf, sel("renderCommandEncoderWithDescriptor:"), desc);
     send1(void, Id, enc, sel("setRenderPipelineState:"), win.pso);
-    var f = Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0 };
+    var f = Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text };
+    win.text.beginFrame();
     cb(&f);
     instFlush(&f);
     send(void, enc, sel("endEncoding"));
@@ -708,6 +1037,7 @@ pub const Window = struct {
     lr_h: f32,
     clear: MTLClearColor,
     insts: std.ArrayList(GpuInstance),
+    text: TextSystem,
 };
 
 // A frame in flight — carries the LIVE render encoder, so draw calls inside
@@ -729,6 +1059,7 @@ pub const Frame = struct {
     insts: *std.ArrayList(GpuInstance),
     clip_stack: [16][4]f32,
     clip_depth: u8,
+    text: *TextSystem,
 };
 
 ~pub tor window.open { width: i32, height: i32, title: string }
@@ -977,6 +1308,7 @@ pub const Frame = struct {
         .lr_h = -1,
         .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
         .insts = .empty,
+        .text = .init(device, @floatCast(bs0)),
     };
     live_win = w;
     return .{ .win = w };
@@ -1062,7 +1394,8 @@ pub const Frame = struct {
         const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
         $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
 
-        var __f = $mod.Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0 };
+        var __f = $mod.Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_tex = win.pso_tex, .pso_inst = win.pso_inst, .samp = win.samp, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text };
+        win.text.beginFrame();
         frame(&__f);
 
         $mod.instFlush(&__f);
@@ -1094,6 +1427,7 @@ pub const Frame = struct {
     send(void, win.win, sel("close"));
     send(void, win.win, sel("release"));
     win.insts.deinit(std.heap.page_allocator);
+    win.text.deinit();
     std.heap.page_allocator.destroy(win);
 }
 
@@ -1226,6 +1560,43 @@ pub const Frame = struct {
 
 ~proc draw.clip.pop|zig {
     if (f.clip_depth > 0) f.clip_depth -= 1;
+}
+
+// ============================================================================
+// Text — one run of the system font. x,y is the TOP-LEFT of the line box
+// in points (the convention every other draw verb uses); the baseline is
+// y + the font's ascent, snapped to a pixel row. Each glyph becomes a
+// kind-1 instance sampling the atlas — the run shapes once per
+// (string, size) and every glyph rasterizes once per quarter-pixel bin.
+~pub tor draw.text { f: *Frame<frame>, x: f64, y: f64, size: f64, r: f64, g: f64, b: f64, a: f64, text: string }
+
+~proc draw.text|zig {
+    const ts = f.text;
+    const sz: f32 = @floatCast(size);
+    const fnt = ts.font(sz);
+    const lay = ts.layout(text, sz);
+    if (lay.glyphs.len == 0) return;
+    const scale = ts.scale;
+    const cx: f32 = @floatCast(x);
+    const baseline = @round((@as(f32, @floatCast(y)) + fnt.ascent) * scale) / scale;
+    const color: [4]f32 = .{ @floatCast(r), @floatCast(g), @floatCast(b), @floatCast(a) };
+    for (lay.glyphs) |gl| {
+        const pen = (cx + gl.x) * scale;
+        const px = @floor(pen);
+        const bin: u8 = @intFromFloat(@min(@as(f32, atlas_bins - 1), @floor((pen - px) * atlas_bins)));
+        const sp = ts.atlas.glyph(gl.font, ts.run_fonts.items[gl.font], gl.glyph, bin) orelse continue;
+        instPush(f, .{
+            .rect = .{ px / scale + sp.x, baseline - gl.y + sp.y, sp.w, sp.h },
+            .color = color,
+            .border_color = .{ 0, 0, 0, 0 },
+            .uv = sp.uv,
+            .clip = curClip(f),
+            .radius = 0,
+            .border_width = 0,
+            .kind = inst_text,
+            .clip_round = 0,
+        });
+    }
 }
 
 // ============================================================================

@@ -27,6 +27,10 @@ libs/metal:window.open(width: 640, height: 400, title: "vocab probe")
                 |> libs/metal:draw.clip.push(f, x: 320.0, y: 60.0, w: 200.0, h: 60.0)
                 |> libs/metal:draw.rect(f, x: 320.0, y: 40.0, w: 200.0, h: 140.0, r: 0.5, g: 0.9, b: 0.3, a: 1.0)
                 |> libs/metal:draw.clip.pop(f)
+                // Text: a caption inside the panel, and a free-standing
+                // run in a second size — kind-1 atlas instances.
+                |> libs/metal:draw.text(f, x: 80.0, y: 100.0, size: 20.0, r: 0.9, g: 0.95, b: 1.0, a: 1.0, text: "panel + border")
+                |> libs/metal:draw.text(f, x: 320.0, y: 340.0, size: 14.0, r: 0.75, g: 0.75, b: 0.85, a: 1.0, text: "atlas glyphs, subpixel-binned")
                 // Ordering: green rect, image overlapping its right edge,
                 // red rect overlapping the image. Correct: green < image < red.
                 |> libs/metal:draw.roundrect(f, x: 320.0, y: 220.0, w: 160.0, h: 80.0, radius: 10.0, r: 0.3, g: 0.8, b: 0.4, a: 1.0)
