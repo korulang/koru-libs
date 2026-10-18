@@ -923,10 +923,10 @@ pub const Frame = struct {
 // back out of the IMAGE render command verbatim for draw.image.
 // ============================================================================
 
-// Fail-loud single-return load: any missing step panics with the cause —
-// no degraded/placeholder path. Returns the texture handle as i64 pointer
-// bits — the same value Clay hands back as imageData for draw.image.
-~pub tor image.load { win: *Window<opened|active>, path: string } -> i64
+// Two-arm load — `| img` hands back the texture handle as i64 pointer
+// bits (the same value Clay hands back as imageData for draw.image);
+// `| err` names which step failed. No degraded/placeholder path.
+~pub tor image.load { win: *Window<opened|active>, path: string } | img i64 | err string
 
 ~proc image.load|zig {
     const pool = objc_autoreleasePoolPush();
@@ -940,22 +940,22 @@ pub const Frame = struct {
         sel("initWithContentsOfFile:"),
         @as(Id, @ptrCast(@constCast(pstr))),
     );
-    if (nsimg == null) @panic("metal: image file not readable");
+    if (nsimg == null) return .{ .err = "metal: image file not readable" };
     var prop: NSRect = undefined;
     const cg = send3(Id, *NSRect, Id, Id, nsimg, sel("CGImageForProposedRect:context:hints:"), &prop, @as(Id, null), @as(Id, null));
-    if (cg == null) @panic("metal: no CGImage in file");
+    if (cg == null) return .{ .err = "metal: no CGImage in file" };
     const w = CGImageGetWidth(cg);
     const h = CGImageGetHeight(cg);
-    if (w == 0 or h == 0) @panic("metal: zero-size image");
+    if (w == 0 or h == 0) return .{ .err = "metal: zero-size image" };
 
     // Rasterize into a BGRA-premultiplied buffer — the layer's pixel format
     // (BGRA8Unorm) expects premultiplied alpha; kCGImageAlphaPremultipliedFirst
     // | kCGBitmapByteOrder32Little is exactly that byte order.
     const cs = CGColorSpaceCreateDeviceRGB();
     const bctx = CGBitmapContextCreate(null, w, h, 8, w * 4, cs, 2 | (2 << 12));
-    if (bctx == null) @panic("metal: bitmap context failed");
+    if (bctx == null) return .{ .err = "metal: bitmap context failed" };
     CGContextDrawImage(bctx, .{ .origin = .{ .x = 0, .y = 0 }, .size = .{ .width = @floatFromInt(w), .height = @floatFromInt(h) } }, cg);
-    const px = CGBitmapContextGetData(bctx) orelse @panic("metal: no bitmap data");
+    const px = CGBitmapContextGetData(bctx) orelse return .{ .err = "metal: no bitmap data" };
 
     const device = send(Id, win.layer, sel("device"));
     const tdesc = send4(
@@ -965,14 +965,14 @@ pub const Frame = struct {
         80, w, h, false,
     );
     const tex = send1(Id, Id, device, sel("newTextureWithDescriptor:"), tdesc);
-    if (tex == null) @panic("metal: texture creation failed");
+    if (tex == null) return .{ .err = "metal: texture creation failed" };
     const region = MTLRegion{
         .origin = .{ .x = 0, .y = 0, .z = 0 },
         .size = .{ .width = w, .height = h, .depth = 1 },
     };
     send4(void, MTLRegion, u64, ?*const anyopaque, u64, tex, sel("replaceRegion:mipmapLevel:withBytes:bytesPerRow:"), region, 0, px, w * 4);
 
-    return @as(i64, @intCast(@intFromPtr(tex)));
+    return .{ .img = @as(i64, @intCast(@intFromPtr(tex))) };
 }
 
 // One textured quad in PIXEL space — tex is a texture handle as i64

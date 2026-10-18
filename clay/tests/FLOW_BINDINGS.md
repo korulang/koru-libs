@@ -71,43 +71,53 @@ Pins: koru `400_210` / `400_211` / `400_212`. Referencing an arm binding at
 the join is refused today only by the host (`use of undeclared identifier`);
 a koruc-level unbound-reference check is the open follow-up.
 
-**The spike can't adopt it yet — blocked on §3.** The join route means the
-texture reaches `! frame` via the store instead of the `texh` capture, and
-dropping that capture is exactly what trips §3: measured 2026-10-18 by
-moving `texh` into `stored { world.tex: texh }` before `frames` and removing
-it from the `! frame` store write — `KORU030: binding 'w' was already
-discharged` at `window.size(win: w)`. `image.load` stays `-> i64` + `@panic`
-until 330_145 is fixed.
+**Adopted 2026-10-18 — verified at runtime.** §3 is resolved (330_145
+fixed in koru `fdfb39c`: a `!` arm runs inside the callee's custody, so
+`w` reads live inside `! frame` by design — the `texh` capture latch is
+retired). `image.load` is now `| img i64 | err string` and the consumer
+spells the join exactly as above: `| img`/`| err` arms deeper than the
+`image.load` step, an unnamed `|>` at the chain's level rejoins, and the
+`frames` arms sit deeper than the `frames` step in turn. One caveat found
+while wiring it: a `~proc|zig` body that references a REQUIRED `!` arm as
+a value (`frame_cb = frame` — metal's live-resize registration) must stay
+on the handler-call path; the inline splice lowers only `frame(` direct
+calls. That gate existed for optional arms since `400_168` but not for
+required ones — fixed in koru (`emitter_helpers.zig`,
+`procRefsAnyArmAsValue`), pinned by koru `400_215`. Before the fix, every
+metal consumer of `frames` — `close.k`, `spec_snap.k`, the live spike —
+emitted `use of undeclared identifier 'frame'`; after it, all compile and
+`close.k`/`probe_join` run end-to-end.
 
-## 3. KORU030 phantom: ambient `w` inside `! frame` — non-compositional verdict
+## 3. KORU030 phantom: ambient `w` inside `! frame` — RESOLVED 2026-10-18
 
-The rule as bisected (2026-10-19, against the real consumer):
+The bisected rule was a red herring on two fronts, now both fixed in koru
+`fdfb39c`:
 
-- `w` inside `! frame` compiles **only when a `w`-derived binding is also
-  captured into that arm** — `texh` from `image.load(win: w)` used inside
-  `! frame` is the license. Remove that capture (`image.load: _`, or use
-  `texh` before `frames` instead) and `window.size(win: w)` in the same arm
-  gets `KORU030: binding 'w' was already discharged`.
-- Capturing an *unrelated* ambient binding does not license it —
-  `libs/clay:dims(cl: h)` inside `! frame` still leaves `w` refused.
-- In a minimal pure-`.kz` repro (single-file tors, no library imports),
-  `w` inside the event arm is refused **unconditionally** — even with a
-  `w`-derived value captured alongside. So the app's "works when a derived
-  binding is captured" path is a side door, not the rule.
+- **Custody, not captures.** A `!` arm runs inside the callee's custody —
+  `frames(win: w)` consumes `*Window<!opened|!active>`, so during `! frame`
+  the window genuinely IS `opened|active` and `window.size(win: w)` is the
+  designed use. The phantom checker now revives consumed `<!state>`
+  arguments for the duration of their own `!` arms (matched by the exact
+  firing invocation's argument identity, not by tor name — a `w` discharged
+  by an *earlier* `frames` call stays dead inside a later one). After the
+  call, `w` is discharged unless the `| done` arm re-issues it.
+- **Transform-graft descent.** The "capture license" was an artifact: a
+  multi-field `stored` site inside the arm wrapped the authored tail in an
+  `is_transformed_subtree` graft, and `validateContinuation` pruned the
+  whole subtree — the `w` check simply never ran. The checker now skips
+  only the synthesized node and still walks its authored children.
 
-Either `w` in event arms is legal (this minimal repro is over-strict) or it
-isn't (the app's derived-capture path is under-strict). The verdict must be
-compositional — today it depends on which other bindings are captured.
+Pins (both green): `330_145` (positive — consumed binding live in its own
+`!` arm, discharged after `| done`) and `330_146` (negative — a binding
+discharged by an earlier call stays dead inside another's arm). The `texh`
+capture latch in `spec_sel_live.k` is retired; `world.tex` rides the store
+through the join instead.
 
-Pinned in the suite:
-`tests/regression/300_ADVANCED_FEATURES/330_PHANTOM_TYPES/330_145_event_arm_capture_of_discharged_borrow/`
-(BROKEN — reproduces exactly `KORU030`; ~45 lines, no library deps).
-
-Related: `w` inside a `| then` body in `! frame` also gets KORU030
-(`|> if (world.frame == 1) | then |> image.load(win: w)`), while bare
-`window.size(win: w)` in the same frame body compiles — arm bodies appear
-to resolve `w` to the discharged outer binding rather than the frame
-capture. Same family, possibly same fix.
+Related (pre-fix observation, unverified since): `w` inside a `| then`
+body in `! frame` also got KORU030 (`|> if (world.frame == 1) | then |>
+image.load(win: w)`), while bare `window.size(win: w)` in the same frame
+body compiled. The custody fix should cover nested `| then` bodies too —
+re-verify before citing.
 
 ## 4. Emitter: `| row`-bound insert before another `| row` line → `else {}` with no `if`
 
