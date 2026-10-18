@@ -1,7 +1,8 @@
 // OMNI spike S5b-LIVE — spec_sel.k with the scripted drivers removed:
 // no snap frames, no auto-select/deselect, no auto-quit. Selection is
 // only the live path — Tab (code 48) cycles sel through the spec
-// ordinals, Escape quits. Same stores, same fold, same chrome.
+// ordinals, a mouse click hits the row whose rect contains the point
+// (chrome clicks swallowed), Escape quits. Same stores, fold, chrome.
 //
 //   world.sel      the selected row's ORDINAL (-1 = none). Ordinal, not a
 //                  branded handle: value stores are scalar-only, so the
@@ -24,9 +25,9 @@
 // its two-column offsets inside the palette. Chips ride the slide via
 // fx = px + cx.
 //
-// Verification is manual: press Tab to select/deselect — palette slides
-// in at right, kind-keyed chips appear, the selected element tints.
-// The scripted sibling spec_sel.k pins the pixel snaps.
+// Verification is manual: Tab cycles, click selects topmost-under-point,
+// click on empty space or chrome deselects — palette slides, chips rekey,
+// the element tints. The scripted sibling spec_sel.k pins pixel snaps.
 //
 import libs/metal
 import libs/clay
@@ -34,7 +35,7 @@ import libs/ui
 import std/store
 import std/io
 
-std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], selkind: 0[i64], dirty: 0[i64] }
+std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], selkind: 0[i64], dirty: 0[i64], cmdi: 0[i64], hitool: 0[i64] }
 
 // One row = one element in the dialect. d: tree depth. kind: stack|leaf|
 // grid|cell|col|row. dock: ""|top|bottom|left|right|fill (a dock slot
@@ -76,13 +77,25 @@ std/store:new(tools, capacity: 32) {
     r: f64, g: f64, b: f64, a: f64,
     tk: i64, cx: f64, cy: f64, px: f64, vis: i64,
 }
+// Hit map — one row per RECTANGLE command drained this frame, recorded in
+// WINDOW coordinates. Clay rects live in the pinned 640x400 layout space
+// and the shader stretches that space to fill the drawable (vp_w/vp_h are
+// fixed at open — NDC maps layout px straight onto the whole framebuffer),
+// so window-space rect = layout rect scaled by win/layout, then y flipped
+// (locationInWindow is bottom-up, layout is top-down). seq is the running
+// rect index; spec emits
+// first, so seq < 25 is a spec row (25 = the seed block's insert count)
+// and seq >= 25 is chrome. Cleared and re-recorded every frame — mailbox
+// drains before ! frame, so mouse arms always see a complete table.
+std/store:new(hit, capacity: 64) { seq: i64, tool: i64, x: f64, y: f64, w: f64, h: f64 }
 libs/clay:init(width: 640, height: 400)
 | cl h |> libs/metal:window.open(width: 640, height: 400, title: "omni s5 — spec-driven layout")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
             |> libs/metal:frames(win: w, count: 9999)
         ! frame f
-            |> std/store:stored { world.frame: world.frame + 1 }
-            // Selection driver: Tab (below, code 48) is the only writer.
+            |> std/store:stored { world.frame: world.frame + 1, world.cmdi: 0 }
+            |> std/store:clear(hit)
+            // Selection drivers: Tab and click are the only writers.
             // Every writer sets dirty — the refresh below is the single
             // site, same shape as the scripted sibling.
             |> if (world.dirty == 1)
@@ -255,10 +268,25 @@ libs/clay:init(width: 640, height: 400)
                             |> libs/ui:panel(t, dock: "", tl.ws, tl.w, tl.hs, tl.h, tl.dir, tl.gap, tl.pad, tl.ax, tl.ay, tl.r, tl.g, tl.b, tl.a, fl: 1, fx: tl.px + tl.cx, fy: 70.0 + tl.cy)
                 | solved cls |> libs/clay:each(cl: cls)
                     ! cmd rc |> if (rc.kind == 1)
-                        | then |> libs/metal:draw.rect(f, rc.x, rc.y, rc.w, rc.h, rc.r, rc.g, rc.b, rc.a)
+                        | then |> libs/metal:window.size(win: w): wh
+                            |> std/store:insert(hit) { seq: world.cmdi, tool: if (world.cmdi < 25) 0 else 1, x: rc.x * wh.w / 640.0, y: wh.h - (rc.y + rc.h) * wh.h / 400.0, w: rc.w * wh.w / 640.0, h: rc.h * wh.h / 400.0 }
+                            |> std/store:stored { world.cmdi: world.cmdi + 1 }
+                            |> libs/metal:draw.rect(f, rc.x, rc.y, rc.w, rc.h, rc.r, rc.g, rc.b, rc.a)
                     | drained |> std/store:stored { world.drew: 1 }
         ! key-down k when k.code == 48
             |> std/store:stored { world.sel: if (world.sel >= 24) 0 else world.sel + 1, world.dirty: 1 }
+        ! mouse-down e  // chrome pass first (palette click swallowed via
+                        // hitool); spec pass takes the LAST match — later
+                        // draws sit on top
+            |> std/store:stored { world.sel: -1, world.hitool: 0 }
+            |> std/store:query(hit)
+                ! query hi when hi.tool == 1 and e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
+                    |> std/store:stored { world.hitool: 1 }
+            |> std/store:query(hit)
+                ! query hi when hi.tool == 0 and world.hitool == 0 and e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
+                    |> std/store:stored { world.sel: hi.seq }
+            |> std/store:stored { world.dirty: 1 }
+            |> std/io:print.ln("click {{ e.x:f }},{{ e.y:f }} -> sel {{ world.sel:d }} chrome {{ world.hitool:d }}")
         ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("spec: closed (snapped)")

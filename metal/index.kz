@@ -267,6 +267,22 @@ fn dumpDrawable(drawable: Id, win: *Window) void {
     pushEvent(.{ .mouse_down = .{ .x = x, .y = y } });
 }
 
+// Live content size in points — locationInWindow's space. vp_w/vp_h are
+// pinned at open for the shader viewport; hit-testing and layout-on-resize
+// need the size NOW, not the size at open.
+pub const Size = struct {
+    w: f64,
+    h: f64,
+};
+
+~pub tor window.size { win: *Window<opened|active> } -> koru/metal:Size
+
+~proc window.size|zig {
+    const cv = send(Id, win.win, sel("contentView"));
+    const b = send(NSRect, cv, sel("bounds"));
+    return .{ .w = @floatCast(b.size.width), .h = @floatCast(b.size.height) };
+}
+
 ~pub tor window.snap { path: string }
 
 ~proc window.snap|zig {
