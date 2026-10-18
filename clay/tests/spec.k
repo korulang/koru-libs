@@ -7,13 +7,14 @@
 // the words, libs/clay solves, Metal draws.
 //
 // grid is the dialect's shared-track panel — the thing clay structurally
-// cannot do: a `grid` row authors its own rect (v1: fl+fx/fy + fix w/h),
+// cannot do: a `grid` row authors its own rect (fl+fx/fy + fix w/h),
 // `col`/`row` children declare track sizes in the same ws/w | hs/h words
-// (`star` w = the N in `N*`), and `cell` children carry gc/gr — the walk
-// solves tracks into gtrk and emits each cell floating at its solved
-// rect. Tracks are solved in the walk, not by clay; a native
-// measure/arrange package is the next spike (content-sized `auto` tracks
-// and cells-with-children live there).
+// (fix = px, star w = the N in `N*`, auto = hug the largest fix-authored
+// member cell), and `cell` children carry gc/gr — the walk solves tracks
+// into gtrk and emits each cell floating at its solved rect. `auto` is a
+// declared-hint measure — cells declare their content size with ws:"fix"
+// w:X; true content measure (cells with children, Clay_GetElementData
+// readback) is the next spike.
 import libs/metal
 import libs/clay
 import libs/ui
@@ -28,7 +29,7 @@ std/store:new(world) { frame: 0[i64], drew: 0[i64] }
 // ax/ay: start|end|center. fl: 1 = canvas — float at (fx,fy).
 // id/pid: row identity + parent link — load-bearing only for grid scope
 // (a cell's pid names its grid's id; def rows likewise). gc/gr: the
-// cell's column/row track index; defs take their index from row order.
+// cell's column/row track index; defs declare theirs in gc/gr too.
 std/store:new(spec, capacity: 64) {
     d: i64, kind: char[8], dock: char[8],
     ws: char[8], w: f64, hs: char[8], h: f64,
@@ -42,7 +43,7 @@ std/store:new(spec, capacity: 64) {
 // count, resolved star size, running offset/index) plus the solved track
 // rect table cell arms read back — pid keys the owning grid row,
 // axis 0 = column track, 1 = row track. Cleared and re-solved each frame.
-std/store:new(gs) { cf: 0.0[f64], cs: 0.0[f64], cn: 0.0[f64], rf: 0.0[f64], rs: 0.0[f64], rn: 0.0[f64], cstar: 0.0[f64], rstar: 0.0[f64], co: 0.0[f64], ci: 0.0[f64], ro: 0.0[f64], ri: 0.0[f64] }
+std/store:new(gs) { cf: 0.0[f64], cs: 0.0[f64], cn: 0.0[f64], rf: 0.0[f64], rs: 0.0[f64], rn: 0.0[f64], cstar: 0.0[f64], rstar: 0.0[f64], co: 0.0[f64], ro: 0.0[f64], amax: 0.0[f64], res: 0.0[f64] }
 std/store:new(gtrk, capacity: 16) { pid: i64, axis: i64, i: i64, off: f64, size: f64 }
 
 libs/clay:init(width: 640, height: 400)
@@ -64,15 +65,15 @@ libs/clay:init(width: 640, height: 400)
                                                     | row _ |> std/store:insert(spec) { d: 2, kind: "leaf", dock: "", ws: "star", w: 0.0, hs: "fix", h: 8.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 150.0, g: 118.0, b: 92.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 0, gc: 0, gr: 0 }
                                                         | row _ |> std/store:insert(spec) { d: 2, kind: "leaf", dock: "", ws: "star", w: 0.0, hs: "fix", h: 8.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 118.0, g: 94.0, b: 74.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 0, gc: 0, gr: 0 }
                                                             | row _ |> std/store:insert(spec) { d: 0, kind: "grid", dock: "", ws: "fix", w: 76.0, hs: "fix", h: 98.0, dir: "", gap: 4, pad: 6, ax: "start", ay: "start", r: 20.0, g: 22.0, b: 30.0, a: 255.0, fl: 1, fx: 340.0, fy: 70.0, id: 1, pid: 0, gc: 0, gr: 0 }
-                                                                | row _ |> std/store:insert(spec) { d: 1, kind: "col", dock: "", ws: "star", w: 1.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
-                                                                    | row _ |> std/store:insert(spec) { d: 1, kind: "col", dock: "", ws: "star", w: 1.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
-                                                                        | row _ |> std/store:insert(spec) { d: 1, kind: "row", dock: "", ws: "", w: 0.0, hs: "star", h: 1.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
-                                                                            | row _ |> std/store:insert(spec) { d: 1, kind: "row", dock: "", ws: "", w: 0.0, hs: "star", h: 1.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
-                                                                                | row _ |> std/store:insert(spec) { d: 1, kind: "row", dock: "", ws: "", w: 0.0, hs: "star", h: 1.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
-                                                                                    | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 120.0, g: 80.0, b: 200.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
-                                                                                        | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 200.0, g: 150.0, b: 60.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 1 }
-                                                                                            | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 60.0, g: 170.0, b: 160.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 2 }
-                                                                                                | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 190.0, g: 80.0, b: 80.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 1, gr: 0 }
+                                                                | row _ |> std/store:insert(spec) { d: 1, kind: "col", dock: "", ws: "auto", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
+                                                                    | row _ |> std/store:insert(spec) { d: 1, kind: "col", dock: "", ws: "star", w: 1.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 1, gr: 0 }
+                                                                        | row _ |> std/store:insert(spec) { d: 1, kind: "row", dock: "", ws: "", w: 0.0, hs: "auto", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
+                                                                            | row _ |> std/store:insert(spec) { d: 1, kind: "row", dock: "", ws: "", w: 0.0, hs: "star", h: 1.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 1 }
+                                                                                | row _ |> std/store:insert(spec) { d: 1, kind: "row", dock: "", ws: "", w: 0.0, hs: "star", h: 1.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 0.0, g: 0.0, b: 0.0, a: 0.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 2 }
+                                                                                    | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "fix", w: 24.0, hs: "fix", h: 30.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 120.0, g: 80.0, b: 200.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 0 }
+                                                                                        | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "fix", w: 16.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 200.0, g: 150.0, b: 60.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 1 }
+                                                                                            | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "fix", w: 20.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 60.0, g: 170.0, b: 160.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 0, gr: 2 }
+                                                                                                | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "fix", h: 18.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 190.0, g: 80.0, b: 80.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 1, gr: 0 }
                                                                                                     | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "", gap: 0, pad: 0, ax: "start", ay: "start", r: 80.0, g: 110.0, b: 200.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 1, gr: 1 }
                                                                                                         | row _ |> std/store:insert(spec) { d: 1, kind: "cell", dock: "", ws: "fix", w: 18.0, hs: "fix", h: 14.0, dir: "", gap: 0, pad: 0, ax: "center", ay: "center", r: 90.0, g: 180.0, b: 90.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0, id: 0, pid: 1, gc: 1, gr: 2 }
             |> libs/clay:layout(cl: h)
@@ -86,21 +87,39 @@ libs/clay:init(width: 640, height: 400)
                                     |> std/store:stored { gs.cf: 0.0, gs.cs: 0.0, gs.cn: 0.0, gs.rf: 0.0, gs.rs: 0.0, gs.rn: 0.0 }
                                     |> std/store:query(spec)
                                         ! query d when d.pid == s.id and d.kind == "col"
-                                            |> std/store:stored { gs.cf: gs.cf + if (d.ws == "star") 0.0 else d.w, gs.cs: gs.cs + if (d.ws == "star") d.w else 0.0, gs.cn: gs.cn + 1.0 }
+                                            |> std/store:stored { gs.amax: 0.0 }
+                                            |> std/store:query(spec)
+                                                ! query c when d.ws == "auto" and c.pid == s.id and c.kind == "cell" and c.ws == "fix" and c.gc == d.gc
+                                                    |> std/store:stored { gs.amax: if (c.w > gs.amax) c.w else gs.amax }
+                                            |> std/store:stored { gs.cf: gs.cf + if (d.ws == "star") 0.0 else if (d.ws == "auto") gs.amax else d.w, gs.cs: gs.cs + if (d.ws == "star") d.w else 0.0, gs.cn: gs.cn + 1.0 }
                                     |> std/store:query(spec)
                                         ! query d when d.pid == s.id and d.kind == "row"
-                                            |> std/store:stored { gs.rf: gs.rf + if (d.hs == "star") 0.0 else d.h, gs.rs: gs.rs + if (d.hs == "star") d.h else 0.0, gs.rn: gs.rn + 1.0 }
+                                            |> std/store:stored { gs.amax: 0.0 }
+                                            |> std/store:query(spec)
+                                                ! query c when d.hs == "auto" and c.pid == s.id and c.kind == "cell" and c.hs == "fix" and c.gr == d.gr
+                                                    |> std/store:stored { gs.amax: if (c.h > gs.amax) c.h else gs.amax }
+                                            |> std/store:stored { gs.rf: gs.rf + if (d.hs == "star") 0.0 else if (d.hs == "auto") gs.amax else d.h, gs.rs: gs.rs + if (d.hs == "star") d.h else 0.0, gs.rn: gs.rn + 1.0 }
                                     |> std/store:stored { gs.cstar: if (gs.cs == 0.0) 0.0 else (s.w - 2.0 * @as(f64, @floatFromInt(s.pad)) - gs.cf - @as(f64, @floatFromInt(s.gap)) * (gs.cn - 1.0)) / gs.cs, gs.rstar: if (gs.rs == 0.0) 0.0 else (s.h - 2.0 * @as(f64, @floatFromInt(s.pad)) - gs.rf - @as(f64, @floatFromInt(s.gap)) * (gs.rn - 1.0)) / gs.rs }
-                                    |> std/store:stored { gs.co: 0.0, gs.ci: 0.0 }
+                                    |> std/store:stored { gs.co: 0.0 }
                                     |> std/store:query(spec)
                                         ! query d when d.pid == s.id and d.kind == "col"
-                                            |> std/store:insert(gtrk) { pid: s.id, axis: 0, i: @as(i64, @intFromFloat(gs.ci)), off: s.fx + @as(f64, @floatFromInt(s.pad)) + gs.co, size: if (d.ws == "star") gs.cstar * d.w else d.w }
-                                                | row _ |> std/store:stored { gs.co: gs.co + (if (d.ws == "star") gs.cstar * d.w else d.w) + @as(f64, @floatFromInt(s.gap)), gs.ci: gs.ci + 1.0 }
-                                    |> std/store:stored { gs.ro: 0.0, gs.ri: 0.0 }
+                                            |> std/store:stored { gs.amax: 0.0 }
+                                            |> std/store:query(spec)
+                                                ! query c when d.ws == "auto" and c.pid == s.id and c.kind == "cell" and c.ws == "fix" and c.gc == d.gc
+                                                    |> std/store:stored { gs.amax: if (c.w > gs.amax) c.w else gs.amax }
+                                            |> std/store:stored { gs.res: if (d.ws == "star") gs.cstar * d.w else if (d.ws == "auto") gs.amax else d.w }
+                                            |> std/store:insert(gtrk) { pid: s.id, axis: 0, i: d.gc, off: s.fx + @as(f64, @floatFromInt(s.pad)) + gs.co, size: gs.res }
+                                                | row _ |> std/store:stored { gs.co: gs.co + gs.res + @as(f64, @floatFromInt(s.gap)) }
+                                    |> std/store:stored { gs.ro: 0.0 }
                                     |> std/store:query(spec)
                                         ! query d when d.pid == s.id and d.kind == "row"
-                                            |> std/store:insert(gtrk) { pid: s.id, axis: 1, i: @as(i64, @intFromFloat(gs.ri)), off: s.fy + @as(f64, @floatFromInt(s.pad)) + gs.ro, size: if (d.hs == "star") gs.rstar * d.h else d.h }
-                                                | row _ |> std/store:stored { gs.ro: gs.ro + (if (d.hs == "star") gs.rstar * d.h else d.h) + @as(f64, @floatFromInt(s.gap)), gs.ri: gs.ri + 1.0 }
+                                            |> std/store:stored { gs.amax: 0.0 }
+                                            |> std/store:query(spec)
+                                                ! query c when d.hs == "auto" and c.pid == s.id and c.kind == "cell" and c.hs == "fix" and c.gr == d.gr
+                                                    |> std/store:stored { gs.amax: if (c.h > gs.amax) c.h else gs.amax }
+                                            |> std/store:stored { gs.res: if (d.hs == "star") gs.rstar * d.h else if (d.hs == "auto") gs.amax else d.h }
+                                            |> std/store:insert(gtrk) { pid: s.id, axis: 1, i: d.gr, off: s.fy + @as(f64, @floatFromInt(s.pad)) + gs.ro, size: gs.res }
+                                                | row _ |> std/store:stored { gs.ro: gs.ro + gs.res + @as(f64, @floatFromInt(s.gap)) }
                             |> if (s.kind == "cell")
                                 | then |> std/store:query(gtrk)
                                     ! query tc when tc.pid == s.pid and tc.axis == 0 and tc.i == s.gc
