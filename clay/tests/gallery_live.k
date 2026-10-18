@@ -79,7 +79,7 @@ libs/clay:init(width: 640, height: 480)
                             |> libs/clay:el.open(t)
                             |> libs/clay:el.cfg(t, wk: 1, w: 0.0, hk: 1, h: 0.0, dir: 0, gap: 20, pad: 20, ax: 0, ay: 0, r: 14.0, g: 15.0, b: 20.0, a: 255.0, fl: 0, fx: 0.0, fy: 0.0)
                             |> libs/clay:el.open(t)
-                            |> libs/clay:el.clip(t, wk: 3, w: 280.0, hk: 1, h: 0.0, dir: 1, gap: 6, pad: 8, r: 22.0, g: 24.0, b: 32.0, a: 255.0, ox: 0.0, oy: 0.0 - fworld.scroll, horiz: 0, vert: 1)
+                            |> libs/clay:el.clip(t, wk: 1, w: 0.0, hk: 1, h: 0.0, dir: 1, gap: 6, pad: 8, r: 22.0, g: 24.0, b: 32.0, a: 255.0, ox: 0.0, oy: 0.0 - fworld.scroll, horiz: 0, vert: 1)
                             // top spacer stands in for culled rows (its height
                             // minus the gap the spacer itself takes)
                             |> if (world.r0 > 0)
