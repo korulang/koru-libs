@@ -1776,6 +1776,15 @@ pub const Frame = struct {
     return @floatCast(win.text.font(@floatCast(size)).ascent);
 }
 
+// The font's descent at `size` — baseline to line-box bottom. Together
+// with text.ascent a consumer can center a line vertically:
+// baseline = box.top + (box.h - asc - desc) / 2 + asc.
+~pub tor text.descent { win: *Window<opened|active>, size: f64 } -> f64
+
+~proc text.descent|zig {
+    return @floatCast(win.text.font(@floatCast(size)).descent);
+}
+
 // ============================================================================
 // Images — decode to BGRA premultiplied via NSImage + CGBitmapContext (pure
 // Cocoa/CoreGraphics, no extra frameworks), then pack into the window's
