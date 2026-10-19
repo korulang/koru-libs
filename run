@@ -1,0 +1,11 @@
+#!/bin/sh
+# run <probe> [args...] — compile a tests/*.k probe and run it.
+#   ./run gallery_comp         scripted mode (deterministic, snaps+quits)
+#   ./run gallery_comp live    interactive (real mouse, Esc/close quits)
+# Probes are found under */tests/<name>.k — clay/, metal/, whatever's next.
+set -e
+cd "$(dirname "$0")"
+n="$1"; shift
+f=$(ls */tests/"$n".k 2>/dev/null | head -1)
+[ -n "$f" ] || { echo "run: no probe named '$n' under */tests/" >&2; exit 1; }
+koruc "$f" -o "/tmp/$n" && exec "/tmp/$n" "$@"
