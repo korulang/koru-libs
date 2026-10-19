@@ -18,7 +18,7 @@
 // at parent.d + 1 (text leaves don't push depth; close-to is a no-op for
 // them and they land under the innermost open element).
 //
-// ud namespace: 1..60 = list rows, 100 = button, 101 = toggle,
+// ud namespace: 500+i = list rows, 100 = button, 101 = toggle,
 // 102 = slider track, 200+i = tabs, 300 = the clicks label.
 //
 // Scripted twin: input.* drivers on fixed frames — grow the list by slider
@@ -164,7 +164,7 @@ libs/clay:init(width: 640, height: 480)
                             ! query { [row]it, [ordinal]io } when io >= world.want
                                 |> std/store:take(items[it])
                                     | item _ |> std/store:stored { world.icount: world.icount - 1 }
-                            |> std/store:stored { fworld.scroll: @min(fworld.scroll, @max(0.0, @as(f64, @floatFromInt(world.want)) * 36.0 + 10.0 - (fworld.ly1 - fworld.ly0))) }
+                            |> std/store:stored { fworld.scroll: @min(fworld.scroll, @max(0.0, @as(f64, @floatFromInt(world.icount + 1)) * 36.0 + 10.0 - (fworld.ly1 - fworld.ly0))) }
                     |> std/store:preorder(spec, order: "ord")
                         ! preorder s
                             |> if (s.kind == "panel")
@@ -182,12 +182,12 @@ libs/clay:init(width: 640, height: 480)
                                         | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.r0)) * 36.0 - 6.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
                                             | row _
                                     |> std/store:query(items)
-                                        ! query { [row]it, [ordinal]io } when @as(i64, @intCast(io)) - 1 >= world.r0 and @as(i64, @intCast(io)) - 1 <= world.r1
-                                            |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: 30.0, dir: 1, gap: 0, pad: 10, ax: 0, ay: 2, r: 46.0 + (if (@as(i64, @intCast(io)) - 1 == world.sel) @as(f64, 60.0) else if (@as(i64, @intCast(io)) == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), g: 48.0 + (if (@as(i64, @intCast(io)) - 1 == world.sel) @as(f64, 50.0) else if (@as(i64, @intCast(io)) == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), b: 60.0, a: 255.0, ox: 0.0, oy: 0.0, uid: @as(i64, @intCast(io)), tx: "", fs: 0.0 }
-                                                | row _ |> std/store:insert(view) { d: s.d + 2, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 200.0, g: 205.0, b: 220.0, a: 255.0, ox: 0.0, oy: 0.0, uid: @as(i64, @intCast(io)), tx: it.tx, fs: 13.0 }
+                                        ! query { [row]it, [ordinal]io } when @as(i64, @intCast(io)) >= world.r0 and @as(i64, @intCast(io)) <= world.r1
+                                            |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: 30.0, dir: 1, gap: 0, pad: 10, ax: 0, ay: 2, r: 46.0 + (if (@as(i64, @intCast(io)) == world.sel) @as(f64, 60.0) else if (@as(i64, @intCast(io)) + 500 == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), g: 48.0 + (if (@as(i64, @intCast(io)) == world.sel) @as(f64, 50.0) else if (@as(i64, @intCast(io)) + 500 == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), b: 60.0, a: 255.0, ox: 0.0, oy: 0.0, uid: @as(i64, @intCast(io)) + 500, tx: "", fs: 0.0 }
+                                                | row _ |> std/store:insert(view) { d: s.d + 2, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 200.0, g: 205.0, b: 220.0, a: 255.0, ox: 0.0, oy: 0.0, uid: @as(i64, @intCast(io)) + 500, tx: it.tx, fs: 13.0 }
                                                     | row _
-                                    |> if (world.r1 < world.icount - 1)
-                                        | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.icount - 1 - world.r1)) * 36.0 - 6.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
+                                    |> if (world.r1 < world.icount)
+                                        | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.icount - world.r1)) * 36.0 - 6.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
                                             | row _
                             |> if (s.kind == "tab")
                                 | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 90.0, hk: 3, h: 28.0, dir: 1, gap: 0, pad: 0, ax: 2, ay: 2, r: if (world.tab == s.n) 90.0 else if (world.hover == s.uid) 70.0 else 52.0, g: if (world.tab == s.n) 100.0 else if (world.hover == s.uid) 72.0 else 56.0, b: if (world.tab == s.n) 130.0 else if (world.hover == s.uid) 80.0 else 66.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.uid, tx: "", fs: 0.0 }
@@ -208,7 +208,7 @@ libs/clay:init(width: 640, height: 480)
                     // contract as the hand-rolled gallery.
                     |> std/store:stored {
                         world.r0: @max(0, @as(i64, @intFromFloat(@floor(fworld.scroll / 36.0)))),
-                        world.r1: @min(world.icount - 1, @as(i64, @intFromFloat(@floor((fworld.scroll + fworld.ly1 - fworld.ly0) / 36.0))))
+                        world.r1: @min(world.icount, @as(i64, @intFromFloat(@floor((fworld.scroll + fworld.ly1 - fworld.ly0) / 36.0))))
                     }
                     |> if (world.frame == 3 and world.live == 0)
                         | then |> libs/metal:input.scroll(x: 100.0, y: 200.0, dx: 0.0, dy: 0.0 - 200.0)
@@ -324,16 +324,16 @@ libs/clay:init(width: 640, height: 480)
                                 | then |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 3, uid: 203, tx: "delta", fs: 13.0 , ord: 550 }
                                     | row hd |> std/store:stored { spec[hd].parent: world.strip }
                                         |> std/store:stored { world.grafted: 1 }
-                            |> if (world.down >= 200)
+                            |> if (world.down >= 200 and world.down < 300)
                                 | then |> std/store:insert(cstate) { uid: 400, k: "tab", v: @as(f64, @floatFromInt(world.down - 200)) }
                                     | row _ |> std/store:stored { world.down: -2 }
-                            |> if (world.down >= 1 and world.down <= 60)
-                                | then |> std/store:insert(cstate) { uid: 50, k: "sel", v: @as(f64, @floatFromInt(world.down - 1)) }
+                            |> if (world.down >= 500 and world.down <= 699)
+                                | then |> std/store:insert(cstate) { uid: 50, k: "sel", v: @as(f64, @floatFromInt(world.down - 500)) }
                                     | row _ |> std/store:stored { world.down: -2 }
                     |> std/store:stored { world.down: -1 }
                 ! scroll e
                     |> if (e.x >= fworld.lx0 and e.x < fworld.lx1 and e.y >= fworld.ly0 and e.y < fworld.ly1)
-                        | then |> std/store:stored { fworld.scroll: if (fworld.scroll - e.dy < 0.0) 0.0 else if (fworld.scroll - e.dy > @as(f64, @floatFromInt(world.icount)) * 36.0 + 10.0 - (fworld.ly1 - fworld.ly0)) @as(f64, @floatFromInt(world.icount)) * 36.0 + 10.0 - (fworld.ly1 - fworld.ly0) else fworld.scroll - e.dy }
+                        | then |> std/store:stored { fworld.scroll: @min(@max(0.0, fworld.scroll - e.dy), @max(0.0, @as(f64, @floatFromInt(world.icount + 1)) * 36.0 + 10.0 - (fworld.ly1 - fworld.ly0))) }
                 ! close |> libs/metal:quit()
                 | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("clicks: {{ world.clicks:d }} tog: {{ world.tog:d }} tab: {{ world.tab:d }} sel: {{ world.sel:d }} scroll: {{ fworld.scroll:f }} slider: {{ fworld.slider:f }}") |> std/io:print.ln("gallery_comp: closed (snapped)")
     | err e |> std/io:print.ln("metal init failed: {{ e:s }}")
