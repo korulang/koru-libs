@@ -8,4 +8,4 @@ cd "$(dirname "$0")"
 n="$1"; shift
 f=$(ls */tests/"$n".k 2>/dev/null | head -1)
 [ -n "$f" ] || { echo "run: no probe named '$n' under */tests/" >&2; exit 1; }
-koruc "$f" -o "/tmp/$n" && exec "/tmp/$n" "$@"
+KORU_COMPILE_MEM_MB=6144 koruc "$f" -o "/tmp/$n" && exec "/tmp/$n" "$@"

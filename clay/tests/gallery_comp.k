@@ -63,7 +63,7 @@ std/store:new(cstate, capacity: 1024) { uid: i64, k: char[8], v: f64 }
     d: i64, kind: char[8], ws: char[8], w: f64, hs: char[8], h: f64,
     dir: char[8], gap: i64, pad: i64, ax: char[8], ay: char[8],
     r: f64, g: f64, b: f64, a: f64,
-    n: i64, uid: i64, tx: char[40], fs: f64,
+    n: i64, uid: i64, tx: char[40], fs: f64, ord: i64,
 }
 
 // The EXPANDED tree — rebuilt every frame by the pass below. Sizing/
@@ -81,19 +81,19 @@ std/store:new(view, capacity: 256) {
 libs/clay:init(width: 640, height: 480)
 | cl h |> libs/metal:window.open(width: 640, height: 480, title: "omni gallery — components")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
-            |> std/store:insert(spec) { d: 0, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ltr", gap: 20, pad: 20, ax: "start", ay: "start", r: 14.0, g: 15.0, b: 20.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }
-                | row h0 |> std/store:insert(spec) { d: 1, kind: "vlist", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 6, pad: 8, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 60, uid: 50, tx: "", fs: 0.0 }
-                    | row h1 |> std/store:insert(spec) { d: 1, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 14, pad: 12, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }
-                        | row h2 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 230.0, g: 234.0, b: 246.0, a: 255.0, n: 0, uid: 0, tx: "control gallery", fs: 15.0 }
-                            | row h3 |> std/store:insert(spec) { d: 2, kind: "panel", ws: "star", w: 0.0, hs: "fix", h: 34.0, dir: "ltr", gap: 4, pad: 0, ax: "start", ay: "center", r: 30.0, g: 32.0, b: 42.0, a: 255.0, n: 0, uid: 400, tx: "", fs: 0.0 }
-                                | row h4 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 200, tx: "alpha", fs: 13.0 }
-                                    | row h5 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 1, uid: 201, tx: "beta", fs: 13.0 }
-                                        | row h6 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 2, uid: 202, tx: "gamma", fs: 13.0 }
-                                            | row h7 |> std/store:insert(spec) { d: 2, kind: "button", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 100, tx: "click me", fs: 13.0 }
-                                                | row h8 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 170.0, g: 176.0, b: 196.0, a: 255.0, n: 0, uid: 300, tx: "clicks:", fs: 13.0 }
-                                                    | row h9 |> std/store:insert(spec) { d: 2, kind: "toggle", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 101, tx: "", fs: 13.0 }
-                                                        | row h10 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 160.0, g: 166.0, b: 186.0, a: 255.0, n: 0, uid: 0, tx: "slider", fs: 12.0 }
-                                                            | row h11 |> std/store:insert(spec) { d: 2, kind: "slider", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 102, tx: "", fs: 0.0 }
+            |> std/store:insert(spec) { d: 0, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ltr", gap: 20, pad: 20, ax: "start", ay: "start", r: 14.0, g: 15.0, b: 20.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 , ord: 0 }
+                | row h0 |> std/store:insert(spec) { d: 1, kind: "vlist", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 6, pad: 8, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 60, uid: 50, tx: "", fs: 0.0 , ord: 100 }
+                    | row h1 |> std/store:insert(spec) { d: 1, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 14, pad: 12, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 , ord: 200 }
+                        | row h2 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 230.0, g: 234.0, b: 246.0, a: 255.0, n: 0, uid: 0, tx: "control gallery", fs: 15.0 , ord: 300 }
+                            | row h3 |> std/store:insert(spec) { d: 2, kind: "panel", ws: "star", w: 0.0, hs: "fix", h: 34.0, dir: "ltr", gap: 4, pad: 0, ax: "start", ay: "center", r: 30.0, g: 32.0, b: 42.0, a: 255.0, n: 0, uid: 400, tx: "", fs: 0.0 , ord: 400 }
+                                | row h4 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 200, tx: "alpha", fs: 13.0 , ord: 500 }
+                                    | row h5 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 1, uid: 201, tx: "beta", fs: 13.0 , ord: 600 }
+                                        | row h6 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 2, uid: 202, tx: "gamma", fs: 13.0 , ord: 700 }
+                                            | row h7 |> std/store:insert(spec) { d: 2, kind: "button", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 100, tx: "click me", fs: 13.0 , ord: 800 }
+                                                | row h8 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 170.0, g: 176.0, b: 196.0, a: 255.0, n: 0, uid: 300, tx: "clicks:", fs: 13.0 , ord: 900 }
+                                                    | row h9 |> std/store:insert(spec) { d: 2, kind: "toggle", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 101, tx: "", fs: 13.0 , ord: 1000 }
+                                                        | row h10 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 160.0, g: 166.0, b: 186.0, a: 255.0, n: 0, uid: 0, tx: "slider", fs: 12.0 , ord: 1100 }
+                                                            | row h11 |> std/store:insert(spec) { d: 2, kind: "slider", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 102, tx: "", fs: 0.0 , ord: 1200 }
                                                                 | row h12 |> std/store:stored { spec[h1].parent: h0 }
                                                                     |> std/store:stored { spec[h2].parent: h0 }
                                                                     |> std/store:stored { spec[h3].parent: h2 }
@@ -146,7 +146,7 @@ libs/clay:init(width: 640, height: 480)
                                 | err ie |> std/io:print.ln(ie)
                     |> std/store:query(items)
                         ! query { [row]ic, [ordinal]io } |> std/store:stored { world.icount: io }
-                    |> std/store:preorder(spec)
+                    |> std/store:preorder(spec, order: "ord")
                         ! preorder s
                             |> if (s.kind == "panel")
                                 | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: if (s.ws == "star") 1 else if (s.ws == "fix") 3 else 0, w: s.w, hk: if (s.hs == "star") 1 else if (s.hs == "fix") 3 else 0, h: s.h, dir: if (s.dir == "ttb") 1 else 0, gap: s.gap, pad: s.pad, ax: if (s.ax == "end") 1 else if (s.ax == "center") 2 else 0, ay: if (s.ay == "end") 1 else if (s.ay == "center") 2 else 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0, uid: s.uid, tx: "", fs: 0.0 }
@@ -287,13 +287,13 @@ libs/clay:init(width: 640, height: 480)
                             |> if (world.down == 101)
                                 | then |> std/store:insert(cstate) { uid: 101, k: "tog", v: 1.0 - @as(f64, @floatFromInt(world.tog)) }
                                     | row _ |> std/store:stored { world.down: -2 }
-                            // Gamma grafts a tab next to itself — an agent
+                            // Gamma grafts a tab mid-strip — an agent
                             // splicing a child under an existing parent
-                            // mid-run. preorder emits it in tree position
-                            // (right after gamma) though it was inserted
-                            // last — the case 695_008's fix made usable.
+                            // mid-run. ord: 550 lands delta between
+                            // alpha(500) and beta(600): inserted last,
+                            // emitted second — the order: clause at work.
                             |> if (world.down == 202 and world.grafted == 0)
-                                | then |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 3, uid: 203, tx: "delta", fs: 13.0 }
+                                | then |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 3, uid: 203, tx: "delta", fs: 13.0 , ord: 550 }
                                     | row hd |> std/store:stored { spec[hd].parent: world.strip }
                                         |> std/store:stored { world.grafted: 1 }
                             |> if (world.down >= 200)
