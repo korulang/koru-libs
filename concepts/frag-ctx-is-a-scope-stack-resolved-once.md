@@ -1,13 +1,16 @@
 ---
 type: belief
 id: frag-ctx-is-a-scope-stack-resolved-once
-provenance: ui/index.kz ctx transform — probe_ctx.k / probe_ctx_fail.k (2026-10-19)
+provenance: ctx/index.kz default tor — probe_ctx.k / probe_ctx_fail.k (2026-10-19)
 ts: 2026-10-19
 ---
 
 # Context injection is a scope stack resolved in one depth-first pass
 
-`libs/ui:ctx(X)` is a compile-time scope: the transform walks the whole
+`libs/ctx(X)` is a compile-time scope — the module's `pub tor default`,
+so the call is a bare-name attach on the module, same convention as
+`std/store(game)` / `std/pump(main)`; promotion to `std/ctx(X)` changes
+no call site. The transform walks the whole
 program once, pushes X's scope while descending the ctx step's continuation
 subtree, and fills every unfilled call parameter by searching the stack
 innermost-out. Precedence is the one that fell out of shadowing — explicit

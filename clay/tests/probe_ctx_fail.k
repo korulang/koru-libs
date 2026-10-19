@@ -2,10 +2,10 @@
 // b and c stay unfilled → ordinary missing-param refusal.
 import std/store
 import std/io
-import libs/ui
+import libs/ctx
 
 std/store:new(inner) { a: i64 }
 
 std/io:print.ln("seed")
 |> std/store:stored { inner.a: 9 }
-|> libs/ui:ctx(inner) |> libs/ui:ctxprobe()
+|> libs/ctx(inner) |> libs/ctx:ctxprobe()
