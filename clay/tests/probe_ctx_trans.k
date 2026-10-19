@@ -1,6 +1,7 @@
-// probe_ctx_trans — the documented boundary: a call-site ctx scope does
-// NOT reach into the callee's own body. needs-scope's inner ctxprobe()
-// is lexically outside the ctx subtree, so a/b/c stay unfilled -> KORU080.
+// probe_ctx_trans — transitivity: a call-site ctx scope crosses the subflow
+// boundary via keyed clone specialization. needs-scope's body calls
+// ctxprobe() unfilled; called under ctx(inner) it is cloned to
+// needs-scope__ctx_inner whose body's call is injected from the scope.
 import std/store
 import std/io
 import std/ctx
@@ -8,7 +9,7 @@ import std/ctx
 std/store:new(inner) { a: i64, b: i64, c: i64 }
 
 pub tor ctxprobe { a: i64, b: i64, c: i64 }
-ctxprobe = std/io:print.ln("unreached")
+ctxprobe = std/io:print.ln("ctxprobe a={{ a:d }} b={{ b:d }} c={{ c:d }}")
 
 pub tor needs-scope { }
 needs-scope = ctxprobe()
