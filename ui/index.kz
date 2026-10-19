@@ -533,7 +533,12 @@ fn axis(a: []const u8) i64 {
             var inner = v;
             if (quoted and v.len >= 2) inner = v[1 .. v.len - 1];
             if (std.mem.eql(u8, ty, "f64") or std.mem.eql(u8, ty, "f32")) {
-                if (std.mem.indexOfScalar(u8, inner, '.') == null and std.mem.indexOfScalar(u8, inner, 'e') == null) {
+                // Numeric literals only — `15` → `15.0`. A prop ident
+                // (`fs={{ fs:f }}` emits bare `fs`) or any other expression
+                // passes through verbatim: normalizing a variable reference
+                // into `fs.0` emits a tuple access that does not exist.
+                const numeric = inner.len > 0 and (std.ascii.isDigit(inner[0]) or inner[0] == '-' or inner[0] == '+');
+                if (numeric and std.mem.indexOfScalar(u8, inner, '.') == null and std.mem.indexOfScalar(u8, inner, 'e') == null) {
                     return std.fmt.allocPrint(a, "{s}.0", .{inner}) catch unreachable;
                 }
             }
@@ -592,7 +597,11 @@ fn axis(a: []const u8) i64 {
                         var found = false;
                         for (nd.attrs) |at| {
                             if (std.mem.eql(u8, at.name, "ord")) {
-                                row.appendSlice(a, fmtVal(a, col.ty, at.value, at.quoted)) catch unreachable;
+                                if (!at.quoted and std.mem.eql(u8, at.value, col.name)) {
+                                    row.shrinkRetainingCapacity(row.items.len - 2);
+                                } else {
+                                    row.appendSlice(a, fmtVal(a, col.ty, at.value, at.quoted)) catch unreachable;
+                                }
                                 found = true;
                             }
                         }
@@ -602,7 +611,13 @@ fn axis(a: []const u8) i64 {
                     var found = false;
                     for (nd.attrs) |at| {
                         if (std.mem.eql(u8, at.name, col.name)) {
-                            row.appendSlice(a, fmtVal(a, col.ty, at.value, at.quoted)) catch unreachable;
+                            // A prop whose value IS the column name must pun
+                            // (`{ fs }`), never `{ fs: fs }` — KORU161.
+                            if (!at.quoted and std.mem.eql(u8, at.value, col.name)) {
+                                row.shrinkRetainingCapacity(row.items.len - 2);
+                            } else {
+                                row.appendSlice(a, fmtVal(a, col.ty, at.value, at.quoted)) catch unreachable;
+                            }
                             found = true;
                         }
                     }
