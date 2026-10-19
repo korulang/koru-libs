@@ -21,7 +21,8 @@
 // ud namespace: 1..60 = list rows, 100 = button, 101 = toggle,
 // 102 = slider track, 200+i = tabs, 300 = the clicks label.
 //
-// Scripted twin: input.* drivers on fixed frames, snapshot at 15, quit at 20.
+// Scripted twin: input.* drivers on fixed frames — grow the list by slider
+// (snap 16), shrink it back (snap 28), quit at 30.
 //
 import libs/metal
 import libs/clay
@@ -34,7 +35,7 @@ import std/string
 std/store:new(world) {
     frame: 0[i64],
     hover: -1[i64], down: -1[i64], tab: 0[i64], sel: -1[i64],
-    clicks: 0[i64], tog: 0[i64], ic: 0[i64], r0: 0[i64], r1: 59[i64], icount: 0[i64], strip: 0[i64], grafted: 0[i64], live: 0[i64],
+    clicks: 0[i64], tog: 0[i64], ic: 0[i64], r0: 0[i64], r1: 59[i64], icount: 0[i64], strip: 0[i64], grafted: 0[i64], live: 0[i64], want: 60[i64],
 }
 std/store:new(fworld) {
     scroll: 0.0[f64], slider: 0.3[f64],
@@ -47,7 +48,7 @@ std/store:new(hit, capacity: 96) { seq: i64, cl: i64, x: f64, y: f64, w: f64, h:
 // List CONTENT — the rows the vlist shows. Store memory is stable across
 // the drain, so tx feeds clay text directly (no drain-drawn labels).
 // insert(items) anywhere — next frame's expansion picks it up.
-std/store:new(items, capacity: 128) { tx: char[40] }
+std/store:new(items, capacity: 256) { tx: char[40] }
 
 // Per-instance component state — append-only journal, NOT a record per
 // component. Interactions insert {uid, k, v}; expansion folds latest-per-
@@ -146,6 +147,24 @@ libs/clay:init(width: 640, height: 480)
                                 | err ie |> std/io:print.ln(ie)
                     |> std/store:query(items)
                         ! query { [row]ic, [ordinal]io } |> std/store:stored { world.icount: io }
+                    // Slider → list length: want = slider * 200. [ordinal]
+                    // is the 0-based dense index, so icount is count-1.
+                    // Growing appends labeled rows; shrinking takes rows at
+                    // dense positions >= want — swap-remove hides stragglers
+                    // inside visited positions, converging over next frames.
+                    |> std/store:stored { world.want: @as(i64, @intFromFloat(@round(fworld.slider * 200.0))) }
+                    |> if (world.want > world.icount + 1)
+                        | then |> for(0..@as(usize, @intCast(world.want - world.icount - 1)))
+                            ! each ii |> std/string:from-int(n: world.icount + 1 + @as(i64, @intCast(ii)))
+                                | ok is |> std/store:insert(items) { tx: is.data }
+                                    |> std/string:free(s: is)
+                                | err ie |> std/io:print.ln(ie)
+                    |> if (world.want < world.icount + 1)
+                        | then |> std/store:query(items)
+                            ! query { [row]it, [ordinal]io } when io >= world.want
+                                |> std/store:take(items[it])
+                                    | item _ |> std/store:stored { world.icount: world.icount - 1 }
+                            |> std/store:stored { fworld.scroll: @min(fworld.scroll, @max(0.0, @as(f64, @floatFromInt(world.want)) * 36.0 + 10.0 - (fworld.ly1 - fworld.ly0))) }
                     |> std/store:preorder(spec, order: "ord")
                         ! preorder s
                             |> if (s.kind == "panel")
@@ -215,8 +234,17 @@ libs/clay:init(width: 640, height: 480)
                         | then |> libs/metal:input.mouse(x: 150.0, y: 48.0)
                     |> if (world.frame == 14 and world.live == 0)
                         | then |> libs/metal:input.up(x: 150.0, y: 48.0)
-                    |> if (world.frame == 15 and world.live == 0)
+                            |> libs/metal:input.scroll(x: 100.0, y: 200.0, dx: 0.0, dy: 0.0 - 2000.0)
+                    |> if (world.frame == 16 and world.live == 0)
                         | then |> libs/metal:window.snap(path: "/tmp/gallery_comp_snap.bmp")
+                    |> if (world.frame == 17 and world.live == 0)
+                        | then |> libs/metal:input.mouse(x: 400.0, y: 272.0)
+                    |> if (world.frame == 18 and world.live == 0)
+                        | then |> libs/metal:input.drag(x: 256.0, y: 272.0)
+                    |> if (world.frame == 19 and world.live == 0)
+                        | then |> libs/metal:input.up(x: 256.0, y: 272.0)
+                    |> if (world.frame == 28 and world.live == 0)
+                        | then |> libs/metal:window.snap(path: "/tmp/gallery_comp_snap2.bmp")
                     // EMIT — blind over view: close-to the row's depth,
                     // dispatch on the primitive kind. No state reads;
                     // expansion already baked them.
@@ -258,7 +286,7 @@ libs/clay:init(width: 640, height: 480)
                                 | then |> libs/metal:draw.clip.pop(f)
                                     |> std/store:stored { world.ic: 0 }
                             | drained |> std/store:stored { world.frame: world.frame }
-                    |> if (world.frame == 20 and world.live == 0)
+                    |> if (world.frame == 30 and world.live == 0)
                         | then |> libs/metal:quit()
                 ! key-down k when k.code == 53 |> libs/metal:quit()
                 ! mouse-move e
