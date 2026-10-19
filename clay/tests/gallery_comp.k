@@ -88,50 +88,33 @@ std/store:new(view, capacity: 256) {
     uid: i64, tx: char[40], fs: f64,
 }
 
+// The static tree, authored as markup. `component` synthesizes `seed` — a
+// tor whose impl emits the insert/|row|/stored chain the old seed wrote by
+// hand (every column filled from the schema, d/ord from the markup shape,
+// parent edges from nesting, hid self-handles per row).
+libs/ui:component(seed, spec) {
+    <panel ws="star" hs="star" dir="ltr" gap="20" pad="20" ax="start" ay="start" r="14" g="15" b="20" a="255" ord="0">
+        <vlist ws="star" hs="star" dir="ttb" gap="6" pad="8" ax="start" ay="start" r="22" g="24" b="32" a="255" n="60" uid="50" ord="100"/>
+        <panel ws="star" hs="star" dir="ttb" gap="14" pad="12" ax="start" ay="start" r="22" g="24" b="32" a="255" ord="200">
+            <text tx="control gallery" fs="15" r="230" g="234" b="246" a="255" ord="300"/>
+            <panel ws="star" hs="fix" h="34" dir="ltr" gap="4" ax="start" ay="center" r="30" g="32" b="42" a="255" uid="400" ord="400" bind="world.strip">
+                <tab tx="alpha" uid="200" fs="13" ord="500" bind="world.alphah"/>
+                <tab tx="beta" uid="201" n="1" fs="13" ord="600" bind="world.betah"/>
+                <tab tx="gamma" uid="202" n="2" fs="13" ord="700" bind="world.gammah"/>
+            </panel>
+            <button tx="click me" uid="100" fs="13" ord="800" bind="world.buth"/>
+            <text tx="clicks:" uid="300" fs="13" r="170" g="176" b="196" a="255" ord="900" bind="world.labelh"/>
+            <toggle uid="101" fs="13" ord="1000" bind="world.togh"/>
+            <text tx="slider" fs="12" r="160" g="166" b="186" a="255" ord="1100"/>
+            <slider uid="102" ord="1200" bind="world.sliderh"/>
+        </panel>
+    </panel>
+}
+
 libs/clay:init(width: 640, height: 480)
 | cl h |> libs/metal:window.open(width: 640, height: 480, title: "omni gallery — components")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
-            |> std/store:insert(spec) { d: 0, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ltr", gap: 20, pad: 20, ax: "start", ay: "start", r: 14.0, g: 15.0, b: 20.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 , ord: 0, hid: 0 }
-                | row h0 |> std/store:insert(spec) { d: 1, kind: "vlist", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 6, pad: 8, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 60, uid: 50, tx: "", fs: 0.0 , ord: 100, hid: 0 }
-                    | row h1 |> std/store:insert(spec) { d: 1, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 14, pad: 12, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 , ord: 200, hid: 0 }
-                        | row h2 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 230.0, g: 234.0, b: 246.0, a: 255.0, n: 0, uid: 0, tx: "control gallery", fs: 15.0 , ord: 300, hid: 0 }
-                            | row h3 |> std/store:insert(spec) { d: 2, kind: "panel", ws: "star", w: 0.0, hs: "fix", h: 34.0, dir: "ltr", gap: 4, pad: 0, ax: "start", ay: "center", r: 30.0, g: 32.0, b: 42.0, a: 255.0, n: 0, uid: 400, tx: "", fs: 0.0 , ord: 400, hid: 0 }
-                                | row h4 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 200, tx: "alpha", fs: 13.0 , ord: 500, hid: 0 }
-                                    | row h5 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 1, uid: 201, tx: "beta", fs: 13.0 , ord: 600, hid: 0 }
-                                        | row h6 |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 2, uid: 202, tx: "gamma", fs: 13.0 , ord: 700, hid: 0 }
-                                            | row h7 |> std/store:insert(spec) { d: 2, kind: "button", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 100, tx: "click me", fs: 13.0 , ord: 800, hid: 0 }
-                                                | row h8 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 170.0, g: 176.0, b: 196.0, a: 255.0, n: 0, uid: 300, tx: "clicks:", fs: 13.0 , ord: 900, hid: 0 }
-                                                    | row h9 |> std/store:insert(spec) { d: 2, kind: "toggle", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 101, tx: "", fs: 13.0 , ord: 1000, hid: 0 }
-                                                        | row h10 |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 160.0, g: 166.0, b: 186.0, a: 255.0, n: 0, uid: 0, tx: "slider", fs: 12.0 , ord: 1100, hid: 0 }
-                                                            | row h11 |> std/store:insert(spec) { d: 2, kind: "slider", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 102, tx: "", fs: 0.0 , ord: 1200, hid: 0 }
-                                                                | row h12 |> std/store:stored { spec[h0].hid: h0 }
-                                                                    |> std/store:stored { spec[h1].hid: h1 }
-                                                                    |> std/store:stored { spec[h2].hid: h2 }
-                                                                    |> std/store:stored { spec[h3].hid: h3 }
-                                                                    |> std/store:stored { spec[h4].hid: h4 }
-                                                                    |> std/store:stored { spec[h5].hid: h5 }
-                                                                    |> std/store:stored { spec[h6].hid: h6 }
-                                                                    |> std/store:stored { spec[h7].hid: h7 }
-                                                                    |> std/store:stored { spec[h8].hid: h8 }
-                                                                    |> std/store:stored { spec[h9].hid: h9 }
-                                                                    |> std/store:stored { spec[h10].hid: h10 }
-                                                                    |> std/store:stored { spec[h11].hid: h11 }
-                                                                    |> std/store:stored { spec[h12].hid: h12 }
-                                                                    |> std/store:stored { spec[h1].parent: h0 }
-                                                                    |> std/store:stored { spec[h2].parent: h0 }
-                                                                    |> std/store:stored { spec[h3].parent: h2 }
-                                                                    |> std/store:stored { spec[h4].parent: h2 }
-                                                                    |> std/store:stored { spec[h5].parent: h4 }
-                                                                    |> std/store:stored { spec[h6].parent: h4 }
-                                                                    |> std/store:stored { spec[h7].parent: h4 }
-                                                                    |> std/store:stored { spec[h8].parent: h2 }
-                                                                    |> std/store:stored { spec[h9].parent: h2 }
-                                                                    |> std/store:stored { spec[h10].parent: h2 }
-                                                                    |> std/store:stored { spec[h11].parent: h2 }
-                                                                    |> std/store:stored { spec[h12].parent: h2 }
-                                                                    |> std/store:stored { world.strip: h4 }
-                                                                    |> std/store:stored { world.alphah: h5, world.betah: h6, world.gammah: h7 }
-                                                                    |> std/store:stored { world.buth: h8, world.labelh: h9, world.togh: h10, world.sliderh: h12 }
+            |> seed()
             // --live skips the scripted drivers; anything else is the
             // deterministic twin (drivers inject at fixed frames).
             |> std/args:get(index: 1)
