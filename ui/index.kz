@@ -24,6 +24,19 @@
     exe.addIncludePath(.{ .cwd_relative = "/Users/larsde/src/koru-libs/clay" });
 }
 
+// Backend compilation requirements: ui's transforms (component, ctx) embed
+// this module's code — including @cImport — into the emitted backend, so the
+// backend build needs clay headers just like the output binary. The @cImport
+// sits in the backend_output MODULE — a dep of the backend root — so the
+// include path must land on that module, not just exe (-I reaches root only).
+~std/compiler:requires {
+    exe.linkLibC();
+    exe.addIncludePath(.{ .cwd_relative = "/Users/larsde/src/koru-libs/clay" });
+    if (exe.root_module.import_table.get("backend_output")) |mod| {
+        mod.addIncludePath(.{ .cwd_relative = "/Users/larsde/src/koru-libs/clay" });
+    }
+}
+
 const std = @import("std");
 const c = @cImport({
     @cInclude("clay.h");
@@ -285,7 +298,6 @@ fn axis(a: []const u8) i64 {
 ~proc component|zig {
     const ast = @import("ast");
     _ = expr;
-    _ = source;
     _ = invocation;
     _ = item;
 
@@ -768,4 +780,273 @@ fn axis(a: []const u8) i64 {
         .type_registry = program.type_registry,
     };
     return .{ .whole_program = new_prog };
+}
+
+// ============================================================================
+// ctx — lexical scope injection, resolved depth-first (innermost shadows).
+//
+//   |> libs/ui:ctx(outer) |> libs/ui:ctxprobe()
+//   |> libs/ui:ctx(inner) |> libs/ui:ctxprobe()
+//
+// A `ctx(X)` step is a compile-time scope: the transform walks its
+// continuation subtree and, for every invocation, fills params the call
+// left unfilled from the nearest enclosing scope providing a field of the
+// same name — the author spelling `call()` while the emitted call reads
+// `call(a: inner.a, b: outer.b)`. Scope = downstream continuation subtree,
+// so a linear `ctx(A) |> ctx(B) |> call()` chain shadows A with B for the
+// call; arms, conditionals, and nested chains all inherit. The ctx step
+// itself is spliced out — zero runtime cost: injection is argument-filling
+// at compile time, nothing resolves at run.
+//
+//   precedence: explicit arg > innermost ctx > outward ctx > declared
+//   default > ordinary missing-param refusal (automatic — nothing new)
+//
+// The scope value is a source expression — `world`, `themes[h]`, `cfg`.
+// Which fields a scope provides is read off the schema of the store it
+// names (the `std/store:new` seed block); a scope that names no store
+// provides nothing. Calls whose decl has no input shape in this program
+// pass through untouched. Context reaches call sites only — inside a
+// callee's own impl the scope does not follow (the keyed-subflow case —
+// a specialization, not inlining — is the open design question).
+// ============================================================================
+
+~[keyword|comptime|transform|pre]pub tor ctx {
+    expr: Expression,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~proc ctx|zig {
+    const ast = @import("ast");
+    _ = expr;
+    _ = invocation;
+    _ = item;
+
+    // The store a scope value names — `world` → "world", `themes[h]` →
+    // "themes". Everything else (a record binding, a path) is out of scope
+    // for this rung and provides no fields.
+    const scopeStore = struct {
+        fn call(v: []const u8) []const u8 {
+            var end: usize = 0;
+            while (end < v.len) : (end += 1) {
+                const ch = v[end];
+                if (ch == '[' or ch == '.' or ch == ' ' or ch == '\t' or ch == '(') break;
+            }
+            return v[0..end];
+        }
+    }.call;
+
+    // Column names of a store — the injectable surface of a scope that
+    // names it. Same `std/store:new` seed-block read as component's.
+    const scopeFields = struct {
+        fn call(a: std.mem.Allocator, prog: *const ast.Program, store: []const u8) []const []const u8 {
+            for (prog.items) |*pi| {
+                if (pi.* != .flow) continue;
+                const inv = pi.flow.inv();
+                if (inv.path.segments.len != 1 or !std.mem.eql(u8, inv.path.segments[0], "new")) continue;
+                const mq = inv.path.module_qualifier orelse continue;
+                if (!std.mem.eql(u8, mq, "std.store")) continue;
+                var named = false;
+                var seed: ?[]const u8 = null;
+                for (inv.args) |arg| {
+                    if (std.mem.eql(u8, arg.name, "expr")) {
+                        var v = arg.value;
+                        if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') v = v[1 .. v.len - 1];
+                        named = std.mem.eql(u8, v, store);
+                    } else if (std.mem.eql(u8, arg.name, "source")) {
+                        seed = if (arg.source_value) |sv| sv.text else arg.value;
+                    }
+                }
+                if (!named or seed == null) continue;
+                var cols = std.ArrayList([]const u8).initCapacity(a, 8) catch unreachable;
+                var tok = std.mem.tokenizeAny(u8, seed.?, ",\n\r\t");
+                while (tok.next()) |raw| {
+                    const f = std.mem.trim(u8, raw, " \t");
+                    if (f.len == 0) continue;
+                    const cp = std.mem.indexOfScalar(u8, f, ':') orelse continue;
+                    const nm = std.mem.trim(u8, f[0..cp], " \t");
+                    if (nm.len > 0) cols.append(a, a.dupe(u8, nm) catch unreachable) catch unreachable;
+                }
+                return cols.toOwnedSlice(a) catch unreachable;
+            }
+            return &[_][]const u8{};
+        }
+    }.call;
+
+    // Input fields of the invoked tor — read off its decl in the program.
+    const shapeOf = struct {
+        fn call(prog: *const ast.Program, inv: *const ast.Invocation) []const ast.Field {
+            const segs = inv.path.segments;
+            if (segs.len == 0) return &[_]ast.Field{};
+            const want = segs[segs.len - 1];
+            var stack = std.ArrayList(ast.Item).initCapacity(std.heap.page_allocator, 64) catch unreachable;
+            defer stack.deinit(std.heap.page_allocator);
+            for (prog.items) |pi| stack.append(std.heap.page_allocator, pi) catch unreachable;
+            while (stack.items.len > 0) {
+                const pi = stack.pop().?;
+                if (pi == .module_decl) {
+                    for (pi.module_decl.items) |mi| stack.append(std.heap.page_allocator, mi) catch unreachable;
+                    continue;
+                }
+                if (pi != .event_decl) continue;
+                const ds = pi.event_decl.path.segments;
+                if (ds.len == 0 or !std.mem.eql(u8, ds[ds.len - 1], want)) continue;
+                if (inv.path.module_qualifier) |mq| {
+                    const dq = pi.event_decl.path.module_qualifier orelse continue;
+                    if (!std.mem.eql(u8, mq, dq)) continue;
+                }
+                return pi.event_decl.input.fields;
+            }
+            return &[_]ast.Field{};
+        }
+    }.call;
+
+    // Inject `scope.field` args for every declared field the call left
+    // unfilled, innermost scope first (stack top wins — that is shadowing).
+    const inject = struct {
+        fn call(a: std.mem.Allocator, prog: *const ast.Program, inv: ast.Invocation, stack: []const []const u8) ast.Invocation {
+            if (stack.len == 0) return inv;
+            const fields = shapeOf(prog, &inv);
+            if (fields.len == 0) return inv;
+            var adds = std.ArrayList(ast.Arg).initCapacity(a, 2) catch unreachable;
+            for (fields) |f| {
+                var have = false;
+                for (inv.args) |arg| {
+                    if (std.mem.eql(u8, arg.name, f.name)) have = true;
+                }
+                if (have) continue;
+                var found = false;
+                var si = stack.len;
+                while (si > 0 and !found) {
+                    si -= 1;
+                    const cols = scopeFields(a, prog, scopeStore(stack[si]));
+                    for (cols) |cn| {
+                        if (std.mem.eql(u8, cn, f.name)) {
+                            adds.append(a, .{
+                                .name = a.dupe(u8, f.name) catch unreachable,
+                                .value = std.fmt.allocPrint(a, "{s}.{s}", .{ stack[si], f.name }) catch unreachable,
+                                .had_explicit_label = true,
+                            }) catch unreachable;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (adds.items.len == 0) return inv;
+            var ninv = inv;
+            const nargs = a.alloc(ast.Arg, inv.args.len + adds.items.len) catch unreachable;
+            for (inv.args, 0..) |arg, i| nargs[i] = arg;
+            for (adds.items, 0..) |add, i| nargs[inv.args.len + i] = add;
+            ninv.args = nargs;
+            return ninv;
+        }
+    }.call;
+
+    const isCtxCont = struct {
+        fn call(ct: *const ast.Continuation) bool {
+            if (ct.node == null or ct.node.? != .invocation) return false;
+            const segs = ct.node.?.invocation.path.segments;
+            return segs.len > 0 and std.mem.eql(u8, segs[segs.len - 1], "ctx");
+        }
+    }.call;
+
+    const scopeOf = struct {
+        fn call(a: std.mem.Allocator, ct: *const ast.Continuation) []const u8 {
+            for (ct.node.?.invocation.args) |arg| {
+                if (!std.mem.eql(u8, arg.name, "source")) {
+                    var v = arg.value;
+                    if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') v = v[1 .. v.len - 1];
+                    return a.dupe(u8, v) catch unreachable;
+                }
+            }
+            return "";
+        }
+    }.call;
+
+    // Recursive worker: rewrite a continuation list under `stack`. ctx
+    // continuations push their scope and SPLICE OUT (their children take
+    // their slot); every other invocation gets inject() and recursed.
+    const RW = struct {
+        a: std.mem.Allocator,
+        prog: *const ast.Program,
+        changed: *bool,
+    };
+    const rewriteConts = struct {
+        fn call(rw: *const RW, conts: []const ast.Continuation, stack: []const []const u8) []const ast.Continuation {
+            var out = std.ArrayList(ast.Continuation).initCapacity(rw.a, conts.len) catch unreachable;
+            for (conts) |*ct| {
+                if (isCtxCont(ct)) {
+                    var nstack = rw.a.alloc([]const u8, stack.len + 1) catch unreachable;
+                    for (stack, 0..) |s, i| nstack[i] = s;
+                    nstack[stack.len] = scopeOf(rw.a, ct);
+                    out.appendSlice(rw.a, call(rw, ct.continuations, nstack)) catch unreachable;
+                    rw.changed.* = true;
+                    continue;
+                }
+                var nc = ct.*;
+                if (ct.node != null and ct.node.? == .invocation) {
+                    nc.node = .{ .invocation = inject(rw.a, rw.prog, ct.node.?.invocation, stack) };
+                }
+                nc.continuations = call(rw, ct.continuations, stack);
+                out.append(rw.a, nc) catch unreachable;
+            }
+            return out.toOwnedSlice(rw.a) catch unreachable;
+        }
+    }.call;
+
+    // WHOLE-PROGRAM WALK: every flow body gets one depth-first pass. A ctx
+    // step at the flow HEAD promotes its first continuation to the body.
+    var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len + 4) catch unreachable;
+    var changed = false;
+    const rw = RW{ .a = allocator, .prog = program, .changed = &changed };
+
+    for (program.items) |pi| {
+        if (pi != .flow) {
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+        // The siteView flow — the runner wraps a nested site as a synthetic
+        // top-level flow so `item.flow.body` reads the site's own subtree.
+        // It is a VIEW, not a real item: drop it or it leaks into the program
+        // (a phantom second emission of the site's descendants).
+        if (pi.flow.site_of != null) continue;
+        var nf = pi.flow;
+        var body = nf.body;
+        if (isCtxCont(&body)) {
+            const kids = rewriteConts(&rw, body.continuations, &[_][]const u8{scopeOf(allocator, &body)});
+            if (kids.len > 0) {
+                nf.body = kids[0];
+            } else {
+                nf.body.continuations = &[_]ast.Continuation{};
+            }
+            changed = true;
+        } else {
+            nf.body.continuations = rewriteConts(&rw, body.continuations, &[_][]const u8{});
+        }
+        new_items.append(allocator, ast.Item{ .flow = nf }) catch unreachable;
+    }
+
+    if (!changed) return .{};
+    const new_prog = allocator.create(ast.Program) catch unreachable;
+    new_prog.* = .{
+        .items = new_items.toOwnedSlice(allocator) catch unreachable,
+        .module_annotations = program.module_annotations,
+        .main_module_name = program.main_module_name,
+        .allocator = program.allocator,
+        .type_registry = program.type_registry,
+    };
+    return .{ .whole_program = new_prog };
+}
+
+// ctxprobe — a probe tor for the ctx transform's verification: prints the
+// params it received, injected or explicit.
+~pub tor ctxprobe {
+    a: i64, b: i64, c: i64,
+}
+
+~proc ctxprobe|zig {
+    std.debug.print("ctxprobe a={d} b={d} c={d}\n", .{ a, b, c });
 }
