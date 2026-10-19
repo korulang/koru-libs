@@ -35,7 +35,7 @@ import std/string
 std/store:new(world) {
     frame: 0[i64],
     hover: -1[i64], down: -1[i64], tab: 0[i64], sel: -1[i64],
-    clicks: 0[i64], tog: 0[i64], ic: 0[i64], r0: 0[i64], r1: 59[i64], icount: 0[i64], strip: 0[i64], grafted: 0[i64], live: 0[i64], want: 60[i64], downsk: -1[i64],
+    clicks: 0[i64], tog: 0[i64], ic: 0[i64], r0: 0[i64], r1: 59[i64], icount: 0[i64], strip: 0[i64], grafted: 0[i64], live: 0[i64], demo: 0[i64], want: 60[i64], downsk: -1[i64],
     alphah: -1[i64], betah: -1[i64], gammah: -1[i64], deltah: -1[i64],
     buth: -1[i64], togh: -1[i64], sliderh: -1[i64], labelh: -1[i64],
 }
@@ -137,6 +137,11 @@ libs/clay:init(width: 640, height: 480)
             |> std/args:get(index: 1)
                 | arg a |> std/store:stored { world.live: if (a == "live") 1 else 0 }
                 | out-of-bounds |> std/store:stored { world.live: 0 }
+            // live <preset> — play the scripted drivers through a named
+            // checkpoint, then hand control over in that exact state.
+            |> std/args:get(index: 2)
+                | arg b |> std/store:stored { world.demo: if (b == "graft") 9 else if (b == "grown") 15 else if (b == "shrunk") 19 else if (b == "full") 28 else 0 }
+                | out-of-bounds |> std/store:stored { world.demo: 0 }
             |> libs/metal:frames(win: w, count: if (world.live == 1) 999999 else 9999)
                 ! frame f
                     |> std/store:stored { world.frame: world.frame + 1 }
@@ -238,41 +243,45 @@ libs/clay:init(width: 640, height: 480)
                         world.r0: @max(0, @as(i64, @intFromFloat(@floor(fworld.scroll / 36.0)))),
                         world.r1: @min(world.icount, @as(i64, @intFromFloat(@floor((fworld.scroll + fworld.ly1 - fworld.ly0) / 36.0))))
                     }
-                    |> if (world.frame == 3 and world.live == 0)
+                    |> if (world.frame == 3 and (world.live == 0 or 3 <= world.demo))
                         | then |> libs/metal:input.scroll(x: 100.0, y: 200.0, dx: 0.0, dy: 0.0 - 200.0)
-                    |> if (world.frame == 4 and world.live == 0)
+                    |> if (world.frame == 4 and (world.live == 0 or 4 <= world.demo))
                         | then |> libs/metal:input.mouse(x: 410.0, y: 128.0)
-                    |> if (world.frame == 5 and world.live == 0)
+                    |> if (world.frame == 5 and (world.live == 0 or 5 <= world.demo))
                         | then |> libs/metal:input.up(x: 410.0, y: 128.0)
-                    |> if (world.frame == 6 and world.live == 0)
+                    |> if (world.frame == 6 and (world.live == 0 or 6 <= world.demo))
                         | then |> libs/metal:input.mouse(x: 400.0, y: 208.0)
-                    |> if (world.frame == 7 and world.live == 0)
+                    |> if (world.frame == 7 and (world.live == 0 or 7 <= world.demo))
                         | then |> libs/metal:input.up(x: 400.0, y: 208.0)
-                    |> if (world.frame == 8 and world.live == 0)
+                    |> if (world.frame == 8 and (world.live == 0 or 8 <= world.demo))
                         | then |> libs/metal:input.mouse(x: 560.0, y: 80.0)
-                    |> if (world.frame == 9 and world.live == 0)
+                    |> if (world.frame == 9 and (world.live == 0 or 9 <= world.demo))
                         | then |> libs/metal:input.up(x: 560.0, y: 80.0)
-                    |> if (world.frame == 10 and world.live == 0)
+                    |> if (world.frame == 10 and (world.live == 0 or 10 <= world.demo))
                         | then |> libs/metal:input.mouse(x: 400.0, y: 272.0)
-                    |> if (world.frame == 11 and world.live == 0)
+                    |> if (world.frame == 11 and (world.live == 0 or 11 <= world.demo))
                         | then |> libs/metal:input.drag(x: 300.0, y: 272.0)
-                    |> if (world.frame == 12 and world.live == 0)
+                    |> if (world.frame == 12 and (world.live == 0 or 12 <= world.demo))
                         | then |> libs/metal:input.up(x: 300.0, y: 272.0)
-                    |> if (world.frame == 13 and world.live == 0)
+                    |> if (world.frame == 13 and (world.live == 0 or 13 <= world.demo))
                         | then |> libs/metal:input.mouse(x: 150.0, y: 48.0)
-                    |> if (world.frame == 14 and world.live == 0)
+                    |> if (world.frame == 14 and (world.live == 0 or 14 <= world.demo))
                         | then |> libs/metal:input.up(x: 150.0, y: 48.0)
                             |> libs/metal:input.scroll(x: 100.0, y: 200.0, dx: 0.0, dy: 0.0 - 2000.0)
-                    |> if (world.frame == 16 and world.live == 0)
+                    |> if (world.frame == 16 and (world.live == 0 or 16 <= world.demo))
                         | then |> libs/metal:window.snap(path: "/tmp/gallery_comp_snap.bmp")
-                    |> if (world.frame == 17 and world.live == 0)
+                    |> if (world.frame == 17 and (world.live == 0 or 17 <= world.demo))
                         | then |> libs/metal:input.mouse(x: 400.0, y: 272.0)
-                    |> if (world.frame == 18 and world.live == 0)
+                    |> if (world.frame == 18 and (world.live == 0 or 18 <= world.demo))
                         | then |> libs/metal:input.drag(x: 256.0, y: 272.0)
-                    |> if (world.frame == 19 and world.live == 0)
+                    |> if (world.frame == 19 and (world.live == 0 or 19 <= world.demo))
                         | then |> libs/metal:input.up(x: 256.0, y: 272.0)
-                    |> if (world.frame == 28 and world.live == 0)
+                    |> if (world.frame == 28 and (world.live == 0 or 28 <= world.demo))
                         | then |> libs/metal:window.snap(path: "/tmp/gallery_comp_snap2.bmp")
+                    // A named preset documents itself: two frames after the
+                    // replay cutoff the layout has settled — write the snap.
+                    |> if (world.demo > 0 and world.frame == world.demo + 2)
+                        | then |> libs/metal:window.snap(path: "/tmp/gallery_comp_preset.bmp")
                     // EMIT — blind over view: close-to the row's depth,
                     // dispatch on the primitive kind. No state reads;
                     // expansion already baked them.
@@ -314,7 +323,7 @@ libs/clay:init(width: 640, height: 480)
                                 | then |> libs/metal:draw.clip.pop(f)
                                     |> std/store:stored { world.ic: 0 }
                             | drained |> std/store:stored { world.frame: world.frame }
-                    |> if (world.frame == 30 and world.live == 0)
+                    |> if (world.frame == 30 and (world.live == 0 or 30 <= world.demo))
                         | then |> libs/metal:quit()
                 ! key-down k when k.code == 53 |> libs/metal:quit()
                 ! mouse-move e
