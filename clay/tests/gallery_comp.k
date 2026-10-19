@@ -146,8 +146,8 @@ libs/clay:init(width: 640, height: 480)
                                 | err ie |> std/io:print.ln(ie)
                     |> std/store:query(items)
                         ! query { [row]ic, [ordinal]io } |> std/store:stored { world.icount: io }
-                    |> std/store:query(spec)
-                        ! query s
+                    |> std/store:preorder(spec)
+                        ! preorder s
                             |> if (s.kind == "panel")
                                 | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: if (s.ws == "star") 1 else if (s.ws == "fix") 3 else 0, w: s.w, hk: if (s.hs == "star") 1 else if (s.hs == "fix") 3 else 0, h: s.h, dir: if (s.dir == "ttb") 1 else 0, gap: s.gap, pad: s.pad, ax: if (s.ax == "end") 1 else if (s.ax == "center") 2 else 0, ay: if (s.ay == "end") 1 else if (s.ay == "center") 2 else 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0, uid: s.uid, tx: "", fs: 0.0 }
                                     | row _
@@ -206,15 +206,15 @@ libs/clay:init(width: 640, height: 480)
                     |> if (world.frame == 9 and world.live == 0)
                         | then |> libs/metal:input.up(x: 560.0, y: 80.0)
                     |> if (world.frame == 10 and world.live == 0)
-                        | then |> libs/metal:input.mouse(x: 340.0, y: 272.0)
+                        | then |> libs/metal:input.mouse(x: 400.0, y: 272.0)
                     |> if (world.frame == 11 and world.live == 0)
-                        | then |> libs/metal:input.drag(x: 270.0, y: 272.0)
+                        | then |> libs/metal:input.drag(x: 300.0, y: 272.0)
                     |> if (world.frame == 12 and world.live == 0)
-                        | then |> libs/metal:input.up(x: 270.0, y: 272.0)
+                        | then |> libs/metal:input.up(x: 300.0, y: 272.0)
                     |> if (world.frame == 13 and world.live == 0)
-                        | then |> libs/metal:input.mouse(x: 80.0, y: 48.0)
+                        | then |> libs/metal:input.mouse(x: 150.0, y: 48.0)
                     |> if (world.frame == 14 and world.live == 0)
-                        | then |> libs/metal:input.up(x: 80.0, y: 48.0)
+                        | then |> libs/metal:input.up(x: 150.0, y: 48.0)
                     |> if (world.frame == 15 and world.live == 0)
                         | then |> libs/metal:window.snap(path: "/tmp/gallery_comp_snap.bmp")
                     // EMIT — blind over view: close-to the row's depth,
@@ -287,15 +287,14 @@ libs/clay:init(width: 640, height: 480)
                             |> if (world.down == 101)
                                 | then |> std/store:insert(cstate) { uid: 101, k: "tog", v: 1.0 - @as(f64, @floatFromInt(world.tog)) }
                                     | row _ |> std/store:stored { world.down: -2 }
-                            // Gamma grafts a new root subtree — an agent
-                            // inserting a component row mid-frame. Appended
-                            // roots land correctly under insertion-order
-                            // traversal; a mid-tree graft (a child spliced
-                            // under an existing parent) needs preorder —
-                            // 695_008 is the pinned gap, not routed around.
+                            // Gamma grafts a tab next to itself — an agent
+                            // splicing a child under an existing parent
+                            // mid-run. preorder emits it in tree position
+                            // (right after gamma) though it was inserted
+                            // last — the case 695_008's fix made usable.
                             |> if (world.down == 202 and world.grafted == 0)
-                                | then |> std/store:insert(spec) { d: 1, kind: "button", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 600, tx: "grafted", fs: 13.0 }
-                                    | row hd |> std/store:stored { spec[hd].parent: -1 }
+                                | then |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 3, uid: 203, tx: "delta", fs: 13.0 }
+                                    | row hd |> std/store:stored { spec[hd].parent: world.strip }
                                         |> std/store:stored { world.grafted: 1 }
                             |> if (world.down >= 200)
                                 | then |> std/store:insert(cstate) { uid: 400, k: "tab", v: @as(f64, @floatFromInt(world.down - 200)) }
