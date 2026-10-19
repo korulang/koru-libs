@@ -48,6 +48,13 @@ std/store:new(hit, capacity: 96) { seq: i64, cl: i64, x: f64, y: f64, w: f64, h:
 // insert(items) anywhere — next frame's expansion picks it up.
 std/store:new(items, capacity: 128) { tx: char[40] }
 
+// Per-instance component state — append-only journal, NOT a record per
+// component. Interactions insert {uid, k, v}; expansion folds latest-per-
+// key back into the world scalars, so everything downstream is unchanged.
+// (std/store has no row-field write: `stored` is cell-only, `take` removes.
+// Journal+fold is the honest shape until a real update verb exists.)
+std/store:new(cstate, capacity: 1024) { uid: i64, k: char[8], v: f64 }
+
 // The AUTHORED tree — spec rows in DFS order. Composite kinds are legal
 // here and illegal in view; n is the component param slot (tab index,
 // vlist count).
@@ -73,7 +80,7 @@ std/store:new(view, capacity: 256) {
 libs/clay:init(width: 640, height: 480)
 | cl h |> libs/metal:window.open(width: 640, height: 480, title: "omni gallery — components")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
-            |> std/store:insert(spec) { d: 0, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ltr", gap: 20, pad: 20, ax: "start", ay: "start", r: 14.0, g: 15.0, b: 20.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 1, kind: "vlist", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 6, pad: 8, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 60, uid: 0, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 1, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 14, pad: 12, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 230.0, g: 234.0, b: 246.0, a: 255.0, n: 0, uid: 0, tx: "control gallery", fs: 15.0 }            |> std/store:insert(spec) { d: 2, kind: "panel", ws: "star", w: 0.0, hs: "fix", h: 34.0, dir: "ltr", gap: 4, pad: 0, ax: "start", ay: "center", r: 30.0, g: 32.0, b: 42.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 200, tx: "alpha", fs: 13.0 }            |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 1, uid: 201, tx: "beta", fs: 13.0 }            |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 2, uid: 202, tx: "gamma", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "button", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 100, tx: "click me", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 170.0, g: 176.0, b: 196.0, a: 255.0, n: 0, uid: 300, tx: "clicks:", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "toggle", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 101, tx: "", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 160.0, g: 166.0, b: 186.0, a: 255.0, n: 0, uid: 0, tx: "slider", fs: 12.0 }            |> std/store:insert(spec) { d: 2, kind: "slider", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 102, tx: "", fs: 0.0 }
+            |> std/store:insert(spec) { d: 0, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ltr", gap: 20, pad: 20, ax: "start", ay: "start", r: 14.0, g: 15.0, b: 20.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 1, kind: "vlist", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 6, pad: 8, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 60, uid: 50, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 1, kind: "panel", ws: "star", w: 0.0, hs: "star", h: 0.0, dir: "ttb", gap: 14, pad: 12, ax: "start", ay: "start", r: 22.0, g: 24.0, b: 32.0, a: 255.0, n: 0, uid: 0, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 230.0, g: 234.0, b: 246.0, a: 255.0, n: 0, uid: 0, tx: "control gallery", fs: 15.0 }            |> std/store:insert(spec) { d: 2, kind: "panel", ws: "star", w: 0.0, hs: "fix", h: 34.0, dir: "ltr", gap: 4, pad: 0, ax: "start", ay: "center", r: 30.0, g: 32.0, b: 42.0, a: 255.0, n: 0, uid: 400, tx: "", fs: 0.0 }            |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 200, tx: "alpha", fs: 13.0 }            |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 1, uid: 201, tx: "beta", fs: 13.0 }            |> std/store:insert(spec) { d: 3, kind: "tab", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 2, uid: 202, tx: "gamma", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "button", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 100, tx: "click me", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 170.0, g: 176.0, b: 196.0, a: 255.0, n: 0, uid: 300, tx: "clicks:", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "toggle", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 101, tx: "", fs: 13.0 }            |> std/store:insert(spec) { d: 2, kind: "text", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 160.0, g: 166.0, b: 186.0, a: 255.0, n: 0, uid: 0, tx: "slider", fs: 12.0 }            |> std/store:insert(spec) { d: 2, kind: "slider", ws: "", w: 0.0, hs: "", h: 0.0, dir: "", gap: 0, pad: 0, ax: "", ay: "", r: 0.0, g: 0.0, b: 0.0, a: 0.0, n: 0, uid: 102, tx: "", fs: 0.0 }
             |> libs/metal:frames(win: w, count: 9999)
                 ! frame f
                     |> std/store:stored { world.frame: world.frame + 1 }
@@ -82,6 +89,18 @@ libs/clay:init(width: 640, height: 480)
                     |> libs/metal:window.size(win: w): wh
                     |> std/store:stored { wins.w: wh.w, wins.h: wh.h }
                     |> libs/clay:dims(cl: h, width: wh.w, height: wh.h)
+                    // Resolve component state: defaults, then latest-per-key
+                    // fold of the cstate journal into the world scalars.
+                    |> std/store:stored { world.tog: 0, world.tab: 0, world.sel: -1, world.clicks: 0 }
+                    |> std/store:stored { fworld.slider: 0.3 }
+                    |> std/store:query(cstate)
+                        ! query cs |> std/store:stored {
+                            world.clicks: if (cs.uid == 100 and cs.k == "clk") @as(i64, @intFromFloat(cs.v)) else world.clicks,
+                            world.tog: if (cs.uid == 101 and cs.k == "tog") @as(i64, @intFromFloat(cs.v)) else world.tog,
+                            world.tab: if (cs.uid == 400 and cs.k == "tab") @as(i64, @intFromFloat(cs.v)) else world.tab,
+                            world.sel: if (cs.uid == 50 and cs.k == "sel") @as(i64, @intFromFloat(cs.v)) else world.sel,
+                        }
+                            |> std/store:stored { fworld.slider: if (cs.uid == 102 and cs.k == "sli") cs.v else fworld.slider }
                     // EXPANSION PASS — spec rows walk in order; each kind's
                     // rule inserts its primitive subtree into view. State
                     // reads (scroll, tab, tog, sel, hover, down) live HERE —
@@ -222,21 +241,27 @@ libs/clay:init(width: 640, height: 480)
                         ! query hi when (hi.cl == 0 or e.y >= fworld.ly0 and e.y < fworld.ly1) and e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
                             |> std/store:stored { world.down: hi.seq }
                     |> if (world.down == 102)
-                        | then |> std/store:stored { fworld.slider: if (e.x < fworld.sx) 0.0 else if (e.x > fworld.sx + fworld.sw) 1.0 else (e.x - fworld.sx) / fworld.sw }
+                        | then |> std/store:insert(cstate) { uid: 102, k: "sli", v: if (e.x < fworld.sx) 0.0 else if (e.x > fworld.sx + fworld.sw) 1.0 else (e.x - fworld.sx) / fworld.sw }
+                            | row _
                 ! mouse-drag e
                     |> if (world.down == 102)
-                        | then |> std/store:stored { fworld.slider: if (e.x < fworld.sx) 0.0 else if (e.x > fworld.sx + fworld.sw) 1.0 else (e.x - fworld.sx) / fworld.sw }
+                        | then |> std/store:insert(cstate) { uid: 102, k: "sli", v: if (e.x < fworld.sx) 0.0 else if (e.x > fworld.sx + fworld.sw) 1.0 else (e.x - fworld.sx) / fworld.sw }
+                            | row _
                 ! mouse-up e
                     |> std/store:query(hit)
                         ! query hi when (hi.cl == 0 or e.y >= fworld.ly0 and e.y < fworld.ly1) and world.down == hi.seq and e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
                             |> if (world.down == 100)
-                                | then |> std/store:stored { world.clicks: world.clicks + 1, world.down: -2 }
+                                | then |> std/store:insert(cstate) { uid: 100, k: "clk", v: @as(f64, @floatFromInt(world.clicks)) + 1.0 }
+                                    | row _ |> std/store:stored { world.down: -2 }
                             |> if (world.down == 101)
-                                | then |> std/store:stored { world.tog: 1 - world.tog, world.down: -2 }
+                                | then |> std/store:insert(cstate) { uid: 101, k: "tog", v: 1.0 - @as(f64, @floatFromInt(world.tog)) }
+                                    | row _ |> std/store:stored { world.down: -2 }
                             |> if (world.down >= 200)
-                                | then |> std/store:stored { world.tab: world.down - 200, world.down: -2 }
+                                | then |> std/store:insert(cstate) { uid: 400, k: "tab", v: @as(f64, @floatFromInt(world.down - 200)) }
+                                    | row _ |> std/store:stored { world.down: -2 }
                             |> if (world.down >= 1 and world.down <= 60)
-                                | then |> std/store:stored { world.sel: world.down - 1, world.down: -2 }
+                                | then |> std/store:insert(cstate) { uid: 50, k: "sel", v: @as(f64, @floatFromInt(world.down - 1)) }
+                                    | row _ |> std/store:stored { world.down: -2 }
                     |> std/store:stored { world.down: -1 }
                 ! scroll e
                     |> if (e.x >= fworld.lx0 and e.x < fworld.lx1 and e.y >= fworld.ly0 and e.y < fworld.ly1)
