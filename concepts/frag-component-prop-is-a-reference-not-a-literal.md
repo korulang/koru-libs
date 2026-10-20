@@ -8,7 +8,7 @@ ts: 2026-10-19
 
 # A component prop is a value reference, not attribute text
 
-`libs/ui:component` markup carries two value kinds that share one syntax
+`libs/oshun:component` markup carries two value kinds that share one syntax
 surface: quoted literals (`fs="15"`) and props (`fs={{ fs:f }}`). Every
 normalization the row emitter applies to attribute text must split on
 that distinction, because a prop emits as a *reference to a declared tor
