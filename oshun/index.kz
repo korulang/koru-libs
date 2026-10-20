@@ -27,6 +27,13 @@
 //   attr="v"          → a row field, formatted by that column's declared type
 //   attr={{ p:t }}    → a prop on the synthesized tor, forwarded verbatim
 //                       (Liquid-shaped; the tor's input IS the prop list)
+//   attr="lit{{ p:t }}"→ a mixed value: fmt:ln → from-page | ok → take,
+//                       the row field reads v.data into `char[N]` (bytes
+//                       copy, overflow truncates) or v into *String, then
+//                       free discharges the String inside the row arm.
+//                       Mixed on a non-text column → loud refusal.
+//   <tag>lit{{ p:t }}</tag> → same parts rule for inner text → `tx`
+//   <!-- … -->        → a comment; emits no node
 //   <tag>text</tag>   → inner text lands in `tx` when no tx attr names it
 //   nesting           → `d` = markup depth; on a `[tree]` store, a
 //                       `store[child].parent: parent` write per edge
@@ -136,6 +143,38 @@ const std = @import("std");
     // row's field value at call time). Quoted values keep their quotes for
     // char columns; numeric columns get the inner digits.
     const Attr = struct { name: []const u8, value: []const u8, quoted: bool };
+    // Register every `{{ p:t }}` inside a value as a prop on the
+    // synthesized tor — same dedup the bare-placeholder path uses.
+    const regPlaceholdersIn = struct {
+        fn call(
+            a: std.mem.Allocator,
+            text: []const u8,
+            prop_name: *std.ArrayList([]const u8),
+            prop_type: *std.ArrayList([]const u8),
+        ) void {
+            var j: usize = 0;
+            while (std.mem.indexOfPos(u8, text, j, "{{")) |ob| {
+                const cb = std.mem.indexOfPos(u8, text, ob + 2, "}}") orelse break;
+                const ph = std.mem.trim(u8, text[ob + 2 .. cb], " \t");
+                j = cb + 2;
+                var ident = ph;
+                var ktype: []const u8 = "string";
+                if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
+                    ident = std.mem.trim(u8, ph[0..cp], " \t");
+                    ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                }
+                if (ident.len == 0) continue;
+                var seen = false;
+                for (prop_name.items) |pn| {
+                    if (std.mem.eql(u8, pn, ident)) seen = true;
+                }
+                if (!seen) {
+                    prop_name.append(a, a.dupe(u8, ident) catch unreachable) catch unreachable;
+                    prop_type.append(a, a.dupe(u8, ktype) catch unreachable) catch unreachable;
+                }
+            }
+        }
+    }.call;
     // `malformed` is set when the scan ends mid-attr — a bare name, a
     // `name` with no `=`, an unterminated `"…` or `{{…`, or a value that
     // is neither. Malformed means the row's tail dropped silently; the
@@ -172,11 +211,53 @@ const std = @import("std");
                     while (i < n and region[i] != '"') : (i += 1) {}
                     if (i >= n) malformed.* = true;
                     if (i < n) i += 1;
-                    list.append(a, .{
-                        .name = a.dupe(u8, aname) catch unreachable,
-                        .value = a.dupe(u8, region[v0..i]) catch unreachable,
-                        .quoted = true,
-                    }) catch unreachable;
+                    const qv = region[v0..i];
+                    const inner = if (qv.len >= 2) qv[1 .. qv.len - 1] else qv;
+                    const ob = std.mem.indexOf(u8, inner, "{{");
+                    const cb = if (ob) |o| std.mem.indexOfPos(u8, inner, o + 2, "}}") else null;
+                    if (ob != null and cb != null) {
+                        // Attr rule is parts: "{{ p:t }}" alone in quotes is a
+                        // prop reference identical to bare `{{ p:t }}`; mixed
+                        // literal/placeholder text keeps its quotes and the
+                        // emit path lowers it through std.fmt:ln.
+                        const single = ob.? == 0 and cb.? + 2 == inner.len and
+                            std.mem.indexOfPos(u8, inner, cb.? + 2, "{{") == null;
+                        if (single) {
+                            const ph = std.mem.trim(u8, inner[2..cb.?], " \t");
+                            var ident = ph;
+                            var ktype: []const u8 = "string";
+                            if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
+                                ident = std.mem.trim(u8, ph[0..cp], " \t");
+                                ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                            }
+                            var seen = false;
+                            for (prop_name.items) |pn| {
+                                if (std.mem.eql(u8, pn, ident)) seen = true;
+                            }
+                            if (!seen) {
+                                prop_name.append(a, a.dupe(u8, ident) catch unreachable) catch unreachable;
+                                prop_type.append(a, a.dupe(u8, ktype) catch unreachable) catch unreachable;
+                            }
+                            list.append(a, .{
+                                .name = a.dupe(u8, aname) catch unreachable,
+                                .value = a.dupe(u8, ident) catch unreachable,
+                                .quoted = false,
+                            }) catch unreachable;
+                        } else {
+                            regPlaceholdersIn(a, inner, prop_name, prop_type);
+                            list.append(a, .{
+                                .name = a.dupe(u8, aname) catch unreachable,
+                                .value = a.dupe(u8, qv) catch unreachable,
+                                .quoted = true,
+                            }) catch unreachable;
+                        }
+                    } else {
+                        list.append(a, .{
+                            .name = a.dupe(u8, aname) catch unreachable,
+                            .value = a.dupe(u8, qv) catch unreachable,
+                            .quoted = true,
+                        }) catch unreachable;
+                    }
                 } else if (i + 1 < n and region[i] == '{' and region[i + 1] == '{') {
                     const pe = std.mem.indexOfPos(u8, region, i + 2, "}}") orelse {
                         malformed.* = true;
@@ -347,6 +428,105 @@ const std = @import("std");
         }
     }.call;
 
+    // True when a value carries `{{ … }}` placeholders — the mixed-parts
+    // path (lit + placeholder) lowers through std.fmt:ln at seed time.
+    const hasInterp = struct {
+        fn call(v: []const u8) bool {
+            return std.mem.indexOf(u8, v, "{{") != null and std.mem.indexOf(u8, v, "}}") != null;
+        }
+    }.call;
+
+    // fmt:ln's own lowering, spelled directly — transforms have already run
+    // when component emits, so the generated `fmt:ln` call would never be
+    // expanded (unknown tor downstream). Emit what its transform produces:
+    // a `std.fmt:ln.impl` invocation whose inline_body bufPrints the
+    // template into the 4KiB threadlocal scratch and binds `{ .text }`.
+    const buildLnInline = struct {
+        fn call(a: std.mem.Allocator, tmpl: []const u8) []const u8 {
+            var format_buf = std.ArrayList(u8).initCapacity(a, 128) catch unreachable;
+            var args_buf = std.ArrayList(u8).initCapacity(a, 64) catch unreachable;
+            const s0: usize = if (tmpl.len > 0 and tmpl[0] == '"') 1 else 0;
+            const e0: usize = if (tmpl.len > 0 and tmpl[tmpl.len - 1] == '"') tmpl.len - 1 else tmpl.len;
+            const content = tmpl[s0..e0];
+            var i: usize = 0;
+            var first = true;
+            while (i < content.len) {
+                if (i + 1 < content.len and content[i] == '{' and content[i + 1] == '{') {
+                    var ws = i + 2;
+                    while (ws < content.len and (content[ws] == ' ' or content[ws] == '\t')) : (ws += 1) {}
+                    var j = ws;
+                    while (j + 1 < content.len and !(content[j] == '}' and content[j + 1] == '}')) : (j += 1) {}
+                    if (j + 1 < content.len) {
+                        var we = j;
+                        while (we > ws and (content[we - 1] == ' ' or content[we - 1] == '\t')) : (we -= 1) {}
+                        const ph = content[ws..we];
+                        var vname = ph;
+                        var spec: []const u8 = "any";
+                        if (std.mem.indexOf(u8, ph, ":")) |cp| {
+                            vname = ph[0..cp];
+                            spec = ph[cp + 1 ..];
+                        }
+                        // Same rail as fmt:ln — :f collapses, :S is the
+                        // handle form (arg reads .data).
+                        const zspec = if (std.mem.eql(u8, spec, "f")) "" else if (std.mem.eql(u8, spec, "S")) "s" else spec;
+                        format_buf.append(a, '{') catch unreachable;
+                        format_buf.appendSlice(a, zspec) catch unreachable;
+                        format_buf.append(a, '}') catch unreachable;
+                        if (!first) args_buf.appendSlice(a, ", ") catch unreachable;
+                        args_buf.appendSlice(a, vname) catch unreachable;
+                        if (std.mem.eql(u8, spec, "S")) args_buf.appendSlice(a, ".data") catch unreachable;
+                        first = false;
+                        i = j + 2;
+                        continue;
+                    }
+                    format_buf.append(a, content[i]) catch unreachable;
+                    i += 1;
+                } else {
+                    switch (content[i]) {
+                        '{' => format_buf.appendSlice(a, "{{") catch unreachable,
+                        '}' => format_buf.appendSlice(a, "}}") catch unreachable,
+                        '"' => format_buf.appendSlice(a, "\\\"") catch unreachable,
+                        '\n' => format_buf.appendSlice(a, "\\n") catch unreachable,
+                        '\r' => format_buf.appendSlice(a, "\\r") catch unreachable,
+                        '\t' => format_buf.appendSlice(a, "\\t") catch unreachable,
+                        else => format_buf.append(a, content[i]) catch unreachable,
+                    }
+                    i += 1;
+                }
+            }
+            return std.fmt.allocPrint(
+                a,
+                "{{\n    const __S = struct {{ threadlocal var __buf: [4096]u8 = undefined; }};\n    const __text = @import(\"std\").fmt.bufPrint(&__S.__buf, \"{s}\", .{{{s}}}) catch @panic(\"oshun mixed-parts value exceeds the 4096-byte scratch buffer\");\n    break :__KORU_INLINE__ .{{ .text = __text }};\n}}",
+                .{ format_buf.items, args_buf.items },
+            ) catch unreachable;
+        }
+    }.call;
+
+    // A mixed-parts field: the authored value `lit{{ p:t }}lit` lowers to
+    // `fmt:ln(tmpl) → from-page | ok s → take : v`, then the row field
+    // emits `v` for `*String` columns or `v.data` for `char[N]` (bytes
+    // copy into the fixed buffer, runtime overflow truncates per 690_052)
+    // followed by `free(v)` inside the row arm — the String exists only
+    // as long as the copy needs it.
+    const MixField = struct {
+        col: []const u8,
+        tmpl: []const u8,
+        fvar: []const u8,
+        svar: []const u8,
+        vvar: []const u8,
+        as_data: bool,
+    };
+    // One link in the emitted chain. `ok_svar` marks a `take` step riding
+    // its from-page's `| ok` arm; `ins_node` marks a node's insert (the
+    // next step rides its `| row h{ni}` arm); `extra` carries sibling
+    // arms (from-page's `| err _ |> _`).
+    const Step = struct {
+        inv: ast.Invocation,
+        extra: []const ast.Continuation = &[_]ast.Continuation{},
+        ok_svar: ?[]const u8 = null,
+        ins_node: i64 = -1,
+    };
+
     // Synthesize the tor decl + impl pair. `cols` is the target store's schema.
     // `malformed` comes back true when the markup couldn't be fully scanned —
     // the walk then leaves the decl for a loud downstream refusal rather
@@ -373,13 +553,145 @@ const std = @import("std");
                 if (std.mem.eql(u8, col.name, "hid")) has_hid = true;
             }
 
-            var ops = std.ArrayList(ast.Invocation).initCapacity(a, n_nodes * 2 + 4) catch unreachable;
+            // Mixed-parts fields per node: quoted attrs carrying `{{ }}`
+            // that name a text column, plus inner text carrying `{{ }}`
+            // for a `tx` column. Placeholders inside inner text register
+            // as props here (attr placeholders were registered at parse).
+            var late_pn = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            var late_pt = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
+            const mixes = a.alloc([]const MixField, n_nodes) catch unreachable;
             for (nodes, 0..) |nd, ni| {
+                var mfl = std.ArrayList(MixField).initCapacity(a, 2) catch unreachable;
+                for (nd.attrs) |at| {
+                    if (!at.quoted or !hasInterp(at.value)) continue;
+                    for (cols) |col| {
+                        if (!std.mem.eql(u8, col.name, at.name)) continue;
+                        const is_str = std.mem.indexOf(u8, col.ty, "String") != null;
+                        const is_char = std.mem.startsWith(u8, col.ty, "char");
+                        if (!is_str and !is_char) {
+                            // Mixed value on a non-text column — the fmt
+                            // product can't typecheck there; loud refusal.
+                            malformed.* = true;
+                            continue;
+                        }
+                        const j = mfl.items.len;
+                        mfl.append(a, .{
+                            .col = a.dupe(u8, at.name) catch unreachable,
+                            .tmpl = a.dupe(u8, at.value) catch unreachable,
+                            .fvar = std.fmt.allocPrint(a, "f{d}_{d}", .{ ni, j }) catch unreachable,
+                            .svar = std.fmt.allocPrint(a, "s{d}_{d}", .{ ni, j }) catch unreachable,
+                            .vvar = std.fmt.allocPrint(a, "v{d}_{d}", .{ ni, j }) catch unreachable,
+                            .as_data = !is_str,
+                        }) catch unreachable;
+                        break;
+                    }
+                }
+                if (nd.text.len > 0 and hasInterp(nd.text)) {
+                    for (cols) |col| {
+                        if (!std.mem.eql(u8, col.name, "tx")) continue;
+                        const is_str = std.mem.indexOf(u8, col.ty, "String") != null;
+                        const is_char = std.mem.startsWith(u8, col.ty, "char");
+                        if (!is_str and !is_char) {
+                            malformed.* = true;
+                            break;
+                        }
+                        const j = mfl.items.len;
+                        mfl.append(a, .{
+                            .col = "tx",
+                            .tmpl = std.fmt.allocPrint(a, "\"{s}\"", .{esc(a, nd.text)}) catch unreachable,
+                            .fvar = std.fmt.allocPrint(a, "f{d}_{d}", .{ ni, j }) catch unreachable,
+                            .svar = std.fmt.allocPrint(a, "s{d}_{d}", .{ ni, j }) catch unreachable,
+                            .vvar = std.fmt.allocPrint(a, "v{d}_{d}", .{ ni, j }) catch unreachable,
+                            .as_data = !is_str,
+                        }) catch unreachable;
+                        // Text placeholders never passed through parseAttrs —
+                        // register their props now, dedup against both lists.
+                        var j2: usize = 0;
+                        while (std.mem.indexOfPos(u8, nd.text, j2, "{{")) |ob| {
+                            const cb = std.mem.indexOfPos(u8, nd.text, ob + 2, "}}") orelse break;
+                            const ph = std.mem.trim(u8, nd.text[ob + 2 .. cb], " \t");
+                            j2 = cb + 2;
+                            var ident = ph;
+                            var ktype: []const u8 = "string";
+                            if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
+                                ident = std.mem.trim(u8, ph[0..cp], " \t");
+                                ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                            }
+                            if (ident.len == 0) continue;
+                            var seen = false;
+                            for (parsed.prop_name) |pn| {
+                                if (std.mem.eql(u8, pn, ident)) seen = true;
+                            }
+                            for (late_pn.items) |pn| {
+                                if (std.mem.eql(u8, pn, ident)) seen = true;
+                            }
+                            if (!seen) {
+                                late_pn.append(a, a.dupe(u8, ident) catch unreachable) catch unreachable;
+                                late_pt.append(a, a.dupe(u8, ktype) catch unreachable) catch unreachable;
+                            }
+                        }
+                        break;
+                    }
+                }
+                mixes[ni] = mfl.toOwnedSlice(a) catch unreachable;
+            }
+
+            const lookupMix = struct {
+                fn call(mfl: []const MixField, col: []const u8) ?MixField {
+                    for (mfl) |m| {
+                        if (std.mem.eql(u8, m.col, col)) return m;
+                    }
+                    return null;
+                }
+            }.call;
+
+            var steps = std.ArrayList(Step).initCapacity(a, n_nodes * 4 + 4) catch unreachable;
+            for (nodes, 0..) |nd, ni| {
+                // Format preps: each mixed field emits fmt:ln.impl (the
+                // lowered form — the ln transform already ran) → from-page
+                // (err arm: `_`) → take, then the insert reads vK(.data).
+                for (mixes[ni]) |m| {
+                    steps.append(a, .{ .inv = .{
+                        .path = mkPath(a, "std.fmt", "ln.impl"),
+                        .args = &[_]ast.Arg{},
+                        .return_binding = a.dupe(u8, m.fvar) catch unreachable,
+                        .inline_body = buildLnInline(a, m.tmpl),
+                    } }) catch unreachable;
+                    const pargs = a.alloc(ast.Arg, 1) catch unreachable;
+                    pargs[0] = .{ .name = a.dupe(u8, "text") catch unreachable, .value = std.fmt.allocPrint(a, "{s}.text", .{m.fvar}) catch unreachable };
+                    const errl = a.alloc(ast.Continuation, 1) catch unreachable;
+                    errl[0] = .{
+                        .branch = a.dupe(u8, "err") catch unreachable,
+                        .binding = a.dupe(u8, "_") catch unreachable,
+                        .condition = null,
+                        .kind = .terminal,
+                        .node = .{ .terminal = {} },
+                        .indent = 0,
+                        .continuations = &[_]ast.Continuation{},
+                        .location = cloc,
+                    };
+                    steps.append(a, .{ .inv = .{
+                        .path = mkPath(a, "std.string", "from-page"),
+                        .args = pargs,
+                    }, .extra = errl }) catch unreachable;
+                    const targs = a.alloc(ast.Arg, 1) catch unreachable;
+                    targs[0] = .{ .name = a.dupe(u8, "s") catch unreachable, .value = a.dupe(u8, m.svar) catch unreachable };
+                    steps.append(a, .{ .inv = .{
+                        .path = mkPath(a, "std.string", "take"),
+                        .args = targs,
+                        .return_binding = a.dupe(u8, m.vvar) catch unreachable,
+                    }, .ok_svar = a.dupe(u8, m.svar) catch unreachable }) catch unreachable;
+                }
                 var row = std.ArrayList(u8).initCapacity(a, 160) catch unreachable;
                 for (cols, 0..) |col, ci| {
                     if (ci > 0) row.appendSlice(a, ", ") catch unreachable;
                     row.appendSlice(a, col.name) catch unreachable;
                     row.appendSlice(a, ": ") catch unreachable;
+                    if (lookupMix(mixes[ni], col.name)) |m| {
+                        row.appendSlice(a, m.vvar) catch unreachable;
+                        if (m.as_data) row.appendSlice(a, ".data") catch unreachable;
+                        continue;
+                    }
                     if (std.mem.eql(u8, col.name, "kind")) {
                         row.appendSlice(a, "\"") catch unreachable;
                         row.appendSlice(a, nd.tag) catch unreachable;
@@ -418,7 +730,9 @@ const std = @import("std");
                             found = true;
                         }
                     }
-                    if (!found and std.mem.eql(u8, col.name, "tx") and nd.text.len > 0) {
+                    // Inner text is literal-only here — mixed text is a
+                    // MixField already claimed by lookupMix above.
+                    if (!found and std.mem.eql(u8, col.name, "tx") and nd.text.len > 0 and !hasInterp(nd.text)) {
                         row.appendSlice(a, "\"") catch unreachable;
                         row.appendSlice(a, esc(a, nd.text)) catch unreachable;
                         row.appendSlice(a, "\"") catch unreachable;
@@ -429,7 +743,14 @@ const std = @import("std");
                 const iargs = a.alloc(ast.Arg, 2) catch unreachable;
                 iargs[0] = .{ .name = a.dupe(u8, "expr") catch unreachable, .value = a.dupe(u8, store) catch unreachable };
                 iargs[1] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = row.toOwnedSlice(a) catch unreachable };
-                ops.append(a, .{ .path = mkPath(a, "std.store", "insert"), .args = iargs }) catch unreachable;
+                steps.append(a, .{ .inv = .{ .path = mkPath(a, "std.store", "insert"), .args = iargs }, .ins_node = @intCast(ni) }) catch unreachable;
+                // char-column mixes free their String right after the copy.
+                for (mixes[ni]) |m| {
+                    if (!m.as_data) continue;
+                    const gargs = a.alloc(ast.Arg, 1) catch unreachable;
+                    gargs[0] = .{ .name = a.dupe(u8, "s") catch unreachable, .value = a.dupe(u8, m.vvar) catch unreachable };
+                    steps.append(a, .{ .inv = .{ .path = mkPath(a, "std.string", "free"), .args = gargs } }) catch unreachable;
+                }
             }
             // Self-handle writes (the seed's `spec[h].hid: h` convention —
             // emitted only when the schema actually declares `hid`).
@@ -437,7 +758,7 @@ const std = @import("std");
                 for (0..n_nodes) |ni| {
                     const sargs = a.alloc(ast.Arg, 1) catch unreachable;
                     sargs[0] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = std.fmt.allocPrint(a, "{s}[h{d}].hid: h{d}", .{ store, ni, ni }) catch unreachable };
-                    ops.append(a, .{ .path = mkPath(a, "std.store", "stored"), .args = sargs }) catch unreachable;
+                    steps.append(a, .{ .inv = .{ .path = mkPath(a, "std.store", "stored"), .args = sargs } }) catch unreachable;
                 }
             }
             // Tree edges: `store[child].parent: parent` per markup edge.
@@ -446,7 +767,7 @@ const std = @import("std");
                     if (nd.parent < 0) continue;
                     const sargs = a.alloc(ast.Arg, 1) catch unreachable;
                     sargs[0] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = std.fmt.allocPrint(a, "{s}[h{d}].parent: h{d}", .{ store, ni, nd.parent }) catch unreachable };
-                    ops.append(a, .{ .path = mkPath(a, "std.store", "stored"), .args = sargs }) catch unreachable;
+                    steps.append(a, .{ .inv = .{ .path = mkPath(a, "std.store", "stored"), .args = sargs } }) catch unreachable;
                 }
             }
             // `bind="world.strip"` → `stored { world.strip: h }` — the node's
@@ -459,39 +780,51 @@ const std = @import("std");
                     if (at.quoted and target.len >= 2) target = target[1 .. target.len - 1];
                     const sargs = a.alloc(ast.Arg, 1) catch unreachable;
                     sargs[0] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = std.fmt.allocPrint(a, "{s}: h{d}", .{ target, ni }) catch unreachable };
-                    ops.append(a, .{ .path = mkPath(a, "std.store", "stored"), .args = sargs }) catch unreachable;
+                    steps.append(a, .{ .inv = .{ .path = mkPath(a, "std.store", "stored"), .args = sargs } }) catch unreachable;
                 }
             }
 
-            // Chain: ops[0] is the site; each later op rides a continuation —
-            // `| row hK` while still inside the insert run AND for the last
-            // insert's row arm, which wraps the first stored op (hand shape:
-            // `insert | row h12 |> stored …`); bare `|>` after that.
+            // Chain: steps[0] is the site; each later step rides a
+            // continuation — `| ok sK` for take steps, `| row hK` for the
+            // step following a node's insert, bare `|>` otherwise. A
+            // from-page step's `| err _ |> _` sibling arm rides `extra`.
             var tail: []const ast.Continuation = &[_]ast.Continuation{};
-            var k: usize = ops.items.len;
+            var k: usize = steps.items.len;
             while (k > 1) {
                 k -= 1;
+                const st = steps.items[k];
                 const link = a.alloc(ast.Continuation, 1) catch unreachable;
+                var branch: []const u8 = "";
                 var binding: ?[]const u8 = null;
-                if (k <= n_nodes) {
-                    binding = std.fmt.allocPrint(a, "h{d}", .{k - 1}) catch unreachable;
+                if (st.ok_svar) |sv| {
+                    branch = "ok";
+                    binding = sv;
+                } else if (k >= 1 and steps.items[k - 1].ins_node >= 0) {
+                    branch = "row";
+                    binding = std.fmt.allocPrint(a, "h{d}", .{steps.items[k - 1].ins_node}) catch unreachable;
                 }
+                const conts = a.alloc(ast.Continuation, tail.len + st.extra.len) catch unreachable;
+                @memcpy(conts[0..tail.len], tail);
+                @memcpy(conts[tail.len..], st.extra);
                 link[0] = .{
-                    .branch = a.dupe(u8, if (k <= n_nodes) "row" else "") catch unreachable,
+                    .branch = a.dupe(u8, branch) catch unreachable,
                     .binding = binding,
                     .condition = null,
                     .kind = .terminal,
-                    .node = .{ .invocation = ops.items[k] },
+                    .node = .{ .invocation = st.inv },
                     .indent = 0,
-                    .continuations = tail,
+                    .continuations = conts,
                     .location = cloc,
                 };
                 tail = link;
             }
 
-            const fields = a.alloc(ast.Field, parsed.prop_name.len) catch unreachable;
+            const fields = a.alloc(ast.Field, parsed.prop_name.len + late_pn.items.len) catch unreachable;
             for (parsed.prop_name, parsed.prop_type, 0..) |pn, pt, i| {
                 fields[i] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
+            }
+            for (late_pn.items, late_pt.items, 0..) |pn, pt, i| {
+                fields[parsed.prop_name.len + i] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
             }
             const event_item = ast.Item{ .event_decl = ast.EventDecl{
                 .path = mkPath(a, cmodule, cname),
@@ -505,7 +838,7 @@ const std = @import("std");
                 .module = a.dupe(u8, cmodule) catch unreachable,
             } };
             const impl_item = ast.Item{ .flow = ast.Flow{
-                .body = ast.rootSite(ops.items[0], tail, cloc),
+                .body = ast.rootSite(steps.items[0].inv, tail, cloc),
                 .impl_of = mkPath(a, cmodule, cname),
                 .is_pure = false,
                 .is_transitively_pure = false,

@@ -25,3 +25,19 @@ The general shape: attribute text is writer input and can be normalized
 freely; prop expressions are *program text* and pass through verbatim.
 The moment a component prop flows into a generated row block it is code,
 and code is not normalized — it is emitted.
+
+## The attr rule is parts (2026-10-20)
+
+The two value kinds are no longer all-or-nothing — a quoted value is a
+*parts list*: `"{{ p:t }}"` spanning the whole value is still the bare
+prop reference, but `lit{{ p:t }}lit` is a format, not a literal and not
+a reference. It lowers through `fmt:ln`'s own lowered shape (the
+transform pass has already run — oshun emits `ln.impl` + inline_body
+directly), copies out through `from-page | ok → take : v`, and the row
+field admits it only where the destination is textual: `v.data` into
+`char[N]` (bytes copy, overflow truncates per 690_052) or `v` into a
+`*String` column, with `free(v)` inside the row arm. A mixed value on a
+numeric or otherwise non-text column leaves the decl unconsumed — loud
+refusal, because stringifying a typed slot is the XAML mistake in
+reverse. Dynamic IDs and templated labels are legitimate; silent
+stringification is not.
