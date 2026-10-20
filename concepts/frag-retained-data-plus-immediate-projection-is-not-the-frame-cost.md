@@ -14,19 +14,21 @@ On nanoui's own hillclimb `boxes` scene (600 rounded, shadowed, moving
 boxes — geometry proven identical instance-for-instance by
 `clay/tests/bench_boxes_gate.k` against nanoui's painted dump before any
 timing ran), the full koru path — spec query, row/leaf emission, Clay
-solve, command drain — costs 0.089 ms per pass. nanoui's build + layout +
-paint for the same frame: 0.067 ms. Same machine, ReleaseFast both, ~1.33x.
+declare + solve, command drain — costs 0.087 ms per frame (lowest median,
+`std/benchmarking:climb`). nanoui's build + layout + paint for the same
+frame: 0.066 ms. Same machine, ReleaseFast both: we are behind, 1.32x,
+and our measured binary does no paint at all (the drain phase measures 0).
 
-The composition matters more than the headline. Upstream Clay alone, racing
-the same scene through nanoui's own twin, costs 0.058 ms — meaning the
-dialect overhead the retained model actually adds (query + emission +
-drain dispatch) is ~0.03 ms, and the single largest component in our frame
-is the *shared* layout library. nanoui's own layout pass does the same
-work in 0.018 ms — purpose-built flexbox beats vendored Clay roughly
-threefold. The lever on frame CPU is the layout engine, not the data
-model; the lever on *idle* cost is the pump (nanoui pauses its display
-link and pays 0.00% CPU idle; our `frames` poll unconditionally — a
-different, already-known gap).
+The composition, measured per phase (`clay/tests/bench_boxes_split1.k`):
+the retained model's own work, spec query + colour derivation, is ~0.020
+ms. Clay is ~0.067: handing it the tree costs ~0.034 and solving costs
+~0.033, and both match raw C Clay, so the binding is free. nanoui's
+build (tree + colours) is 0.035 and its solve is 0.015. The largest
+component of our frame is still the shared layout library, but it costs
+**twice** over: once to declare a tree the store already holds, once to
+solve it. A solver that reads the rows replaces both halves. The lever on
+*idle* cost is the pump (nanoui pauses its display link and pays 0.00% CPU
+idle; our `frames` poll unconditionally — a different, already-known gap).
 
 Two disciplines this instance reinforces. The gate preceded the meter: the
 same comparator that passed the real candidate failed a `gr`/`gc`-swapped

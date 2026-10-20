@@ -18,8 +18,10 @@ trees: koru-libs 4e2f332 (main), koru 4c2f38b30 (main), nanoui ede1eb4 (clone)
 koru-libs renders UI through vendored Clay v0.14 (`clay.h`, 5,058 lines,
 652 internals) for layout. Nanoui — the Zig framework metal/index.kz
 already ports glyphs/atlas/instancing from — solves the same workload
-with a purpose-built 318-line flexbox (`src/ui/layout.zig`) and wins the
-layout phase ~3.9×.
+with a purpose-built 318-line flexbox (`src/ui/layout.zig`). Its solve
+(0.015) is ~2.2× faster than Clay's EndLayout (0.033), and its
+build+layout (0.050) is 1.74× faster than our expand+declare+solve
+(0.087). See §2.
 
 **Should the dialect get a narrow native solver** — and if so, does the
 combination (retained spec rows + small solver + dirty gating) let us
@@ -27,17 +29,48 @@ combination (retained spec rows + small solver + dirty gating) let us
 
 ## 2. Measured state (receipts, not claims)
 
-Machine: M2 Pro, zig 0.17.0, both sides ReleaseFast, hillclimb protocol
-(30 warmup + 300 measured × 3 reps, lowest median retained, ±5% = noise).
+Re-measured 2026-10-20. The first draft of this table was wrong: it put
+Clay's whole frame (declare + solve + commands, per hillclimb's own
+`clay.zig` header) in the "layout solve" row against nanoui's solve-only
+0.015, derived the Koru split by subtraction (0.089 − 0.058), and the
+0.089 itself was a mean (`benchmarking:run` = seconds/passes).
 
-| | nanoui | koru | upstream Clay |
+Machine: M2 Pro, both sides ReleaseFast, load avg 6–9 during runs.
+Protocol on both sides: 30 warmup + 300 measured × 3 reps, lowest median
+retained. Koru side: `std/benchmarking:climb` + `lap` (koru worktree
+`bench-climb` branch, 09f6d2fb2 — not yet on koru main), ranges over 5 interleaved rounds.
+
+| | nanoui | koru (`bench_boxes_split1.k`) | upstream Clay (`/tmp/clay-split/split.c`) |
 |---|---|---|---|
-| view build | 0.035 ms | ~0 (retained spec) | n/a |
-| layout solve | 0.015 | 0.058 (Clay) | 0.058 |
-| paint / emit+drain | 0.017 | ~0.031 | n/a |
-| **frame CPU** | **0.067** | **0.089** | **0.058** |
-| encode CPU | 0.014 | — (unmeasured) | — |
-| GPU | 0.612 | — (no offscreen surface yet) | — |
+| build / expand (spec query + HSL) | 0.035 ms | ~0.020 (inferred: lap 1 0.053–0.054 minus declare) | n/a |
+| declare (tree into Clay) | (in build) | 0.033–0.036 (declare-only arm, in `bench_boxes_split.k`) | 0.0335 |
+| layout solve (EndLayout incl. commands) | 0.015 | 0.0330–0.0340 | 0.0331–0.0335 |
+| paint / drain | 0.016–0.017 | **0** (below clock tick — no paint work) | 0.002 (cmd read) |
+| **frame CPU** | **0.066–0.070** | **0.0869–0.0880** | **0.069–0.070** |
+| encode CPU | 0.013 | — (unmeasured) | — |
+| GPU | 0.42–0.73 (varies run to run) | — (no offscreen surface yet) | — |
+
+- **We are behind**: 0.087 vs 0.066 (1.32×) — while doing no paint. Like
+  for like, Koru expand + declare + solve (0.087) vs nanoui build + layout
+  (0.050) is 1.74×.
+- The binding adds nothing measurable: Koru's declare-only arm matches raw
+  C Clay's declare, and Koru's EndLayout matches raw C's.
+- `bench_boxes.k`'s drain does no work that survives: the tail phase is 0
+  at a 41 ns clock in every run. Probable cause (not verified in the
+  disassembly): nothing reads the per-command writes, so LLVM collapses the
+  loop. Either way, the measured binary has **no paint equivalent**. The
+  gate binary doesn't paint either: it prints the instance stream as text
+  in nanoui's dump format. Neither binary runs metal's `draw.*` →
+  `instPush`, which needs a `*Frame` that today only exists inside a
+  windowed `frames` pump.
+- hillclimb's own Clay arm reads 0.059–0.060 for the same declare twin my
+  C harness reads at 0.069. Not reconciled (possibly a different `clay.h`
+  revision). Trust the ratios, not the absolute numbers.
+- Instrument note: putting a second pipeline (the declare-only arm) in the
+  same binary slowed the full arm's lap 1 from 0.053 to 0.069, while
+  EndLayout stayed the same. One pipeline per binary for absolute numbers.
+  `split1` (full arm only, with laps) matches the lap-free `climb` binary
+  (0.086–0.089), so laps cost nothing measurable.
 
 Scene: `boxes` — 600 rounded+shadowed boxes, 20×30 grid, sine-offset +
 HSL colors at frame 100/120. 1201 painted instances.
@@ -48,10 +81,14 @@ painted instance stream; the Koru candidate reproduces it 1201/1201 with
 0 divergences at 0.005pt/0.002 tolerances. Mutation-tested: a gr/gc-swapped
 seed fails with 2247 divergences + 200 orphans. The gate can say no.
 
-Finding that reframes the problem: **the dialect layer is already ahead.**
-Nanoui pays 0.035ms building its ephemeral view tree; our retained spec
-costs ~0 there and our walk+drain is ~0.031 vs their 0.052 build+paint.
-The *entire* deficit is Clay's solve.
+What the table implies for the bet: Clay accounts for ~0.067 of our 0.087
+(declare ~0.034 + solve ~0.033). A solver that walks the retained rows
+directly replaces **both** halves, not just EndLayout. The expansion pass
+(~0.020) is a separate target: `std/store:query(leaves) when lf.gr == rr`
+inside `for(0..20)` visits 12,000 rows per frame to emit 600. Any
+frame-level race against nanoui also needs real paint work in the measured
+binary first; right now we are being compared without the 0.016 phase
+nanoui pays.
 
 ## 3. Architecture as it stands
 
@@ -99,8 +136,10 @@ percent-sizing, alignment, and the text measure callback.
 A narrow solver covering §4's reachable surface, ~318-line-class,
 emitting the same CmdView contract, with two possible wins:
 
-1. **Constant factor** — no generality tax. Straight win vs 0.058 if
-   the solver is honestly narrower.
+1. **Constant factor** — no generality tax. The target is Clay's
+   declare + solve together (~0.067, §2) if the solver reads spec rows
+   directly, or EndLayout alone (~0.033) if it is fed by the same
+   per-frame declaration pass.
 2. **Incrementality Clay structurally cannot offer** — Clay has no
    partial-solve API; retained spec + stable row identity + `[tree]`
    parent chains means dirty-subtree re-solve is expressible. This is
@@ -119,6 +158,14 @@ Known traps, ranked:
    default (ui:text exposes no wrap config) — whether any spec actually
    wraps is **unmeasured**; census it first. If nothing wraps, a solver
    may still handle wrapped text by refusing or falling back (see trap 3).
+   Two Clay behaviours the Clay oracle will hold us to: it caches
+   measurements across frames (`Clay__MeasureTextCached`, clay.h:1639),
+   and under the default WORDS wrap it measures **word by word plus a
+   separate `spaceWidth`** (clay.h:1717, 1741), not the whole string.
+   Kerning across spaces differs, so a whole-string CoreText width will
+   not gate identical. A solver without its own cache loses the text
+   scene. Hillclimb's Clay twin uses `WRAP_NONE` and our `ui:text` uses
+   the default, so the two Clay oracles already measure differently.
 3. **The hybrid boundary.** Per-scene routing (whole tree native iff
    every element in vocabulary, else whole tree Clay) is honest and
    simple. Subtree-level routing embeds a foreign-solved subtree inside a
@@ -138,18 +185,32 @@ Known traps, ranked:
    re-solve is only sound under a real invalidation rule (probably:
    dirty bubbles to nearest sizing-independent ancestor). Nanoui doesn't
    attempt it; if we do, the invalidation rule IS the contribution —
-   gate it as hard as the solver itself.
+   gate it as hard as the solver itself. Cheaper first: most dirty
+   frames during interaction only change paint (hover recolor). A
+   paint-only vs layout dirty split that patches rgba into a cached
+   CmdView needs no invalidation proof. Boxes moves every frame, so
+   neither form shows anything on boxes.
+7. **Gate coverage.** Boxes only exercises fixed leaves, fit rows and a
+   grow root. Grow distribution, percent sizing, alignment, clip and
+   floating go untested. Clay runs in-process, so trap 1's real
+   defense is differential fuzzing: random trees over the §4
+   vocabulary, CmdView streams compared Clay vs native, plus a
+   known-wrong mutant the fuzzer must catch. Scene gates then cover the
+   nanoui side.
 
 ## 6. Orthogonal steals (smaller, separable, still worth it)
 
-- **Hillclimb protocol → koru-side harness.** `std/benchmarking:run`
-  currently runs-for-duration. Port: warmup + measured × reps + lowest
-  median + ±5% noise + `--label` + append-only `bench/history.jsonl`.
+- **Hillclimb protocol → koru-side harness.** Protocol half done
+  (koru branch `bench-climb`, 09f6d2fb2, not yet on main):
+  `std/benchmarking:climb(warmup, frames, reps)` returns the lowest
+  median, and `lap(k)` / `lap.ms(k)` split a pass into phases. It panics
+  if a pass skips, repeats or reorders a lap. Still to do: `--label` +
+  append-only `bench/history.jsonl`.
   Makes every future number protocol-comparable to nanoui's published
   table and turns regression into a ledger diff.
 - **Paused pump** — store-watch → dirty flag → skip expansion/solve/drain
-  when clean; nanoui pauses the display link itself. Idle Clay cost
-  0.058 → 0 beats any solver constant-factor. Watch out: hover writes
+  when clean; nanoui pauses the display link itself. Idle frame cost
+  0.087 → 0 beats any solver constant-factor. Watch out: hover writes
   every mouse-move (dirty under interaction is correct); `stored` writes
   inside `! frame` mean write→fire recursion — flag-and-drain, not
   recursive fire.
