@@ -35,24 +35,37 @@ Clay's whole frame (declare + solve + commands, per hillclimb's own
 0.015, derived the Koru split by subtraction (0.089 − 0.058), and the
 0.089 itself was a mean (`benchmarking:run` = seconds/passes).
 
-Machine: M2 Pro, both sides ReleaseFast, load avg 6–9 during runs.
+Machine: M2 Pro, both sides ReleaseFast, load avg 3.5–9 across the runs.
 Protocol on both sides: 30 warmup + 300 measured × 3 reps, lowest median
-retained. Koru side: `std/benchmarking:climb` + `lap` (koru worktree
-`bench-climb` branch, 09f6d2fb2 — not yet on koru main), ranges over 5 interleaved rounds.
+retained. Koru side: `std/benchmarking:climb` + `lap` (koru main
+1dbc71cf3), ranges over 5 interleaved rounds.
 
-| | nanoui | koru (`bench_boxes_split1.k`) | upstream Clay (`/tmp/clay-split/split.c`) |
-|---|---|---|---|
-| build / expand (spec query + HSL) | 0.035 ms | ~0.020 (inferred: lap 1 0.053–0.054 minus declare) | n/a |
-| declare (tree into Clay) | (in build) | 0.033–0.036 (declare-only arm, in `bench_boxes_split.k`) | 0.0335 |
-| layout solve (EndLayout incl. commands) | 0.015 | 0.0330–0.0340 | 0.0331–0.0335 |
-| paint / drain | 0.016–0.017 | **0** (below clock tick — no paint work) | 0.002 (cmd read) |
-| **frame CPU** | **0.066–0.070** | **0.0869–0.0880** | **0.069–0.070** |
-| encode CPU | 0.013 | — (unmeasured) | — |
-| GPU | 0.42–0.73 (varies run to run) | — (no offscreen surface yet) | — |
+| | nanoui | koru (`bench_boxes_split1.k`) | koru with paint (`bench_boxes_paint.k`) | upstream Clay (`/tmp/clay-split/split.c`) |
+|---|---|---|---|---|
+| build / expand (spec query + HSL) | 0.035 ms | ~0.020 (inferred: lap 1 0.052–0.056 minus declare) | (in lap 1: 0.059–0.060) | n/a |
+| declare (tree into Clay) | (in build) | 0.033–0.036 (declare-only arm, in `bench_boxes_split.k`) | ↑ | 0.0335 |
+| layout solve (EndLayout incl. commands) | 0.014–0.015 | 0.032–0.035 | 0.032–0.033 | 0.0331–0.0335 |
+| paint | 0.016 | **0** (no paint work) | 0.0154–0.0163 (draw.* → instPush, incl. pass/encoder setup) | 0.002 (cmd read) |
+| encode CPU (upload + encode + commit) | 0.012–0.014 | — | 0.0231–0.0249 (instFlush + endEncoding + commit) | — |
+| **CPU total** | **0.077–0.080** (frame + encode) | 0.084–0.091 (no paint, no encode) | **0.131–0.134** (sum of phase medians) | 0.069–0.070 |
+| GPU (GPUEnd − GPUStart, same method) | 0.424 | — | **0.606–0.607** (min over passes; nanoui reports a median, so this estimator can only flatter us) | — |
 
-- **We are behind**: 0.087 vs 0.066 (1.32×) — while doing no paint. Like
-  for like, Koru expand + declare + solve (0.087) vs nanoui build + layout
-  (0.050) is 1.74×.
+- **We are behind**: CPU 0.132 vs 0.079 (1.67×), GPU 0.606 vs 0.424
+  (1.43×), same 1201 instances at 2× backing. Before paint existed on our
+  side the comparison read 0.087 vs 0.066 (1.32×) — that number flattered
+  us by omitting paint + encode. Like for like, expand + declare + solve
+  (0.087) vs nanoui build + layout (0.050) is still 1.74×.
+- Paint + encode together: 0.039–0.041 vs nanoui's 0.028–0.030 (1.4×).
+  Our encode allocates a fresh `newBufferWithBytes` per flush; nanoui
+  uploads into a ring of instance buffers. The phase boundary differs
+  slightly (our encoder setup falls inside the paint lap), so compare the
+  sum, not the split. GPU cause unmeasured.
+- The paint path is gated: `metal/tests/offscreen_scene.k` (offscreen
+  surface) and `offscreen_twin.k` (same scene through a window) produce
+  byte-identical 1280×800 BMPs. A +1/255 colour mutation makes `cmp`
+  fail. The window path's `snap.k` is byte-identical before and after the
+  metal refactor. `bench_boxes_paint.k` reports 1201 instances flushed per
+  frame.
 - The binding adds nothing measurable: Koru's declare-only arm matches raw
   C Clay's declare, and Koru's EndLayout matches raw C's.
 - `bench_boxes.k`'s drain does no work that survives: the tail phase is 0
@@ -85,10 +98,12 @@ What the table implies for the bet: Clay accounts for ~0.067 of our 0.087
 (declare ~0.034 + solve ~0.033). A solver that walks the retained rows
 directly replaces **both** halves, not just EndLayout. The expansion pass
 (~0.020) is a separate target: `std/store:query(leaves) when lf.gr == rr`
-inside `for(0..20)` visits 12,000 rows per frame to emit 600. Any
-frame-level race against nanoui also needs real paint work in the measured
-binary first; right now we are being compared without the 0.016 phase
-nanoui pays.
+inside `for(0..20)` visits 12,000 rows per frame to emit 600. With paint
+and encode measured, two more targets join it: encode (~0.024 vs 0.013 —
+a ring of instance buffers instead of a buffer per flush) and GPU (0.606
+vs 0.424, cause unmeasured). The paint binary's lap 1 reads 0.059–0.060
+against split1's 0.052–0.056 for identical code, the binary-composition
+effect again, so lap 1 absolutes are per-binary.
 
 ## 3. Architecture as it stands
 
@@ -201,7 +216,7 @@ Known traps, ranked:
 ## 6. Orthogonal steals (smaller, separable, still worth it)
 
 - **Hillclimb protocol → koru-side harness.** Protocol half done
-  (koru branch `bench-climb`, 09f6d2fb2, not yet on main):
+  (koru main 1dbc71cf3):
   `std/benchmarking:climb(warmup, frames, reps)` returns the lowest
   median, and `lap(k)` / `lap.ms(k)` split a pass into phases. It panics
   if a pass skips, repeats or reorders a lap. Still to do: `--label` +

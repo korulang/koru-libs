@@ -335,7 +335,7 @@ fn instPush(f: *Frame, inst: GpuInstance) void {
 fn instFlush(f: *Frame) void {
     if (f.insts.items.len == 0) return;
     const n = f.insts.items.len;
-    const device = send(Id, f.layer, sel("device"));
+    const device = f.device;
     const buf = send3(
         Id, ?*const anyopaque, u64, u64,
         device, sel("newBufferWithBytes:length:options:"),
@@ -351,6 +351,7 @@ fn instFlush(f: *Frame) void {
     send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), f.text.atlas.texture, 0);
     send2(void, Id, u64, f.encoder, sel("setFragmentTexture:atIndex:"), f.images.texture, 1);
     send4(void, u64, u64, u64, u64, f.encoder, sel("drawPrimitives:vertexStart:vertexCount:instanceCount:"), 4, 0, 4, n);
+    f.flushed.* += n;
     f.insts.clearRetainingCapacity();
 }
 
@@ -927,17 +928,16 @@ fn writeBmp(path: []const u8, px: []const u8, w: u32, h: u32) void {
     }
 }
 
-fn dumpDrawable(drawable: Id, win: *Window) void {
-    const tex = send(Id, drawable, sel("texture"));
+// Private-storage textures forbid CPU getBytes — readback is a blit copy
+// into a shared-mode MTLBuffer, synced. Shared by the drawable snapshot
+// and the offscreen surface's snap.
+fn readbackToBmp(device: Id, queue: Id, tex: Id, path: []const u8) void {
     const tw: u64 = send(u64, tex, sel("width"));
     const th: u64 = send(u64, tex, sel("height"));
     const len: usize = @intCast(tw * th * 4);
 
-    // Drawable textures are storageModePrivate — CPU getBytes crashes in the
-    // driver. Readback is a blit copy into a shared-mode MTLBuffer, synced.
-    const device = send(Id, win.layer, sel("device"));
     const mtlbuf = send2(Id, usize, u64, device, sel("newBufferWithLength:options:"), len, 0);
-    const cmd = send(Id, win.queue, sel("commandBuffer"));
+    const cmd = send(Id, queue, sel("commandBuffer"));
     const blit = send(Id, cmd, sel("blitCommandEncoder"));
     const Blit = *const fn (Id, SEL, Id, u64, u64, MTLOrigin, MTLSize, Id, u64, u64, u64) callconv(.c) void;
     const copy: Blit = @ptrCast(&objc.objc_msgSend);
@@ -954,8 +954,13 @@ fn dumpDrawable(drawable: Id, win: *Window) void {
     send(void, cmd, sel("waitUntilCompleted"));
 
     const contents: [*]u8 = @ptrCast(send(?*anyopaque, mtlbuf, sel("contents")));
-    writeBmp(snap_path[0..snap_len], contents[0..len], @intCast(tw), @intCast(th));
+    writeBmp(path, contents[0..len], @intCast(tw), @intCast(th));
     send(void, mtlbuf, sel("release"));
+}
+
+fn dumpDrawable(drawable: Id, win: *Window) void {
+    const tex = send(Id, drawable, sel("texture"));
+    readbackToBmp(win.device, win.queue, tex, snap_path[0..snap_len]);
 }
 
 ~pub tor input.key { code: i64 }
@@ -1155,7 +1160,8 @@ fn drawLiveFrame(win: *Window, cb: *const fn (*Frame) void) void {
     const buf = send(Id, win.queue, sel("commandBuffer"));
     const enc = send1(Id, Id, buf, sel("renderCommandEncoderWithDescriptor:"), desc);
     send1(void, Id, enc, sel("setRenderPipelineState:"), win.pso);
-    var f = Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_inst = win.pso_inst, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text, .images = &win.images };
+    win.flushed = 0;
+    var f = Frame{ .encoder = enc, .device = win.device, .pso = win.pso, .pso_rect = win.pso_rect, .pso_inst = win.pso_inst, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .flushed = &win.flushed, .clip_stack = undefined, .clip_depth = 0, .text = &win.text, .images = &win.images };
     win.text.beginFrame();
     win.images.beginFrame();
     cb(&f);
@@ -1278,6 +1284,7 @@ pub const Window = struct {
     app: Id,
     win: Id,
     layer: Id,
+    device: Id,
     queue: Id,
     pso: Id,
     pso_rect: Id,
@@ -1288,6 +1295,7 @@ pub const Window = struct {
     lr_h: f32,
     clear: MTLClearColor,
     insts: std.ArrayList(GpuInstance),
+    flushed: usize,
     text: TextSystem,
     images: ImageAtlas,
 };
@@ -1300,18 +1308,123 @@ pub const Window = struct {
 // with the frame.
 pub const Frame = struct {
     encoder: Id,
-    layer: Id,
+    device: Id,
     pso: Id,
     pso_rect: Id,
     pso_inst: Id,
     vp_w: f32,
     vp_h: f32,
     insts: *std.ArrayList(GpuInstance),
+    // Running count of instances flushed this frame — the owner (window or
+    // surface) resets it per frame; offscreen.frame returns it as `insts`.
+    flushed: *usize,
     clip_stack: [16][4]f32,
     clip_depth: u8,
     text: *TextSystem,
     images: *ImageAtlas,
 };
+
+// Pipeline: compile the MSL source, wire the descriptors, build the three
+// states. Shared by window.open and offscreen.open — identical shader
+// program, pixel format 80, and blend settings. The base `pso` keeps NO
+// blending; rect and inst blend source 4 / destination 5 / alpha 1,5.
+fn buildPipelines(device: Id) error{
+    ShaderLib,
+    ShaderFns,
+    Pso,
+    RectFns,
+    RectPso,
+    InstFns,
+    InstPso,
+}!struct { pso: Id, pso_rect: Id, pso_inst: Id } {
+    const srcStr = cf.CFStringCreateWithCString(null, msl_src.ptr, cf.kCFStringEncodingUTF8);
+    var shaderErr: Id = null;
+    const lib = send3(Id, Id, Id, *Id, device, sel("newLibraryWithSource:options:error:"), @as(Id, @ptrCast(@constCast(srcStr))), @as(Id, null), &shaderErr);
+    if (lib == null) {
+        if (shaderErr) |e| {
+            const d = send(Id, e, sel("localizedDescription"));
+            const cstr_ = cf.CFStringGetCStringPtr(@ptrCast(d), cf.kCFStringEncodingUTF8);
+            if (cstr_ != null) std.debug.print("metal: shader error: {s}\n", .{std.mem.span(cstr_)});
+        }
+        return error.ShaderLib;
+    }
+
+    const vname = cf.CFStringCreateWithCString(null, "vertex_main", cf.kCFStringEncodingUTF8);
+    const fname = cf.CFStringCreateWithCString(null, "fragment_main", cf.kCFStringEncodingUTF8);
+    const vfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(vname))));
+    const ffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(fname))));
+    if (vfn == null or ffn == null) {
+        return error.ShaderFns;
+    }
+
+    const pdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, pdesc, sel("setVertexFunction:"), vfn);
+    send1(void, Id, pdesc, sel("setFragmentFunction:"), ffn);
+    const patts = send(Id, pdesc, sel("colorAttachments"));
+    const patt = send1(Id, u64, patts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, patt, sel("setPixelFormat:"), 80); // match the layer
+
+    var psoErr: Id = null;
+    const pso = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), pdesc, &psoErr);
+    if (pso == null) {
+        return error.Pso;
+    }
+
+    // Second pipeline, same library: the rect pair. Per-draw params ride
+    // through [[buffer(0)]] — no vertex buffer, no descriptor changes.
+    const rvname = cf.CFStringCreateWithCString(null, "rect_vertex", cf.kCFStringEncodingUTF8);
+    const rfname = cf.CFStringCreateWithCString(null, "rect_fragment", cf.kCFStringEncodingUTF8);
+    const rvfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(rvname))));
+    const rffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(rfname))));
+    if (rvfn == null or rffn == null) {
+        return error.RectFns;
+    }
+    const rpdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, rpdesc, sel("setVertexFunction:"), rvfn);
+    send1(void, Id, rpdesc, sel("setFragmentFunction:"), rffn);
+    const rpatts = send(Id, rpdesc, sel("colorAttachments"));
+    const rpatt = send1(Id, u64, rpatts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, rpatt, sel("setPixelFormat:"), 80);
+    send1(void, bool, rpatt, sel("setBlendingEnabled:"), true);
+    send1(void, u64, rpatt, sel("setSourceRGBBlendFactor:"), 4);
+    send1(void, u64, rpatt, sel("setDestinationRGBBlendFactor:"), 5);
+    send1(void, u64, rpatt, sel("setSourceAlphaBlendFactor:"), 1);
+    send1(void, u64, rpatt, sel("setDestinationAlphaBlendFactor:"), 5);
+    var rpsoErr: Id = null;
+    const pso_rect = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), rpdesc, &rpsoErr);
+    if (pso_rect == null) {
+        return error.RectPso;
+    }
+
+    // Third pipeline: the instanced quad vocabulary — one instanced draw
+    // per run of recorded instances (nanoui's model). Same blend as the
+    // rect pipeline.
+    const ivname = cf.CFStringCreateWithCString(null, "inst_vertex", cf.kCFStringEncodingUTF8);
+    const ifname = cf.CFStringCreateWithCString(null, "inst_fragment", cf.kCFStringEncodingUTF8);
+    const ivfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ivname))));
+    const iffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ifname))));
+    if (ivfn == null or iffn == null) {
+        return error.InstFns;
+    }
+    const ipdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
+    send1(void, Id, ipdesc, sel("setVertexFunction:"), ivfn);
+    send1(void, Id, ipdesc, sel("setFragmentFunction:"), iffn);
+    const ipatts = send(Id, ipdesc, sel("colorAttachments"));
+    const ipatt = send1(Id, u64, ipatts, sel("objectAtIndexedSubscript:"), 0);
+    send1(void, u64, ipatt, sel("setPixelFormat:"), 80);
+    send1(void, bool, ipatt, sel("setBlendingEnabled:"), true);
+    send1(void, u64, ipatt, sel("setSourceRGBBlendFactor:"), 4);
+    send1(void, u64, ipatt, sel("setDestinationRGBBlendFactor:"), 5);
+    send1(void, u64, ipatt, sel("setSourceAlphaBlendFactor:"), 1);
+    send1(void, u64, ipatt, sel("setDestinationAlphaBlendFactor:"), 5);
+    var ipsoErr: Id = null;
+    const pso_inst = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), ipdesc, &ipsoErr);
+    if (pso_inst == null) {
+        return error.InstPso;
+    }
+
+    return .{ .pso = pso, .pso_rect = pso_rect, .pso_inst = pso_inst };
+}
 
 ~pub tor window.open { width: i32, height: i32, title: string }
 | win *Window<opened!>
@@ -1399,92 +1512,17 @@ pub const Frame = struct {
         return .{ .err = "metal: newCommandQueue returned null" };
     }
 
-    // Pipeline: compile the MSL source, wire the descriptor, build the state.
-    const srcStr = cf.CFStringCreateWithCString(null, msl_src.ptr, cf.kCFStringEncodingUTF8);
-    var shaderErr: Id = null;
-    const lib = send3(Id, Id, Id, *Id, device, sel("newLibraryWithSource:options:error:"), @as(Id, @ptrCast(@constCast(srcStr))), @as(Id, null), &shaderErr);
-    if (lib == null) {
-        if (shaderErr) |e| {
-            const d = send(Id, e, sel("localizedDescription"));
-            const cstr_ = cf.CFStringGetCStringPtr(@ptrCast(d), cf.kCFStringEncodingUTF8);
-            if (cstr_ != null) std.debug.print("metal: shader error: {s}\n", .{std.mem.span(cstr_)});
-        }
-        return .{ .err = "metal: shader library compile failed" };
-    }
-
-    const vname = cf.CFStringCreateWithCString(null, "vertex_main", cf.kCFStringEncodingUTF8);
-    const fname = cf.CFStringCreateWithCString(null, "fragment_main", cf.kCFStringEncodingUTF8);
-    const vfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(vname))));
-    const ffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(fname))));
-    if (vfn == null or ffn == null) {
-        return .{ .err = "metal: shader functions not found in library" };
-    }
-
-    const pdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
-    send1(void, Id, pdesc, sel("setVertexFunction:"), vfn);
-    send1(void, Id, pdesc, sel("setFragmentFunction:"), ffn);
-    const patts = send(Id, pdesc, sel("colorAttachments"));
-    const patt = send1(Id, u64, patts, sel("objectAtIndexedSubscript:"), 0);
-    send1(void, u64, patt, sel("setPixelFormat:"), 80); // match the layer
-
-    var psoErr: Id = null;
-    const pso = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), pdesc, &psoErr);
-    if (pso == null) {
-        return .{ .err = "metal: render pipeline state creation failed" };
-    }
-
-    // Second pipeline, same library: the rect pair. Per-draw params ride
-    // through [[buffer(0)]] — no vertex buffer, no descriptor changes.
-    const rvname = cf.CFStringCreateWithCString(null, "rect_vertex", cf.kCFStringEncodingUTF8);
-    const rfname = cf.CFStringCreateWithCString(null, "rect_fragment", cf.kCFStringEncodingUTF8);
-    const rvfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(rvname))));
-    const rffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(rfname))));
-    if (rvfn == null or rffn == null) {
-        return .{ .err = "metal: rect shader functions not found in library" };
-    }
-    const rpdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
-    send1(void, Id, rpdesc, sel("setVertexFunction:"), rvfn);
-    send1(void, Id, rpdesc, sel("setFragmentFunction:"), rffn);
-    const rpatts = send(Id, rpdesc, sel("colorAttachments"));
-    const rpatt = send1(Id, u64, rpatts, sel("objectAtIndexedSubscript:"), 0);
-    send1(void, u64, rpatt, sel("setPixelFormat:"), 80);
-    send1(void, bool, rpatt, sel("setBlendingEnabled:"), true);
-    send1(void, u64, rpatt, sel("setSourceRGBBlendFactor:"), 4);
-    send1(void, u64, rpatt, sel("setDestinationRGBBlendFactor:"), 5);
-    send1(void, u64, rpatt, sel("setSourceAlphaBlendFactor:"), 1);
-    send1(void, u64, rpatt, sel("setDestinationAlphaBlendFactor:"), 5);
-    var rpsoErr: Id = null;
-    const pso_rect = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), rpdesc, &rpsoErr);
-    if (pso_rect == null) {
-        return .{ .err = "metal: rect pipeline state creation failed" };
-    }
-
-    // Third pipeline: the instanced quad vocabulary — one instanced draw
-    // per run of recorded instances (nanoui's model). Same blend as the
-    // rect pipeline.
-    const ivname = cf.CFStringCreateWithCString(null, "inst_vertex", cf.kCFStringEncodingUTF8);
-    const ifname = cf.CFStringCreateWithCString(null, "inst_fragment", cf.kCFStringEncodingUTF8);
-    const ivfn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ivname))));
-    const iffn = send1(Id, Id, lib, sel("newFunctionWithName:"), @as(Id, @ptrCast(@constCast(ifname))));
-    if (ivfn == null or iffn == null) {
-        return .{ .err = "metal: inst shader functions not found in library" };
-    }
-    const ipdesc = send(Id, cls("MTLRenderPipelineDescriptor"), sel("new"));
-    send1(void, Id, ipdesc, sel("setVertexFunction:"), ivfn);
-    send1(void, Id, ipdesc, sel("setFragmentFunction:"), iffn);
-    const ipatts = send(Id, ipdesc, sel("colorAttachments"));
-    const ipatt = send1(Id, u64, ipatts, sel("objectAtIndexedSubscript:"), 0);
-    send1(void, u64, ipatt, sel("setPixelFormat:"), 80);
-    send1(void, bool, ipatt, sel("setBlendingEnabled:"), true);
-    send1(void, u64, ipatt, sel("setSourceRGBBlendFactor:"), 4);
-    send1(void, u64, ipatt, sel("setDestinationRGBBlendFactor:"), 5);
-    send1(void, u64, ipatt, sel("setSourceAlphaBlendFactor:"), 1);
-    send1(void, u64, ipatt, sel("setDestinationAlphaBlendFactor:"), 5);
-    var ipsoErr: Id = null;
-    const pso_inst = send2(Id, Id, *Id, device, sel("newRenderPipelineStateWithDescriptor:error:"), ipdesc, &ipsoErr);
-    if (pso_inst == null) {
-        return .{ .err = "metal: inst pipeline state creation failed" };
-    }
+    const pipes = buildPipelines(device) catch |e| {
+        return .{ .err = switch (e) {
+            error.ShaderLib => "metal: shader library compile failed",
+            error.ShaderFns => "metal: shader functions not found in library",
+            error.Pso => "metal: render pipeline state creation failed",
+            error.RectFns => "metal: rect shader functions not found in library",
+            error.RectPso => "metal: rect pipeline state creation failed",
+            error.InstFns => "metal: inst shader functions not found in library",
+            error.InstPso => "metal: inst pipeline state creation failed",
+        } };
+    };
 
     // We own the release: releasedWhenClosed (default YES) frees wobj the
     // moment the user hits the close button, leaving win.win dangling for
@@ -1514,16 +1552,18 @@ pub const Frame = struct {
         .app = app,
         .win = wobj,
         .layer = layer,
+        .device = device,
         .queue = queue,
-        .pso = pso,
-        .pso_rect = pso_rect,
-        .pso_inst = pso_inst,
+        .pso = pipes.pso,
+        .pso_rect = pipes.pso_rect,
+        .pso_inst = pipes.pso_inst,
         .vp_w = @floatFromInt(width),
         .vp_h = @floatFromInt(height),
         .lr_w = -1,
         .lr_h = -1,
         .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
         .insts = .empty,
+        .flushed = 0,
         .text = .init(device, @floatCast(bs0)),
         .images = .init(device),
     };
@@ -1619,7 +1659,8 @@ pub const Frame = struct {
         const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
         $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), win.pso);
 
-        var __f = $mod.Frame{ .encoder = enc, .layer = win.layer, .pso = win.pso, .pso_rect = win.pso_rect, .pso_inst = win.pso_inst, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .clip_stack = undefined, .clip_depth = 0, .text = &win.text, .images = &win.images };
+        win.flushed = 0;
+        var __f = $mod.Frame{ .encoder = enc, .device = win.device, .pso = win.pso, .pso_rect = win.pso_rect, .pso_inst = win.pso_inst, .vp_w = win.vp_w, .vp_h = win.vp_h, .insts = &win.insts, .flushed = &win.flushed, .clip_stack = undefined, .clip_depth = 0, .text = &win.text, .images = &win.images };
         win.text.beginFrame();
         win.images.beginFrame();
         frame(&__f);
@@ -1670,6 +1711,180 @@ pub const Frame = struct {
 
 ~proc window.clear.color|zig {
     win.clear = .{ .red = r, .green = g, .blue = b, .alpha = 1.0 };
+}
+
+// ============================================================================
+// Offscreen surface — the window's render path minus the window. Same device,
+// same three pipelines, same instanced draw vocabulary, same readback — the
+// only difference is the render target is a Private-storage texture instead
+// of a drawable, so nothing touches AppKit or the screen. Exists so headless
+// binaries can run the real paint path (draw.* -> instPush -> instFlush ->
+// commit -> waitUntilCompleted) under a benchmark, the nanoui Tester model.
+// ============================================================================
+
+pub const Surface = struct {
+    device: Id,
+    queue: Id,
+    tex: Id,
+    pso: Id,
+    pso_rect: Id,
+    pso_inst: Id,
+    vp_w: f32,
+    vp_h: f32,
+    clear: MTLClearColor,
+    insts: std.ArrayList(GpuInstance),
+    flushed: usize,
+    text: TextSystem,
+    images: ImageAtlas,
+    // The last committed command buffer, retained — offscreen.wait reads its
+    // GPU timestamps. null until the first frame commits.
+    last: Id,
+};
+
+~pub tor offscreen.open { width: i32, height: i32, scale: f64 }
+| surf *Surface<ready!>
+| err string
+
+~proc offscreen.open|zig {
+    const device = MTLCreateSystemDefaultDevice();
+    if (device == null) {
+        return .{ .err = "metal: MTLCreateSystemDefaultDevice returned null" };
+    }
+    const queue = send(Id, device, sel("newCommandQueue"));
+    if (queue == null) {
+        return .{ .err = "metal: newCommandQueue returned null" };
+    }
+    const pipes = buildPipelines(device) catch |e| {
+        return .{ .err = switch (e) {
+            error.ShaderLib => "metal: shader library compile failed",
+            error.ShaderFns => "metal: shader functions not found in library",
+            error.Pso => "metal: render pipeline state creation failed",
+            error.RectFns => "metal: rect shader functions not found in library",
+            error.RectPso => "metal: rect pipeline state creation failed",
+            error.InstFns => "metal: inst shader functions not found in library",
+            error.InstPso => "metal: inst pipeline state creation failed",
+        } };
+    };
+
+    // Render target: a real texture in Private storage, the same pixel
+    // format the layer uses (80 = BGRA8Unorm), sized in BACKING pixels —
+    // points x scale, matching the window's drawableSize. ShaderRead lets
+    // the blit readback (and any future sample) reach it.
+    const desc = send4(
+        Id, u64, u64, u64, bool,
+        cls("MTLTextureDescriptor"),
+        sel("texture2DDescriptorWithPixelFormat:width:height:mipmapped:"),
+        80,
+        @intFromFloat(@as(f64, @floatFromInt(width)) * scale),
+        @intFromFloat(@as(f64, @floatFromInt(height)) * scale),
+        false,
+    );
+    send1(void, u64, desc, sel("setUsage:"), 4 | 1); // RenderTarget|ShaderRead
+    send1(void, u64, desc, sel("setStorageMode:"), 2); // Private
+    const tex = send1(Id, Id, device, sel("newTextureWithDescriptor:"), desc);
+    if (tex == null) {
+        return .{ .err = "metal: offscreen render target creation failed" };
+    }
+
+    const s = std.heap.page_allocator.create(Surface) catch @panic("metal: OOM allocating Surface token");
+    s.* = Surface{
+        .device = device,
+        .queue = queue,
+        .tex = tex,
+        .pso = pipes.pso,
+        .pso_rect = pipes.pso_rect,
+        .pso_inst = pipes.pso_inst,
+        .vp_w = @floatFromInt(width),
+        .vp_h = @floatFromInt(height),
+        .clear = .{ .red = 0.1, .green = 0.1, .blue = 0.15, .alpha = 1.0 },
+        .insts = .empty,
+        .flushed = 0,
+        .text = .init(device, @floatCast(scale)),
+        .images = .init(device),
+        .last = null,
+    };
+    return .{ .surf = s };
+}
+
+// Same semantic as window.clear.color: a surface property read at pass
+// descriptor creation, applied to every frame's attachment.
+~pub tor offscreen.clear.color { s: *Surface<ready>, r: f32, g: f32, b: f32 }
+
+~proc offscreen.clear.color|zig {
+    s.clear = .{ .red = r, .green = g, .blue = b, .alpha = 1.0 };
+}
+
+// One headless frame — the `frames` per-frame block minus drawable, present,
+// and the 16ms pump sleep: build the pass on s.tex, hand `! frame` a live
+// encoder, flush, end, commit. The command buffer is retained in s.last so
+// offscreen.wait can read GPU timestamps; nothing waits here — a benchmark
+// measures encode (CPU) and wait (GPU) as separate laps.
+~pub tor offscreen.frame { s: *Surface<ready> }
+! frame *Frame<frame!>
+| done i64
+
+~proc offscreen.frame|zig {
+    const pool = $mod.objc_autoreleasePoolPush();
+    defer $mod.objc_autoreleasePoolPop(pool);
+
+    const desc = $mod.send($mod.Id, $mod.cls("MTLRenderPassDescriptor"), $mod.sel("renderPassDescriptor"));
+    const atts = $mod.send($mod.Id, desc, $mod.sel("colorAttachments"));
+    const att = $mod.send1($mod.Id, u64, atts, $mod.sel("objectAtIndexedSubscript:"), 0);
+    $mod.send1(void, $mod.Id, att, $mod.sel("setTexture:"), s.tex);
+    $mod.send1(void, u64, att, $mod.sel("setLoadAction:"), 2); // MTLLoadActionClear
+    $mod.send1(void, u64, att, $mod.sel("setStoreAction:"), 1); // MTLStoreActionStore
+    $mod.send1(void, $mod.MTLClearColor, att, $mod.sel("setClearColor:"), s.clear);
+
+    const buf = $mod.send($mod.Id, s.queue, $mod.sel("commandBuffer"));
+    const enc = $mod.send1($mod.Id, $mod.Id, buf, $mod.sel("renderCommandEncoderWithDescriptor:"), desc);
+    $mod.send1(void, $mod.Id, enc, $mod.sel("setRenderPipelineState:"), s.pso);
+
+    s.flushed = 0;
+    var __f = $mod.Frame{ .encoder = enc, .device = s.device, .pso = s.pso, .pso_rect = s.pso_rect, .pso_inst = s.pso_inst, .vp_w = s.vp_w, .vp_h = s.vp_h, .insts = &s.insts, .flushed = &s.flushed, .clip_stack = undefined, .clip_depth = 0, .text = &s.text, .images = &s.images };
+    s.text.beginFrame();
+    s.images.beginFrame();
+    frame(&__f);
+
+    $mod.instFlush(&__f);
+    $mod.send(void, enc, $mod.sel("endEncoding"));
+    $mod.send(void, buf, $mod.sel("commit"));
+    if (s.last != null) $mod.send(void, s.last, $mod.sel("release"));
+    s.last = $mod.send($mod.Id, buf, $mod.sel("retain"));
+    return .{ .done = @intCast(s.flushed) };
+}
+
+// GPU-side duration of the last committed frame — GPUStart/EndTime on the
+// retained command buffer, in ms. Commit-wait here, NOT in offscreen.frame,
+// keeps the encode lap honest.
+~pub tor offscreen.wait { s: *Surface<ready> } -> f64
+
+~proc offscreen.wait|zig {
+    if (s.last == null) @panic("metal: offscreen.wait: no frame committed");
+    send(void, s.last, sel("waitUntilCompleted"));
+    const t0 = send(f64, s.last, sel("GPUStartTime"));
+    const t1 = send(f64, s.last, sel("GPUEndTime"));
+    return (t1 - t0) * 1000.0;
+}
+
+// Pixel gate: wait for the GPU to finish, then blit the render target into a
+// shared buffer and write the BMP — identical readback to the window path.
+~pub tor offscreen.snap { s: *Surface<ready>, path: string }
+
+~proc offscreen.snap|zig {
+    if (s.last == null) @panic("metal: offscreen.snap: no frame committed");
+    send(void, s.last, sel("waitUntilCompleted"));
+    readbackToBmp(s.device, s.queue, s.tex, path);
+}
+
+~pub tor offscreen.close { s: *Surface<!ready> }
+
+~proc offscreen.close|zig {
+    if (s.last != null) send(void, s.last, sel("release"));
+    send(void, s.tex, sel("release"));
+    s.insts.deinit(std.heap.page_allocator);
+    s.text.deinit();
+    s.images.deinit();
+    std.heap.page_allocator.destroy(s);
 }
 
 // ============================================================================

@@ -16,8 +16,13 @@ boxes — geometry proven identical instance-for-instance by
 timing ran), the full koru path — spec query, row/leaf emission, Clay
 declare + solve, command drain — costs 0.087 ms per frame (lowest median,
 `std/benchmarking:climb`). nanoui's build + layout + paint for the same
-frame: 0.066 ms. Same machine, ReleaseFast both: we are behind, 1.32x,
-and our measured binary does no paint at all (the drain phase measures 0).
+frame: 0.066 ms. Same machine, ReleaseFast both: we are behind, 1.32x, and
+that binary did no paint at all (the drain phase measures 0). With real
+paint through metal's offscreen surface (`clay/tests/bench_boxes_paint.k`,
+pixel-gated against the window path), the whole CPU frame is 0.132 vs
+nanoui's 0.079 including encode (1.67x), and GPU is 0.606 vs 0.424 (1.43x).
+A frame number that leaves out a phase the competitor pays is not a
+smaller deficit; it is an unmeasured one.
 
 The composition, measured per phase (`clay/tests/bench_boxes_split1.k`):
 the retained model's own work, spec query + colour derivation, is ~0.020
