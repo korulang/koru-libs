@@ -25,6 +25,19 @@ path) into their backends. The four probes now import `libs/oshun` alone;
 Division of labor: **oshun** owns MARKUP → spec-row seeds; **ui** owns the
 OMNI WORDS → solver numerics; **clay** owns the solver.
 
+2026-10-20, first real-tree witness: `clay/tests/spec_tree.k` converted
+its 25-row hand-seeded `[tree]` spec to markup and renders
+pixel-identical (frame-30 BMP `cmp`-clean against the pre-conversion
+snapshot; the original binary re-ran deterministic). The conversion
+caught two dormant bugs the probes never could: `[tree]` was read off
+`inv.annotations` when the declaration carries it on
+`flow.annotations`, so tree-edge emission never ran at all — and once
+it ran, `parseNodes` read `open.items.len - 1` (stack depth) as the
+parent index instead of the stack's entry value, which is only right
+down a left spine. Lesson the frags already know, sharpened: a probe
+family can pin a dialect's surface while a real consumer with a
+deterministic oracle is still needed to prove the semantics.
+
 Open path: `libs/ctx` promoted to `std/ctx` with call sites unchanged
 (`dd42801`). If Oshun settles, `libs/oshun:component` promotes the same
 way — the `libs/` qualifier is provisional by design.

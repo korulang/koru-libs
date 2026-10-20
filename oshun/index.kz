@@ -117,6 +117,11 @@ const std = @import("std");
                     }
                 }
                 if (!named or seed == null) continue;
+                // `[tree]` rides the flow's annotation list at top level —
+                // invocation annotations are the mid-chain step surface.
+                for (pi.flow.annotations) |an| {
+                    if (std.mem.eql(u8, an, "tree")) is_tree.* = true;
+                }
                 for (inv.annotations) |an| {
                     if (std.mem.eql(u8, an, "tree")) is_tree.* = true;
                 }
@@ -367,7 +372,10 @@ const std = @import("std");
                 // self-close broke AT the '/', so the '>' may still be ahead.
                 while (i < markup.len and markup[i] != '>') : (i += 1) {}
                 if (i < markup.len) i += 1; // '>'
-                const parent: i64 = if (open.items.len > 0) @as(i64, @intCast(open.items.len - 1)) else -1;
+                // The open stack holds node INDICES — `parent` is the top
+                // entry's value, not the stack depth (which only coincides
+                // with a node index down the left spine).
+                const parent: i64 = if (open.items.len > 0) @as(i64, @intCast(open.items[open.items.len - 1])) else -1;
                 nodes.append(a, .{
                     .tag = a.dupe(u8, tag) catch unreachable,
                     .attrs = parseAttrs(a, region, &prop_name, &prop_type, &malformed),
