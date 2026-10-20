@@ -1,0 +1,10 @@
+name: extension
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: an existing ruled mechanism reached a new context or consumer —
+same rail, new reach ([size(N)]'s call-site semantics carried into
+markup as bufsize). Distinct from language-surface (a new spelling
+joins the ruled vocabulary) and capability-added (a new surface the
+system did not have).
