@@ -136,8 +136,12 @@ const std = @import("std");
     // row's field value at call time). Quoted values keep their quotes for
     // char columns; numeric columns get the inner digits.
     const Attr = struct { name: []const u8, value: []const u8, quoted: bool };
+    // `malformed` is set when the scan ends mid-attr — a bare name, a
+    // `name` with no `=`, an unterminated `"…` or `{{…`, or a value that
+    // is neither. Malformed means the row's tail dropped silently; the
+    // walk turns that into an unconsumed decl → loud downstream refusal.
     const parseAttrs = struct {
-        fn call(a: std.mem.Allocator, region: []const u8, prop_name: *std.ArrayList([]const u8), prop_type: *std.ArrayList([]const u8)) []const Attr {
+        fn call(a: std.mem.Allocator, region: []const u8, prop_name: *std.ArrayList([]const u8), prop_type: *std.ArrayList([]const u8), malformed: *bool) []const Attr {
             var list = std.ArrayList(Attr).initCapacity(a, 4) catch unreachable;
             var i: usize = 0;
             const n = region.len;
@@ -147,16 +151,26 @@ const std = @import("std");
                 const id0 = i;
                 while (i < n and region[i] != '=' and region[i] != ' ' and region[i] != '\t' and region[i] != '\r' and region[i] != '\n') : (i += 1) {}
                 const aname = region[id0..i];
-                if (aname.len == 0) break;
+                if (aname.len == 0) {
+                    malformed.* = true;
+                    break;
+                }
                 while (i < n and (region[i] == ' ' or region[i] == '\t' or region[i] == '\r' or region[i] == '\n')) : (i += 1) {}
-                if (i >= n or region[i] != '=') break;
+                if (i >= n or region[i] != '=') {
+                    malformed.* = true;
+                    break;
+                }
                 i += 1;
                 while (i < n and (region[i] == ' ' or region[i] == '\t')) : (i += 1) {}
-                if (i >= n) break;
+                if (i >= n) {
+                    malformed.* = true;
+                    break;
+                }
                 if (region[i] == '"') {
                     const v0 = i;
                     i += 1;
                     while (i < n and region[i] != '"') : (i += 1) {}
+                    if (i >= n) malformed.* = true;
                     if (i < n) i += 1;
                     list.append(a, .{
                         .name = a.dupe(u8, aname) catch unreachable,
@@ -164,7 +178,10 @@ const std = @import("std");
                         .quoted = true,
                     }) catch unreachable;
                 } else if (i + 1 < n and region[i] == '{' and region[i + 1] == '{') {
-                    const pe = std.mem.indexOfPos(u8, region, i + 2, "}}") orelse break;
+                    const pe = std.mem.indexOfPos(u8, region, i + 2, "}}") orelse {
+                        malformed.* = true;
+                        break;
+                    };
                     const ph = std.mem.trim(u8, region[i + 2 .. pe], " \t");
                     i = pe + 2;
                     var ident = ph;
@@ -186,7 +203,10 @@ const std = @import("std");
                         .value = a.dupe(u8, ident) catch unreachable,
                         .quoted = false,
                     }) catch unreachable;
-                } else break;
+                } else {
+                    malformed.* = true;
+                    break;
+                }
             }
             return list.toOwnedSlice(a) catch unreachable;
         }
@@ -203,6 +223,7 @@ const std = @import("std");
         nodes: []const MNode,
         prop_name: []const []const u8,
         prop_type: []const []const u8,
+        malformed: bool,
     };
     const parseNodes = struct {
         fn call(a: std.mem.Allocator, markup: []const u8) Parsed {
@@ -211,6 +232,7 @@ const std = @import("std");
             var texts = std.ArrayList(std.ArrayList(u8)).initCapacity(a, 8) catch unreachable;
             var prop_name = std.ArrayList([]const u8).initCapacity(a, 2) catch unreachable;
             var prop_type = std.ArrayList([]const u8).initCapacity(a, 2) catch unreachable;
+            var malformed = false;
             var i: usize = 0;
             while (i < markup.len) {
                 const t0 = i;
@@ -220,6 +242,16 @@ const std = @import("std");
                     texts.items[top].appendSlice(a, markup[t0..i]) catch unreachable;
                 }
                 if (i >= markup.len) break;
+                // `<!-- … -->` — a comment emits no node and no text. An
+                // unterminated comment is malformed, like a truncated attr.
+                if (i + 3 < markup.len and markup[i + 1] == '!' and markup[i + 2] == '-' and markup[i + 3] == '-') {
+                    const ce = std.mem.indexOfPos(u8, markup, i + 4, "-->") orelse {
+                        malformed = true;
+                        break;
+                    };
+                    i = ce + 3;
+                    continue;
+                }
                 if (i + 1 < markup.len and markup[i + 1] == '/') {
                     while (i < markup.len and markup[i] != '>') : (i += 1) {}
                     if (i < markup.len) i += 1;
@@ -252,7 +284,7 @@ const std = @import("std");
                 const parent: i64 = if (open.items.len > 0) @as(i64, @intCast(open.items.len - 1)) else -1;
                 nodes.append(a, .{
                     .tag = a.dupe(u8, tag) catch unreachable,
-                    .attrs = parseAttrs(a, region, &prop_name, &prop_type),
+                    .attrs = parseAttrs(a, region, &prop_name, &prop_type, &malformed),
                     .depth = @intCast(if (parent < 0) 0 else nodes.items[@intCast(parent)].depth + 1),
                     .parent = parent,
                     .text = "",
@@ -264,6 +296,7 @@ const std = @import("std");
                 .nodes = nodes.toOwnedSlice(a) catch unreachable,
                 .prop_name = prop_name.toOwnedSlice(a) catch unreachable,
                 .prop_type = prop_type.toOwnedSlice(a) catch unreachable,
+                .malformed = malformed,
             };
         }
     }.call;
@@ -315,6 +348,9 @@ const std = @import("std");
     }.call;
 
     // Synthesize the tor decl + impl pair. `cols` is the target store's schema.
+    // `malformed` comes back true when the markup couldn't be fully scanned —
+    // the walk then leaves the decl for a loud downstream refusal rather
+    // than emitting rows whose tail silently dropped.
     const synth = struct {
         fn call(
             a: std.mem.Allocator,
@@ -325,8 +361,10 @@ const std = @import("std");
             markup: []const u8,
             cmodule: []const u8,
             cloc: anytype,
+            malformed: *bool,
         ) [2]ast.Item {
             const parsed = parseNodes(a, markup);
+            malformed.* = parsed.malformed;
             const nodes = parsed.nodes;
             const n_nodes = nodes.len;
 
@@ -529,8 +567,16 @@ const std = @import("std");
             new_items.append(allocator, pi) catch unreachable;
             continue;
         }
+        var malformed = false;
+        const pair = synth(allocator, cname, store, cols, is_tree, markup, pi.flow.module, pi.flow.location, &malformed);
+        if (malformed) {
+            // Malformed markup → leave the decl unconsumed: the compiler
+            // refuses it downstream with a file:line diagnostic instead of
+            // silently seeding a partial tree.
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
         found = true;
-        const pair = synth(allocator, cname, store, cols, is_tree, markup, pi.flow.module, pi.flow.location);
         synthed.append(allocator, pair[0]) catch unreachable;
         synthed.append(allocator, pair[1]) catch unreachable;
         const consumed = std.fmt.allocPrint(allocator, "// oshun: component '{s}' synthesized → tor + spec-seed impl (store {s})", .{ cname, store }) catch unreachable;
