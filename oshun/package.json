@@ -1,0 +1,21 @@
+{
+  "name": "@korulang/oshun",
+  "version": "0.0.1",
+  "description": "Oshun — the OMNI markup language. XAML/WPF-flavored authoring (elements, attrs, {{prop:t}} placeholders, bind handles) lowered to spec-row seeds. Solver-free; pairs with libs/ui for the panel words.",
+  "keywords": ["koru", "korulang", "oshun", "ui", "markup", "xaml", "transform"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "oshun"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": ["index.kz"],
+  "koru": {
+    "entry": "index.kz"
+  }
+}

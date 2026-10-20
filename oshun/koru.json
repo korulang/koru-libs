@@ -1,0 +1,6 @@
+{
+  "name": "@korulang/oshun",
+  "version": "0.0.1",
+  "description": "Oshun — the OMNI markup language (XAML/WPF-flavored) lowered to spec-row seeds",
+  "koru": { "entry": "index.kz" }
+}

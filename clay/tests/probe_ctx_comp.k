@@ -10,13 +10,13 @@
 import std/store
 import std/io
 import std/ctx
-import libs/ui
+import libs/oshun
 
 std/store:new(theme, capacity: 8) { accent: f64, fs: f64 }
 std/store:new(hands) { cardh: i64 }
 std/store:new(spec, capacity: 256) { d: i64, ord: i64, kind: char[8], tx: char[40], fs: f64 }
 
-libs/ui:component(card, spec) {
+libs/oshun:component(card, spec) {
     <text tx="hi" fs={{ fs:f }} bind="hands.cardh"/>
 }
 

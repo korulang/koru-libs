@@ -1,0 +1,557 @@
+// @korulang/oshun — the OMNI markup language. Oshun is the authoring
+// surface: the markup inside `oshun:component`'s braces, named for the
+// orisha of aesthetics — the design layer over the OMNI panel dialect.
+// This package owns MARKUP → spec-row seeds; libs/ui owns WORDS → solver
+// numerics; libs/clay owns the solver. No solver dependency — the
+// transform emits plain std.store inserts, so markup-only consumers pull
+// no @cImport into their backend.
+//
+//   libs/oshun:component(seed, spec) {
+//       <panel ws="star" dir="ttb" gap="14">
+//           <text tx="control gallery" fs="15"/>
+//           <tab tx="alpha" uid="200"/>
+//       </panel>
+//   }
+//
+// is a DECLARATION: it synthesizes a tor `seed { <props> }` plus an impl
+// that inserts the markup tree into `store` — the same whole-program walk
+// koru/vaxis:component runs, a different lowering target (spec rows, not
+// write-at paint calls). The generated rows name EVERY declared column once
+// — KORU161 by construction — with defaults taken from the column's own
+// type (char→"", i64/bool→0, f64→0.0), read off the `std/store:new` seed
+// block. A spec schema can carry app columns the markup never mentions and
+// they still emit — defaults are the generator's business, not the schema's.
+//
+// Dialect:
+//   <tag …/>          → one insert row; the tag lands in `kind`
+//   attr="v"          → a row field, formatted by that column's declared type
+//   attr={{ p:t }}    → a prop on the synthesized tor, forwarded verbatim
+//                       (Liquid-shaped; the tor's input IS the prop list)
+//   <tag>text</tag>   → inner text lands in `tx` when no tx attr names it
+//   nesting           → `d` = markup depth; on a `[tree]` store, a
+//                       `store[child].parent: parent` write per edge
+//   `hid` column      → when the schema declares one, `store[h].hid: h` —
+//                       the self-handle every row writes at seed
+//   bind="s.f"        → `stored { s.f: h }` — the row's handle captured into
+//                       another store's field; how markup names interactive
+//                       nodes for dispatch (strip/alphah/buth in the gallery)
+//   ord               → an attr; absent, the row's preorder index × 100
+//
+// The synthesized tor is a NORMAL koru tor — call it, branch on it,
+// compose it. Handlers stay outside markup (`! draw` arms own behavior);
+// markup is pure structure. Dynamic collections stay store+template — a
+// `<vlist>` row names the container, its items still arrive through the
+// items store and the expansion arm.
+
+const std = @import("std");
+
+~[comptime|transform|pre]pub tor component {
+    expr: Expression,
+    source: Source,
+    invocation: *const Invocation,
+    item: *const Item,
+    program: *const Program,
+    allocator: std.mem.Allocator
+} -> SiteResult
+
+~proc component|zig {
+    const ast = @import("ast");
+    _ = expr;
+    _ = invocation;
+    _ = item;
+
+    const mkPath = struct {
+        fn call(a: std.mem.Allocator, qual: ?[]const u8, seg0: []const u8) ast.DottedPath {
+            const segs = a.alloc([]const u8, 1) catch unreachable;
+            segs[0] = a.dupe(u8, seg0) catch unreachable;
+            return .{
+                .module_qualifier = if (qual) |q| a.dupe(u8, q) catch unreachable else null,
+                .segments = segs,
+            };
+        }
+    }.call;
+
+    // s→string / d→i64 / f→f64 / b→bool — same Liquid type rail as vaxis.
+    const mapType = struct {
+        fn call(tc: []const u8) []const u8 {
+            if (std.mem.eql(u8, tc, "d")) return "i64";
+            if (std.mem.eql(u8, tc, "f")) return "f64";
+            if (std.mem.eql(u8, tc, "b")) return "bool";
+            return "string";
+        }
+    }.call;
+
+    // A target store's declared columns, read off its `std/store:new` seed
+    // block (`d: i64, kind: char[8], …`) — names AND types, in declaration
+    // order. `is_tree` comes back when the new invocation wears `[tree]`.
+    const Col = struct { name: []const u8, ty: []const u8 };
+    const schemaOf = struct {
+        fn call(a: std.mem.Allocator, prog: *const ast.Program, store: []const u8, is_tree: *bool) []const Col {
+            for (prog.items) |*pi| {
+                if (pi.* != .flow) continue;
+                const inv = pi.flow.inv();
+                if (inv.path.segments.len != 1 or !std.mem.eql(u8, inv.path.segments[0], "new")) continue;
+                const mq = inv.path.module_qualifier orelse continue;
+                if (!std.mem.eql(u8, mq, "std.store")) continue;
+                var named = false;
+                var seed: ?[]const u8 = null;
+                for (inv.args) |arg| {
+                    if (std.mem.eql(u8, arg.name, "expr")) {
+                        var v = arg.value;
+                        if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') v = v[1 .. v.len - 1];
+                        named = std.mem.eql(u8, v, store);
+                    } else if (std.mem.eql(u8, arg.name, "source")) {
+                        seed = if (arg.source_value) |sv| sv.text else arg.value;
+                    }
+                }
+                if (!named or seed == null) continue;
+                for (inv.annotations) |an| {
+                    if (std.mem.eql(u8, an, "tree")) is_tree.* = true;
+                }
+                var cols = std.ArrayList(Col).initCapacity(a, 16) catch unreachable;
+                var tok = std.mem.tokenizeAny(u8, seed.?, ",\n\r\t");
+                while (tok.next()) |raw| {
+                    const f = std.mem.trim(u8, raw, " \t");
+                    if (f.len == 0) continue;
+                    const cp = std.mem.indexOfScalar(u8, f, ':') orelse continue;
+                    const nm = std.mem.trim(u8, f[0..cp], " \t");
+                    var ty = std.mem.trim(u8, f[cp + 1 ..], " \t");
+                    if (std.mem.indexOfScalar(u8, ty, '[')) |lb| {
+                        // `n: 0[i64]` style default tail — keep the bare type.
+                        if (std.mem.indexOfScalar(u8, ty, ']')) |rb| {
+                            if (lb < rb) ty = ty[0 .. rb + 1];
+                        }
+                    }
+                    if (nm.len == 0 or ty.len == 0) continue;
+                    cols.append(a, .{ .name = a.dupe(u8, nm) catch unreachable, .ty = a.dupe(u8, ty) catch unreachable }) catch unreachable;
+                }
+                return cols.toOwnedSlice(a) catch unreachable;
+            }
+            return &[_]Col{};
+        }
+    }.call;
+
+    // Attr value → prop registration + emitted value. `{{ p:t }}` registers
+    // p:t on the tor's input and emits bare `p` (the prop rides in as the
+    // row's field value at call time). Quoted values keep their quotes for
+    // char columns; numeric columns get the inner digits.
+    const Attr = struct { name: []const u8, value: []const u8, quoted: bool };
+    const parseAttrs = struct {
+        fn call(a: std.mem.Allocator, region: []const u8, prop_name: *std.ArrayList([]const u8), prop_type: *std.ArrayList([]const u8)) []const Attr {
+            var list = std.ArrayList(Attr).initCapacity(a, 4) catch unreachable;
+            var i: usize = 0;
+            const n = region.len;
+            while (i < n) {
+                while (i < n and (region[i] == ' ' or region[i] == '\t' or region[i] == '\r' or region[i] == '\n' or region[i] == '/')) : (i += 1) {}
+                if (i >= n) break;
+                const id0 = i;
+                while (i < n and region[i] != '=' and region[i] != ' ' and region[i] != '\t' and region[i] != '\r' and region[i] != '\n') : (i += 1) {}
+                const aname = region[id0..i];
+                if (aname.len == 0) break;
+                while (i < n and (region[i] == ' ' or region[i] == '\t' or region[i] == '\r' or region[i] == '\n')) : (i += 1) {}
+                if (i >= n or region[i] != '=') break;
+                i += 1;
+                while (i < n and (region[i] == ' ' or region[i] == '\t')) : (i += 1) {}
+                if (i >= n) break;
+                if (region[i] == '"') {
+                    const v0 = i;
+                    i += 1;
+                    while (i < n and region[i] != '"') : (i += 1) {}
+                    if (i < n) i += 1;
+                    list.append(a, .{
+                        .name = a.dupe(u8, aname) catch unreachable,
+                        .value = a.dupe(u8, region[v0..i]) catch unreachable,
+                        .quoted = true,
+                    }) catch unreachable;
+                } else if (i + 1 < n and region[i] == '{' and region[i + 1] == '{') {
+                    const pe = std.mem.indexOfPos(u8, region, i + 2, "}}") orelse break;
+                    const ph = std.mem.trim(u8, region[i + 2 .. pe], " \t");
+                    i = pe + 2;
+                    var ident = ph;
+                    var ktype: []const u8 = "string";
+                    if (std.mem.indexOfScalar(u8, ph, ':')) |cp| {
+                        ident = std.mem.trim(u8, ph[0..cp], " \t");
+                        ktype = mapType(std.mem.trim(u8, ph[cp + 1 ..], " \t"));
+                    }
+                    var seen = false;
+                    for (prop_name.items) |pn| {
+                        if (std.mem.eql(u8, pn, ident)) seen = true;
+                    }
+                    if (!seen) {
+                        prop_name.append(a, a.dupe(u8, ident) catch unreachable) catch unreachable;
+                        prop_type.append(a, a.dupe(u8, ktype) catch unreachable) catch unreachable;
+                    }
+                    list.append(a, .{
+                        .name = a.dupe(u8, aname) catch unreachable,
+                        .value = a.dupe(u8, ident) catch unreachable,
+                        .quoted = false,
+                    }) catch unreachable;
+                } else break;
+            }
+            return list.toOwnedSlice(a) catch unreachable;
+        }
+    }.call;
+
+    // Markup walk → flat preorder node list. Each node: tag, attrs, depth,
+    // parent's preorder index (-1 for roots), and direct inner text (which
+    // lands in `tx` when no tx attr names it — <text>hi</text> = tx="hi").
+    // Iterative — an explicit open-element stack, no recursion: `<tag …>`
+    // pushes, `</…>` pops, `/>` never pushes. Text runs between tags append
+    // to the innermost open element.
+    const MNode = struct { tag: []const u8, attrs: []const Attr, depth: i64, parent: i64, text: []const u8 };
+    const Parsed = struct {
+        nodes: []const MNode,
+        prop_name: []const []const u8,
+        prop_type: []const []const u8,
+    };
+    const parseNodes = struct {
+        fn call(a: std.mem.Allocator, markup: []const u8) Parsed {
+            var nodes = std.ArrayList(MNode).initCapacity(a, 8) catch unreachable;
+            var open = std.ArrayList(usize).initCapacity(a, 4) catch unreachable;
+            var texts = std.ArrayList(std.ArrayList(u8)).initCapacity(a, 8) catch unreachable;
+            var prop_name = std.ArrayList([]const u8).initCapacity(a, 2) catch unreachable;
+            var prop_type = std.ArrayList([]const u8).initCapacity(a, 2) catch unreachable;
+            var i: usize = 0;
+            while (i < markup.len) {
+                const t0 = i;
+                while (i < markup.len and markup[i] != '<') : (i += 1) {}
+                if (i > t0 and open.items.len > 0) {
+                    const top = open.items[open.items.len - 1];
+                    texts.items[top].appendSlice(a, markup[t0..i]) catch unreachable;
+                }
+                if (i >= markup.len) break;
+                if (i + 1 < markup.len and markup[i + 1] == '/') {
+                    while (i < markup.len and markup[i] != '>') : (i += 1) {}
+                    if (i < markup.len) i += 1;
+                    if (open.items.len > 0) {
+                        const top = open.items[open.items.len - 1];
+                        open.items.len -= 1;
+                        nodes.items[top].text = std.mem.trim(u8, texts.items[top].toOwnedSlice(a) catch unreachable, " \t\r\n");
+                    }
+                    continue;
+                }
+                i += 1; // '<'
+                const n0 = i;
+                while (i < markup.len) : (i += 1) {
+                    const ch = markup[i];
+                    if (ch == ' ' or ch == '\t' or ch == '\r' or ch == '\n' or ch == '>' or ch == '/') break;
+                }
+                const tag = markup[n0..i];
+                const a0 = i;
+                var selfclose = false;
+                while (i < markup.len and markup[i] != '>') : (i += 1) {
+                    if (markup[i] == '/' and i + 1 < markup.len and markup[i + 1] == '>') {
+                        selfclose = true;
+                        break;
+                    }
+                }
+                const region = markup[a0..i];
+                // self-close broke AT the '/', so the '>' may still be ahead.
+                while (i < markup.len and markup[i] != '>') : (i += 1) {}
+                if (i < markup.len) i += 1; // '>'
+                const parent: i64 = if (open.items.len > 0) @as(i64, @intCast(open.items.len - 1)) else -1;
+                nodes.append(a, .{
+                    .tag = a.dupe(u8, tag) catch unreachable,
+                    .attrs = parseAttrs(a, region, &prop_name, &prop_type),
+                    .depth = @intCast(if (parent < 0) 0 else nodes.items[@intCast(parent)].depth + 1),
+                    .parent = parent,
+                    .text = "",
+                }) catch unreachable;
+                texts.append(a, std.ArrayList(u8).initCapacity(a, 8) catch unreachable) catch unreachable;
+                if (!selfclose) open.append(a, nodes.items.len - 1) catch unreachable;
+            }
+            return .{
+                .nodes = nodes.toOwnedSlice(a) catch unreachable,
+                .prop_name = prop_name.toOwnedSlice(a) catch unreachable,
+                .prop_type = prop_type.toOwnedSlice(a) catch unreachable,
+            };
+        }
+    }.call;
+
+    // `tx` is a char column — escape `"` → `\"` in authored text.
+    const esc = struct {
+        fn call(a: std.mem.Allocator, t: []const u8) []const u8 {
+            var out = std.ArrayList(u8).initCapacity(a, t.len + 8) catch unreachable;
+            for (t) |ch| {
+                if (ch == '"' or ch == '\\') out.append(a, '\\') catch unreachable;
+                out.append(a, ch) catch unreachable;
+            }
+            return out.toOwnedSlice(a) catch unreachable;
+        }
+    }.call;
+
+    // Format an attr's stored value for its column type. `quoted` attrs
+    // arrive WITH quotes (`"alpha"`); char columns take them verbatim,
+    // numeric columns strip and re-normalize (f64 always carries a '.').
+    const fmtVal = struct {
+        fn call(a: std.mem.Allocator, ty: []const u8, v: []const u8, quoted: bool) []const u8 {
+            if (std.mem.startsWith(u8, ty, "char")) {
+                if (quoted) return v;
+                return std.fmt.allocPrint(a, "\"{s}\"", .{v}) catch unreachable;
+            }
+            var inner = v;
+            if (quoted and v.len >= 2) inner = v[1 .. v.len - 1];
+            if (std.mem.eql(u8, ty, "f64") or std.mem.eql(u8, ty, "f32")) {
+                // Numeric literals only — `15` → `15.0`. A prop ident
+                // (`fs={{ fs:f }}` emits bare `fs`) or any other expression
+                // passes through verbatim: normalizing a variable reference
+                // into `fs.0` emits a tuple access that does not exist.
+                const numeric = inner.len > 0 and (std.ascii.isDigit(inner[0]) or inner[0] == '-' or inner[0] == '+');
+                if (numeric and std.mem.indexOfScalar(u8, inner, '.') == null and std.mem.indexOfScalar(u8, inner, 'e') == null) {
+                    return std.fmt.allocPrint(a, "{s}.0", .{inner}) catch unreachable;
+                }
+            }
+            return a.dupe(u8, inner) catch unreachable;
+        }
+    }.call;
+
+    // Type default for a column: char→"", f64/f32→0.0, anything else→0.
+    const defVal = struct {
+        fn call(ty: []const u8) []const u8 {
+            if (std.mem.startsWith(u8, ty, "char")) return "\"\"";
+            if (std.mem.eql(u8, ty, "f64") or std.mem.eql(u8, ty, "f32")) return "0.0";
+            return "0";
+        }
+    }.call;
+
+    // Synthesize the tor decl + impl pair. `cols` is the target store's schema.
+    const synth = struct {
+        fn call(
+            a: std.mem.Allocator,
+            cname: []const u8,
+            store: []const u8,
+            cols: []const Col,
+            is_tree: bool,
+            markup: []const u8,
+            cmodule: []const u8,
+            cloc: anytype,
+        ) [2]ast.Item {
+            const parsed = parseNodes(a, markup);
+            const nodes = parsed.nodes;
+            const n_nodes = nodes.len;
+
+            var has_hid = false;
+            for (cols) |col| {
+                if (std.mem.eql(u8, col.name, "hid")) has_hid = true;
+            }
+
+            var ops = std.ArrayList(ast.Invocation).initCapacity(a, n_nodes * 2 + 4) catch unreachable;
+            for (nodes, 0..) |nd, ni| {
+                var row = std.ArrayList(u8).initCapacity(a, 160) catch unreachable;
+                for (cols, 0..) |col, ci| {
+                    if (ci > 0) row.appendSlice(a, ", ") catch unreachable;
+                    row.appendSlice(a, col.name) catch unreachable;
+                    row.appendSlice(a, ": ") catch unreachable;
+                    if (std.mem.eql(u8, col.name, "kind")) {
+                        row.appendSlice(a, "\"") catch unreachable;
+                        row.appendSlice(a, nd.tag) catch unreachable;
+                        row.appendSlice(a, "\"") catch unreachable;
+                        continue;
+                    }
+                    if (std.mem.eql(u8, col.name, "d")) {
+                        row.appendSlice(a, std.fmt.allocPrint(a, "{d}", .{nd.depth}) catch unreachable) catch unreachable;
+                        continue;
+                    }
+                    if (std.mem.eql(u8, col.name, "ord")) {
+                        var found = false;
+                        for (nd.attrs) |at| {
+                            if (std.mem.eql(u8, at.name, "ord")) {
+                                if (!at.quoted and std.mem.eql(u8, at.value, col.name)) {
+                                    row.shrinkRetainingCapacity(row.items.len - 2);
+                                } else {
+                                    row.appendSlice(a, fmtVal(a, col.ty, at.value, at.quoted)) catch unreachable;
+                                }
+                                found = true;
+                            }
+                        }
+                        if (!found) row.appendSlice(a, std.fmt.allocPrint(a, "{d}", .{@as(i64, @intCast(ni)) * 100}) catch unreachable) catch unreachable;
+                        continue;
+                    }
+                    var found = false;
+                    for (nd.attrs) |at| {
+                        if (std.mem.eql(u8, at.name, col.name)) {
+                            // A prop whose value IS the column name must pun
+                            // (`{ fs }`), never `{ fs: fs }` — KORU161.
+                            if (!at.quoted and std.mem.eql(u8, at.value, col.name)) {
+                                row.shrinkRetainingCapacity(row.items.len - 2);
+                            } else {
+                                row.appendSlice(a, fmtVal(a, col.ty, at.value, at.quoted)) catch unreachable;
+                            }
+                            found = true;
+                        }
+                    }
+                    if (!found and std.mem.eql(u8, col.name, "tx") and nd.text.len > 0) {
+                        row.appendSlice(a, "\"") catch unreachable;
+                        row.appendSlice(a, esc(a, nd.text)) catch unreachable;
+                        row.appendSlice(a, "\"") catch unreachable;
+                        found = true;
+                    }
+                    if (!found) row.appendSlice(a, defVal(col.ty)) catch unreachable;
+                }
+                const iargs = a.alloc(ast.Arg, 2) catch unreachable;
+                iargs[0] = .{ .name = a.dupe(u8, "expr") catch unreachable, .value = a.dupe(u8, store) catch unreachable };
+                iargs[1] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = row.toOwnedSlice(a) catch unreachable };
+                ops.append(a, .{ .path = mkPath(a, "std.store", "insert"), .args = iargs }) catch unreachable;
+            }
+            // Self-handle writes (the seed's `spec[h].hid: h` convention —
+            // emitted only when the schema actually declares `hid`).
+            if (has_hid) {
+                for (0..n_nodes) |ni| {
+                    const sargs = a.alloc(ast.Arg, 1) catch unreachable;
+                    sargs[0] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = std.fmt.allocPrint(a, "{s}[h{d}].hid: h{d}", .{ store, ni, ni }) catch unreachable };
+                    ops.append(a, .{ .path = mkPath(a, "std.store", "stored"), .args = sargs }) catch unreachable;
+                }
+            }
+            // Tree edges: `store[child].parent: parent` per markup edge.
+            if (is_tree) {
+                for (nodes, 0..) |nd, ni| {
+                    if (nd.parent < 0) continue;
+                    const sargs = a.alloc(ast.Arg, 1) catch unreachable;
+                    sargs[0] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = std.fmt.allocPrint(a, "{s}[h{d}].parent: h{d}", .{ store, ni, nd.parent }) catch unreachable };
+                    ops.append(a, .{ .path = mkPath(a, "std.store", "stored"), .args = sargs }) catch unreachable;
+                }
+            }
+            // `bind="world.strip"` → `stored { world.strip: h }` — the node's
+            // handle captured where dispatch can find it. `bind` names no
+            // row column, so it never lands in the insert itself.
+            for (nodes, 0..) |nd, ni| {
+                for (nd.attrs) |at| {
+                    if (!std.mem.eql(u8, at.name, "bind")) continue;
+                    var target = at.value;
+                    if (at.quoted and target.len >= 2) target = target[1 .. target.len - 1];
+                    const sargs = a.alloc(ast.Arg, 1) catch unreachable;
+                    sargs[0] = .{ .name = a.dupe(u8, "source") catch unreachable, .value = std.fmt.allocPrint(a, "{s}: h{d}", .{ target, ni }) catch unreachable };
+                    ops.append(a, .{ .path = mkPath(a, "std.store", "stored"), .args = sargs }) catch unreachable;
+                }
+            }
+
+            // Chain: ops[0] is the site; each later op rides a continuation —
+            // `| row hK` while still inside the insert run AND for the last
+            // insert's row arm, which wraps the first stored op (hand shape:
+            // `insert | row h12 |> stored …`); bare `|>` after that.
+            var tail: []const ast.Continuation = &[_]ast.Continuation{};
+            var k: usize = ops.items.len;
+            while (k > 1) {
+                k -= 1;
+                const link = a.alloc(ast.Continuation, 1) catch unreachable;
+                var binding: ?[]const u8 = null;
+                if (k <= n_nodes) {
+                    binding = std.fmt.allocPrint(a, "h{d}", .{k - 1}) catch unreachable;
+                }
+                link[0] = .{
+                    .branch = a.dupe(u8, if (k <= n_nodes) "row" else "") catch unreachable,
+                    .binding = binding,
+                    .condition = null,
+                    .kind = .terminal,
+                    .node = .{ .invocation = ops.items[k] },
+                    .indent = 0,
+                    .continuations = tail,
+                    .location = cloc,
+                };
+                tail = link;
+            }
+
+            const fields = a.alloc(ast.Field, parsed.prop_name.len) catch unreachable;
+            for (parsed.prop_name, parsed.prop_type, 0..) |pn, pt, i| {
+                fields[i] = .{ .name = a.dupe(u8, pn) catch unreachable, .type = a.dupe(u8, pt) catch unreachable };
+            }
+            const event_item = ast.Item{ .event_decl = ast.EventDecl{
+                .path = mkPath(a, cmodule, cname),
+                .input = ast.Shape{ .fields = fields },
+                .branches = &[_]ast.Branch{},
+                .return_type = null,
+                .is_public = false,
+                .is_implicit_flow = false,
+                .annotations = &[_][]const u8{},
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+            const impl_item = ast.Item{ .flow = ast.Flow{
+                .body = ast.rootSite(ops.items[0], tail, cloc),
+                .impl_of = mkPath(a, cmodule, cname),
+                .is_pure = false,
+                .is_transitively_pure = false,
+                .location = cloc,
+                .module = a.dupe(u8, cmodule) catch unreachable,
+            } };
+            return .{ event_item, impl_item };
+        }
+    }.call;
+
+    // WHOLE-PROGRAM WALK (same contract as koru/vaxis:component): find every
+    // `component(name, store) {…}` flow, synthesize tor + impl, consume the
+    // declaration, hand back the rewritten program — `.whole_program` so the
+    // synthesized decls exist before shape checking and the site-transform
+    // walkers (insert/stored belong to that family) see the new invocations.
+    var new_items = std.ArrayList(ast.Item).initCapacity(allocator, program.items.len + 8) catch unreachable;
+    var synthed = std.ArrayList(ast.Item).initCapacity(allocator, 8) catch unreachable;
+    var found = false;
+
+    for (program.items) |pi| {
+        const is_component = pi == .flow and blk: {
+            const segs = pi.flow.inv().path.segments;
+            break :blk segs.len > 0 and std.mem.eql(u8, segs[segs.len - 1], "component");
+        };
+        if (!is_component) {
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+        const cinv = pi.flow.inv();
+        var cname: []const u8 = "";
+        var store: []const u8 = "";
+        var markup: []const u8 = "";
+        var positional: usize = 0;
+        for (cinv.args) |arg| {
+            if (std.mem.eql(u8, arg.name, "source")) {
+                markup = if (arg.source_value) |sv| sv.text else arg.value;
+            } else {
+                var v = arg.value;
+                if (v.len >= 2 and v[0] == '"' and v[v.len - 1] == '"') v = v[1 .. v.len - 1];
+                if (positional == 0) {
+                    cname = a: {
+                        break :a allocator.dupe(u8, v) catch unreachable;
+                    };
+                } else if (positional == 1) {
+                    store = allocator.dupe(u8, v) catch unreachable;
+                }
+                positional += 1;
+            }
+        }
+        if (cname.len == 0 or store.len == 0) {
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+        var is_tree = false;
+        const cols = schemaOf(allocator, program, store, &is_tree);
+        if (cols.len == 0) {
+            // No schema → can't emit a full row; leave the decl for a loud
+            // downstream refusal rather than guessing columns.
+            new_items.append(allocator, pi) catch unreachable;
+            continue;
+        }
+        found = true;
+        const pair = synth(allocator, cname, store, cols, is_tree, markup, pi.flow.module, pi.flow.location);
+        synthed.append(allocator, pair[0]) catch unreachable;
+        synthed.append(allocator, pair[1]) catch unreachable;
+        const consumed = std.fmt.allocPrint(allocator, "// oshun: component '{s}' synthesized → tor + spec-seed impl (store {s})", .{ cname, store }) catch unreachable;
+        new_items.append(allocator, ast.Item{ .host_line = ast.HostLine{
+            .content = consumed,
+            .location = pi.flow.location,
+            .module = allocator.dupe(u8, pi.flow.module) catch unreachable,
+        } }) catch unreachable;
+    }
+
+    if (!found) return .{};
+    for (synthed.items) |si| {
+        new_items.append(allocator, si) catch unreachable;
+    }
+    const new_prog = allocator.create(ast.Program) catch unreachable;
+    new_prog.* = .{
+        .items = new_items.toOwnedSlice(allocator) catch unreachable,
+        .module_annotations = program.module_annotations,
+        .main_module_name = program.main_module_name,
+        .allocator = program.allocator,
+        .type_registry = program.type_registry,
+    };
+    return .{ .whole_program = new_prog };
+}
