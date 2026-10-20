@@ -1,0 +1,10 @@
+name: measured-parity
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a comparison replaced an assumption — the candidate ran the
+reference's workload and the result was a ratio, not just a number.
+Distinct from measurement (a value established by running something);
+parity claims carry a named comparator and a verdict within reach of
+one, and the workload must have been gated identical first.
