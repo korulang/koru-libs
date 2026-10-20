@@ -30,7 +30,7 @@ import std/fmt
 import std/string
 import std/ctx
 
-std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], dft: 0[i64], ovr: 0[i64] }
+std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], dft: 0[i64] }
 
 // A theme = four role colors + a font size. r0 bg / r1 panel / r2
 // accent / r3 ink; `self` is the row's own handle, stamped at seed so
@@ -168,26 +168,18 @@ libs/clay:init(width: 640, height: 400)
                                 ! query { [row]sh } when sh.scope == 1
                                     |> std/store:stored { sh.th: p.th }
         ! mouse-move e  // hover-candidacy — cursor over a swatch retargets
-                        // the preview with no click; p.th != s.th keeps the
-                        // write once-per-change. Hovering anything else
-                        // mirrors: preview falls back to the shell's live
-                        // theme, so the card always shows either the held
-                        // candidate or what apply would replace.
-            |> std/store:stored { world.ovr: 0 }
+                        // the preview with no click; the candidate is STICKY:
+                        // leaving the swatch keeps it (reverting on leave broke
+                        // apply — the crossing-to-the-button pixels reverted the
+                        // preview before the click landed). p.th != s.th keeps
+                        // the write once-per-change, not once-per-pixel.
             |> std/store:query(hit)
                 ! query hi when e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
                     |> std/store:query(spec)
                         ! query { [row]s, [ordinal]o } when o == hi.seq and s.act == 1
-                            |> std/store:stored { world.ovr: 1 }
                             |> std/store:query(spec)
                                 ! query { [row]p } when p.scope == 2 and p.th != s.th
                                     |> std/store:stored { p.th: s.th }
-            |> if (world.ovr == 0)
-                | then |> std/store:query(spec)
-                    ! query { [row]p } when p.scope == 2
-                        |> std/store:query(spec)
-                            ! query { [row]sh } when sh.scope == 1 and sh.th != p.th
-                                |> std/store:stored { p.th: sh.th }
         ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("theme_preview: closed")

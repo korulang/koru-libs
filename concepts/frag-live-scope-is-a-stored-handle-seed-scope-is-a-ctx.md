@@ -38,16 +38,20 @@ commit, which is the desired semantics for "preview becomes live."
 Hover-candidacy landed the same day and was one arm: `! mouse-move`
 queries the hit map, and when the hovered row's `act` is 1 writes the
 preview scope's `th` to the swatch's own theme handle — same stored-
-write trigger, no new machinery. Its mirror rule completes the loop:
-when the cursor is over nothing actionable, the preview scope's `th`
-is written back to the shell's — the preview card always shows either
-the held candidate or what apply would replace. Scripted pin covers
-all three transitions: `input.move` over swatch 1 re-themed the
-preview with zero clicks, a move to empty space reverted it, and the
-apply click committed the last-hovered theme. The `p.th != s.th`
-guard on each write keeps it once-per-change rather than once-per-
-pixel — worth remembering wherever a standing watch or event arm
-feeds a handle.
+write trigger, no new machinery. The candidate is STICKY: leaving the
+swatch keeps it. An earlier "mirror" rule reverted preview to the
+shell's theme whenever the cursor held nothing actionable — it looked
+consistent on paper and broke apply in the hand: the pixels between
+the swatch and the apply chip are nothing actionable, so crossing to
+the commit button reverted the candidate and apply then committed the
+shell's own theme — a correct no-op that read as "click doesn't take."
+Selection that a commit gesture can reach must survive the path to the
+commit button. Scripted pin covers all three transitions: `input.move`
+over swatch 1 re-themed the preview with zero clicks, a move to empty
+space left it holding, and the apply click committed the last-hovered
+theme. The `p.th != s.th` guard on each write keeps it once-per-
+change rather than once-per-pixel — worth remembering wherever a
+standing watch or event arm feeds a handle.
 
 Open: per-subtree dirty propagation is possible now that scope
 membership is derivable from `eff`/`th` columns — but only pays once a
