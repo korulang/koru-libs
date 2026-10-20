@@ -41,3 +41,16 @@ numeric or otherwise non-text column leaves the decl unconsumed — loud
 refusal, because stringifying a typed slot is the XAML mistake in
 reverse. Dynamic IDs and templated labels are legitimate; silent
 stringification is not.
+
+## The scratch a format lands in is sized at the element (2026-10-20)
+
+Every mixed value formats into the same per-site threadlocal scratch
+`fmt:ln` uses — and since `[size(N)]` made that size a call-site
+decision, markup gets its own spelling: `bufsize="16k"` on the element.
+It is a *meta-attr* in `bind`'s class — consumed by the transform,
+never a row field — and it sizes every mixed value that element emits,
+no wider (per-call-site means per-element). The refusal culture holds
+in both directions: a malformed size (`bufsize="xyz"`, zero, a `{{ }}`
+reference — runtime-sized scratch is not a thing) refuses, and a
+`bufsize` on an element with no mixed values refuses too, because a
+silent no-op attr is the same lie as a silently-dropped one.

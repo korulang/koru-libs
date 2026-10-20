@@ -33,6 +33,11 @@
 //                       free discharges the String inside the row arm.
 //                       Mixed on a non-text column → loud refusal.
 //   <tag>lit{{ p:t }}</tag> → same parts rule for inner text → `tx`
+//   bufsize="16k"     → sizes the scratch THIS element's mixed values
+//                       format into (digits, optional k/m; the same rail
+//                       as fmt:ln's [size(N)]). A meta-attr like `bind` —
+//                       consumed by the transform, never a row field.
+//                       On an element with no mixed values it refuses.
 //   <!-- … -->        → a comment; emits no node
 //   <tag>text</tag>   → inner text lands in `tx` when no tx attr names it
 //   nesting           → `d` = markup depth; on a `[tree]` store, a
@@ -436,13 +441,36 @@ const std = @import("std");
         }
     }.call;
 
+    // `bufsize="16k"` on an element sizes the scratch its own mixed values
+    // format into — digits with an optional k/m suffix, the same rail as
+    // fmt:ln's [size(N)]. Returns null on a malformed or zero size.
+    const parseBufSize = struct {
+        fn call(v: []const u8) ?usize {
+            var s = v;
+            if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') s = s[1 .. s.len - 1];
+            var mult: usize = 1;
+            var digits = s;
+            if (digits.len > 0 and (digits[digits.len - 1] == 'k' or digits[digits.len - 1] == 'K')) {
+                mult = 1024;
+                digits = digits[0 .. digits.len - 1];
+            } else if (digits.len > 0 and (digits[digits.len - 1] == 'm' or digits[digits.len - 1] == 'M')) {
+                mult = 1024 * 1024;
+                digits = digits[0 .. digits.len - 1];
+            }
+            const parsed = std.fmt.parseUnsigned(usize, digits, 10) catch 0;
+            const size = parsed *| mult;
+            if (size == 0) return null;
+            return size;
+        }
+    }.call;
+
     // fmt:ln's own lowering, spelled directly — transforms have already run
     // when component emits, so the generated `fmt:ln` call would never be
     // expanded (unknown tor downstream). Emit what its transform produces:
     // a `std.fmt:ln.impl` invocation whose inline_body bufPrints the
-    // template into the 4KiB threadlocal scratch and binds `{ .text }`.
+    // template into the threadlocal scratch and binds `{ .text }`.
     const buildLnInline = struct {
-        fn call(a: std.mem.Allocator, tmpl: []const u8) []const u8 {
+        fn call(a: std.mem.Allocator, tmpl: []const u8, buf_size: usize) []const u8 {
             var format_buf = std.ArrayList(u8).initCapacity(a, 128) catch unreachable;
             var args_buf = std.ArrayList(u8).initCapacity(a, 64) catch unreachable;
             const s0: usize = if (tmpl.len > 0 and tmpl[0] == '"') 1 else 0;
@@ -496,8 +524,8 @@ const std = @import("std");
             }
             return std.fmt.allocPrint(
                 a,
-                "{{\n    const __S = struct {{ threadlocal var __buf: [4096]u8 = undefined; }};\n    const __text = @import(\"std\").fmt.bufPrint(&__S.__buf, \"{s}\", .{{{s}}}) catch @panic(\"oshun mixed-parts value exceeds the 4096-byte scratch buffer\");\n    break :__KORU_INLINE__ .{{ .text = __text }};\n}}",
-                .{ format_buf.items, args_buf.items },
+                "{{\n    const __S = struct {{ threadlocal var __buf: [{d}]u8 = undefined; }};\n    const __text = @import(\"std\").fmt.bufPrint(&__S.__buf, \"{s}\", .{{{s}}}) catch @panic(\"oshun mixed-parts value exceeds the {d}-byte scratch buffer\");\n    break :__KORU_INLINE__ .{{ .text = __text }};\n}}",
+                .{ buf_size, format_buf.items, args_buf.items, buf_size },
             ) catch unreachable;
         }
     }.call;
@@ -560,7 +588,23 @@ const std = @import("std");
             var late_pn = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
             var late_pt = std.ArrayList([]const u8).initCapacity(a, 4) catch unreachable;
             const mixes = a.alloc([]const MixField, n_nodes) catch unreachable;
+            const buf_sizes = a.alloc(usize, n_nodes) catch unreachable;
             for (nodes, 0..) |nd, ni| {
+                // `bufsize="16k"` — a meta-attr like `bind`: consumed here,
+                // never a row field. Sizes every mixed value on THIS
+                // element; on an element with no mixed values it does
+                // nothing, so it refuses rather than silently dropping.
+                var buf_size: usize = 4096;
+                var saw_bufsize = false;
+                for (nd.attrs) |at| {
+                    if (!std.mem.eql(u8, at.name, "bufsize")) continue;
+                    saw_bufsize = true;
+                    buf_size = parseBufSize(at.value) orelse {
+                        malformed.* = true;
+                        break;
+                    };
+                }
+                buf_sizes[ni] = buf_size;
                 var mfl = std.ArrayList(MixField).initCapacity(a, 2) catch unreachable;
                 for (nd.attrs) |at| {
                     if (!at.quoted or !hasInterp(at.value)) continue;
@@ -633,6 +677,7 @@ const std = @import("std");
                         break;
                     }
                 }
+                if (saw_bufsize and mfl.items.len == 0) malformed.* = true;
                 mixes[ni] = mfl.toOwnedSlice(a) catch unreachable;
             }
 
@@ -655,7 +700,7 @@ const std = @import("std");
                         .path = mkPath(a, "std.fmt", "ln.impl"),
                         .args = &[_]ast.Arg{},
                         .return_binding = a.dupe(u8, m.fvar) catch unreachable,
-                        .inline_body = buildLnInline(a, m.tmpl),
+                        .inline_body = buildLnInline(a, m.tmpl, buf_sizes[ni]),
                     } }) catch unreachable;
                     const pargs = a.alloc(ast.Arg, 1) catch unreachable;
                     pargs[0] = .{ .name = a.dupe(u8, "text") catch unreachable, .value = std.fmt.allocPrint(a, "{s}.text", .{m.fvar}) catch unreachable };
