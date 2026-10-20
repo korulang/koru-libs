@@ -5,11 +5,10 @@ libs/sqlite3:open(path: ":memory:")
 | db d |> libs/sqlite3:exec(conn: d, sql: "CREATE TABLE t (id INTEGER)")
     | ok |> libs/sqlite3:exec(conn: d, sql: "INSERT INTO t VALUES (1)")
         | ok |> libs/sqlite3:query(conn: d) { SELECT id FROM t }
-            | row r |> libs/sqlite3:col.int(stmt: r.row, index: 0): i
+            | row r |> libs/sqlite3:scol.int(stmt: r, index: 0): i
                 |> std/io:print.ln("got {{ i:d }}")
-                |> libs/sqlite3:release.row(r.row)
-                |> libs/sqlite3:finalize.stmt(r.stmt)
-                |> libs/sqlite3:close(r.conn)
+                |> libs/sqlite3:finalize.stmt(stmt: r): c
+                |> libs/sqlite3:close(conn: c)
                 |> std/io:print.ln("abandoned clean")
             | empty d3 |> libs/sqlite3:close(conn: d3) |> std/io:print.ln("empty")
             | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("err")

@@ -1,6 +1,7 @@
-// Terminal-path row access: `| row` carries BOTH obligations on the same
-// object — `stmt` (lifetime, needs finalize/next) and `row` (the live row
-// borrow col.* reads). next(r.conn, r.stmt, r.row) consumes both per step.
+// Terminal-path row access: `| row` hands the stream token — the row is
+// the stream's state, not a second handle, and the stream owns the
+// connection's custody inside it. next(r) spends and re-mints per step;
+// done/err/finalize.stmt hand the connection back out.
 
 import libs/sqlite3
 import std/io
@@ -11,12 +12,12 @@ libs/sqlite3:open(path: ":memory:")
         | ok |> libs/sqlite3:query(conn: d) {
                 SELECT name FROM t ORDER BY id
             }
-            | row r |> libs/sqlite3:col.text(stmt: r.row, index: 0): name
+            | row r |> libs/sqlite3:scol.text(stmt: r, index: 0): name
                 |> std/io:print.ln("row0={{ name:s }}")
-                |> libs/sqlite3:next(r.conn, r.stmt, r.row)
-                    | row r2 |> libs/sqlite3:col.text(stmt: r2.row, index: 0): n2
+                |> libs/sqlite3:next(stmt: r)
+                    | row r2 |> libs/sqlite3:scol.text(stmt: r2, index: 0): n2
                         |> std/io:print.ln("row1={{ n2:s }}")
-                        |> libs/sqlite3:next(r2.conn, r2.stmt, r2.row)
+                        |> libs/sqlite3:next(stmt: r2)
                             | row _ |> std/io:print.ln("unexpected third row")
                             | done d4 |> libs/sqlite3:close(conn: d4) |> std/io:print.ln("done")
                             | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("next err: {{ e.msg:s }}")

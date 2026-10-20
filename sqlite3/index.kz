@@ -41,6 +41,11 @@ pub const Connection = struct {
 
 pub const Statement = struct {
     handle: ?*c.sqlite3_stmt,
+    // A stream owns its connection's custody while it lives: `rows` spends
+    // conn in and `done`/`err`/`finalize.stmt` hand it back, so a live
+    // statement token can never dangle on a closed connection. `row` is the
+    // stream's state, never a second handle — one token per object.
+    conn: *Connection,
 };
 
 /// Generic value binder for `{{...}}` interpolation — the transforms emit
@@ -80,13 +85,20 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
 // Connection Management
 // ============================================================================
 
-~pub tor open { path: string }
+~[
+Open a SQLite database file (":memory:" for transient) — mints the conn token.
+The | db branch's token is what every other verb's conn field takes;
+close-db discharges it.
+]pub tor open { path: string }
 | db *Connection<opened!>
 | err { code: i32, msg: string }
 
 ~proc open|zig {
     var db: ?*c.sqlite3 = null;
-    const rc = c.sqlite3_open(path.ptr, &db);
+    // sqlite3_open wants a C string; a koru `string` is a slice with no
+    // sentinel — comptime literals get away with it, runtime strings don't.
+    const zpath = std.heap.page_allocator.dupeZ(u8, path) catch unreachable;
+    const rc = c.sqlite3_open(zpath.ptr, &db);
     if (rc != c.SQLITE_OK) {
         const msg = c.sqlite3_errmsg(db);
         _ = c.sqlite3_close(db);
@@ -97,7 +109,10 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     return .{ .db = conn };
 }
 
-~pub tor close { conn: *Connection<!opened> }
+~[
+Close the connection and discharge its token for good.
+Afterwards the token names nothing — passing it to another verb is refused.
+]pub tor close { conn: *Connection<!opened> }
 ~proc close|zig {
     if (conn.handle) |h| {
         var it = conn.stmt_cache.iterator();
@@ -117,15 +132,22 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
 // `exec` only READS the connection to run SQL — it never closes it — so it
 // BORROWS `<opened>` rather than consuming and re-minting. The caller keeps its
 // live `opened!` obligation across the call and still owes exactly one `close`.
-~pub tor exec { conn: *Connection<opened>, sql: string }
+~[
+Run rowless SQL — CREATE, INSERT, UPDATE, DELETE, DDL.
+Borrows conn rather than spending it: the token stays live across the
+call. For SELECT use rows, not exec.
+]pub tor exec { conn: *Connection<opened>, sql: string }
 | ok
 | err { code: i32, msg: string }
 
 ~proc exec|zig {
     var errmsg: [*c]u8 = null;
-    const rc = c.sqlite3_exec(conn.handle, sql.ptr, null, null, &errmsg);
+    const zsql = std.heap.page_allocator.dupeZ(u8, sql) catch unreachable;
+    const rc = c.sqlite3_exec(conn.handle, zsql.ptr, null, null, &errmsg);
     if (rc != c.SQLITE_OK) {
-        const msg = if (errmsg) |e| std.mem.span(e) else "unknown error";
+        // errmsg is sqlite-owned and freed below — span it, then dupe before
+        // the free or the slice dangles into freed memory.
+        const msg = if (errmsg) |e| std.heap.page_allocator.dupe(u8, std.mem.span(e)) catch unreachable else "unknown error";
         if (errmsg) |e| c.sqlite3_free(e);
         return .{ .err = .{ .code = rc, .msg = msg } };
     }
@@ -156,7 +178,7 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     // row-body boundary; the statement is finalized exactly ONCE, below, by the
     // engine — so the user never finalizes and cannot leak it (safe by
     // construction, enforced by the phantom checker at compile time).
-    var __row = $mod.Statement{ .handle = stmt };
+    var __row = $mod.Statement{ .handle = stmt, .conn = conn };
     var __rc = $mod.c.sqlite3_step(stmt);
     while (__rc == $mod.c.SQLITE_ROW) : (__rc = $mod.c.sqlite3_step(stmt)) {
         row(&__row);
@@ -414,7 +436,7 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     // semantics (exec): rows are stepped through and dropped.
     w.print("        var {s} = {s}.sqlite3_step({s});\n", .{ RC, C, STMT }) catch unreachable;
     if (row_idx) |ri| {
-        w.print("        var {s} = {s}.Statement{{ .handle = {s} }};\n        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{\n            __koru_inline_{d}(&{s})\n        }}\n", .{ ROW, SQ, STMT, RC, C, RC, C, STMT, ri, ROW }) catch unreachable;
+        w.print("        var {s} = {s}.Statement{{ .handle = {s}, .conn = {s} }};\n        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{\n            __koru_inline_{d}(&{s})\n        }}\n", .{ ROW, SQ, STMT, conn_var, RC, C, RC, C, STMT, ri, ROW }) catch unreachable;
     } else {
         w.print("        while ({s} == {s}.SQLITE_ROW) : ({s} = {s}.sqlite3_step({s})) {{}}\n", .{ RC, C, RC, C, STMT }) catch unreachable;
     }
@@ -502,7 +524,7 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
 // Runtime impl event for shape-checking (never actually runs - inline code does)
 // conn comes from invocation args, captured in generated code
 ~[norun]pub tor query.impl { conn: *Connection<!opened> }
-| row { conn: *Connection<opened!>, stmt: *Statement<prepared!>, row: *Statement<row!> }
+| row *Statement<stream!>
 | empty *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: string }
 
@@ -637,7 +659,7 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     code_buf.appendSlice(allocator, "    const __sqlite3 = @import(\"root\").") catch unreachable;
     code_buf.appendSlice(allocator, mod_path) catch unreachable;
     code_buf.appendSlice(allocator, ";\n    const c = __sqlite3.c;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: struct { conn: *__sqlite3.Connection, stmt: *__sqlite3.Statement, row: *__sqlite3.Statement }, empty: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "    const Result = union(enum) { row: *__sqlite3.Statement, empty: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
     code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
     code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
@@ -675,10 +697,10 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     code_buf.appendSlice(allocator, "    const step_rc = c.sqlite3_step(stmt_handle);\n") catch unreachable;
     code_buf.appendSlice(allocator, "    if (step_rc == c.SQLITE_ROW) {\n") catch unreachable;
     code_buf.appendSlice(allocator, "        const s = @import(\"std\").heap.page_allocator.create(__sqlite3.Statement) catch unreachable;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        s.* = .{ .handle = stmt_handle };\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .row = .{ .conn = ") catch unreachable;
+    code_buf.appendSlice(allocator, "        s.* = .{ .handle = stmt_handle, .conn = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ", .stmt = s, .row = s } });\n") catch unreachable;
+    code_buf.appendSlice(allocator, " };\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .row = s });\n") catch unreachable;
     code_buf.appendSlice(allocator, "    } else if (step_rc == c.SQLITE_DONE) {\n") catch unreachable;
     code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .empty = ") catch unreachable;
@@ -748,25 +770,65 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     return .{ .replacement = ast.Item{ .flow = new_flow } };
 }
 
-// Get next row from statement. `stmt` is the statement's lifetime handle
-// (still needs finalize); `row` is the live row borrow — stepping consumes
-// it (the step IS the release). `| row` re-issues both on the same object:
-// `col.*` borrows `row`, `next`/`finalize.stmt` consume `stmt`.
-~pub tor next { conn: *Connection<!opened>, stmt: *Statement<!prepared>, row: *Statement<!row> }
-| row { conn: *Connection<opened!>, stmt: *Statement<prepared!>, row: *Statement<row!> }
+// Dispatchable row-stream opener — the pull-model twin of `query.impl`
+// (which is [norun] because the `query` transform inlines it). Prepares,
+// takes the first step, and hands the stream to `next`: the connection
+// moves INTO the statement and comes back on `empty`/`done`/`err`.
+~[
+Open a row stream over a SELECT — prepares and steps to the first row.
+| row hands back a stream token that owns the connection inside it:
+read columns by the stream token, step on by handing it to next.
+]pub tor rows { conn: *Connection<!opened>, sql: string }
+| row *Statement<stream!>
+| empty *Connection<opened!>
+| err { conn: *Connection<opened!>, code: i32, msg: string }
+
+~proc rows|zig {
+    var stmt: ?*c.sqlite3_stmt = null;
+    const rc = c.sqlite3_prepare_v2(conn.handle, sql.ptr, @intCast(sql.len), &stmt, null);
+    if (rc != c.SQLITE_OK) {
+        const msg = c.sqlite3_errmsg(conn.handle);
+        return .{ .err = .{ .conn = conn, .code = rc, .msg = std.mem.span(msg) } };
+    }
+    const s = std.heap.page_allocator.create(Statement) catch unreachable;
+    s.* = Statement{ .handle = stmt, .conn = conn };
+    const step = c.sqlite3_step(stmt);
+    if (step == c.SQLITE_ROW) {
+        return .{ .row = s };
+    }
+    const msg = c.sqlite3_errmsg(conn.handle);
+    _ = c.sqlite3_finalize(stmt);
+    std.heap.page_allocator.destroy(s);
+    if (step == c.SQLITE_DONE) {
+        return .{ .empty = conn };
+    }
+    return .{ .err = .{ .conn = conn, .code = step, .msg = std.mem.span(msg) } };
+}
+
+// Step a stream to its next row. One token, one object: the row is the
+// stream's state, not a second handle — `<!row>` spends the stream's
+// current position and `| row` re-mints it at the next. `| done` frees
+// the statement and hands the owned connection back.
+~[
+Step the stream past the live row — spends the stream token.
+| row re-issues it fresh for the next row; | done ends the stream,
+frees the statement, and hands the connection back.
+]pub tor next { stmt: *Statement<!stream> }
+| row *Statement<stream!>
 | done *Connection<opened!>
 | err { conn: *Connection<opened!>, code: i32, msg: string }
 
 ~proc next|zig {
-    _ = &row;
     const rc = c.sqlite3_step(stmt.handle);
     if (rc == c.SQLITE_ROW) {
-        return .{ .row = .{ .conn = conn, .stmt = stmt, .row = stmt } };
+        return .{ .row = stmt };
     } else if (rc == c.SQLITE_DONE) {
+        const conn = stmt.conn;
         _ = c.sqlite3_finalize(stmt.handle);
         std.heap.page_allocator.destroy(stmt);
         return .{ .done = conn };
     } else {
+        const conn = stmt.conn;
         const msg = c.sqlite3_errmsg(conn.handle);
         _ = c.sqlite3_finalize(stmt.handle);
         std.heap.page_allocator.destroy(stmt);
@@ -782,36 +844,94 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     _ = &text;
 }
 
-// Finalize statement - releases the prepared statement
-~pub tor finalize.stmt { stmt: *Statement<!prepared> }
+~[
+Finalize a stream — abandons it without stepping to done.
+Spends the stream token, frees the statement, and hands the owned
+connection back so close-db can still run.
+]pub tor finalize.stmt { stmt: *Statement<!stream> } -> *Connection<opened!>
 
 ~proc finalize.stmt|zig {
+    const conn = stmt.conn;
     if (stmt.handle) |h| {
         _ = c.sqlite3_finalize(h);
     }
     std.heap.page_allocator.destroy(stmt);
+    return conn;
 }
 
 // ============================================================================
 // Column Access (within row context)
 // ============================================================================
 
-~pub tor col.int { stmt: *Statement<row>, index: i32 } -> i64
+~[
+Read the live row's column 'index' (0-based) as an integer.
+Borrows the row token — the row stays live for more reads or next.
+]pub tor col.int { stmt: *Statement<row>, index: i32 } -> i64
 ~proc col.int|zig {
-    return c.sqlite3_column_int64(stmt.handle, index);
+    return colIntStmt(stmt, index);
 }
 
 // NOTE: text is a ROW-SCOPED borrow (valid only within the `! row` body, like
 // std/fs:read-lines' `! line`). Pristine-later: hand back an owned copy so it's
 // safe to capture across rows. For now it matches the stdlib borrow idiom.
-~pub tor col.text { stmt: *Statement<row>, index: i32 } -> string
+~[
+Read the live row's column 'index' (0-based) as text.
+Borrows the row token — the row stays live for more reads or next.
+]pub tor col.text { stmt: *Statement<row>, index: i32 } -> string
 ~proc col.text|zig {
-    const ptr = c.sqlite3_column_text(stmt.handle, index);
-    const len = c.sqlite3_column_bytes(stmt.handle, index);
+    return colTextStmt(stmt, index);
+}
+
+~[
+Read the live row's column 'index' (0-based) as a float.
+Borrows the row token — the row stays live for more reads or next.
+]pub tor col.real { stmt: *Statement<row>, index: i32 } -> f64
+~proc col.real|zig {
+    return colRealStmt(stmt, index);
+}
+
+// ============================================================================
+// Stream-column reads — `scol.*` are the pull-model twins of `col.*`.
+// `row` is a scoped-borrow state (auto-released at body boundaries for the
+// `! row` effect path); `stream` is a durable obligation — a minted stream
+// must be spent through `next`/`finalize.stmt` or the checker refuses.
+// One Statement object, two lifecycle policies, two state names.
+// ============================================================================
+
+fn colIntStmt(s: *Statement, i: i32) i64 {
+    return c.sqlite3_column_int64(s.handle, i);
+}
+
+fn colTextStmt(s: *Statement, i: i32) []const u8 {
+    const ptr = c.sqlite3_column_text(s.handle, i);
+    const len = c.sqlite3_column_bytes(s.handle, i);
     return if (ptr) |p| p[0..@intCast(len)] else "";
 }
 
-~pub tor col.real { stmt: *Statement<row>, index: i32 } -> f64
-~proc col.real|zig {
-    return c.sqlite3_column_double(stmt.handle, index);
+fn colRealStmt(s: *Statement, i: i32) f64 {
+    return c.sqlite3_column_double(s.handle, i);
+}
+
+~[
+Read a stream's live-row column 'index' (0-based) as an integer.
+Borrows the stream token — the row stays live for more reads or next.
+]pub tor scol.int { stmt: *Statement<stream>, index: i32 } -> i64
+~proc scol.int|zig {
+    return colIntStmt(stmt, index);
+}
+
+~[
+Read a stream's live-row column 'index' (0-based) as text.
+Borrows the stream token — the row stays live for more reads or next.
+]pub tor scol.text { stmt: *Statement<stream>, index: i32 } -> string
+~proc scol.text|zig {
+    return colTextStmt(stmt, index);
+}
+
+~[
+Read a stream's live-row column 'index' (0-based) as a float.
+Borrows the stream token — the row stays live for more reads or next.
+]pub tor scol.real { stmt: *Statement<stream>, index: i32 } -> f64
+~proc scol.real|zig {
+    return colRealStmt(stmt, index);
 }

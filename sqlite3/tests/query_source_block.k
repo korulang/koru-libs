@@ -12,7 +12,7 @@ libs/sqlite3:open(path: ":memory:")
         | ok |> libs/sqlite3:query(conn: d) [SQL]{
                 SELECT * FROM users
             }
-            | row r |> libs/sqlite3:finalize.stmt(r.stmt) |> libs/sqlite3:close(r.conn) |> std/io:print.ln("Found row via transform!")
+            | row r |> libs/sqlite3:finalize.stmt(stmt: r): c |> libs/sqlite3:close(conn: c) |> std/io:print.ln("Found row via transform!")
             | empty e |> libs/sqlite3:close(conn: e) |> std/io:print.ln("No rows")
             | err e |> libs/sqlite3:close(e.conn) |> std/io:print.ln("Query error")
         | err e3 |> libs/sqlite3:close(conn: d) |> std/io:print.ln("Insert error: {{ e3.msg:s }}")
