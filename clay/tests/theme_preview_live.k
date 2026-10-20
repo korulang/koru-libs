@@ -167,6 +167,16 @@ libs/clay:init(width: 640, height: 400)
                             |> std/store:query(spec)
                                 ! query { [row]sh } when sh.scope == 1
                                     |> std/store:stored { sh.th: p.th }
+        ! mouse-move e  // hover-candidacy — cursor over a swatch retargets
+                        // the preview with no click; p.th != s.th keeps the
+                        // write once-per-change, not once-per-pixel-of-move
+            |> std/store:query(hit)
+                ! query hi when e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
+                    |> std/store:query(spec)
+                        ! query { [row]s, [ordinal]o } when o == hi.seq and s.act == 1
+                            |> std/store:query(spec)
+                                ! query { [row]p } when p.scope == 2 and p.th != s.th
+                                    |> std/store:stored { p.th: s.th }
         ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("theme_preview: closed")

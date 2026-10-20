@@ -111,13 +111,15 @@ libs/clay:init(width: 640, height: 400)
                                 |> std/ctx(themes[t0]) |> mini(fx: 30.0, fy: 50.0, scope: 1, title: "shell")
                                 |> std/ctx(themes[t0]) |> mini(fx: 330.0, fy: 50.0, scope: 2, title: "preview")
                                 |> chrome(t0, t1, t2)
-            // scripted: swatch 1 at frame 10, apply at frame 40
+            // scripted: HOVER swatch 1 at frame 10 (a move, not a click —
+            // the pin is that hovering alone re-themes the preview),
+            // apply click at frame 40
             |> if (world.frame == 10)
-                | then |> libs/metal:input.mouse(x: 88.0, y: 322.0)
+                | then |> libs/metal:input.move(x: 88.0, y: 322.0)
             |> if (world.frame == 20)
                 | then |> std/store:query(spec)
                     ! query s when s.scope != 0
-                        |> std/io:print.ln("after swatch — scope {{ s.scope:d }} th {{ s.th:d }}")
+                        |> std/io:print.ln("after hover — scope {{ s.scope:d }} th {{ s.th:d }}")
             |> if (world.frame == 30)
                 | then |> libs/metal:window.snap(path: "/tmp/theme_preview_a.bmp")
             |> if (world.frame == 40)
@@ -182,6 +184,16 @@ libs/clay:init(width: 640, height: 400)
                             |> std/store:query(spec)
                                 ! query { [row]sh } when sh.scope == 1
                                     |> std/store:stored { sh.th: p.th }
+        ! mouse-move e  // hover-candidacy — cursor over a swatch retargets
+                        // the preview with no click; p.th != s.th keeps the
+                        // write once-per-change, not once-per-pixel-of-move
+            |> std/store:query(hit)
+                ! query hi when e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
+                    |> std/store:query(spec)
+                        ! query { [row]s, [ordinal]o } when o == hi.seq and s.act == 1
+                            |> std/store:query(spec)
+                                ! query { [row]p } when p.scope == 2 and p.th != s.th
+                                    |> std/store:stored { p.th: s.th }
         ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("theme_preview: closed")
