@@ -35,22 +35,26 @@ parent.eff for one frame. And handle-sharing means apply does not fork
 the theme — shell and preview point at the same themes row after
 commit, which is the desired semantics for "preview becomes live."
 
-Hover-candidacy landed the same day and was one arm: `! mouse-move`
-queries the hit map, and when the hovered row's `act` is 1 writes the
-preview scope's `th` to the swatch's own theme handle — same stored-
-write trigger, no new machinery. The candidate is STICKY: leaving the
-swatch keeps it. An earlier "mirror" rule reverted preview to the
-shell's theme whenever the cursor held nothing actionable — it looked
-consistent on paper and broke apply in the hand: the pixels between
-the swatch and the apply chip are nothing actionable, so crossing to
-the commit button reverted the candidate and apply then committed the
-shell's own theme — a correct no-op that read as "click doesn't take."
-Selection that a commit gesture can reach must survive the path to the
-commit button. Scripted pin covers all three transitions: `input.move`
-over swatch 1 re-themed the preview with zero clicks, a move to empty
-space left it holding, and the apply click committed the last-hovered
-theme. The `p.th != s.th` guard on each write keeps it once-per-
-change rather than once-per-pixel — worth remembering wherever a
+Hover-candidacy landed the same day and taught the final model in two
+corrections. The candidate state has TWO slots: `world.held` — written
+only by swatch CLICKS — and `preview.th` — transient, following the
+cursor over swatches and falling back to `held` over anything else.
+Apply commits `held`, never the transient preview. First correction:
+a "mirror" rule reverted preview to the SHELL's theme over non-
+actionable pixels — crossing the gap to the apply chip reverted the
+candidate and the click committed the shell's own theme, a correct
+no-op reading as "click doesn't take." Second correction: making the
+hover candidate sticky-with-no-revert let the PATH to apply change
+the pick — hovering ember then crossing moss en route committed moss.
+Held/transient resolves both: hovering previews honestly (snap A:
+preview moss over the moss swatch while `held` stays ember), the
+crossing can't steal the pick (snap B: apply committed EMBER), and
+leaving the strip falls back to the held candidate, not the shell —
+a selection is what a click held, not what the cursor last touched.
+Scripted pin walks it: move → click swatch 1 → move over swatch 2 →
+move onto apply → click → `held` printed ember throughout, shell took
+ember. The `p.th != s.th` / `!= world.held` guards keep writes once-
+per-change, not once-per-pixel — worth remembering wherever a
 standing watch or event arm feeds a handle.
 
 Open: per-subtree dirty propagation is possible now that scope

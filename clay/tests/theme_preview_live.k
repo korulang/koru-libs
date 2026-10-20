@@ -30,7 +30,11 @@ import std/fmt
 import std/string
 import std/ctx
 
-std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], dft: 0[i64] }
+// held = the CLICKED candidate — only swatch clicks write it, apply
+// commits it. preview.th is transient: it follows the cursor over a
+// swatch and falls back to held everywhere else, so crossing swatch 2
+// on the way to apply can never change what apply does.
+std/store:new(world) { frame: 0[i64], drew: 0[i64], sel: -1[i64], dft: 0[i64], held: 0[i64], ovr: 0[i64] }
 
 // A theme = four role colors + a font size. r0 bg / r1 panel / r2
 // accent / r3 ink; `self` is the row's own handle, stamped at seed so
@@ -107,7 +111,7 @@ libs/clay:init(width: 640, height: 400)
                             | row t2 |> std/store:stored { themes[t0].self: t0 }
                                 |> std/store:stored { themes[t1].self: t1 }
                                 |> std/store:stored { themes[t2].self: t2 }
-                                |> std/store:stored { world.dft: t0 }
+                                |> std/store:stored { world.dft: t0, world.held: t0 }
                                 |> std/io:print.ln("themes: slate {{ t0:d }} ember {{ t1:d }} moss {{ t2:d }}")
                                 |> std/ctx(themes[t0]) |> mini(fx: 30.0, fy: 50.0, scope: 1, title: "shell")
                                 |> std/ctx(themes[t0]) |> mini(fx: 330.0, fy: 50.0, scope: 2, title: "preview")
@@ -153,33 +157,40 @@ libs/clay:init(width: 640, height: 400)
             |> std/store:query(hit)
                 ! query hi when e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
                     |> std/store:stored { world.sel: hi.seq }
-            // act 1 (swatch): preview root takes the swatch's own theme
+            // act 1 (swatch): the click HOLDS — held := the swatch's own
+            // theme, and the preview shows the held pick immediately
             |> std/store:query(spec)
                 ! query { [row]s, [ordinal]o } when o == world.sel and s.act == 1
+                    |> std/store:stored { world.held: s.th }
                     |> std/store:query(spec)
                         ! query { [row]p } when p.scope == 2
                             |> std/store:stored { p.th: s.th }
-            // act 2 (apply): shell root takes preview's theme — commit
+            // act 2 (apply): shell root takes the HELD candidate — never
+            // the transient preview row — commit
             |> std/store:query(spec)
                 ! query { [row]s, [ordinal]o } when o == world.sel and s.act == 2
                     |> std/store:query(spec)
-                        ! query { [row]p } when p.scope == 2
-                            |> std/store:query(spec)
-                                ! query { [row]sh } when sh.scope == 1
-                                    |> std/store:stored { sh.th: p.th }
-        ! mouse-move e  // hover-candidacy — cursor over a swatch retargets
-                        // the preview with no click; the candidate is STICKY:
-                        // leaving the swatch keeps it (reverting on leave broke
-                        // apply — the crossing-to-the-button pixels reverted the
-                        // preview before the click landed). p.th != s.th keeps
-                        // the write once-per-change, not once-per-pixel.
+                        ! query { [row]sh } when sh.scope == 1
+                            |> std/store:stored { sh.th: world.held }
+        ! mouse-move e  // hover-candidacy — cursor over a swatch previews
+                        // it transiently; over anything else the preview
+                        // falls back to HELD (the clicked candidate, not
+                        // the shell) so the path to the apply chip can
+                        // never change what apply does. != guards keep each
+                        // write once-per-change, not once-per-pixel.
+            |> std/store:stored { world.ovr: 0 }
             |> std/store:query(hit)
                 ! query hi when e.x >= hi.x and e.x < hi.x + hi.w and e.y >= hi.y and e.y < hi.y + hi.h
                     |> std/store:query(spec)
                         ! query { [row]s, [ordinal]o } when o == hi.seq and s.act == 1
+                            |> std/store:stored { world.ovr: 1 }
                             |> std/store:query(spec)
                                 ! query { [row]p } when p.scope == 2 and p.th != s.th
                                     |> std/store:stored { p.th: s.th }
+            |> if (world.ovr == 0)
+                | then |> std/store:query(spec)
+                    ! query { [row]p } when p.scope == 2 and p.th != world.held
+                        |> std/store:stored { p.th: world.held }
         ! key-down k when k.code == 53 |> libs/metal:quit()
         ! close |> libs/metal:quit()
         | done w2 |> libs/clay:drop(cl: h) |> libs/metal:window.close(win: w2) |> std/io:print.ln("theme_preview: closed")
