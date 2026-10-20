@@ -32,6 +32,7 @@ import std/args
 import std/store
 import std/io
 import std/string
+import std/fmt
 
 std/store:new(world) {
     frame: 0[i64],
@@ -97,11 +98,11 @@ libs/oshun:component(seed, spec) {
     <panel ws="star" hs="star" dir="ltr" gap="20" pad="20" ax="start" ay="start" r="14" g="15" b="20" a="255" ord="0">
         <vlist ws="star" hs="star" dir="ttb" gap="6" pad="8" ax="start" ay="start" r="22" g="24" b="32" a="255" n="60" uid="50" ord="100"/>
         <panel ws="star" hs="star" dir="ttb" gap="14" pad="12" ax="start" ay="start" r="22" g="24" b="32" a="255" ord="200">
-            <text tx="control gallery" fs="15" r="230" g="234" b="246" a="255" ord="300"/>
+            <text tx="control {{ which:s }}" fs="15" r="230" g="234" b="246" a="255" ord="300"/>
             <panel ws="star" hs="fix" h="34" dir="ltr" gap="4" ax="start" ay="center" r="30" g="32" b="42" a="255" uid="400" ord="400" bind="world.strip">
                 <tab tx="alpha" uid="200" fs="13" ord="500" bind="world.alphah"/>
-                <tab tx="beta" uid="201" n="1" fs="13" ord="600" bind="world.betah"/>
-                <tab tx="gamma" uid="202" n="2" fs="13" ord="700" bind="world.gammah"/>
+                <tab tx="beta" uid="201" n={{ bn:d }} fs="13" ord="600" bind="world.betah"/>
+                <tab tx="gamma" uid="202" n={{ gn:d }} fs="13" ord="700" bind="world.gammah"/>
             </panel>
             <button tx="click me" uid="100" fs="13" ord="800" bind="world.buth"/>
             <text tx="clicks:" uid="300" fs="13" r="170" g="176" b="196" a="255" ord="900" bind="world.labelh"/>
@@ -115,7 +116,7 @@ libs/oshun:component(seed, spec) {
 libs/clay:init(width: 640, height: 480)
 | cl h |> libs/metal:window.open(width: 640, height: 480, title: "omni gallery — components")
     | win w |> libs/metal:window.clear.color(win: w, r: 0.08, g: 0.08, b: 0.11)
-            |> seed()
+            |> seed(which: "gallery", bn: 1, gn: 2)
             // --live skips the scripted drivers; anything else is the
             // deterministic twin (drivers inject at fixed frames).
             |> std/args:get(index: 1)
