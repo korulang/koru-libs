@@ -65,6 +65,13 @@ sideways through no sibling. Layout is part of the gesture contract:
 where a commit control sits relative to the candidates determines
 whether transient hover is a feature or a theft.
 
+Postscript, ruling on the whole loop: on a desktop the apply chip is
+a staged-commit artifact the gesture does not need — hover previews,
+click commits directly, and `held` collapses into the shell write.
+Apply earns its keep where a tap needs a confirmation boundary
+(mobile). Same mechanism either way — `held` is the commit slot; the
+only question is whether an arm writes shell from a click or a chip.
+
 Open: per-subtree dirty propagation is possible now that scope
 membership is derivable from `eff`/`th` columns — but only pays once a
 `! dirty` arm or paused pump exists to spend it.
