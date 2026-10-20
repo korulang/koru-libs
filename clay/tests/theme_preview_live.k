@@ -82,16 +82,20 @@ libs/oshun:component(mini, spec) {
     </dock>
 }
 
-// The picker chrome — three swatches (each IS its theme: own th →
-// accent via role 3, act 1 makes a click retarget the preview) and an
-// apply leaf (act 2 → shell := preview). The strip floats under the
-// two minis and binds t0 itself so nothing ambient leaks in.
+// The picker chrome — swatches in a COLUMN, apply beside it: the
+// natural path from any swatch to apply exits sideways and crosses no
+// sibling theme, so transient hover can't flicker past the pick en
+// route. Each swatch IS its theme (own th → accent via role 3, act 1
+// → click holds it); apply (act 2) commits held → shell. The strip
+// floats under the two minis and binds t0 so nothing ambient leaks in.
 libs/oshun:component(chrome, spec) {
-    <stack ws="fix" w="280" hs="fix" h="44" dir="ltr" gap="8" pad="8" ax="start" ay="center" role="2" fl="1" fx="30" fy="300" th={{ t0:d }}>
-        <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t0:d }} act="1"/>
-        <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t1:d }} act="1"/>
-        <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t2:d }} act="1"/>
-        <leaf ws="fix" w="0" hs="fix" h="28" role="3" act="2" tx="apply" fs="12"/>
+    <stack ws="fix" w="140" hs="fix" h="116" dir="ltr" gap="12" pad="8" ax="start" ay="center" role="2" fl="1" fx="30" fy="290" th={{ t0:d }}>
+        <stack ws="fix" w="28" hs="star" dir="ttb" gap="8" role="2">
+            <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t0:d }} act="1"/>
+            <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t1:d }} act="1"/>
+            <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t2:d }} act="1"/>
+        </stack>
+        <leaf ws="fix" w="64" hs="fix" h="36" role="3" act="2" tx="apply" fs="12"/>
     </stack>
 }
 

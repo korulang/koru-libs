@@ -51,11 +51,19 @@ preview moss over the moss swatch while `held` stays ember), the
 crossing can't steal the pick (snap B: apply committed EMBER), and
 leaving the strip falls back to the held candidate, not the shell —
 a selection is what a click held, not what the cursor last touched.
-Scripted pin walks it: move → click swatch 1 → move over swatch 2 →
-move onto apply → click → `held` printed ember throughout, shell took
+Scripted pin walks it: move → click ember → move over moss → move
+onto apply → click → `held` printed ember throughout, shell took
 ember. The `p.th != s.th` / `!= world.held` guards keep writes once-
 per-change, not once-per-pixel — worth remembering wherever a
 standing watch or event arm feeds a handle.
+
+Laid out as a row, the model still read wrong in the hand: the
+natural path from a swatch to apply CROSSED sibling swatches, so the
+preview flickered through themes nobody picked. The swatches now form
+a column with apply beside it — the path from pick to commit exits
+sideways through no sibling. Layout is part of the gesture contract:
+where a commit control sits relative to the candidates determines
+whether transient hover is a feature or a theft.
 
 Open: per-subtree dirty propagation is possible now that scope
 membership is derivable from `eff`/`th` columns — but only pays once a

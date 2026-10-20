@@ -81,16 +81,20 @@ libs/oshun:component(mini, spec) {
     </dock>
 }
 
-// The picker chrome — three swatches (each IS its theme: own th →
-// accent via role 3, act 1 makes a click retarget the preview) and an
-// apply leaf (act 2 → shell := preview). The strip floats under the
-// two minis and binds t0 itself so nothing ambient leaks in.
+// The picker chrome — swatches in a COLUMN, apply beside it: the
+// natural path from any swatch to apply exits sideways and crosses no
+// sibling theme, so transient hover can't flicker past the pick en
+// route. Each swatch IS its theme (own th → accent via role 3, act 1
+// → click holds it); apply (act 2) commits held → shell. The strip
+// floats under the two minis and binds t0 so nothing ambient leaks in.
 libs/oshun:component(chrome, spec) {
-    <stack ws="fix" w="280" hs="fix" h="44" dir="ltr" gap="8" pad="8" ax="start" ay="center" role="2" fl="1" fx="30" fy="300" th={{ t0:d }}>
-        <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t0:d }} act="1"/>
-        <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t1:d }} act="1"/>
-        <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t2:d }} act="1"/>
-        <leaf ws="fix" w="0" hs="fix" h="28" role="3" act="2" tx="apply" fs="12"/>
+    <stack ws="fix" w="140" hs="fix" h="116" dir="ltr" gap="12" pad="8" ax="start" ay="center" role="2" fl="1" fx="30" fy="290" th={{ t0:d }}>
+        <stack ws="fix" w="28" hs="star" dir="ttb" gap="8" role="2">
+            <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t0:d }} act="1"/>
+            <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t1:d }} act="1"/>
+            <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t2:d }} act="1"/>
+        </stack>
+        <leaf ws="fix" w="64" hs="fix" h="36" role="3" act="2" tx="apply" fs="12"/>
     </stack>
 }
 
@@ -117,33 +121,35 @@ libs/clay:init(width: 640, height: 400)
                                 |> chrome(t0, t1, t2)
             // scripted pin of the held/transient split — the decisive leg
             // is the bug as reported: click ember, then PASS OVER moss on
-            // the way to apply — apply must commit ember, not moss.
-            //  10 move over swatch 1 → transient preview ember
-            //  15 CLICK swatch 1   → held = ember
-            //  25 move over swatch 2 → transient preview moss (browsing
+            // the way to apply — apply must commit ember, not moss. The
+            // column layout makes the natural path sideways (a crossing
+            // like this leg is now a *detour*, not the route).
+            //  10 move over ember chip → transient preview ember
+            //  15 CLICK ember       → held = ember
+            //  25 move over moss    → transient preview moss (browsing
             //    still works while holding)
             //  35 move onto apply chip → preview falls back to held = ember
             //  45 click apply → shell := held = EMBER (moss never touched it)
             // snaps at 30 (preview moss, held ember) and 60 (both ember).
             |> if (world.frame == 10)
-                | then |> libs/metal:input.move(x: 88.0, y: 322.0)
+                | then |> libs/metal:input.move(x: 52.0, y: 348.0)
             |> if (world.frame == 15)
-                | then |> libs/metal:input.mouse(x: 88.0, y: 322.0)
+                | then |> libs/metal:input.mouse(x: 52.0, y: 348.0)
             |> if (world.frame == 20)
                 | then |> std/store:query(spec)
                     ! query s when s.scope != 0
                         |> std/io:print.ln("clicked ember — scope {{ s.scope:d }} th {{ s.th:d }} held {{ world.held:d }}")
             |> if (world.frame == 25)
-                | then |> libs/metal:input.move(x: 124.0, y: 322.0)
+                | then |> libs/metal:input.move(x: 52.0, y: 384.0)
             |> if (world.frame == 30)
                 | then |> std/store:query(spec)
                     ! query s when s.scope != 0
                         |> std/io:print.ln("over moss — scope {{ s.scope:d }} th {{ s.th:d }} held {{ world.held:d }}")
                         |> libs/metal:window.snap(path: "/tmp/theme_preview_a.bmp")
             |> if (world.frame == 35)
-                | then |> libs/metal:input.move(x: 160.0, y: 322.0)
+                | then |> libs/metal:input.move(x: 93.0, y: 349.0)
             |> if (world.frame == 45)
-                | then |> libs/metal:input.mouse(x: 160.0, y: 322.0)
+                | then |> libs/metal:input.mouse(x: 93.0, y: 349.0)
             |> if (world.frame == 55)
                 | then |> std/store:query(spec)
                     ! query s when s.scope != 0
