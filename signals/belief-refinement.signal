@@ -1,0 +1,12 @@
+name: belief-refinement
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a held belief gained precision without being wrong — the commit
+      sharpens the boundary of a true claim (scope narrows, a layer is
+      named, a mechanism is identified) rather than revoking it.
+      Distinct from belief-revision (the prior claim was measured
+      false), belief-flip (the direction reversed), and belief-change
+      (generic umbrella — prefer this or the specific ones when the
+      shape of the motion is known).
