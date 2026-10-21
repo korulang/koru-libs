@@ -156,6 +156,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     r: f64, g: f64, b: f64, a: f64,
     fl: i64, fx: f64, fy: f64,
     eid: i64,
+    ovr: f64, ovg: f64, ovb: f64, ova: f64,
 }
 
 ~proc el.cfg|zig {
@@ -176,6 +177,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
         .layoutDirection = @intCast(dir),
     };
     decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    decl.overlayColor = .{ .r = @floatCast(ovr), .g = @floatCast(ovg), .b = @floatCast(ovb), .a = @floatCast(ova) };
     decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
     if (fl != 0) {
         decl.floating = .{
@@ -197,6 +199,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     data: i64,
     fl: i64, fx: f64, fy: f64,
     eid: i64,
+    ovr: f64, ovg: f64, ovb: f64, ova: f64,
 }
 
 ~proc el.img|zig {
@@ -208,6 +211,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
         },
     };
     decl.image = .{ .imageData = @ptrFromInt(@as(usize, @intCast(data))) };
+    decl.overlayColor = .{ .r = @floatCast(ovr), .g = @floatCast(ovg), .b = @floatCast(ovb), .a = @floatCast(ova) };
     decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
     if (fl != 0) {
         decl.floating = .{
@@ -249,6 +253,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     wk: i64, w: f64, hk: i64, h: f64,
     dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
     r: f64, g: f64, b: f64, a: f64,
+    ovr: f64, ovg: f64, ovb: f64, ova: f64,
     ox: f64, oy: f64, horiz: i64, vert: i64,
 }
 
@@ -269,6 +274,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
         .layoutDirection = @intCast(dir),
     };
     decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    decl.overlayColor = .{ .r = @floatCast(ovr), .g = @floatCast(ovg), .b = @floatCast(ovb), .a = @floatCast(ova) };
     decl.clip = .{
         .horizontal = horiz != 0,
         .vertical = vert != 0,

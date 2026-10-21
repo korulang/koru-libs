@@ -112,6 +112,10 @@ const El = struct {
     g: f32 = 0,
     b: f32 = 0,
     a: f32 = 0,
+    ovr: f32 = 0,
+    ovg: f32 = 0,
+    ovb: f32 = 0,
+    ova: f32 = 0,
     fl: u8 = 0,
     fx: f32 = 0,
     fy: f32 = 0,
@@ -642,6 +646,9 @@ fn emitCommands(n: *Native) void {
                 dfs.items.len -= 1;
                 if (e.is_text) continue;
                 if (!offscreen(n, e.bx, e.by, e.dw, e.dh)) {
+                    if (e.ova > 0) {
+                        n.cmds.append(alloc, .{ .kind = 8, .ud = e.ud }) catch @panic("nl: OOM");
+                    }
                     if (e.ch or e.cv) {
                         n.cmds.append(alloc, .{ .kind = 6 }) catch @panic("nl: OOM");
                     }
@@ -688,6 +695,9 @@ fn emitCommands(n: *Native) void {
                         if (by + ypos > n.h) break;
                     }
                 } else {
+                    if (e.ova > 0) {
+                        n.cmds.append(alloc, .{ .kind = 7, .r = e.ovr, .g = e.ovg, .b = e.ovb, .a = e.ova, .ud = e.ud }) catch @panic("nl: OOM");
+                    }
                     if (e.img != 0) {
                         n.cmds.append(alloc, .{ .kind = 4, .x = bx, .y = by, .w = e.dw, .h = e.dh, .img = e.img, .ud = e.ud }) catch @panic("nl: OOM");
                     }
@@ -845,6 +855,7 @@ fn solve(n: *Native) void {
     r: f64, g: f64, b: f64, a: f64,
     fl: i64, fx: f64, fy: f64,
     eid: i64,
+    ovr: f64, ovg: f64, ovb: f64, ova: f64,
 }
 
 ~proc nl.el.cfg|zig {
@@ -868,6 +879,10 @@ fn solve(n: *Native) void {
     e.g = @floatCast(g);
     e.b = @floatCast(b);
     e.a = @floatCast(a);
+    e.ovr = @floatCast(ovr);
+    e.ovg = @floatCast(ovg);
+    e.ovb = @floatCast(ovb);
+    e.ova = @floatCast(ova);
     e.ud = @intCast(@as(u64, @bitCast(eid)));
     if (fl != 0) {
         e.fl = 1;
@@ -883,6 +898,7 @@ fn solve(n: *Native) void {
     data: i64,
     fl: i64, fx: f64, fy: f64,
     eid: i64,
+    ovr: f64, ovg: f64, ovb: f64, ova: f64,
 }
 
 ~proc nl.el.img|zig {
@@ -893,6 +909,10 @@ fn solve(n: *Native) void {
     $mod.setSizing(e, false, hk, h);
     e.img = @intCast(@as(u64, @bitCast(data)));
     e.ud = @intCast(@as(u64, @bitCast(eid)));
+    e.ovr = @floatCast(ovr);
+    e.ovg = @floatCast(ovg);
+    e.ovb = @floatCast(ovb);
+    e.ova = @floatCast(ova);
     if (fl != 0) {
         e.fl = 1;
         e.fx = @floatCast(fx);
@@ -906,6 +926,7 @@ fn solve(n: *Native) void {
     wk: i64, w: f64, hk: i64, h: f64,
     dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
     r: f64, g: f64, b: f64, a: f64,
+    ovr: f64, ovg: f64, ovb: f64, ova: f64,
     ox: f64, oy: f64, horiz: i64, vert: i64,
 }
 
@@ -925,6 +946,10 @@ fn solve(n: *Native) void {
     e.g = @floatCast(g);
     e.b = @floatCast(b);
     e.a = @floatCast(a);
+    e.ovr = @floatCast(ovr);
+    e.ovg = @floatCast(ovg);
+    e.ovb = @floatCast(ovb);
+    e.ova = @floatCast(ova);
     e.ch = horiz != 0;
     e.cv = vert != 0;
     e.ox = @floatCast(ox);

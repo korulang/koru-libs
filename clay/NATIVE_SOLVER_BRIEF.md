@@ -29,8 +29,11 @@ semantics (incl. pct>1 in the corpus — Clay logs a diagnostic but still
 configures/lays out; nl does the same math without the log), PER-SIDE
 padding, gap, ax/ay, ltr/ttb, ROOT+LEFT_TOP floats (panels AND images),
 clip + childOffset, image, text (WORDS wrap, fontSize, color), ud,
-offscreen cull. ABSENT, additive ports — cornerRadius, overlayColor,
-borders (+betweenChildren), CUSTOM commands, aspectRatio, letterSpacing/
+offscreen cull, OVERLAY_COLOR (START/END pair — ordering + union
+layout verified: rectangle.backgroundColor aliases overlayColor.color
+in Clay's renderData union, so CmdView needed no new field). ABSENT,
+additive ports — cornerRadius, borders (+betweenChildren), CUSTOM
+commands, aspectRatio, letterSpacing/
 lineHeight/fontId, wrap NEWLINES/NONE, textAlignment, attachPoints 9×9,
 attachTo PARENT/clipTo, expand, zIndex, pct>1 diagnostic line. ABSENT,
 structural — element IDs + hover machinery (ud-stamp is our hit-test model
@@ -52,6 +55,16 @@ the view/expanded store carries the four sides. gallery_comp emits
 bit-identical snaps; needs KORU_COMPILE_MEM_MB≈4600 (was already near
 the 4096 default before this change — frontend elaboration, not a
 blowup; backend bytes identical).
+
+growth 2026-10-20 — overlayColor: second capability cycle, cheaper than
+the first because the raw bracket was already the harness. el.cfg/
+el.clip/el.img + nl.el.* each gained ovr/ovg/ovb/ova → decl.overlayColor /
+El.ovr..ova; emit order matches clay.h exactly (OVERLAY_START before
+image/scissor/rect, OVERLAY_END at pop before SCISSOR_END, both under
+!offscreen, END carries ud). Corpus: ~20% of rows draw overlay color.
+Receipt: GATE PASS — CAND==REF over 539 cmds (134 of them the new
+k=7/k=8 pairs); MUT rejected with 1253 divergences. smoke, gallery,
+gallery_comp, bench_solvers all green.
 
 landmine found 2026-10-20 — nl first lived as `~part native` of libs/clay.
 ~parts elaborate EAGERLY into every consumer: gallery_comp (never touches
