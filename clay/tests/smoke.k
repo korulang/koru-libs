@@ -7,9 +7,9 @@ libs/clay:init(width: 400, height: 300)
 | cl h |> libs/clay:layout(cl: h)
     ! tree t
         |> libs/clay:el.open(t)
-        |> libs/clay:el.cfg(t, wk: 3, w: 300, hk: 3, h: 200, dir: 1, gap: 0, pad: 10, ax: 0, ay: 0, r: 40, g: 40, b: 50, a: 255, fl: 0, fx: 0, fy: 0)
+        |> libs/clay:el.cfg(t, wk: 3, w: 300, hk: 3, h: 200, dir: 1, gap: 0, padl: 10, padr: 10, padt: 10, padb: 10, ax: 0, ay: 0, r: 40, g: 40, b: 50, a: 255, fl: 0, fx: 0, fy: 0, eid: 0)
         |> libs/clay:el.open(t)
-        |> libs/clay:el.cfg(t, wk: 3, w: 60, hk: 3, h: 30, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 200, g: 80, b: 80, a: 255, fl: 0, fx: 0, fy: 0)
+        |> libs/clay:el.cfg(t, wk: 3, w: 60, hk: 3, h: 30, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 200, g: 80, b: 80, a: 255, fl: 0, fx: 0, fy: 0, eid: 0)
     | solved cls |> libs/clay:cmd.count(cl: cls): n
         |> std/io:print.ln("cmds: {{ n:d }}")
         |> libs/clay:each(cl: cls)

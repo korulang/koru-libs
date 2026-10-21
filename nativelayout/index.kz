@@ -101,7 +101,10 @@ const El = struct {
     hmn: f32 = 0,
     hmx: f32 = 0,
     dir: u8 = 0,
-    pad: u16 = 0,
+    padl: u16 = 0,
+    padr: u16 = 0,
+    padt: u16 = 0,
+    padb: u16 = 0,
     gap: u16 = 0,
     ax: u8 = 0,
     ay: u8 = 0,
@@ -203,8 +206,8 @@ fn setSizing(e: *El, xAxis: bool, kind: i64, v: f64) void {
 fn closeEl(n: *Native) void {
     const idx = n.stack.items[n.stack.items.len - 1];
     const e = &n.els.items[@intCast(idx)];
-    const plr: f32 = @floatFromInt(@as(i64, e.pad) * 2);
-    const ptb = plr;
+    const plr: f32 = @floatFromInt(@as(i64, e.padl) + @as(i64, e.padr));
+    const ptb: f32 = @floatFromInt(@as(i64, e.padt) + @as(i64, e.padb));
     const buf = n.kidsbuf.items;
     const base = buf.len - @as(usize, @intCast(e.nc));
     e.fc = @intCast(n.kids.items.len);
@@ -367,7 +370,7 @@ fn sizeAxis(n: *Native, xAxis: bool) void {
             const p = &n.els.items[@intCast(pi)];
             var growCount: i32 = 0;
             const parentSize = dim(p, xAxis).*;
-            const parentPad: f32 = @floatFromInt(@as(i64, p.pad) * 2);
+            const parentPad: f32 = @floatFromInt(if (xAxis) @as(i64, p.padl) + @as(i64, p.padr) else @as(i64, p.padt) + @as(i64, p.padb));
             var inner: f32 = 0;
             var totalPadGaps: f32 = parentPad;
             const along = (xAxis and p.dir == LTR) or (!xAxis and p.dir == TTB);
@@ -595,7 +598,7 @@ fn propagateHeights(n: *Native) void {
             }
             stack.items.len -= 1;
             seen.items.len -= 1;
-            const ptb: f32 = @floatFromInt(@as(i64, e.pad) * 2);
+            const ptb: f32 = @floatFromInt(@as(i64, e.padt) + @as(i64, e.padb));
             if (e.dir == LTR) {
                 for (n.kids.items[@intCast(e.fc)..@intCast(e.fc + e.nc)]) |ci| {
                     const ce = &n.els.items[@intCast(ci)];
@@ -629,8 +632,9 @@ fn emitCommands(n: *Native) void {
             px = root.fx;
             py = root.fy;
         }
-        const rpad: f32 = @floatFromInt(root.pad);
-        dfs.append(alloc, .{ .el = ri, .x = px, .y = py, .nox = rpad, .noy = rpad, .seen = false }) catch @panic("nl: OOM");
+        const rpadx: f32 = @floatFromInt(root.padl);
+        const rpady: f32 = @floatFromInt(root.padt);
+        dfs.append(alloc, .{ .el = ri, .x = px, .y = py, .nox = rpadx, .noy = rpady, .seen = false }) catch @panic("nl: OOM");
         while (dfs.items.len > 0) {
             var node = &dfs.items[dfs.items.len - 1];
             if (node.seen) {
@@ -702,14 +706,14 @@ fn emitCommands(n: *Native) void {
                 var content: f32 = 0;
                 for (kids) |ci| content += n.els.items[@intCast(ci)].dw;
                 content += @floatFromInt(@max(@as(i64, e.nc) - 1, 0) * @as(i64, e.gap));
-                var extra = e.dw - @as(f32, @floatFromInt(@as(i64, e.pad) * 2)) - content;
+                var extra = e.dw - @as(f32, @floatFromInt(@as(i64, e.padl) + @as(i64, e.padr))) - content;
                 if (e.ax == 0) extra = 0 else if (e.ax == 2) extra /= 2;
                 node.nox += @max(0, extra);
             } else {
                 var content: f32 = 0;
                 for (kids) |ci| content += n.els.items[@intCast(ci)].dh;
                 content += @floatFromInt(@max(@as(i64, e.nc) - 1, 0) * @as(i64, e.gap));
-                var extra = e.dh - @as(f32, @floatFromInt(@as(i64, e.pad) * 2)) - content;
+                var extra = e.dh - @as(f32, @floatFromInt(@as(i64, e.padt) + @as(i64, e.padb))) - content;
                 if (e.ay == 0) extra = 0 else if (e.ay == 2) extra /= 2;
                 node.noy += @max(0, extra);
             }
@@ -720,21 +724,20 @@ fn emitCommands(n: *Native) void {
             node = &dfs.items[dfs.items.len - 1 - kids.len];
             for (kids, 0..) |ci, i| {
                 const ce = &n.els.items[@intCast(ci)];
-                const cpad: f32 = @floatFromInt(ce.pad);
+                const cpadx: f32 = @floatFromInt(ce.padl);
+                const cpady: f32 = @floatFromInt(ce.padt);
                 if (e.dir == LTR) {
-                    const ppad: f32 = @floatFromInt(e.pad);
-                    node.noy = ppad;
-                    const ws = e.dh - ppad * 2 - ce.dh;
+                    node.noy = @floatFromInt(e.padt);
+                    const ws = e.dh - @as(f32, @floatFromInt(@as(i64, e.padt) + @as(i64, e.padb))) - ce.dh;
                     if (e.ay == 2) node.noy += ws / 2 else if (e.ay == 1) node.noy += ws;
                 } else {
-                    const ppad: f32 = @floatFromInt(e.pad);
-                    node.nox = ppad;
-                    const ws = e.dw - ppad * 2 - ce.dw;
+                    node.nox = @floatFromInt(e.padl);
+                    const ws = e.dw - @as(f32, @floatFromInt(@as(i64, e.padl) + @as(i64, e.padr))) - ce.dw;
                     if (e.ax == 2) node.nox += ws / 2 else if (e.ax == 1) node.nox += ws;
                 }
                 const cx = bx + node.nox + sx;
                 const cy = by + node.noy + sy;
-                dfs.items[nlen - 1 - i] = .{ .el = ci, .x = cx, .y = cy, .nox = cpad, .noy = cpad, .seen = false };
+                dfs.items[nlen - 1 - i] = .{ .el = ci, .x = cx, .y = cy, .nox = cpadx, .noy = cpady, .seen = false };
                 if (e.dir == LTR) {
                     node.nox += ce.dw + @as(f32, @floatFromInt(e.gap));
                 } else {
@@ -837,7 +840,8 @@ fn solve(n: *Native) void {
 ~pub tor nl.el.cfg {
     t: *NTree<ntree>,
     wk: i64, w: f64, hk: i64, h: f64,
-    dir: i64, gap: i64, pad: i64, ax: i64, ay: i64,
+    dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
+    ax: i64, ay: i64,
     r: f64, g: f64, b: f64, a: f64,
     fl: i64, fx: f64, fy: f64,
     eid: i64,
@@ -853,7 +857,10 @@ fn solve(n: *Native) void {
     $mod.setSizing(e, true, wk, w);
     $mod.setSizing(e, false, hk, h);
     e.dir = @intCast(@min(@max(dir, 0), 1));
-    e.pad = @intCast(@max(pad, 0));
+    e.padl = @intCast(@max(padl, 0));
+    e.padr = @intCast(@max(padr, 0));
+    e.padt = @intCast(@max(padt, 0));
+    e.padb = @intCast(@max(padb, 0));
     e.gap = @intCast(@max(gap, 0));
     e.ax = @intCast(@min(@max(ax, 0), 2));
     e.ay = @intCast(@min(@max(ay, 0), 2));
@@ -897,7 +904,7 @@ fn solve(n: *Native) void {
 ~pub tor nl.el.clip {
     t: *NTree<ntree>,
     wk: i64, w: f64, hk: i64, h: f64,
-    dir: i64, gap: i64, pad: i64,
+    dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
     r: f64, g: f64, b: f64, a: f64,
     ox: f64, oy: f64, horiz: i64, vert: i64,
 }
@@ -909,7 +916,10 @@ fn solve(n: *Native) void {
     $mod.setSizing(e, true, wk, w);
     $mod.setSizing(e, false, hk, h);
     e.dir = @intCast(@min(@max(dir, 0), 1));
-    e.pad = @intCast(@max(pad, 0));
+    e.padl = @intCast(@max(padl, 0));
+    e.padr = @intCast(@max(padr, 0));
+    e.padt = @intCast(@max(padt, 0));
+    e.padb = @intCast(@max(padb, 0));
     e.gap = @intCast(@max(gap, 0));
     e.r = @floatCast(r);
     e.g = @floatCast(g);

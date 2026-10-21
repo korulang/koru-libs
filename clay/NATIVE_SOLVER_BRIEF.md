@@ -25,16 +25,33 @@ proof on both. nl is faster where measured (decl ~1.35×, solve ~1.3×
 ReleaseFast) — a noted property, not the reason to switch.
 
 capability map (Clay surface vs nl): PARITY — fit/grow/pct/fix minMax
-semantics, uniform pad, gap, ax/ay, ltr/ttb, ROOT+LEFT_TOP floats, clip +
-childOffset, image, text (WORDS wrap, fontSize, color), ud, offscreen cull.
-ABSENT, additive ports — per-side padding, cornerRadius, overlayColor,
+semantics (incl. pct>1 in the corpus — Clay logs a diagnostic but still
+configures/lays out; nl does the same math without the log), PER-SIDE
+padding, gap, ax/ay, ltr/ttb, ROOT+LEFT_TOP floats (panels AND images),
+clip + childOffset, image, text (WORDS wrap, fontSize, color), ud,
+offscreen cull. ABSENT, additive ports — cornerRadius, overlayColor,
 borders (+betweenChildren), CUSTOM commands, aspectRatio, letterSpacing/
 lineHeight/fontId, wrap NEWLINES/NONE, textAlignment, attachPoints 9×9,
-attachTo PARENT/clipTo, expand, zIndex, pct>1 diagnostic. ABSENT, structural
-— element IDs + hover machinery (ud-stamp is our hit-test model instead),
-ATTACH_TO_ELEMENT_WITH_ID (wants spec-row refs, not hashes), internal scroll
-state (frame-pure by design — childOffset is app-owned), transitions
-(cross-frame identity — belongs spec-side if ever wanted).
+attachTo PARENT/clipTo, expand, zIndex, pct>1 diagnostic line. ABSENT,
+structural — element IDs + hover machinery (ud-stamp is our hit-test model
+instead), ATTACH_TO_ELEMENT_WITH_ID (wants spec-row refs, not hashes),
+internal scroll state (frame-pure by design — childOffset is app-owned),
+transitions (cross-frame identity — belongs spec-side if ever wanted).
+
+growth 2026-10-20 — first full capability cycle landed: per-side padding.
+The gate's REF walk moved OFF the ui convenience words onto raw
+clay:el.* — the raw bracket was widened to the full declaration surface
+(el.cfg + eid + padl/r/t/b; el.img + fl/fx/fy/eid; el.clip + pad×4;
+new el.text = ui:text's exact OpenTextElement path). nl's El carries
+padl/padr/padt/padb; every solver read audited (axis sums vs leading-side
+cursor origins). Generator draws ~25% per-side asymmetric pads. Receipt:
+GATE PASS — CAND==REF over 405 cmds; MUT rejected with 1388 divergences;
+100 Clay pct>1 diagnostics on stderr (non-cmd lines, comparator-ignored).
+gallery_comp/spec store keeps authored `pad` (ui words stay uniform) —
+the view/expanded store carries the four sides. gallery_comp emits
+bit-identical snaps; needs KORU_COMPILE_MEM_MB≈4600 (was already near
+the 4096 default before this change — frontend elaboration, not a
+blowup; backend bytes identical).
 
 landmine found 2026-10-20 — nl first lived as `~part native` of libs/clay.
 ~parts elaborate EAGERLY into every consumer: gallery_comp (never touches

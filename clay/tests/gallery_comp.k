@@ -84,7 +84,7 @@ std/store:new(cstate, capacity: 1024) { uid: i64, k: char[8], v: f64 }
 // el.clip's childOffset.
 std/store:new(view, capacity: 256) {
     d: i64, kind: char[8], wk: i64, w: f64, hk: i64, h: f64,
-    dir: i64, gap: i64, pad: i64, ax: i64, ay: i64,
+    dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64, ax: i64, ay: i64,
     r: f64, g: f64, b: f64, a: f64,
     ox: f64, oy: f64,
     uid: i64, tx: char[40], fs: f64,
@@ -186,41 +186,41 @@ libs/clay:init(width: 640, height: 480)
                     |> std/store:preorder(spec, order: "ord")
                         ! preorder s
                             |> if (s.kind == "panel")
-                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: if (s.ws == "star") 1 else if (s.ws == "fix") 3 else 0, w: s.w, hk: if (s.hs == "star") 1 else if (s.hs == "fix") 3 else 0, h: s.h, dir: if (s.dir == "ttb") 1 else 0, gap: s.gap, pad: s.pad, ax: if (s.ax == "end") 1 else if (s.ax == "center") 2 else 0, ay: if (s.ay == "end") 1 else if (s.ay == "center") 2 else 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
+                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: if (s.ws == "star") 1 else if (s.ws == "fix") 3 else 0, w: s.w, hk: if (s.hs == "star") 1 else if (s.hs == "fix") 3 else 0, h: s.h, dir: if (s.dir == "ttb") 1 else 0, gap: s.gap, padl: s.pad, padr: s.pad, padt: s.pad, padb: s.pad, ax: if (s.ax == "end") 1 else if (s.ax == "center") 2 else 0, ay: if (s.ay == "end") 1 else if (s.ay == "center") 2 else 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
                                     | row _
                             |> if (s.kind == "text")
-                                | then |> std/store:insert(view) { d: s.d, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0, uid: s.hid, tx: s.tx, fs: s.fs }
+                                | then |> std/store:insert(view) { d: s.d, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0, uid: s.hid, tx: s.tx, fs: s.fs }
                                     | row _
                             // vlist — the stateful composite: reads scroll +
                             // LAST frame's clip box to derive the visible
                             // range, emits clip + spacers + intersecting rows.
                             |> if (s.kind == "vlist")
-                                | then |> std/store:insert(view) { d: s.d, kind: "clip", wk: if (s.ws == "star") 1 else if (s.ws == "fix") 3 else 0, w: s.w, hk: if (s.hs == "star") 1 else if (s.hs == "fix") 3 else 0, h: s.h, dir: if (s.dir == "ttb") 1 else 0, gap: s.gap, pad: s.pad, ax: if (s.ax == "end") 1 else if (s.ax == "center") 2 else 0, ay: if (s.ay == "end") 1 else if (s.ay == "center") 2 else 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0 - fworld.scroll, uid: s.hid, tx: "", fs: 0.0 }
+                                | then |> std/store:insert(view) { d: s.d, kind: "clip", wk: if (s.ws == "star") 1 else if (s.ws == "fix") 3 else 0, w: s.w, hk: if (s.hs == "star") 1 else if (s.hs == "fix") 3 else 0, h: s.h, dir: if (s.dir == "ttb") 1 else 0, gap: s.gap, padl: s.pad, padr: s.pad, padt: s.pad, padb: s.pad, ax: if (s.ax == "end") 1 else if (s.ax == "center") 2 else 0, ay: if (s.ay == "end") 1 else if (s.ay == "center") 2 else 0, r: s.r, g: s.g, b: s.b, a: s.a, ox: 0.0, oy: 0.0 - fworld.scroll, uid: s.hid, tx: "", fs: 0.0 }
                                     | row _ |> if (world.r0 > 0)
-                                        | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.r0)) * 36.0 - 6.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
+                                        | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.r0)) * 36.0 - 6.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
                                             | row _
                                     |> std/store:query(items)
                                         ! query { [row]it, [ordinal]io, [id]ih } when @as(i64, @intCast(io)) >= world.r0 and @as(i64, @intCast(io)) <= world.r1
-                                            |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: 30.0, dir: 1, gap: 0, pad: 10, ax: 0, ay: 2, r: 46.0 + (if (ih == world.sel) @as(f64, 60.0) else if (ih == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), g: 48.0 + (if (ih == world.sel) @as(f64, 50.0) else if (ih == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), b: 60.0, a: 255.0, ox: 0.0, oy: 0.0, uid: ih, tx: "", fs: 0.0 }
-                                                    | row _ |> std/store:insert(view) { d: s.d + 2, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 200.0, g: 205.0, b: 220.0, a: 255.0, ox: 0.0, oy: 0.0, uid: ih, tx: it.tx, fs: 13.0 }
+                                            |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: 30.0, dir: 1, gap: 0, padl: 10, padr: 10, padt: 10, padb: 10, ax: 0, ay: 2, r: 46.0 + (if (ih == world.sel) @as(f64, 60.0) else if (ih == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), g: 48.0 + (if (ih == world.sel) @as(f64, 50.0) else if (ih == world.hover) @as(f64, 24.0) else @as(f64, 0.0)), b: 60.0, a: 255.0, ox: 0.0, oy: 0.0, uid: ih, tx: "", fs: 0.0 }
+                                                    | row _ |> std/store:insert(view) { d: s.d + 2, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 200.0, g: 205.0, b: 220.0, a: 255.0, ox: 0.0, oy: 0.0, uid: ih, tx: it.tx, fs: 13.0 }
                                                         | row _
                                     |> if (world.r1 < world.icount)
-                                        | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.icount - world.r1)) * 36.0 - 6.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
+                                        | then |> std/store:insert(view) { d: s.d + 1, kind: "panel", wk: 1, w: 0.0, hk: 3, h: @as(f64, @floatFromInt(world.icount - world.r1)) * 36.0 - 6.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 0.0, g: 0.0, b: 0.0, a: 0.0, ox: 0.0, oy: 0.0, uid: 0, tx: "", fs: 0.0 }
                                             | row _
                             |> if (s.kind == "tab")
-                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 90.0, hk: 3, h: 28.0, dir: 1, gap: 0, pad: 0, ax: 2, ay: 2, r: if (world.tab == s.n) 90.0 else if (world.hover == s.hid) 70.0 else 52.0, g: if (world.tab == s.n) 100.0 else if (world.hover == s.hid) 72.0 else 56.0, b: if (world.tab == s.n) 130.0 else if (world.hover == s.hid) 80.0 else 66.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
-                                    | row _ |> std/store:insert(view) { d: s.d + 1, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 225.0, g: 228.0, b: 240.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: s.tx, fs: s.fs }
+                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 90.0, hk: 3, h: 28.0, dir: 1, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 2, ay: 2, r: if (world.tab == s.n) 90.0 else if (world.hover == s.hid) 70.0 else 52.0, g: if (world.tab == s.n) 100.0 else if (world.hover == s.hid) 72.0 else 56.0, b: if (world.tab == s.n) 130.0 else if (world.hover == s.hid) 80.0 else 66.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
+                                    | row _ |> std/store:insert(view) { d: s.d + 1, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 225.0, g: 228.0, b: 240.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: s.tx, fs: s.fs }
                                         | row _
                             |> if (s.kind == "button")
-                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 160.0, hk: 3, h: 36.0, dir: 1, gap: 0, pad: 0, ax: 2, ay: 2, r: if (world.down == s.hid) 60.0 else if (world.hover == s.hid) 105.0 else 84.0, g: if (world.down == s.hid) 100.0 else if (world.hover == s.hid) 180.0 else 150.0, b: if (world.down == s.hid) 170.0 else if (world.hover == s.hid) 255.0 else 220.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
-                                    | row _ |> std/store:insert(view) { d: s.d + 1, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 240.0, g: 244.0, b: 252.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: s.tx, fs: s.fs }
+                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 160.0, hk: 3, h: 36.0, dir: 1, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 2, ay: 2, r: if (world.down == s.hid) 60.0 else if (world.hover == s.hid) 105.0 else 84.0, g: if (world.down == s.hid) 100.0 else if (world.hover == s.hid) 180.0 else 150.0, b: if (world.down == s.hid) 170.0 else if (world.hover == s.hid) 255.0 else 220.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
+                                    | row _ |> std/store:insert(view) { d: s.d + 1, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 240.0, g: 244.0, b: 252.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: s.tx, fs: s.fs }
                                         | row _
                             |> if (s.kind == "toggle")
-                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 160.0, hk: 3, h: 36.0, dir: 1, gap: 0, pad: 0, ax: 2, ay: 2, r: if (world.tog == 1) 60.0 else 66.0, g: if (world.tog == 1) 170.0 else 70.0, b: if (world.tog == 1) 110.0 else 78.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
-                                    | row _ |> std/store:insert(view) { d: s.d + 1, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, pad: 0, ax: 0, ay: 0, r: 230.0, g: 234.0, b: 244.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: if (world.tog == 1) "toggle: on" else "toggle: off", fs: s.fs }
+                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 160.0, hk: 3, h: 36.0, dir: 1, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 2, ay: 2, r: if (world.tog == 1) 60.0 else 66.0, g: if (world.tog == 1) 170.0 else 70.0, b: if (world.tog == 1) 110.0 else 78.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
+                                    | row _ |> std/store:insert(view) { d: s.d + 1, kind: "text", wk: 0, w: 0.0, hk: 0, h: 0.0, dir: 0, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 0, r: 230.0, g: 234.0, b: 244.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: if (world.tog == 1) "toggle: on" else "toggle: off", fs: s.fs }
                                         | row _
                             |> if (s.kind == "slider")
-                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 200.0, hk: 3, h: 10.0, dir: 1, gap: 0, pad: 0, ax: 0, ay: 2, r: 60.0, g: 64.0, b: 78.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
+                                | then |> std/store:insert(view) { d: s.d, kind: "panel", wk: 3, w: 200.0, hk: 3, h: 10.0, dir: 1, gap: 0, padl: 0, padr: 0, padt: 0, padb: 0, ax: 0, ay: 2, r: 60.0, g: 64.0, b: 78.0, a: 255.0, ox: 0.0, oy: 0.0, uid: s.hid, tx: "", fs: 0.0 }
                                     | row _
                     // The virtual window reads LAST frame's clip box, same
                     // contract as the hand-rolled gallery.
@@ -276,11 +276,11 @@ libs/clay:init(width: 640, height: 480)
                                 ! query { [row]v }
                                     |> if (v.kind == "panel")
                                         | then |> libs/clay:el.close-to(t, v.d)
-                                            |> libs/ui:panelx(t, dock: "", ws: if (v.wk == 1) "star" else if (v.wk == 3) "fix" else "", v.w, hs: if (v.hk == 1) "star" else if (v.hk == 3) "fix" else "", v.h, dir: if (v.dir == 1) "ttb" else "ltr", v.gap, v.pad, ax: if (v.ax == 2) "center" else if (v.ax == 1) "end" else "start", ay: if (v.ay == 2) "center" else if (v.ay == 1) "end" else "start", v.r, v.g, v.b, v.a, fl: 0, fx: 0.0, fy: 0.0, eid: v.uid)
+                                            |> libs/ui:panelx(t, dock: "", ws: if (v.wk == 1) "star" else if (v.wk == 3) "fix" else "", v.w, hs: if (v.hk == 1) "star" else if (v.hk == 3) "fix" else "", v.h, dir: if (v.dir == 1) "ttb" else "ltr", v.gap, pad: v.padl, ax: if (v.ax == 2) "center" else if (v.ax == 1) "end" else "start", ay: if (v.ay == 2) "center" else if (v.ay == 1) "end" else "start", v.r, v.g, v.b, v.a, fl: 0, fx: 0.0, fy: 0.0, eid: v.uid)
                                     |> if (v.kind == "clip")
                                         | then |> libs/clay:el.close-to(t, v.d)
                                             |> libs/clay:el.open(t)
-                                            |> libs/clay:el.clip(t, v.wk, v.w, v.hk, v.h, v.dir, v.gap, v.pad, v.r, v.g, v.b, v.a, v.ox, v.oy, horiz: 0, vert: 1)
+                                            |> libs/clay:el.clip(t, v.wk, v.w, v.hk, v.h, v.dir, v.gap, v.padl, v.padr, v.padt, v.padb, v.r, v.g, v.b, v.a, v.ox, v.oy, horiz: 0, vert: 1)
                                     |> if (v.kind == "text")
                                         | then |> libs/clay:el.close-to(t, v.d)
                                             |> libs/ui:text(t, v.tx, v.fs, v.r, v.g, v.b, v.a, eid: v.uid)

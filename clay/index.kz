@@ -151,9 +151,11 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
 ~pub tor el.cfg {
     t: *Tree<tree>,
     wk: i64, w: f64, hk: i64, h: f64,
-    dir: i64, gap: i64, pad: i64, ax: i64, ay: i64,
+    dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
+    ax: i64, ay: i64,
     r: f64, g: f64, b: f64, a: f64,
     fl: i64, fx: f64, fy: f64,
+    eid: i64,
 }
 
 ~proc el.cfg|zig {
@@ -164,16 +166,17 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
             .height = $mod.sizing(hk, h),
         },
         .padding = .{
-            .left = @intCast(@max(pad, 0)),
-            .right = @intCast(@max(pad, 0)),
-            .top = @intCast(@max(pad, 0)),
-            .bottom = @intCast(@max(pad, 0)),
+            .left = @intCast(@max(padl, 0)),
+            .right = @intCast(@max(padr, 0)),
+            .top = @intCast(@max(padt, 0)),
+            .bottom = @intCast(@max(padb, 0)),
         },
         .childGap = @intCast(@max(gap, 0)),
         .childAlignment = .{ .x = @intCast(ax), .y = @intCast(ay) },
         .layoutDirection = @intCast(dir),
     };
     decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
     if (fl != 0) {
         decl.floating = .{
             .offset = .{ .x = @floatCast(fx), .y = @floatCast(fy) },
@@ -192,6 +195,8 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     t: *Tree<tree>,
     wk: i64, w: f64, hk: i64, h: f64,
     data: i64,
+    fl: i64, fx: f64, fy: f64,
+    eid: i64,
 }
 
 ~proc el.img|zig {
@@ -203,7 +208,36 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
         },
     };
     decl.image = .{ .imageData = @ptrFromInt(@as(usize, @intCast(data))) };
+    decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
+    if (fl != 0) {
+        decl.floating = .{
+            .offset = .{ .x = @floatCast(fx), .y = @floatCast(fy) },
+            .attachTo = $mod.c.CLAY_ATTACH_TO_ROOT,
+            .attachPoints = .{ .element = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP, .parent = $mod.c.CLAY_ATTACH_POINT_LEFT_TOP },
+        };
+    }
     $mod.c.Clay__ConfigureOpenElement(decl);
+}
+
+// A text leaf — OpenTextElement under the current open parent, no depth
+// change. Same config shape as ui:text; the raw bracket spelling.
+~pub tor el.text {
+    t: *Tree<tree>,
+    tx: string, fs: f64,
+    r: f64, g: f64, b: f64, a: f64,
+    eid: i64,
+}
+
+~proc el.text|zig {
+    var cfg: $mod.c.Clay_TextElementConfig = $mod.std.mem.zeroes($mod.c.Clay_TextElementConfig);
+    cfg.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
+    cfg.textColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
+    cfg.fontSize = @intFromFloat(@max(0.0, @round(fs)));
+    $mod.c.Clay__OpenTextElement(.{
+        .isStaticallyAllocated = false,
+        .length = @intCast(tx.len),
+        .chars = tx.ptr,
+    }, cfg);
 }
 
 // A clip element — decl.clip set, so children emit inside a SCISSOR_START/
@@ -213,7 +247,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
 ~pub tor el.clip {
     t: *Tree<tree>,
     wk: i64, w: f64, hk: i64, h: f64,
-    dir: i64, gap: i64, pad: i64,
+    dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
     r: f64, g: f64, b: f64, a: f64,
     ox: f64, oy: f64, horiz: i64, vert: i64,
 }
@@ -226,10 +260,10 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
             .height = $mod.sizing(hk, h),
         },
         .padding = .{
-            .left = @intCast(@max(pad, 0)),
-            .right = @intCast(@max(pad, 0)),
-            .top = @intCast(@max(pad, 0)),
-            .bottom = @intCast(@max(pad, 0)),
+            .left = @intCast(@max(padl, 0)),
+            .right = @intCast(@max(padr, 0)),
+            .top = @intCast(@max(padt, 0)),
+            .bottom = @intCast(@max(padb, 0)),
         },
         .childGap = @intCast(@max(gap, 0)),
         .layoutDirection = @intCast(dir),
