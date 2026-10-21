@@ -3,6 +3,70 @@
 ```
 kind: commissioned design-attack + build session
 status: draft — 2026-10-20
+
+progress 2026-10-20 — the differential gate exists and the candidate passes
+it: `clay/tests/fuzz_gate.k` + `fuzz_cmp.py`, CAND==REF over 400 commands,
+known-wrong MUT arm rejected with 1420 divergences. Candidate is
+`nativelayout/index.kz` (flat arrays, no ID hashing; fit → grow →
+align/position port; same CmdView stream). Along the way the gate caught a
+real UB in the dialect: `sizing()` built `.percent = f` union inits, leaving
+`size.minMax.max` as stack garbage that Clay's propagate pass reads as a
+clamp bound — percent elements contributed garbage-clamped content heights
+to FIT parents. Both bindings now fully initialize the union
+(`minMax = {f, 0}` — percent still reads f at offset 0; CloseElement's
+max<=0→MAXFLOAT reset now always fires, deterministically un-capped).
+
+decision 2026-10-20 — STAY ON CLAY as the dialect's solver. nl covers ~2/3
+of Clay's capability surface (capability map below); switching now would be
+premature optimization on a 48h-old subset. Clay remains oracle + default;
+nl remains a gate-verified candidate that grows feature-by-feature: each new
+dialect capability lands as binding words + nl port + generator rows + gate
+proof on both. nl is faster where measured (decl ~1.35×, solve ~1.3×
+ReleaseFast) — a noted property, not the reason to switch.
+
+capability map (Clay surface vs nl): PARITY — fit/grow/pct/fix minMax
+semantics, uniform pad, gap, ax/ay, ltr/ttb, ROOT+LEFT_TOP floats, clip +
+childOffset, image, text (WORDS wrap, fontSize, color), ud, offscreen cull.
+ABSENT, additive ports — per-side padding, cornerRadius, overlayColor,
+borders (+betweenChildren), CUSTOM commands, aspectRatio, letterSpacing/
+lineHeight/fontId, wrap NEWLINES/NONE, textAlignment, attachPoints 9×9,
+attachTo PARENT/clipTo, expand, zIndex, pct>1 diagnostic. ABSENT, structural
+— element IDs + hover machinery (ud-stamp is our hit-test model instead),
+ATTACH_TO_ELEMENT_WITH_ID (wants spec-row refs, not hashes), internal scroll
+state (frame-pure by design — childOffset is app-owned), transitions
+(cross-frame identity — belongs spec-side if ever wanted).
+
+landmine found 2026-10-20 — nl first lived as `~part native` of libs/clay.
+~parts elaborate EAGERLY into every consumer: gallery_comp (never touches
+nl.*) blew the 6144MB compile-mem budget with the marker, compiled fine
+without it; backend emitted bytes identical → pure frontend dead weight.
+Moved nl to its own package `libs/nativelayout` — clay consumers pay zero;
+the gate and bench import it directly. fuzz_gate + gallery_comp + smoke +
+spec_snap + bench_solvers all re-verified post-move (gate still
+CAND==REF 400 cmds; gallery snaps bit-identical).
+
+race 2026-10-20 — `clay/tests/bench_solvers.k`: one climb pass runs BOTH
+pipelines per frame (per-frame interleave, 6 laps), same 600-leaf tree.
+
+CORRECTED after a dead measurement basis: the Debug build's ratios
+(~3.6× declare, ~4.9× solve) were a codegen artifact — -O0 punishes
+Clay's C implementation far harder than nl's lean Zig. ReleaseFast is
+the honest basis (and matches every earlier calm absolute). ReleaseFast,
+same binary, same frames:
+
+| lap | clay | nl | ratio |
+|---|---|---|---|
+| declare | 0.062–0.064 | 0.046–0.047 | ~1.35× |
+| solve | 0.034 | 0.024–0.027 | ~1.3× |
+| drain | ~0 | ~0 | — |
+
+Same-moment nanoui (hillclimb, boxes): build 0.035 + layout 0.014 =
+0.049. nl decl+solve ~0.070 — still ~1.4× behind nanoui's build+layout,
+not ahead. nl vs clay is a real ~1.35× on declare+solve combined.
+Caveats: lap 1 pays ui's word-mapping lap 4 skips (slight nl favor);
+nl solve includes Clay-compatible float/wrap bookkeeping nanoui may not
+pay. Machine was under memory pressure during measurement (17G wired,
+swap active) — absolutes on a calm box may differ; ratios in-binary hold.
 trees: koru-libs 4e2f332 (main), koru 4c2f38b30 (main), nanoui ede1eb4 (clone)
 ```
 
@@ -46,26 +110,50 @@ retained. Koru side: `std/benchmarking:climb` + `lap` (koru main
 | declare (tree into Clay) | (in build) | 0.033–0.036 (declare-only arm, in `bench_boxes_split.k`) | ↑ | 0.0335 |
 | layout solve (EndLayout incl. commands) | 0.014–0.015 | 0.032–0.035 | 0.032–0.033 | 0.0331–0.0335 |
 | paint | 0.016 | **0** (no paint work) | 0.0154–0.0163 (draw.* → instPush, incl. pass/encoder setup) | 0.002 (cmd read) |
-| encode CPU (upload + encode + commit) | 0.012–0.014 | — | 0.0231–0.0249 (instFlush + endEncoding + commit) | — |
-| **CPU total** | **0.077–0.080** (frame + encode) | 0.084–0.091 (no paint, no encode) | **0.131–0.134** (sum of phase medians) | 0.069–0.070 |
-| GPU (GPUEnd − GPUStart, same method) | 0.424 | — | **0.606–0.607** (min over passes; nanoui reports a median, so this estimator can only flatter us) | — |
+| encode CPU (upload + encode + commit) | 0.012–0.014 | — | 0.0056–0.0062 with the instance ring (was 0.0230–0.0249 with a buffer per flush); instFlush + endEncoding + commit | — |
+| **CPU total** | **0.077–0.081** (frame + encode) | 0.084–0.091 (no paint, no encode) | **0.107–0.109** (sum of phase medians; 0.112–0.114 before the single walk, 0.131–0.134 before the ring) | 0.069–0.070 |
+| GPU (GPUEnd − GPUStart, same method) | median 0.423–0.424; **min 0.4178–0.4195** | — | **min 0.4145–0.4152** (0.606 before the shadow-σ fix) | — |
 
-- **We are behind**: CPU 0.132 vs 0.079 (1.67×), GPU 0.606 vs 0.424
-  (1.43×), same 1201 instances at 2× backing. Before paint existed on our
+- **We are behind on CPU, at parity on GPU**: CPU 0.108 vs 0.079 (1.37×;
+  1.44× before the single-walk expansion, 1.67× before the instance ring). GPU min 0.415 vs nanoui min 0.418: a
+  0.8% difference, inside the ±5% noise band, so parity, not a win. Same
+  1201 instances at 2× backing. The earlier 1.43× GPU gap was our bug,
+  not a renderer gap: the bench drew shadows at σ = 4 where nanoui uses
+  σ = blur/2 = 2 (paint.zig:66). The instance gate missed it because
+  nanoui's dump didn't print border_width. The dump and the comparator
+  now carry bw/bc; the σ = 4 candidate fails with 600 divergences, σ = 2
+  passes 1201/1201. Before paint existed on our
   side the comparison read 0.087 vs 0.066 (1.32×) — that number flattered
   us by omitting paint + encode. Like for like, expand + declare + solve
   (0.087) vs nanoui build + layout (0.050) is still 1.74×.
-- Paint + encode together: 0.039–0.041 vs nanoui's 0.028–0.030 (1.4×).
-  Our encode allocates a fresh `newBufferWithBytes` per flush; nanoui
-  uploads into a ring of instance buffers. The phase boundary differs
-  slightly (our encoder setup falls inside the paint lap), so compare the
-  sum, not the split. GPU cause unmeasured.
+- Paint + encode together: **ahead**, 0.021 vs nanoui's 0.028–0.030
+  (0.74×), after replacing the per-flush `newBufferWithBytes` with a
+  3-slot instance ring (nanoui's model). Before the ring it was 0.039–0.041
+  (1.4× behind). The phase boundary differs (our pass/encoder setup falls
+  inside the paint lap, nanoui's inside encode), so only the sum compares —
+  our encode alone (0.006) is not a like-for-like win over theirs (0.013).
+  Both sides' sums are sums of per-phase medians. The ring's slot
+  synchronisation (wait on the slot's last command buffer before reuse) is
+  correct by construction but not test-gated: a static scene can't expose
+  a race.
 - The paint path is gated: `metal/tests/offscreen_scene.k` (offscreen
   surface) and `offscreen_twin.k` (same scene through a window) produce
   byte-identical 1280×800 BMPs. A +1/255 colour mutation makes `cmp`
   fail. The window path's `snap.k` is byte-identical before and after the
   metal refactor. `bench_boxes_paint.k` reports 1201 instances flushed per
   frame.
+- Expansion, measured step by step (paint binary, gate-verified at each
+  step): replacing 20 `when lf.gr == rr` scans with one ordered walk took
+  lap 1 from ~0.060 to ~0.055. Moving the HSL intermediates from scratch
+  store columns into a `capture` local was a wash. Spelling each `@mod`
+  once (nanoui's 4 per leaf) was also a wash: the disassembly shows LLVM
+  had already shared the duplicates, with the same 10 `fmod` call sites in
+  both binaries. In a no-paint profile (`sample`, 3174 samples,
+  top-of-stack), `fmod` is ~32% and nanoui pays the same 4 per leaf (f32
+  `@mod`). Clay is ~64%: declare (`Clay__OpenElement` /
+  `AddHashMapItem` / `ConfigureOpenElementPtr` / `CloseElement`) plus
+  `Clay_EndLayout` / `CalculateFinalLayout` / `SizeContainersAlongAxis`.
+  Koru's own frames are ~3%.
 - The binding adds nothing measurable: Koru's declare-only arm matches raw
   C Clay's declare, and Koru's EndLayout matches raw C's.
 - `bench_boxes.k`'s drain does no work that survives: the tail phase is 0
@@ -99,9 +187,9 @@ What the table implies for the bet: Clay accounts for ~0.067 of our 0.087
 directly replaces **both** halves, not just EndLayout. The expansion pass
 (~0.020) is a separate target: `std/store:query(leaves) when lf.gr == rr`
 inside `for(0..20)` visits 12,000 rows per frame to emit 600. With paint
-and encode measured, two more targets join it: encode (~0.024 vs 0.013 —
-a ring of instance buffers instead of a buffer per flush) and GPU (0.606
-vs 0.424, cause unmeasured). The paint binary's lap 1 reads 0.059–0.060
+and encode measured, encode was a target too and is now closed: the
+instance ring took paint + encode from 0.040 to 0.021, ahead of nanoui's
+0.029. GPU is at parity once the shadow σ matches. The paint binary's lap 1 reads 0.059–0.060
 against split1's 0.052–0.056 for identical code, the binary-composition
 effect again, so lap 1 absolutes are per-binary.
 

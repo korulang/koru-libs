@@ -247,7 +247,7 @@ fn sizing(kind: i64, v: f64) c.Clay_SizingAxis {
     const f: f32 = @floatCast(v);
     return switch (kind) {
         1 => .{ .size = .{ .minMax = .{ .min = f, .max = f } }, .type = c.CLAY__SIZING_TYPE_GROW },
-        2 => .{ .size = .{ .percent = f }, .type = c.CLAY__SIZING_TYPE_PERCENT },
+        2 => .{ .size = .{ .minMax = .{ .min = f, .max = 0 } }, .type = c.CLAY__SIZING_TYPE_PERCENT },
         3 => .{ .size = .{ .minMax = .{ .min = f, .max = f } }, .type = c.CLAY__SIZING_TYPE_FIXED },
         else => .{ .size = .{ .minMax = .{ .min = 0, .max = f } }, .type = c.CLAY__SIZING_TYPE_FIT },
     };
