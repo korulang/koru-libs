@@ -16,7 +16,7 @@
 //   ui:panel(t, …)  open + configure in one step — the spec walk's unit
 //                   (close-to d, panel, panel, panel …)
 //
-// The markup half lives in libs/oshun — `oshun:component(seed, spec)` turns
+// The markup half lives in the oshun repo — `oshun:component(seed, spec)` turns
 // authored <tag …> trees into spec rows; these tors render what they seed.
 
 ~import std/build

@@ -27,7 +27,7 @@
 import libs/metal
 import libs/clay
 import libs/ui
-import libs/oshun
+import oshun
 import std/args
 import std/store
 import std/io
@@ -94,7 +94,7 @@ std/store:new(view, capacity: 256) {
 // tor whose impl emits the insert/|row|/stored chain the old seed wrote by
 // hand (every column filled from the schema, d/ord from the markup shape,
 // parent edges from nesting, hid self-handles per row).
-libs/oshun:component(seed, spec) {
+oshun:component(seed, spec) {
     <panel ws="star" hs="star" dir="ltr" gap="20" pad="20" ax="start" ay="start" r="14" g="15" b="20" a="255" ord="0">
         <vlist ws="star" hs="star" dir="ttb" gap="6" pad="8" ax="start" ay="start" r="22" g="24" b="32" a="255" n="60" uid="50" ord="100"/>
         <panel ws="star" hs="star" dir="ttb" gap="14" pad="12" ax="start" ay="start" r="22" g="24" b="32" a="255" ord="200">

@@ -4,7 +4,7 @@
 import std/store
 import std/io
 import std/ctx
-import libs/oshun
+import oshun
 
 std/store:new(theme, capacity: 8) { accent: f64, fs: f64 }
 std/store:new(hands) { cardh: i64 }
@@ -15,6 +15,6 @@ std/io:print.ln("seed")
     | row r |> std/ctx(theme[r]) |> card()
         |> std/io:print.ln("card fs: {{ spec[hands.cardh].fs:f }}")
 
-libs/oshun:component(card, spec) {
+oshun:component(card, spec) {
     <text tx="hi" fs={{ fs:f }} bind="hands.cardh"/>
 }

@@ -7,7 +7,7 @@
 import libs/metal
 import libs/clay
 import libs/ui
-import libs/oshun
+import oshun
 import std/store
 import std/io
 
@@ -44,7 +44,7 @@ std/store:new(gtrk, capacity: 16) { pid: i64, axis: i64, i: i64, off: f64, size:
 // tag → kind, depth → d, attrs → same-named columns. spec is NOT a
 // [tree] store, so no parent stamps emit; id/pid stay dialect-level
 // attrs (grid membership + the measure pass's edge), not tree edges.
-libs/oshun:component(seed, spec) {
+oshun:component(seed, spec) {
     <dock ws="fix" w="220" hs="auto" dir="ttb" ax="start" ay="start" r="30" g="32" b="42" a="255" fl="1" fx="60" fy="70">
         <leaf dock="top" hs="fix" h="24" ax="start" ay="start" r="62" g="74" b="96" a="255"/>
         <stack dock="fill" dir="ttb" gap="6" pad="10" ax="start" ay="start" r="24" g="26" b="34" a="255">

@@ -15,11 +15,11 @@ aesthetics and beauty; the name carries the goal, not just the grammar.
 
 The name lands as a package boundary, following the `libs/ctx` extraction
 precedent (`60b20a3`): `component` moves from `ui/index.kz` to
-`oshun/index.kz`, call sites read `libs/oshun:component(seed, spec) { … }`.
+`the oshun repo (~/src/oshun)`, call sites read `oshun:component(seed, spec) { … }`.
 The boundary is load-bearing, not ornamental — the transform emits plain
 `std.store` inserts and has no solver dependency, so markup-only consumers
 stop dragging ui's Clay `@cImport` (and its `compiler:requires` include
-path) into their backends. The four probes now import `libs/oshun` alone;
+path) into their backends. The four probes now import `oshun` alone;
 `gallery_comp` imports both — Oshun authors the spec, ui renders it.
 
 Division of labor: **oshun** owns MARKUP → spec-row seeds; **ui** owns the
@@ -39,7 +39,7 @@ family can pin a dialect's surface while a real consumer with a
 deterministic oracle is still needed to prove the semantics.
 
 Open path: `libs/ctx` promoted to `std/ctx` with call sites unchanged
-(`dd42801`). If Oshun settles, `libs/oshun:component` promotes the same
+(`dd42801`). If Oshun settles, `oshun:component` promotes the same
 way — the `libs/` qualifier is provisional by design.
 
 Related:

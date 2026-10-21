@@ -7,13 +7,13 @@ import std/store
 import std/io
 import std/fmt
 import std/string
-import libs/oshun
+import oshun
 
 [tree]std/store:new(spec, capacity: 64) {
     d: i64, kind: char[8], tx: char[40], ord: i64, hid: i64,
 }
 
-libs/oshun:component(seed, spec) {
+oshun:component(seed, spec) {
     <panel>
         <text tx="clicks: {{ n:d }}"/>
         <text>row {{ r:d }} up</text>

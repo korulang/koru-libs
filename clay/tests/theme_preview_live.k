@@ -23,7 +23,7 @@
 import libs/metal
 import libs/clay
 import libs/ui
-import libs/oshun
+import oshun
 import std/store
 import std/io
 import std/fmt
@@ -71,7 +71,7 @@ std/store:new(hit, capacity: 64) { seq: i64, tool: i64, x: f64, y: f64, w: f64, 
 // th gets it ambiently. fs also rides ctx — seed-time only, so a live
 // theme swap changes colors but keeps the seeded font size; that
 // asymmetry is the honest ctx-vs-handle line, printed in the docs.
-libs/oshun:component(mini, spec) {
+oshun:component(mini, spec) {
     <dock ws="fix" w="240" hs="fix" h="150" dir="ttb" gap="4" pad="8" ax="start" ay="start" role="2" fl="1" fx={{ fx:f }} fy={{ fy:f }} th={{ self:d }} scope={{ scope:d }}>
         <leaf dock="top" hs="fix" h="26" role="3" tx="{{ title:s }} theme" fs={{ fs:f }}/>
         <stack dock="fill" dir="ttb" gap="4" pad="6" role="1">
@@ -88,7 +88,7 @@ libs/oshun:component(mini, spec) {
 // route. Each swatch IS its theme (own th → accent via role 3, act 1
 // → click holds it); apply (act 2) commits held → shell. The strip
 // floats under the two minis and binds t0 so nothing ambient leaks in.
-libs/oshun:component(chrome, spec) {
+oshun:component(chrome, spec) {
     <stack ws="fix" w="140" hs="fix" h="116" dir="ltr" gap="12" pad="8" ax="start" ay="center" role="2" fl="1" fx="30" fy="290" th={{ t0:d }}>
         <stack ws="fix" w="28" hs="star" dir="ttb" gap="8" role="2">
             <leaf ws="fix" w="28" hs="fix" h="28" role="3" th={{ t0:d }} act="1"/>
