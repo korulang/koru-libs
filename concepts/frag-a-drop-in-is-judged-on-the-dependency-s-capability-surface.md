@@ -37,6 +37,24 @@ additive except cross-frame state — so the ruling was: stay on Clay, keep
 nl as a gate-verified candidate that grows feature-by-feature, flip a
 flag later rather than hold a funeral now.
 
+Evolution (2026-10-21, after the additive surface completed and the ui
+census ran): the denominator is not one surface — it is layered by
+entry point. ui's dialect path reaches a strict subset of Clay (no
+element ids, no hover, no clip, floating only ATTACH_TO_ROOT +
+LEFT_TOP/LEFT_TOP): through that path nl's absent-reachable set is
+ZERO — every feature the dialect can spell is ported and gated cold
+and warm. The raw `el.*` bracket reaches nearly everything and is the
+gated dev/test surface. Clay APIs with no binding at all (PointerOver,
+GetElementData, transitions, query scroll offset) are unreachable from
+either path — they are the true remaining denominator, and porting the
+binding would precede porting the solver support. The census also
+collapsed the last correctness caveat: ui's floating always resolves
+against the root container's constant box, so even the evolving-tree
+staleness class is unreachable through the dialect. The doctrine
+stands — judge on capability, not the exercised subset — but the
+capability surface is what the BINDINGS can spell, not what the
+vendored library contains.
+
 Relates to [[frag-a-gate-cheaper-than-the-benchmark-it-mirrors-is-green-by-construction]]
 — a gate proving the exercised subset is green by construction on the
 unexercised surface, same shape, different instrument.
