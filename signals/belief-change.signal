@@ -1,0 +1,9 @@
+name: belief-change
+kind: inferred
+shape: categorical
+face: in
+membrane: true
+note: a held belief changed — generic umbrella when a more specific
+      signal (belief-flip, belief-revision, corrected) does not fit.
+      Prefer the specific ones; this exists so an unusual belief motion
+      still has a declared point instead of silence.

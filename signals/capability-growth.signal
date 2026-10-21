@@ -1,0 +1,11 @@
+name: capability-growth
+kind: inferred
+shape: categorical
+face: in
+membrane: false
+note: a candidate/dependency surface gained a verified capability — a
+      feature moved from ABSENT to PARITY under a gate, or a latent
+      surface became reachable. Not a flip of a held belief (that is
+      belief-flip/revision); the substrate itself got bigger. First
+      fired on the per-side-padding cycle that moved the fuzz gate's
+      oracle walk onto raw el.*.
