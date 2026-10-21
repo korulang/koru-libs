@@ -1,7 +1,7 @@
 {
   "name": "@korulang/ui",
   "version": "0.0.1",
-  "description": "OMNI panel dialect — WPF-flavored layout words (stack/dock/star/fill) lowered to a solver backend",
+  "description": "Panel dialect OMNI consumes — WPF-flavored layout words (stack/dock/star/fill) lowered to a solver backend",
   "paths": {
     "libs": ".."
   }

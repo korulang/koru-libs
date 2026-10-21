@@ -1,4 +1,4 @@
-// @korulang/ui — the OMNI panel dialect. The vocabulary is ours and
+// @korulang/ui — the panel dialect OMNI consumes. The vocabulary is ours and
 // WPF-flavored — stack orientation, dock slots, Auto/fix/star sizing,
 // canvas-style float-at field position — lowered to a layout solver
 // (clay today; a native measure/arrange pass when real Grid lands).
