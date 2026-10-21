@@ -31,8 +31,14 @@ padding, gap, ax/ay, ltr/ttb, ROOT+LEFT_TOP floats (panels AND images),
 clip + childOffset, image, text (WORDS wrap, fontSize, color), ud,
 offscreen cull, OVERLAY_COLOR (START/END pair — ordering + union
 layout verified: rectangle.backgroundColor aliases overlayColor.color
-in Clay's renderData union, so CmdView needed no new field). ABSENT,
-additive ports — cornerRadius, borders (+betweenChildren), CUSTOM
+in Clay's renderData union, so CmdView needed no new field), CORNER
+RADIUS ×4 (crtl/crtr/crbl/crbr → decl.cornerRadius — first CmdView
+projection growth: ctl/ctr/cbl/cbr fields + a `cr=` line key; `each`
+reads rectangle.cornerRadius for non-text kinds — image/custom share
+the {color, radius} prefix, text is guarded to 0; comparator compares
+cr= on kinds 1/4 and now counts kind-7 c= as a real aliased payload).
+ABSENT,
+additive ports — borders (+betweenChildren), CUSTOM
 commands, aspectRatio, letterSpacing/
 lineHeight/fontId, wrap NEWLINES/NONE, textAlignment, attachPoints 9×9,
 attachTo PARENT/clipTo, expand, zIndex, pct>1 diagnostic line. ABSENT,
@@ -65,6 +71,20 @@ image/scissor/rect, OVERLAY_END at pop before SCISSOR_END, both under
 Receipt: GATE PASS — CAND==REF over 539 cmds (134 of them the new
 k=7/k=8 pairs); MUT rejected with 1253 divergences. smoke, gallery,
 gallery_comp, bench_solvers all green.
+
+growth 2026-10-20 — cornerRadius: third capability cycle, first to grow
+the normalized projection contract. el.cfg/el.clip/el.img + nl.el.*
+each gained crtl/crtr/crbl/crbr → decl.cornerRadius / El.ctl..cbr;
+nl emits radius on RECT (k=1) and IMAGE (k=4) commands, matching
+clay.h (both renderData members carry {color, radius} at the head).
+CmdView +4 fields; `each` guards is_text (text renderData has no
+radius at that offset — unguarded read would be stringContents bytes,
+i.e. nondeterministic). Comparator parses `cr=` and compares on
+k∈{1,4}; corpus draws ~25% asymmetric per corner — corner-order swaps
+diverge. MUT gained a crtr corruption alongside the pad/gap/w/eid
+axes. Receipt: GATE PASS — CAND==REF over 539 cmds; MUT rejected
+with 1632 divergences. smoke, gallery, gallery_comp, bench_solvers
+green.
 
 landmine found 2026-10-20 — nl first lived as `~part native` of libs/clay.
 ~parts elaborate EAGERLY into every consumer: gallery_comp (never touches

@@ -157,6 +157,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     fl: i64, fx: f64, fy: f64,
     eid: i64,
     ovr: f64, ovg: f64, ovb: f64, ova: f64,
+    crtl: f64, crtr: f64, crbl: f64, crbr: f64,
 }
 
 ~proc el.cfg|zig {
@@ -178,6 +179,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     };
     decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
     decl.overlayColor = .{ .r = @floatCast(ovr), .g = @floatCast(ovg), .b = @floatCast(ovb), .a = @floatCast(ova) };
+    decl.cornerRadius = .{ .topLeft = @floatCast(crtl), .topRight = @floatCast(crtr), .bottomLeft = @floatCast(crbl), .bottomRight = @floatCast(crbr) };
     decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
     if (fl != 0) {
         decl.floating = .{
@@ -200,6 +202,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     fl: i64, fx: f64, fy: f64,
     eid: i64,
     ovr: f64, ovg: f64, ovb: f64, ova: f64,
+    crtl: f64, crtr: f64, crbl: f64, crbr: f64,
 }
 
 ~proc el.img|zig {
@@ -212,6 +215,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     };
     decl.image = .{ .imageData = @ptrFromInt(@as(usize, @intCast(data))) };
     decl.overlayColor = .{ .r = @floatCast(ovr), .g = @floatCast(ovg), .b = @floatCast(ovb), .a = @floatCast(ova) };
+    decl.cornerRadius = .{ .topLeft = @floatCast(crtl), .topRight = @floatCast(crtr), .bottomLeft = @floatCast(crbl), .bottomRight = @floatCast(crbr) };
     decl.userData = @ptrFromInt(@as(usize, @intCast(@as(u64, @bitCast(eid)))));
     if (fl != 0) {
         decl.floating = .{
@@ -254,6 +258,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
     r: f64, g: f64, b: f64, a: f64,
     ovr: f64, ovg: f64, ovb: f64, ova: f64,
+    crtl: f64, crtr: f64, crbl: f64, crbr: f64,
     ox: f64, oy: f64, horiz: i64, vert: i64,
 }
 
@@ -275,6 +280,7 @@ fn clayErr(ed: c.Clay_ErrorData) callconv(.c) void {
     };
     decl.backgroundColor = .{ .r = @floatCast(r), .g = @floatCast(g), .b = @floatCast(b), .a = @floatCast(a) };
     decl.overlayColor = .{ .r = @floatCast(ovr), .g = @floatCast(ovg), .b = @floatCast(ovb), .a = @floatCast(ova) };
+    decl.cornerRadius = .{ .topLeft = @floatCast(crtl), .topRight = @floatCast(crtr), .bottomLeft = @floatCast(crbl), .bottomRight = @floatCast(crbr) };
     decl.clip = .{
         .horizontal = horiz != 0,
         .vertical = vert != 0,
@@ -338,6 +344,10 @@ pub const CmdView = struct {
     ud: i64,
     tx: []const u8,
     fs: f64,
+    ctl: f64,
+    ctr: f64,
+    cbl: f64,
+    cbr: f64,
 };
 
 // Rendered-content dims — what a string occupies at a point size under the
@@ -391,6 +401,10 @@ pub const Dims = struct {
             else
                 "",
             .fs = if (is_text) @as(f64, @floatFromInt(__rc.renderData.text.fontSize)) else 0.0,
+            .ctl = if (is_text) 0.0 else @as(f64, __rc.renderData.rectangle.cornerRadius.topLeft),
+            .ctr = if (is_text) 0.0 else @as(f64, __rc.renderData.rectangle.cornerRadius.topRight),
+            .cbl = if (is_text) 0.0 else @as(f64, __rc.renderData.rectangle.cornerRadius.bottomLeft),
+            .cbr = if (is_text) 0.0 else @as(f64, __rc.renderData.rectangle.cornerRadius.bottomRight),
         });
     }
     return .{ .drained = .{} };

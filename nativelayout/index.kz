@@ -116,6 +116,10 @@ const El = struct {
     ovg: f32 = 0,
     ovb: f32 = 0,
     ova: f32 = 0,
+    ctl: f32 = 0,
+    ctr: f32 = 0,
+    cbl: f32 = 0,
+    cbr: f32 = 0,
     fl: u8 = 0,
     fx: f32 = 0,
     fy: f32 = 0,
@@ -170,6 +174,10 @@ const Cmd = struct {
     ud: usize = 0,
     tx: []const u8 = "",
     fs: u16 = 0,
+    ctl: f32 = 0,
+    ctr: f32 = 0,
+    cbl: f32 = 0,
+    cbr: f32 = 0,
 };
 
 const alloc = std.heap.page_allocator;
@@ -699,13 +707,13 @@ fn emitCommands(n: *Native) void {
                         n.cmds.append(alloc, .{ .kind = 7, .r = e.ovr, .g = e.ovg, .b = e.ovb, .a = e.ova, .ud = e.ud }) catch @panic("nl: OOM");
                     }
                     if (e.img != 0) {
-                        n.cmds.append(alloc, .{ .kind = 4, .x = bx, .y = by, .w = e.dw, .h = e.dh, .img = e.img, .ud = e.ud }) catch @panic("nl: OOM");
+                        n.cmds.append(alloc, .{ .kind = 4, .x = bx, .y = by, .w = e.dw, .h = e.dh, .img = e.img, .ud = e.ud, .ctl = e.ctl, .ctr = e.ctr, .cbl = e.cbl, .cbr = e.cbr }) catch @panic("nl: OOM");
                     }
                     if (e.ch or e.cv) {
                         n.cmds.append(alloc, .{ .kind = 5, .x = bx, .y = by, .w = e.dw, .h = e.dh }) catch @panic("nl: OOM");
                     }
                     if (e.a > 0) {
-                        n.cmds.append(alloc, .{ .kind = 1, .x = bx, .y = by, .w = e.dw, .h = e.dh, .r = e.r, .g = e.g, .b = e.b, .a = e.a, .ud = e.ud }) catch @panic("nl: OOM");
+                        n.cmds.append(alloc, .{ .kind = 1, .x = bx, .y = by, .w = e.dw, .h = e.dh, .r = e.r, .g = e.g, .b = e.b, .a = e.a, .ud = e.ud, .ctl = e.ctl, .ctr = e.ctr, .cbl = e.cbl, .cbr = e.cbr }) catch @panic("nl: OOM");
                     }
                 }
             }
@@ -856,6 +864,7 @@ fn solve(n: *Native) void {
     fl: i64, fx: f64, fy: f64,
     eid: i64,
     ovr: f64, ovg: f64, ovb: f64, ova: f64,
+    crtl: f64, crtr: f64, crbl: f64, crbr: f64,
 }
 
 ~proc nl.el.cfg|zig {
@@ -883,6 +892,10 @@ fn solve(n: *Native) void {
     e.ovg = @floatCast(ovg);
     e.ovb = @floatCast(ovb);
     e.ova = @floatCast(ova);
+    e.ctl = @floatCast(crtl);
+    e.ctr = @floatCast(crtr);
+    e.cbl = @floatCast(crbl);
+    e.cbr = @floatCast(crbr);
     e.ud = @intCast(@as(u64, @bitCast(eid)));
     if (fl != 0) {
         e.fl = 1;
@@ -899,6 +912,7 @@ fn solve(n: *Native) void {
     fl: i64, fx: f64, fy: f64,
     eid: i64,
     ovr: f64, ovg: f64, ovb: f64, ova: f64,
+    crtl: f64, crtr: f64, crbl: f64, crbr: f64,
 }
 
 ~proc nl.el.img|zig {
@@ -913,6 +927,10 @@ fn solve(n: *Native) void {
     e.ovg = @floatCast(ovg);
     e.ovb = @floatCast(ovb);
     e.ova = @floatCast(ova);
+    e.ctl = @floatCast(crtl);
+    e.ctr = @floatCast(crtr);
+    e.cbl = @floatCast(crbl);
+    e.cbr = @floatCast(crbr);
     if (fl != 0) {
         e.fl = 1;
         e.fx = @floatCast(fx);
@@ -927,6 +945,7 @@ fn solve(n: *Native) void {
     dir: i64, gap: i64, padl: i64, padr: i64, padt: i64, padb: i64,
     r: f64, g: f64, b: f64, a: f64,
     ovr: f64, ovg: f64, ovb: f64, ova: f64,
+    crtl: f64, crtr: f64, crbl: f64, crbr: f64,
     ox: f64, oy: f64, horiz: i64, vert: i64,
 }
 
@@ -950,6 +969,10 @@ fn solve(n: *Native) void {
     e.ovg = @floatCast(ovg);
     e.ovb = @floatCast(ovb);
     e.ova = @floatCast(ova);
+    e.ctl = @floatCast(crtl);
+    e.ctr = @floatCast(crtr);
+    e.cbl = @floatCast(crbl);
+    e.cbr = @floatCast(crbr);
     e.ch = horiz != 0;
     e.cv = vert != 0;
     e.ox = @floatCast(ox);
@@ -1029,6 +1052,10 @@ fn solve(n: *Native) void {
             .ud = @as(i64, @bitCast(@as(u64, @intCast(rc.ud)))),
             .tx = if (is_text) rc.tx else "",
             .fs = if (is_text) @as(f64, @floatFromInt(rc.fs)) else 0.0,
+            .ctl = rc.ctl,
+            .ctr = rc.ctr,
+            .cbl = rc.cbl,
+            .cbr = rc.cbr,
         });
     }
     return .{ .drained = .{} };

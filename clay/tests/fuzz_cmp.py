@@ -8,10 +8,15 @@
 Per-kind field rules (matching what consumers actually read):
   kind, ud        : exact, always
   rect            : all kinds, tol 0.001 (same binary — near-exact expected)
-  color c=        : kinds 1 (RECT) and 3 (TEXT) only — other kinds read
-                    union garbage in `each`, not part of the contract
+  color c=        : kinds 1 (RECT), 3 (TEXT), and 7 (OVERLAY_START —
+                    overlayColor.color aliases rectangle.backgroundColor
+                    at the union head; a real payload, not garbage)
   img i=          : kind 4 only
   fs f=, tx=      : kind 3 only (fs tol 0.001, tx exact)
+  corner cr=      : kinds 1 (RECT) and 4 (IMAGE) only — cornerRadius sits
+                    at the same union offset in both renderData members;
+                    other kinds carry zeroed bytes (or, for text, are
+                    guarded to 0 in `each`), compared exact at %.2f
 
 Usage: fuzz_cmp.py <dump>
 Exit 0 only if CAND matches REF *and* MUT diverges from REF."""
@@ -20,7 +25,7 @@ import re, sys
 pat = re.compile(
     r"^cmd k=(\d+) ud=(-?\d+) r=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)"
     r" c=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)"
-    r" i=(-?\d+) f=([-\d.]+) tx=(.*)$")
+    r" i=(-?\d+) f=([-\d.]+) cr=([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+) tx=(.*)$")
 
 def parse(path):
     secs, cur = {}, None
@@ -38,7 +43,9 @@ def parse(path):
             secs[cur].append(dict(k=int(g[0]), ud=int(g[1]),
                                   r=[float(g[2]), float(g[3]), float(g[4]), float(g[5])],
                                   c=[float(g[6]), float(g[7]), float(g[8]), float(g[9])],
-                                  i=int(g[10]), f=float(g[11]), tx=g[12]))
+                                  i=int(g[10]), f=float(g[11]),
+                                  cr=[float(g[12]), float(g[13]), float(g[14]), float(g[15])],
+                                  tx=g[16]))
     return secs
 
 def cmp_rows(a, b, label):
@@ -54,10 +61,14 @@ def cmp_rows(a, b, label):
         for j, (u, v) in enumerate(zip(x["r"], y["r"])):
             if abs(u - v) > 0.001:
                 fails.append(f"{label}[{idx}]: rect[{j}] {u} vs {v} (d={u-v:+.4f})")
-        if x["k"] in (1, 3):
+        if x["k"] in (1, 3, 7):
             for j, (u, v) in enumerate(zip(x["c"], y["c"])):
                 if abs(u - v) > 0.002:
                     fails.append(f"{label}[{idx}]: color[{j}] {u} vs {v} (d={u-v:+.4f})")
+        if x["k"] in (1, 4):
+            for j, (u, v) in enumerate(zip(x["cr"], y["cr"])):
+                if abs(u - v) > 0.005:
+                    fails.append(f"{label}[{idx}]: corner[{j}] {u} vs {v} (d={u-v:+.4f})")
         if x["k"] == 4 and x["i"] != y["i"]:
             fails.append(f"{label}[{idx}]: img {x['i']} vs {y['i']}")
         if x["k"] == 3:
