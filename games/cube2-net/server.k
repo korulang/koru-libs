@@ -39,7 +39,26 @@ serve = libs/enet:service(host: srv, timeout_ms: 10)
                         | sent |> libs/enet:flush(host: srv)
                         | err e |> std/io:print.ln("welcome err {{ e:s }}")
                 | bad |> std/io:print.ln("tryjoin decode: BAD")
-            | else |> std/io:print.ln("nmc {{ code:d }} ch {{ ch:d }} len {{ @as(i32, @intCast(d.len)):d }}")
+            | else |> if (code == 16)
+                | then |> libs/enet:packet.peer-pid(p: pk): scn
+                    |> wire:spawnstate.ffa(cn: @as(i32, @intCast(scn)), lifeseq: 1): ss
+                    |> libs/enet:send.key(host: srv, key: pkey, channel: 1, data: ss, reliable: true)
+                        | sent |> libs/enet:flush(host: srv)
+                        | err e |> std/io:print.ln("spawnstate err {{ e:s }}")
+                | else |> if (code == 30)
+                    | then |> wire:ping.decode(d)
+                        | ping v |> wire:pong(v): po
+                            |> libs/enet:send.key(host: srv, key: pkey, channel: 1, data: po, reliable: true)
+                                | sent |> libs/enet:flush(host: srv)
+                                | err e |> std/io:print.ln("pong err {{ e:s }}")
+                        | bad |> _
+                    | else |> if (code == 18)
+                        | then |> wire:confirmspawn.decode(d)
+                            | confirm cf |> std/io:print.ln("spawn confirmed lifeseq {{ cf.lifeseq:d }} weapon {{ cf.weapon:d }}")
+                            | bad |> _
+                        | else |> if (code == 32)
+                            | then |> _
+                            | else |> std/io:print.ln("nmc {{ code:d }} ch {{ ch:d }} len {{ @as(i32, @intCast(d.len)):d }}")
     ! disconnect dp |> libs/enet:peer.pid(p: dp): dpid
         |> std/io:print.ln("disconnect pid {{ dpid:d }}")
     | idle |> _

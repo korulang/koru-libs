@@ -213,3 +213,117 @@ fn finish(buf: []const u8, n: usize) []const u8 {
     wInt(&buf, &n, -1); // reason -1
     return finish(&buf, n);
 }
+
+// ── Ping/Pong (nmc 30/31): Ping carries one int, Pong echoes it ───────
+
+~pub tor ping.decode { d: string<*> }
+| ping i32
+| bad
+
+~proc ping.decode|zig {
+    var pos: usize = 0;
+    _ = rInt(d, &pos) orelse return .{ .bad = .{} }; // nmc
+    const v = rInt(d, &pos) orelse return .{ .bad = .{} };
+    return .{ .ping = v };
+}
+
+~pub tor pong { v: i32 } -> string
+~proc pong|zig {
+    var buf: [64]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 31);
+    wInt(&buf, &n, v);
+    return finish(&buf, n);
+}
+
+// ── ConfirmSpawn (nmc 18, client → server): lifeSequence, weapon ───────
+
+~pub tor confirmspawn.decode { d: string<*> }
+| confirm { lifeseq: i32, weapon: i32 }
+| bad
+
+~proc confirmspawn.decode|zig {
+    var pos: usize = 0;
+    _ = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const lifeseq = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const weapon = rInt(d, &pos) orelse return .{ .bad = .{} };
+    return .{ .confirm = .{ .lifeseq = lifeseq, .weapon = weapon } };
+}
+
+// ── SpawnState (nmc 17, server → client): cn + PlayerState.ToWire —
+// lifeseq, health, maxhealth, armour, armourtype, weapon, ammo[6] in
+// WeaponsWithAmmo order (Shotgun, Minigun, RocketLauncher, Rifle,
+// GrenadeLauncher, Pistol). The FFA spawn constants are the mode's
+// contract — waiter's ffaSpawnState verbatim. ───────────────────────────
+
+~pub tor spawnstate.ffa { cn: i32, lifeseq: i32 } -> string
+~proc spawnstate.ffa|zig {
+    var buf: [128]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 17); // spawnstate
+    wInt(&buf, &n, cn);
+    wInt(&buf, &n, lifeseq);
+    wInt(&buf, &n, 100); // health
+    wInt(&buf, &n, 100); // maxhealth
+    wInt(&buf, &n, 25);  // armour
+    wInt(&buf, &n, 0);   // armourtype: blue
+    wInt(&buf, &n, 6);   // selected weapon: pistol
+    // flattened ammo, WeaponsWithAmmo order: sg mg rl rifle gl pistol
+    wInt(&buf, &n, 0);
+    wInt(&buf, &n, 0);
+    wInt(&buf, &n, 0);
+    wInt(&buf, &n, 0);
+    wInt(&buf, &n, 1);   // grenade launcher
+    wInt(&buf, &n, 40);  // pistol
+    return finish(&buf, n);
+}
+
+~pub tor spawnstate.decode { d: string<*> }
+| spawned { cn: i32, lifeseq: i32, health: i32, maxhealth: i32, armour: i32, weapon: i32 }
+| bad
+
+~proc spawnstate.decode|zig {
+    var pos: usize = 0;
+    _ = rInt(d, &pos) orelse return .{ .bad = .{} }; // nmc
+    const cn = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const lifeseq = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const health = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const maxhealth = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const armour = rInt(d, &pos) orelse return .{ .bad = .{} };
+    _ = rInt(d, &pos) orelse return .{ .bad = .{} }; // armourtype
+    const weapon = rInt(d, &pos) orelse return .{ .bad = .{} };
+    var i: usize = 0;
+    while (i < 6) : (i += 1) {
+        _ = rInt(d, &pos) orelse return .{ .bad = .{} }; // ammo
+    }
+    return .{ .spawned = .{ .cn = cn, .lifeseq = lifeseq, .health = health, .maxhealth = maxhealth, .armour = armour, .weapon = weapon } };
+}
+
+// ── TrySpawn (nmc 16, client → server): no payload beyond the code ─────
+
+~pub tor tryspawn {} -> string
+~proc tryspawn|zig {
+    var buf: [8]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 16);
+    return finish(&buf, n);
+}
+
+~pub tor confirmspawn { lifeseq: i32, weapon: i32 } -> string
+~proc confirmspawn|zig {
+    var buf: [16]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 18);
+    wInt(&buf, &n, lifeseq);
+    wInt(&buf, &n, weapon);
+    return finish(&buf, n);
+}
+
+~pub tor ping { v: i32 } -> string
+~proc ping|zig {
+    var buf: [16]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 30);
+    wInt(&buf, &n, v);
+    return finish(&buf, n);
+}

@@ -51,19 +51,44 @@ on both ends.
   `! disconnect` → log. cn := enet `incomingPeerID` (no session store yet).
 - `probe.k` — the client instrument; takes the target port as argv[1].
 
+## Measured (spawn handshake, second run)
+
+probe → **this server**: full client-visible join —
+
+    SERVERINFO cn 0 proto 260 session 12345
+    WELCOME len 22
+    SPAWNSTATE cn 0 lifeseq 1 hp 100/100 armour 25 weapon 6
+    PONG 42
+
+server log: `connect pid 0` → `tryjoin "koru-probe" model 0` →
+`spawn confirmed lifeseq 1 weapon 6`. The complete retail-client-visible
+join spine works: connect → serverinfo → tryjoin → welcome → tryspawn →
+spawnstate → confirmspawn → ping/pong.
+
+Waiter difference measured: it calls `s.Spawn(c)` inside Join, so its
+TrySpawn guard (`State == Dead`) never fires for our probe — no
+SpawnState from it; ours answers. Retail clients send TrySpawn after map
+load and wait on the server's answer, so the responding behavior is the
+correct one for the real-client gate.
+
+nmc 93 identified: `RequestAuth` carrying `stats.p1x.pw` — waiter's own
+log dumped the bytes (`[93 115 116 97 116 115 46 112 49 120 46 112 119 0]`
+= code + the ASCII string, one byte per put-int). It's the stats-server
+auth prompt — not needed here.
+
 ## Gap list (the real yield — next slices)
 
 - **Session store absent** — cn comes from enet's pid; a `clients` store
-  keyed on `peer.key` lands when game state does (spawn, position).
+  keyed on `peer.key` lands when game state does (position fan-out).
 - **Welcome is minimal** — full welcome adds TeamInfo/InitClient lists,
   privileged-users, pause-state, mode init payload.
-- **No spawn/positions** — a retail client will handshake but stand
-  spawnless: needs SpawnState + channel-0 position fan-out + TrySpawn →
-  ConfirmSpawn handling.
-- **No MapCRC/checkmaps, no chat, no pings** (nmc 30 ClientPing → Pong is
-  probably mandatory to keep a real client alive).
-- **nmc 93 unidentified** — received from waiter post-join, 14 bytes
-  (likely RequestAuth); decode it.
+- **No positions** — retail client stands in-world after spawn but sees a
+  frozen world: needs channel-0 position ingest + fan-out, and our own
+  server-controlled entities to watch move.
+- **No MapCRC/checkmaps, no chat** — chat is one codec step; MapCRC is a
+  file-hash question (`/checkmaps` compares server-side).
+- **ClientPing swallowed, not broadcast** — correct for one client; the
+  relay lands with the session store.
 - **cubecode high bytes** — ASCII passthrough only; port waiter's full
   256-entry cubeToUni/uniToCube tables.
 - **No game timer** — TimeLeft is a constant 600; the real one counts down
@@ -71,3 +96,7 @@ on both ends.
 - **Stale peer-key hazard** rides along from libs/enet's named gap.
 - **probe asserts nothing** — it prints; a `tests/` oracle asserts the
   decoded fields (proto==260 etc.) so the parity check is mechanical.
+- **Retail client unverified** — Sauerbraten isn't installed on this
+  machine; the handshake spine is oracle-verified against waiter, but the
+  real client's expectations beyond this spine (InitClient for self?
+  map-download flow? editstate?) are unmeasured until one connects.
