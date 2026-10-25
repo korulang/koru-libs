@@ -1,0 +1,215 @@
+// wire — Cube 2: Sauerbraten packet codec over libs/enet.
+// Oracle: github.com/sauerbraten/waiter (pkg/protocol/packet.go,
+// pkg/protocol/nmc) — this file ports the byte-level semantics, not the
+// server behavior.
+//
+//   put-int   sauer varint: 1B when -0x7F<v<0x80 · 0x80+2LE · 0x81+4LE
+//   put-uint  28-bit LEB128, 0x80 continuation, 7 bits/byte
+//   put-str   cubecode codepoints, one put-int per char, 0x00 terminator
+//   get-*     the inverses, cursor-passing inside one packet
+//
+// Channels (kb.p1x.pw): 0 positions · 1 game events · 2 coop-edit maps.
+// One enet packet = one protocol message; the packet's first int is the
+// network message code. Handshake: server pushes ServerInfo on enet
+// connect; client answers TryJoin; server replies Welcome.
+//
+// v0 gap: cubecode high bytes — ASCII (9-13, 32-126) keeps its codepoint
+// position so it passes through 1:1; anything outside is written as '?'
+// on decode and dropped on encode until the full 256-entry table lands.
+
+const std = @import("std");
+
+// ── put-int / put-uint — waiter's Packet.PutInt/PutUint, verbatim ──────
+
+fn wInt(buf: []u8, n: *usize, v: i32) void {
+    if (v > -0x7F and v < 0x80) {
+        buf[n.*] = @bitCast(@as(i8, @truncate(v)));
+        n.* += 1;
+    } else if (v >= -0x7FFF and v < 0x8000) {
+        const uv: u16 = @bitCast(@as(i16, @truncate(v)));
+        buf[n.*] = 0x80;
+        buf[n.* + 1] = @truncate(uv);
+        buf[n.* + 2] = @truncate(uv >> 8);
+        n.* += 3;
+    } else {
+        const uv: u32 = @bitCast(v);
+        buf[n.*] = 0x81;
+        buf[n.* + 1] = @truncate(uv);
+        buf[n.* + 2] = @truncate(uv >> 8);
+        buf[n.* + 3] = @truncate(uv >> 16);
+        buf[n.* + 4] = @truncate(uv >> 24);
+        n.* += 5;
+    }
+}
+
+fn wUint(buf: []u8, n: *usize, v: u32) void {
+    if (v < (1 << 7)) {
+        buf[n.*] = @intCast(v);
+        n.* += 1;
+    } else if (v < (1 << 14)) {
+        buf[n.*] = @as(u8, @truncate(v)) | 0x80;
+        buf[n.* + 1] = @truncate(v >> 7);
+        n.* += 2;
+    } else if (v < (1 << 21)) {
+        buf[n.*] = @as(u8, @truncate(v)) | 0x80;
+        buf[n.* + 1] = @as(u8, @truncate(v >> 7)) | 0x80;
+        buf[n.* + 2] = @truncate(v >> 14);
+        n.* += 3;
+    } else {
+        buf[n.*] = @as(u8, @truncate(v)) | 0x80;
+        buf[n.* + 1] = @as(u8, @truncate(v >> 7)) | 0x80;
+        buf[n.* + 2] = @as(u8, @truncate(v >> 14)) | 0x80;
+        buf[n.* + 3] = @truncate(v >> 21);
+        n.* += 4;
+    }
+}
+
+// ASCII keeps cubecode position (verified against waiter's cubeToUni: the
+// control-char slots 14-31 carry Latin-1, so printable ASCII lands on its
+// own codepoint). Anything else is the named gap.
+fn wStr(buf: []u8, n: *usize, s: []const u8) void {
+    for (s) |b| {
+        if ((b >= 32 and b < 127) or (b >= 9 and b <= 13)) wInt(buf, n, b);
+    }
+    buf[n.*] = 0;
+    n.* += 1;
+}
+
+// ── get-int / get-str — the decode halves ──────────────────────────────
+
+fn rInt(d: []const u8, pos: *usize) ?i32 {
+    if (pos.* >= d.len) return null;
+    const b = d[pos.*];
+    pos.* += 1;
+    switch (b) {
+        0x80 => {
+            if (pos.* + 2 > d.len) return null;
+            const v = @as(i32, d[pos.*]) + (@as(i32, @as(i8, @bitCast(d[pos.* + 1]))) << 8);
+            pos.* += 2;
+            return v;
+        },
+        0x81 => {
+            if (pos.* + 4 > d.len) return null;
+            const v = @as(i32, d[pos.*]) + (@as(i32, d[pos.* + 1]) << 8) + (@as(i32, d[pos.* + 2]) << 16) + (@as(i32, @as(i8, @bitCast(d[pos.* + 3]))) << 24);
+            pos.* += 4;
+            return v;
+        },
+        else => return @as(i32, @as(i8, @bitCast(b))),
+    }
+}
+
+fn rStr(d: []const u8, pos: *usize) ?[]const u8 {
+    var tmp: [512]u8 = undefined;
+    var m: usize = 0;
+    while (true) {
+        const cp = rInt(d, pos) orelse return null;
+        if (cp == 0) break;
+        if (m < tmp.len) {
+            tmp[m] = if (cp >= 0 and cp < 128) @intCast(cp) else '?';
+            m += 1;
+        }
+    }
+    return std.heap.page_allocator.dupe(u8, tmp[0..m]) catch null;
+}
+
+fn finish(buf: []const u8, n: usize) []const u8 {
+    return std.heap.page_allocator.dupe(u8, buf[0..n]) catch "";
+}
+
+// ── message head: first int of any packet is the network message code ──
+
+~pub tor nmc { d: string<*> } -> i32
+~proc nmc|zig {
+    var pos: usize = 0;
+    return rInt(d, &pos) orelse -1;
+}
+
+// ── TryJoin (nmc 0, client → server): name, model, password-hash,
+// auth-domain, auth-name ───────────────────────────────────────────────
+
+~pub tor tryjoin.encode { name: string<*>, model: i32, authdom: string<*>, authname: string<*> } -> string
+~proc tryjoin.encode|zig {
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 0);
+    wStr(&buf, &n, name);
+    wInt(&buf, &n, model);
+    wStr(&buf, &n, "");
+    wStr(&buf, &n, authdom);
+    wStr(&buf, &n, authname);
+    return finish(&buf, n);
+}
+
+~pub tor tryjoin.decode { d: string<*> }
+| join { name: string, model: i32, authdom: string, authname: string }
+| bad
+
+~proc tryjoin.decode|zig {
+    var pos: usize = 0;
+    _ = rInt(d, &pos) orelse return .{ .bad = .{} }; // nmc
+    const name = rStr(d, &pos) orelse return .{ .bad = .{} };
+    const model = rInt(d, &pos) orelse return .{ .bad = .{} };
+    _ = rStr(d, &pos) orelse return .{ .bad = .{} }; // hash
+    const authdom = rStr(d, &pos) orelse return .{ .bad = .{} };
+    const authname = rStr(d, &pos) orelse return .{ .bad = .{} };
+    return .{ .join = .{ .name = name, .model = model, .authdom = authdom, .authname = authname } };
+}
+
+// ── ServerInfo (nmc 1, server → client on enet connect):
+// cn, protocol version, session id, has-password byte, description,
+// auth domain ──────────────────────────────────────────────────────────
+
+~pub tor serverinfo { cn: i32, proto: i32, session: i32, haspass: bool, desc: string<*>, authdom: string<*> } -> string
+~proc serverinfo|zig {
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 1);
+    wInt(&buf, &n, cn);
+    wInt(&buf, &n, proto);
+    wInt(&buf, &n, session);
+    buf[n] = if (haspass) 1 else 0;
+    n += 1;
+    wStr(&buf, &n, desc);
+    wStr(&buf, &n, authdom);
+    return finish(&buf, n);
+}
+
+~pub tor serverinfo.decode { d: string<*> }
+| info { cn: i32, proto: i32, session: i32, haspass: bool, desc: string, authdom: string }
+| bad
+
+~proc serverinfo.decode|zig {
+    var pos: usize = 0;
+    _ = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const cn = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const proto = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const session = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const hp = rInt(d, &pos) orelse return .{ .bad = .{} };
+    const haspass = hp != 0;
+    const desc = rStr(d, &pos) orelse return .{ .bad = .{} };
+    const authdom = rStr(d, &pos) orelse return .{ .bad = .{} };
+    return .{ .info = .{ .cn = cn, .proto = proto, .session = session, .haspass = haspass, .desc = desc, .authdom = authdom } };
+}
+
+// ── Welcome (nmc 2, server → client after TryJoin). v0 minimal:
+// MapChange(22) + TimeLeft(33) + SetTeam(64). waiter's full Welcome adds
+// mode init payloads, privileged-users, pause, team-info — named gap. ───
+
+~pub tor welcome { map: string<*>, mode: i32, needmap: bool, timeleft: i32, cn: i32, team: string<*> } -> string
+~proc welcome|zig {
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    wInt(&buf, &n, 2); // welcome
+    wInt(&buf, &n, 22); // mapchange
+    wStr(&buf, &n, map);
+    wInt(&buf, &n, mode);
+    buf[n] = if (needmap) 1 else 0;
+    n += 1;
+    wInt(&buf, &n, 33); // timeleft
+    wInt(&buf, &n, timeleft);
+    wInt(&buf, &n, 64); // setteam
+    wInt(&buf, &n, cn);
+    wStr(&buf, &n, team);
+    wInt(&buf, &n, -1); // reason -1
+    return finish(&buf, n);
+}

@@ -1,0 +1,290 @@
+// @korulang/enet — reliable + sequenced UDP sessions via libenet (v0: IPv4)
+//
+// Lifts ENet — the connection/channel/reliability layer ENet's own homepage
+// describes as "evolved specifically for Cube" — behind phantom obligations.
+// This is the transport SERVER_CHALLENGE.md names for the Cube 2 slice:
+// sequenced+reliable channels over UDP, connection lifecycle managed by the
+// library, one service call driving handshake/ping/resend.
+//
+//   1. There is no unbound-host state AT ALL. `host` (server) and `client`
+//      are the only mints: a *Host exists only once it owns its socket.
+//   2. `close` consumes <!host> — send-after-close is not expressible.
+//   3. `service` fires `! connect` / `! packet` / `! disconnect` once per
+//      ENet event, each a scoped borrow valid only inside its branch (the
+//      udp `! packet` / raylib `! frame` shape). A borrow's release is
+//      auto-inserted at the branch boundary — freeing the koru wrapper,
+//      never the ENetPeer, which the library owns for the connection's life.
+//   4. `peer.key` is the peer HANDLE as i64 — the column a server keys
+//      per-client rows on (unlike udp's addr fold: a *ENetPeer cannot be
+//      refolded from bytes, so the pointer IS the key). send.key casts it
+//      back. Session rows drop on `! disconnect` — a stale key reaches a
+//      recycled or dead peer slot, which is the named hazard below.
+//   5. `dial` returns `| dialing` with the peer key immediately — the
+//      outcome arrives later as a `! connect` on the client's own service,
+//      symmetric with the server side. A blocking dial would deadlock a
+//      loopback where the same thread must pump both hosts.
+//
+// Service is a poll-shaped drain (timeout honored on the first event wait,
+// then drains queued events at 0): a server calls it once per tick, same
+// shape as libs/udp. The evented socket-source remains the shared named
+// gap (Orisha's kqueue pump is the port source).
+
+~import std/build
+~import std/deps
+
+~std/deps:requires.system {
+    "name": "enet",
+    "check": "pkg-config --modversion libenet",
+    "brew": "enet",
+    "apt": "libenet-dev",
+    "dnf": "enet-devel",
+    "pacman": "enet",
+    "apk": "enet-dev"
+}
+
+~std/build:requires {
+    exe.addIncludePath(.{ .cwd_relative = "/opt/homebrew/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/lib" });
+    exe.addIncludePath(.{ .cwd_relative = "/usr/local/include" });
+    exe.addLibraryPath(.{ .cwd_relative = "/usr/local/lib" });
+    exe.linkSystemLibrary("enet");
+    exe.linkLibC();
+}
+
+const std = @import("std");
+const c = @cImport({
+    @cInclude("enet/enet.h");
+});
+
+var enet_initialized = false;
+fn enetInit() void {
+    if (!enet_initialized) {
+        _ = c.enet_initialize();
+        enet_initialized = true;
+    }
+}
+
+// The bound host. The ENetHost is the whole state — the phantom is the contract.
+pub const Host = struct {
+    h: *c.ENetHost,
+};
+
+// A live connection. Wraps the library-owned *ENetPeer — the borrow is
+// branch-scoped; the peer's life is enet's.
+pub const Peer = struct {
+    p: [*c]c.ENetPeer,
+};
+
+// One received packet. Payload copied into the scoped buffer (the ENetPacket
+// is destroyed in-service) — valid only inside the ! packet branch.
+pub const Packet = struct {
+    buf: [65536]u8,
+    n: usize,
+    peer: [*c]c.ENetPeer,
+    channel: u8,
+};
+
+// ============================================================================
+// Lifecycle — host (server) and client are the two mints, close the one exit.
+// ============================================================================
+
+// Bind a server host on 0.0.0.0:port. `down`/`up` are bandwidth caps in
+// bytes/sec — 0 is unlimited, which is what a LAN or localhost server wants.
+~pub tor host { port: u16, peers: i32, channels: i32, down: i32, up: i32 }
+| up *Host<host!>
+| err string
+
+~proc host|zig {
+    enetInit();
+    var addr = std.mem.zeroes(c.ENetAddress);
+    addr.host = c.ENET_HOST_ANY;
+    addr.port = port;
+    const h = c.enet_host_create(&addr, @intCast(peers), @intCast(channels), @intCast(down), @intCast(up)) orelse {
+        return .{ .err = "enet: host_create failed — port in use?" };
+    };
+    const s = std.heap.page_allocator.create(Host) catch @panic("enet: OOM allocating Host");
+    s.* = .{ .h = h };
+    return .{ .up = s };
+}
+
+// An unbound client host — one peer slot, ready to dial.
+~pub tor client { channels: i32 }
+| up *Host<host!>
+| err string
+
+~proc client|zig {
+    enetInit();
+    const h = c.enet_host_create(null, 1, @intCast(channels), 0, 0) orelse {
+        return .{ .err = "enet: client host_create failed" };
+    };
+    const s = std.heap.page_allocator.create(Host) catch @panic("enet: OOM allocating Host");
+    s.* = .{ .h = h };
+    return .{ .up = s };
+}
+
+// Open a connection to ip:port. Returns the peer key NOW — the handshake
+// completes asynchronously and arrives as `! connect` on this host's service.
+// A server-side session row keys on the same value via peer.key.
+~pub tor dial { host: *Host<host>, ip: string, port: u16, channels: i32 }
+| dialing i64
+| err string
+
+~proc dial|zig {
+    var addr = std.mem.zeroes(c.ENetAddress);
+    var ipz: [64]u8 = undefined;
+    if (ip.len >= ipz.len) return .{ .err = "enet: ip too long" };
+    @memcpy(ipz[0..ip.len], ip);
+    ipz[ip.len] = 0;
+    if (c.enet_address_set_host(&addr, @ptrCast(&ipz)) != 0) {
+        return .{ .err = "enet: bad ip" };
+    }
+    addr.port = port;
+    const p = c.enet_host_connect(host.h, &addr, @intCast(channels), 0) orelse {
+        return .{ .err = "enet: host_connect failed — no peer slots" };
+    };
+    return .{ .dialing = @as(i64, @bitCast(@intFromPtr(p))) };
+}
+
+// Branchless: teardown cannot meaningfully fail, and an `| err` arm here
+// would only fork the obligation graph (measured on udp's close, KORU030).
+~pub tor close { host: *Host<!host> }
+~proc close|zig {
+    c.enet_host_destroy(host.h);
+    std.heap.page_allocator.destroy(host);
+}
+
+// ============================================================================
+// Service — the pump. Each call fires each queued event once; the three
+// effect borrows are valid only inside their branch.
+// ============================================================================
+
+~pub tor service { host: *Host<host>, timeout_ms: i32 }
+! connect *Peer<peer!>
+! packet *Packet<packet!>
+! disconnect *Peer<peer!>
+| idle
+| err string
+
+~proc service|zig {
+    var ev: $mod.c.ENetEvent = undefined;
+    var rc: c_int = $mod.c.enet_host_service(host.h, &ev, @intCast(timeout_ms));
+    var guard: i32 = 0;
+    while (rc > 0) : (guard += 1) {
+        if (guard > 512) break;
+        switch (ev.type) {
+            $mod.c.ENET_EVENT_TYPE_CONNECT => {
+                var __pr = $mod.Peer{ .p = ev.peer };
+                connect(&__pr);
+            },
+            $mod.c.ENET_EVENT_TYPE_RECEIVE => {
+                var __pk = $mod.Packet{ .buf = undefined, .n = 0, .peer = ev.peer, .channel = ev.channelID };
+                const nn = @min(ev.packet.*.dataLength, __pk.buf.len);
+                if (nn > 0) @memcpy(__pk.buf[0..nn], ev.packet.*.data[0..nn]);
+                __pk.n = nn;
+                $mod.c.enet_packet_destroy(ev.packet);
+                packet(&__pk);
+            },
+            $mod.c.ENET_EVENT_TYPE_DISCONNECT => {
+                var __pr = $mod.Peer{ .p = ev.peer };
+                disconnect(&__pr);
+            },
+            else => {},
+        }
+        rc = $mod.c.enet_host_service(host.h, &ev, 0);
+    }
+    if (rc < 0) return .{ .err = "enet: host_service failed" };
+    return .{ .idle = .{} };
+}
+
+// ============================================================================
+// Events — accessors. `peer.key` is the session-row column; `peer.pid` is
+// enet's own incoming-peer index (the natural client-number slot).
+// ============================================================================
+
+~pub tor peer.key { p: *Peer<peer> } -> i64
+~proc peer.key|zig { return @as(i64, @bitCast(@intFromPtr(p.p))); }
+
+~pub tor peer.pid { p: *Peer<peer> } -> i64
+~proc peer.pid|zig { return @as(i64, @intCast(p.p.*.incomingPeerID)); }
+
+~pub tor packet.data { p: *Packet<packet> } -> string
+~proc packet.data|zig { return p.buf[0..p.n]; }
+
+~pub tor packet.channel { p: *Packet<packet> } -> u8
+~proc packet.channel|zig { return p.channel; }
+
+// The session key of the peer this packet arrived on — same value peer.key
+// returns inside a ! connect / ! disconnect branch.
+~pub tor packet.peer-key { p: *Packet<packet> } -> i64
+~proc packet.peer-key|zig { return @as(i64, @bitCast(@intFromPtr(p.peer))); }
+
+// The arriving peer's enet index — same as peer.pid off a live borrow.
+~pub tor packet.peer-pid { p: *Packet<packet> } -> i64
+~proc packet.peer-pid|zig { return @as(i64, @intCast(p.peer.*.incomingPeerID)); }
+
+// Branch-boundary consumers, auto-inserted by phantom state name — free
+// nothing, only discharge. One `release.peer` serves both ! connect and
+// ! disconnect arms since both mint <peer!>.
+~pub tor release.peer { p: *Peer<!peer> }
+~proc release.peer|zig { _ = &p; }
+
+~pub tor release.packet { p: *Packet<!packet> }
+~proc release.packet|zig { _ = &p; }
+
+// ============================================================================
+// Sending — two spellings of the peer: the live borrow inside an effect
+// branch, and the stored key from a session row.
+// ============================================================================
+
+~pub tor send.peer { p: *Peer<peer>, channel: u8, data: string, reliable: bool }
+| sent
+| err string
+
+~proc send.peer|zig {
+    const flags: c.enet_uint32 = if (reliable) c.ENET_PACKET_FLAG_RELIABLE else 0;
+    const pkt = c.enet_packet_create(data.ptr, data.len, flags) orelse {
+        return .{ .err = "enet: packet_create failed" };
+    };
+    if (c.enet_peer_send(p.p, channel, pkt) != 0) {
+        c.enet_packet_destroy(pkt);
+        return .{ .err = "enet: peer_send failed — peer not connected" };
+    }
+    return .{ .sent = .{} };
+}
+
+~pub tor send.key { host: *Host<host>, key: i64, channel: u8, data: string, reliable: bool }
+| sent
+| err string
+
+~proc send.key|zig {
+    _ = host;
+    const peer: [*c]c.ENetPeer = @ptrFromInt(@as(usize, @bitCast(key)));
+    const flags: c.enet_uint32 = if (reliable) c.ENET_PACKET_FLAG_RELIABLE else 0;
+    const pkt = c.enet_packet_create(data.ptr, data.len, flags) orelse {
+        return .{ .err = "enet: packet_create failed" };
+    };
+    if (c.enet_peer_send(peer, channel, pkt) != 0) {
+        c.enet_packet_destroy(pkt);
+        return .{ .err = "enet: peer_send failed — peer not connected" };
+    }
+    return .{ .sent = .{} };
+}
+
+// Graceful disconnect on the live borrow; the peer's `! disconnect` event
+// still arrives through service — rows drop there, not here.
+~pub tor peer.disconnect { p: *Peer<peer>, code: i32 }
+~proc peer.disconnect|zig {
+    c.enet_peer_disconnect(p.p, @intCast(code));
+}
+
+~pub tor peer.disconnect-key { host: *Host<host>, key: i64, code: i32 }
+~proc peer.disconnect-key|zig {
+    _ = host;
+    const peer: [*c]c.ENetPeer = @ptrFromInt(@as(usize, @bitCast(key)));
+    c.enet_peer_disconnect(peer, @intCast(code));
+}
+
+// Push queued outgoing packets onto the wire without waiting for the next
+// service pass.
+~pub tor flush { host: *Host<host> }
+~proc flush|zig { c.enet_host_flush(host.h); }
