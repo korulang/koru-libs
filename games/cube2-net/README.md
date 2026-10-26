@@ -115,3 +115,20 @@ for SpawnState; the TrySpawn path stays verified only against ourselves.
   and are only counted. Decoding (lifeseq + physstate + packed
   xyz/vel/yaw, waiter's position reader is the oracle) is the next
   increment — then fan-out so two clients see each other.
+
+## Measured (loadbot, 20 clients × 2000 pings, fourth run)
+
+`loadbot.k` = a real enet client that joins, then Ping-spams (unreliable,
+nmc 30) counting Pong replies. Same binary vs both servers:
+
+| server | sent | ponged | loss | note |
+|---|---|---|---|---|
+| waiter :28785 | 16,446 | 512 | 96.9% | 3 of 20 bots rejected `server full` (max_clients 18); sends err'd |
+| koru :28790 | 39,920 | 20 | 99.95% | all 20 connected, sent full 2000 each; pongs drowned in flood |
+
+Single-bot control: 1998/2000 and 1999/2000 — parity at low load.
+Mechanisms partially identified: waiter's send deficit is config-level
+rejection; why its pongs also drowned is unmeasured. Ours held every
+connection through the flood and lost the replies — opposite failure
+mode. Falsifier for the pong-loss side: server-side pong counters and
+per-bot `| err`/`! disconnect` tallies on the loadbot.
