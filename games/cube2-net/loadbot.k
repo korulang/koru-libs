@@ -11,7 +11,7 @@ import std/grid
 import wire
 
 std/grid:new(tally, size: 1) {
-    sent: 0[i32], ponged: 0[i32], rounds: 0[i32], other: 0[i32]
+    sent: 0[i32], ponged: 0[i32], rounds: 0[i32], other: 0[i32], errs: 0[i32], discs: 0[i32]
 }
 
 tor run { port: i32 }
@@ -32,13 +32,13 @@ run = libs/enet:client(channels: 3)
                     | else |> if (code == 31)
                         | then |> std/grid:stored { tally[0].ponged: tally[0].ponged + 1 }
                         | else |> std/grid:stored { tally[0].other: tally[0].other + 1 }
-            ! disconnect dp |> _
+            ! disconnect dp |> std/grid:stored { tally[0].discs: tally[0].discs + 1 }
             | idle |> wire:ping(v: tally[0].sent): pg
                 |> libs/enet:send.key(host: cli, key: ck, channel: 1, data: pg, reliable: false)
                 | sent |> libs/enet:flush(host: cli) |> std/grid:stored { tally[0].sent: tally[0].sent + 1 }
                 | err _ |> _
             | err _ |> _
-        | done |> std/io:print.ln("loadbot: {{ tally[0].sent:d }} sent, {{ tally[0].ponged:d }} ponged, {{ tally[0].other:d }} other pkts")
+        | done |> std/io:print.ln("loadbot: {{ tally[0].sent:d }} sent, {{ tally[0].ponged:d }} ponged, {{ tally[0].errs:d }} errs, {{ tally[0].discs:d }} discs")
             |> libs/enet:close(host: cli)
     | err e |> std/io:print.ln("dial err {{ e:s }}")
 | err e |> std/io:print.ln("client err {{ e:s }}")

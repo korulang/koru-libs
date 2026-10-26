@@ -123,8 +123,12 @@ nmc 30) counting Pong replies. Same binary vs both servers:
 
 | server | sent | ponged | loss | note |
 |---|---|---|---|---|
-| waiter :28785 | 16,446 | 512 | 96.9% | 3 of 20 bots rejected `server full` (max_clients 18); sends err'd |
-| koru :28790 | 39,920 | 20 | 99.95% | all 20 connected, sent full 2000 each; pongs drowned in flood |
+RETRACTED — rerun with per-bot tallies showed both at ~99.8% delivery
+(waiter 33,981/34,006 with 3 rejects at max_clients 18; koru 39,895/39,995,
+0 disconnects). The earlier "divergence" ran while the retail client was
+still connected: the server prints every unhandled nmc, so ~50 position
+packets/sec of client traffic made it stdout-bound — an artifact, not a
+capacity limit.
 
 Single-bot control: 1998/2000 and 1999/2000 — parity at low load.
 Mechanisms partially identified: waiter's send deficit is config-level
