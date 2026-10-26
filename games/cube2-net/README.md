@@ -76,6 +76,21 @@ log dumped the bytes (`[93 115 116 97 116 115 46 112 49 120 46 112 119 0]`
 = code + the ASCII string, one byte per put-int). It's the stats-server
 auth prompt — not needed here.
 
+## Measured (retail client, third run — the real gate)
+
+A retail Sauerbraten client (brew cask, 2020-12-21 build) connected via
+`autoexec.cfg: connect 127.0.0.1 28790`. Server log:
+
+    connect pid 0
+    tryjoin "unnamed" model 0
+    nmc 102 ch 1 len 18          ← MapCRC (client hashed the map we named)
+    nmc 4 ch 0 len 16 (repeat)   ← live position packets, ~50/sec
+
+Client log confirms: `connected to server` → loaded
+`packages/base/metl3.ogz` → `game mode is ffa` → in-world, spawned,
+streaming positions. ffa auto-spawns on join — the client never waited
+for SpawnState; the TrySpawn path stays verified only against ourselves.
+
 ## Gap list (the real yield — next slices)
 
 - **Session store absent** — cn comes from enet's pid; a `clients` store
@@ -96,7 +111,7 @@ auth prompt — not needed here.
 - **Stale peer-key hazard** rides along from libs/enet's named gap.
 - **probe asserts nothing** — it prints; a `tests/` oracle asserts the
   decoded fields (proto==260 etc.) so the parity check is mechanical.
-- **Retail client unverified** — Sauerbraten isn't installed on this
-  machine; the handshake spine is oracle-verified against waiter, but the
-  real client's expectations beyond this spine (InitClient for self?
-  map-download flow? editstate?) are unmeasured until one connects.
+- **Positions arrive but are undecoded** — nmc 4 packets stream at ~50/s
+  and are only counted. Decoding (lifeseq + physstate + packed
+  xyz/vel/yaw, waiter's position reader is the oracle) is the next
+  increment — then fan-out so two clients see each other.

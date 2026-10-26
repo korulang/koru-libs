@@ -66,7 +66,7 @@ serve = libs/enet:service(host: srv, timeout_ms: 10)
 
 libs/enet:host(port: PORT, peers: 32, channels: 3, down: 0, up: 0)
 | up srv |> std/io:print.ln("cube2-net on :{{ PORT:d }}")
-    |> for(0..600)
+    |> for(0..36000)
         ! each _ |> serve(srv)
         | done |> libs/enet:close(host: srv) |> std/io:print.ln("server done")
 | err e |> std/io:print.ln("host err {{ e:s }}")
