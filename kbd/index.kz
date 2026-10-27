@@ -1,0 +1,216 @@
+// @korulang/kbd — raw nonblocking keyboard reads for terminal Koru programs.
+//
+// The lightest path to live keys: termios cbreak+noecho on stdin (VMIN=0,
+// VTIME=0), then poll()+read() drained through a byte-level decoder for the
+// two sequences a game client actually wants — WASD single bytes and CSI
+// arrow escapes (ESC [ A..D, plus the SS3 alternate ESC O A..D). No event
+// loop, no alternate screen, no library dependency — three host procs and a
+// 64-deep decoded-key queue.
+//
+//   import libs/kbd
+//   import std/io
+//
+//   libs/kbd:raw()
+//   |> for(0..4000)
+//       ! each _ |> libs/kbd:keys(max: 8)
+//           ! key k |> libs/kbd:key.name(code: k.code): n
+//               |> std/io:print.ln("{{ n:s }}")
+//           | done |> std/time:sleep-ms(ms: 16)
+//   | done |> libs/kbd:restore()
+//
+// Codes: 1 up, 2 down, 3 left, 4 right, 5 w, 6 a, 7 s, 8 d, 9 q, 10 space,
+// 11 enter, 12 tab, 13 escape — anything else arrives as 1000+byte (a raw
+// passthrough so unmapped keys stay distinguishable). 0 is the empty queue:
+// `keys` reports it as | done, `read` returns it.
+//
+// Named gaps, honestly: terminals send no key-up — held-key state is
+// repeat-arrival only. ISIG stays on so ^C still kills (and leaves the tty
+// raw — restore is the caller's job). A lone Escape is reported only after
+// two consecutive empty polls: it shares a prefix with every CSI sequence.
+
+~import std/build
+
+~std/build:requires {
+    exe.linkLibC();
+}
+
+const std = @import("std");
+const posix = std.posix;
+
+// One decoded key press. A value copy — the arm borrows nothing.
+pub const Key = struct {
+    code: i32,
+};
+
+var saved_tio: posix.termios = undefined;
+var have_tio = false;
+
+// Decoded-key queue — drainStdin pushes, read/keys pop.
+var kq: [64]i32 = undefined;
+var kq_head: usize = 0;
+var kq_len: usize = 0;
+
+fn kqPush(code: i32) void {
+    if (kq_len < kq.len) {
+        kq[(kq_head + kq_len) % kq.len] = code;
+        kq_len += 1;
+    }
+}
+
+fn kqPop() i32 {
+    if (kq_len == 0) return 0;
+    const c = kq[kq_head];
+    kq_head = (kq_head + 1) % kq.len;
+    kq_len -= 1;
+    return c;
+}
+
+// Escape-sequence state persists across drains: ESC, '[', 'A' can (and on
+// some terminals do) arrive in separate reads.
+var esc_state: u8 = 0; // 0 normal, 1 saw ESC, 2 saw ESC '[', 3 saw ESC 'O'
+var esc_idle: u8 = 0;  // empty polls while esc_state == 1 — lone ESC timer
+
+fn decodeByte(b: u8) void {
+    switch (esc_state) {
+        0 => switch (b) {
+            0x1b => {
+                esc_state = 1;
+                esc_idle = 0;
+            },
+            'w', 'W' => kqPush(5),
+            'a', 'A' => kqPush(6),
+            's', 'S' => kqPush(7),
+            'd', 'D' => kqPush(8),
+            'q', 'Q' => kqPush(9),
+            ' ' => kqPush(10),
+            '\r', '\n' => kqPush(11),
+            '\t' => kqPush(12),
+            else => kqPush(1000 + @as(i32, b)),
+        },
+        1 => switch (b) {
+            '[' => esc_state = 2,
+            'O' => esc_state = 3,
+            0x1b => esc_idle = 0, // ESC ESC — stay pending, restart the timer
+            else => {
+                esc_state = 0;
+                kqPush(1000 + @as(i32, b));
+            },
+        },
+        else => {
+            esc_state = 0;
+            switch (b) {
+                'A' => kqPush(1),
+                'B' => kqPush(2),
+                'C' => kqPush(4),
+                'D' => kqPush(3),
+                else => kqPush(1000 + @as(i32, b)),
+            }
+        },
+    }
+}
+
+// One nonblocking stdin sweep: poll(0) gates the read so a held-open pipe or
+// a VMIN=0 tty both behave identically — data now or nothing.
+fn drainStdin() void {
+    var fds = [_]posix.pollfd{.{ .fd = 0, .events = posix.POLL.IN, .revents = 0 }};
+    const ready = posix.poll(&fds, 0) catch return;
+    if (ready == 0 or (fds[0].revents & posix.POLL.IN) == 0) {
+        if (esc_state == 1) {
+            esc_idle += 1;
+            if (esc_idle >= 2) {
+                esc_state = 0;
+                kqPush(13);
+            }
+        }
+        return;
+    }
+    var buf: [64]u8 = undefined;
+    const n = posix.read(0, &buf) catch return;
+    var i: usize = 0;
+    while (i < n) : (i += 1) decodeByte(buf[i]);
+}
+
+// ============================================================================
+// Lifecycle — raw cbreak stdin in, the original termios back out.
+// ============================================================================
+
+// Put stdin in cbreak no-echo mode: keys arrive per-press and don't print.
+// Non-tty stdin (a pipe, a redirect) is tolerated — poll+read is already
+// nonblocking on the data-ready edge. ISIG is kept so ^C still kills.
+~pub tor raw {} -> i32
+~proc raw|zig {
+    if (posix.tcgetattr(0)) |tio| {
+        saved_tio = tio;
+        have_tio = true;
+        var raw_tio = tio;
+        raw_tio.lflag.ICANON = false;
+        raw_tio.lflag.ECHO = false;
+        raw_tio.cc[@intFromEnum(posix.V.MIN)] = 0;
+        raw_tio.cc[@intFromEnum(posix.V.TIME)] = 0;
+        posix.tcsetattr(0, .FLUSH, raw_tio) catch return -2;
+    } else |_| {}
+    return 0;
+}
+
+// Restore the saved termios. A no-op when stdin was never a tty.
+~pub tor restore {} -> i32
+~proc restore|zig {
+    if (have_tio) {
+        posix.tcsetattr(0, .FLUSH, saved_tio) catch return -1;
+        have_tio = false;
+    }
+    return 0;
+}
+
+// ============================================================================
+// Reading — the scalar pop and the drain combinator.
+// ============================================================================
+
+// Pop one decoded key after a drain sweep; 0 when nothing is queued.
+~pub tor read {} -> i32
+~proc read|zig {
+    drainStdin();
+    return kqPop();
+}
+
+// The source combinator (the `! key` sibling of udp's `! packet`): fire once
+// per decoded press currently queued, stop at `max` or at the empty queue.
+~pub tor keys { max: i32 }
+! key Key
+| done
+
+~proc keys|zig {
+    // Effect-branch proc: inlines into the consumer's frame, so module names
+    // go through $mod. (koru 400_155) — never bare.
+    var __i: i32 = 0;
+    while (__i < max) : (__i += 1) {
+        $mod.drainStdin();
+        const c = $mod.kqPop();
+        if (c == 0) break;
+        key($mod.Key{ .code = c });
+    }
+    return .{ .done = .{} };
+}
+
+// The code as a name — for echo tests and HUDs, not for keybinds (bind on
+// the code; the names are display strings).
+~pub tor key.name { code: i32 } -> string
+~proc key.name|zig {
+    return switch (code) {
+        1 => "up",
+        2 => "down",
+        3 => "left",
+        4 => "right",
+        5 => "w",
+        6 => "a",
+        7 => "s",
+        8 => "d",
+        9 => "q",
+        10 => "space",
+        11 => "enter",
+        12 => "tab",
+        13 => "escape",
+        0 => "none",
+        else => "byte",
+    };
+}

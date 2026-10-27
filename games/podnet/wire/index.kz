@@ -14,6 +14,17 @@ const std = @import("std");
     return std.mem.Allocator.dupe(std.heap.page_allocator, u8, out) catch unreachable;
 }
 
+// Map a libs/kbd key code (plus ticks since it last arrived — terminals
+// send no key-up, so held is "still repeating") onto input fields.
+// up/w → thrust 5; left/a → turn -1; right/d → turn +1; stale >15 → neutral.
+~pub tor input.map { code: i32, age: i32 } -> { thrust: i8, turn: i8 }
+~proc input.map|zig {
+    if (age > 15) return .{ .thrust = 0, .turn = 0 };
+    const thrust: i8 = if (code == 1 or code == 5) 5 else 0;
+    const turn: i8 = if (code == 3 or code == 6) -1 else if (code == 4 or code == 8) 1 else 0;
+    return .{ .thrust = thrust, .turn = turn };
+}
+
 ~pub tor input.decode { d: string<*> }
 | input { thrust: i8, turn: i8 }
 | bad
