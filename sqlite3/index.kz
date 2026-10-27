@@ -37,6 +37,10 @@ pub const Connection = struct {
     // still per-connection state, so keep one connection per thread.
     cache_mu: std.Thread.Mutex = .{},
     stmt_cache: std.StringHashMapUnmanaged(?*c.sqlite3_stmt) = .{},
+    // The path the connection was opened with — duped, owned by the
+    // wrapper. Only `open.pooled` sets it: check-in keys the idle map by
+    // it. "" on a plain `open` connection.
+    path: []const u8 = "",
 };
 
 pub const Statement = struct {
@@ -53,10 +57,12 @@ pub const Statement = struct {
 /// so `{{uid}}` needs no `:d`/`:s` hint. ints → int64, floats → double,
 /// bool → int, optional/null → NULL, text → bind_text with TRANSIENT
 /// (interpolated temporaries may not outlive the statement).
-// SQLITE_TRANSIENT is spelled inside bindValue, not as a comptime const:
-// translate-c's `cast(destructor_type, -1)` and a comptime @ptrFromInt both
-// fail Zig's fn-pointer alignment check. A runtime local defers the cast —
-// the check is comptime-only and sqlite only ever compares the sentinel.
+// SQLITE_TRANSIENT is a pointer-sized sentinel (-1), not a callable fn —
+// so the bind_text extern declares its destructor param usize and no cast
+// ever happens. Every fn-pointer spelling (@ptrFromInt, @bitCast,
+// translate-c's own c_translation.cast) hits Zig's alignment checks.
+const bind_text = @extern(*const fn (?*c.sqlite3_stmt, c_int, [*c]const u8, c_int, usize) callconv(.c) c_int, .{ .name = "sqlite3_bind_text" });
+
 pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
     const T = @TypeOf(value);
     switch (@typeInfo(T)) {
@@ -72,10 +78,7 @@ pub fn bindValue(stmt: ?*c.sqlite3_stmt, index: c_int, value: anytype) c_int {
             const is_text = p.child == u8 or (@typeInfo(p.child) == .array and @typeInfo(p.child).array.child == u8);
             if (!is_text) @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)");
             const s8: []const u8 = value;
-            var addr: usize = std.math.maxInt(usize);
-            _ = &addr; // defeats comptime folding — fn-ptr alignment check is comptime-only
-            const transient: c.sqlite3_destructor_type = @ptrFromInt(addr);
-            return c.sqlite3_bind_text(stmt, index, s8.ptr, @intCast(s8.len), transient);
+            return bind_text(stmt, index, s8.ptr, @intCast(s8.len), std.math.maxInt(usize));
         },
         else => @compileError("sqlite3 {{...}} interpolation: " ++ @typeName(T) ++ " is not bindable (want int/float/bool/text/optional)"),
     }
@@ -104,6 +107,12 @@ close-db discharges it.
         _ = c.sqlite3_close(db);
         return .{ .err = .{ .code = rc, .msg = std.mem.span(msg) } };
     }
+    // Rails-adapter default (database.yml timeout): retry a contended lock
+    // for 5s instead of answering SQLITE_BUSY on the spot. A WAL file under
+    // many short-lived per-request connections hits the wal-index attach /
+    // checkpoint-on-close race — without the timeout a *read* returns BUSY
+    // to a server that then has to pick between lying and leaking.
+    _ = c.sqlite3_busy_timeout(db, 5000);
     const conn = std.heap.page_allocator.create(Connection) catch unreachable;
     conn.* = Connection{ .handle = db };
     return .{ .db = conn };
@@ -122,6 +131,84 @@ Afterwards the token names nothing — passing it to another verb is refused.
         conn.stmt_cache.deinit(std.heap.page_allocator);
         _ = c.sqlite3_close(h);
     }
+    if (conn.path.len > 0) std.heap.page_allocator.free(conn.path);
+    std.heap.page_allocator.destroy(conn);
+}
+
+// ============================================================================
+// Per-worker pooled variants — the request-path shape
+// ============================================================================
+// One idle connection per (thread, path): `open.pooled` checks it out,
+// `close.pooled` parks it back. A server doing per-request open+query+close
+// pays sqlite3_open + wal-index attach + busy_timeout + first-prepare on
+// EVERY request — measured ~90µs of the ~102µs authed-route floor on
+// once-campfire-koru. Pooled, a request pays checkout + cached-stmt reset:
+// microseconds, and the statement cache survives across requests because
+// it lives on the wrapper.
+//
+// The obligation contract is identical to plain open/close: `db` mints
+// `<opened!>`, `close.pooled` settles `<!opened>` — the pool boundary is
+// invisible to the checker, which is the point: a caller cannot tell
+// checkout from open, so it cannot forget release either.
+//
+// Rules of the pool:
+//   - threadlocal — no mutex; sqlite serializes per connection, and the
+//     statement cache already assumes one conn per thread.
+//   - one idle conn per path: a second live conn to the same path gets a
+//     real open, and its close falls through to real close.
+//   - `:memory:` never pools — callers expect a fresh database per open.
+//   - idle conns live for the thread's life: a leak at exit, deliberate.
+//
+// RULED 2026-10-06 (Lars): explicit pooled verbs, not pool-by-default —
+// the dotted-variant convention already rules (query.literal,
+// finalize.stmt, col.text), and distinct spellings let a pooled conn
+// later carry *Connection<pooled!> and refuse plain close outright.
+threadlocal var pool: std.StringHashMapUnmanaged(*Connection) = .{};
+
+~pub tor open.pooled { path: string }
+| db *Connection<opened!>
+| err { code: i32, msg: string }
+
+~proc open.pooled|zig {
+    if (pool.fetchRemove(path)) |kv| {
+        return .{ .db = kv.value };
+    }
+    var db: ?*c.sqlite3 = null;
+    const rc = c.sqlite3_open(path.ptr, &db);
+    if (rc != c.SQLITE_OK) {
+        const msg = c.sqlite3_errmsg(db);
+        _ = c.sqlite3_close(db);
+        return .{ .err = .{ .code = rc, .msg = std.mem.span(msg) } };
+    }
+    _ = c.sqlite3_busy_timeout(db, 5000);
+    const conn = std.heap.page_allocator.create(Connection) catch unreachable;
+    conn.* = Connection{ .handle = db };
+    if (!std.mem.eql(u8, path, ":memory:")) {
+        conn.path = std.heap.page_allocator.dupe(u8, path) catch unreachable;
+    }
+    return .{ .db = conn };
+}
+
+~pub tor close.pooled { conn: *Connection<!opened> }
+~proc close.pooled|zig {
+    if (conn.path.len > 0) {
+        const gop = pool.getOrPut(std.heap.page_allocator, conn.path) catch unreachable;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = conn;
+            return;
+        }
+    }
+    // No idle slot — second live conn to one path, or a plain-opened conn
+    // closed through the pooled verb: tear down for real.
+    if (conn.handle) |h| {
+        var it = conn.stmt_cache.iterator();
+        while (it.next()) |e| {
+            _ = c.sqlite3_finalize(e.value_ptr.*.?);
+        }
+        conn.stmt_cache.deinit(std.heap.page_allocator);
+        _ = c.sqlite3_close(h);
+    }
+    if (conn.path.len > 0) std.heap.page_allocator.free(conn.path);
     std.heap.page_allocator.destroy(conn);
 }
 
