@@ -1,0 +1,25 @@
+{
+  "name": "@korulang/qr",
+  "version": "0.0.1",
+  "description": "QR Code generation for Koru — byte-mode encoder rendered as SVG",
+  "keywords": ["koru", "korulang", "qr", "qrcode", "svg"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru-libs",
+    "directory": "qr"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru-libs/issues"
+  },
+  "files": [
+    "index.k",
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.k"
+  }
+}

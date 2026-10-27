@@ -3,4 +3,5 @@ kind: inferred
 shape: categorical
 face: in
 membrane: false
-note: auto-registered orphan — declared before it was defined; refine me
+note: a fact about the system measured for the first time — nothing prior
+  believed otherwise; the commit is the finding's first record

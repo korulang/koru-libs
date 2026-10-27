@@ -1,0 +1,357 @@
+// Byte-mode QR encoder → SVG. Level-L error correction, versions 1–9
+// (up to 232 data bytes), mask pattern 0. Matrix assembly follows
+// ISO/IEC 18004: finder/timing/alignment/dark modules, format info (BCH),
+// version info (v≥7), zigzag data placement.
+
+const std = @import("std");
+
+const VersionInfo = struct {
+    data_cw: u16, // total data codewords (all blocks)
+    ec_per_block: u8,
+    blocks: u8,
+};
+
+// level L capacities, versions 1..9 (index 0 unused)
+const versions = [_]VersionInfo{
+    .{ .data_cw = 0, .ec_per_block = 0, .blocks = 0 },
+    .{ .data_cw = 19, .ec_per_block = 7, .blocks = 1 },
+    .{ .data_cw = 34, .ec_per_block = 10, .blocks = 1 },
+    .{ .data_cw = 55, .ec_per_block = 15, .blocks = 1 },
+    .{ .data_cw = 80, .ec_per_block = 20, .blocks = 1 },
+    .{ .data_cw = 108, .ec_per_block = 26, .blocks = 1 },
+    .{ .data_cw = 136, .ec_per_block = 18, .blocks = 2 },
+    .{ .data_cw = 156, .ec_per_block = 20, .blocks = 2 },
+    .{ .data_cw = 194, .ec_per_block = 24, .blocks = 2 },
+    .{ .data_cw = 232, .ec_per_block = 30, .blocks = 2 },
+};
+
+// alignment pattern center coords per version (index = version)
+const align_coords = [_][]const u8{
+    &.{},
+    &.{},
+    &.{ 6, 18 },
+    &.{ 6, 22 },
+    &.{ 6, 26 },
+    &.{ 6, 30 },
+    &.{ 6, 34 },
+    &.{ 6, 22, 38 },
+    &.{ 6, 24, 42 },
+    &.{ 6, 26, 46 },
+};
+
+// remainder bits after codewords, versions 2..6 = 7, 7..13 = 0 (we cap at 9)
+fn remainderBits(v: u8) u8 {
+    return if (v >= 2 and v <= 6) 7 else 0;
+}
+
+var gf_exp: [512]u8 = undefined;
+var gf_log: [256]u8 = undefined;
+var gf_ready: bool = false;
+
+fn gfInit() void {
+    if (gf_ready) return;
+    var x: u16 = 1;
+    for (0..255) |i| {
+        gf_exp[i] = @intCast(x);
+        gf_log[@intCast(x)] = @intCast(i);
+        x <<= 1;
+        if (x & 0x100 != 0) x ^= 0x11D;
+    }
+    for (255..512) |i| gf_exp[i] = gf_exp[i - 255];
+    gf_ready = true;
+}
+
+fn gfMul(a: u8, b: u8) u8 {
+    if (a == 0 or b == 0) return 0;
+    return gf_exp[@as(u16, gf_log[a]) + gf_log[b]];
+}
+
+// systematic RS encode: returns ec_len parity bytes for `data`
+fn rsEncode(data: []const u8, ec_len: u8, out: []u8) void {
+    // generator polynomial g(x) = prod (x - a^i), i=0..ec_len-1
+    var gen: [64]u8 = [_]u8{0} ** 64;
+    gen[0] = 1;
+    var deg: u8 = 0;
+    for (0..ec_len) |i| {
+        const a_i = gf_exp[i];
+        var j: u8 = deg;
+        while (true) {
+            gen[j + 1] ^= gfMul(gen[j], a_i);
+            if (j == 0) break;
+            j -= 1;
+        }
+        deg += 1;
+    }
+    @memset(out[0..ec_len], 0);
+    for (data) |byte| {
+        const factor = byte ^ out[0];
+        std.mem.copyForwards(u8, out[0 .. ec_len - 1], out[1..ec_len]);
+        out[ec_len - 1] = 0;
+        for (0..ec_len) |i| {
+            // gen[] includes leading x^deg coefficient at gen[0]==1; parity uses gen[1..]
+            const g = if (i + 1 <= deg) gen[i + 1] else 0;
+            out[i] ^= gfMul(g, factor);
+        }
+    }
+}
+
+const MAX_DIM: usize = 21 + 4 * 8; // v9 → 53
+const MAX_CW: usize = 296; // v9 total codewords incl EC
+
+~proc svg|zig {
+    return qrSvg(text) orelse return errOut();
+}
+
+// The `allocated!` label is contractual — every byte `svg` produces must be
+// freeable by std/io:free (and by a consumer of <std/io:!allocated>, like an
+// orisha body_allocated response body), so even the error sentinel allocates.
+fn errOut() []const u8 {
+    return koru_allocator().dupe(u8, "<svg xmlns=\"http://www.w3.org/2000/svg\"/>") catch unreachable;
+}
+
+threadlocal var bit_buf: [4096]u1 = undefined; // interleaved bitstream
+threadlocal var codewords: [MAX_CW]u8 = undefined;
+threadlocal var ecb: [64]u8 = undefined;
+threadlocal var modules: [MAX_DIM * MAX_DIM]u2 = undefined; // 0 light,1 dark,2 reserved-light,3 reserved-dark
+
+var bit_len: usize = 0;
+fn pushBits(v: u32, n: u5) void {
+    var i: u5 = n;
+    while (i > 0) {
+        i -= 1;
+        bit_buf[bit_len] = @intCast((v >> i) & 1);
+        bit_len += 1;
+    }
+}
+
+fn qrSvg(text: []const u8) ?[]const u8 {
+    if (text.len == 0 or text.len > 232) return null;
+    gfInit();
+    // koru_allocator — the `allocated!` label's disposer (std/io:free) frees
+    // with it; allocating from a different family is a bus error on free.
+    const alloc = koru_allocator();
+
+    // pick version
+    var ver: u8 = 0;
+    for (1..10) |v| {
+        if (text.len + 2 <= versions[v].data_cw) { ver = @intCast(v); break; }
+    }
+    if (ver == 0) return null;
+    const info = versions[ver];
+    const data_bytes = text.len;
+
+    // bitstream: mode(0100) + len(8) + data + terminator + pad to cw + pad bytes
+    bit_len = 0;
+    pushBits(0b0100, 4);
+    pushBits(@intCast(data_bytes), 8);
+    for (text) |b| pushBits(b, 8);
+    const cap_bits = @as(usize, info.data_cw) * 8;
+    var term: usize = @min(4, cap_bits - bit_len);
+    while (term > 0) : (term -= 1) bit_buf[bit_len] = blk: { bit_len += 1; break :blk 0; };
+    while (bit_len % 8 != 0) bit_buf[bit_len] = blk: { bit_len += 1; break :blk 0; };
+    const pads = [_]u8{ 0xEC, 0x11 };
+    var pi: usize = 0;
+    while (bit_len < cap_bits) : (pi += 1) pushBits(pads[pi % 2], 8);
+
+    // codewords from bitstream (data only)
+    const n_data: usize = info.data_cw;
+    var dcw: [MAX_CW]u8 = undefined;
+    for (0..n_data) |i| {
+        var b: u8 = 0;
+        for (0..8) |j| b = (b << 1) | bit_buf[i * 8 + j];
+        dcw[i] = b;
+    }
+
+    // RS per block (uniform block sizes for our version range: data_cw/blocks)
+    const per_block = n_data / info.blocks;
+    var total: usize = 0;
+    // interleave data codewords by column
+    var out_i: usize = 0;
+    for (0..per_block) |col| {
+        for (0..info.blocks) |b| {
+            codewords[out_i] = dcw[b * per_block + col];
+            out_i += 1;
+        }
+    }
+    // interleave EC codewords by column
+    var ecs: [2][64]u8 = undefined;
+    for (0..info.blocks) |b| {
+        rsEncode(dcw[b * per_block .. (b + 1) * per_block], info.ec_per_block, ecs[b][0..info.ec_per_block]);
+    }
+    for (0..info.ec_per_block) |col| {
+        for (0..info.blocks) |b| {
+            codewords[out_i] = ecs[b][col];
+            out_i += 1;
+        }
+    }
+    total = out_i;
+
+    // final bitstream incl remainder bits
+    bit_len = 0;
+    for (codewords[0..total]) |b| pushBits(b, 8);
+    var rem = remainderBits(ver);
+    while (rem > 0) : (rem -= 1) bit_buf[bit_len] = blk: { bit_len += 1; break :blk 0; };
+
+    // matrix
+    const n: usize = 21 + 4 * (@as(usize, ver) - 1);
+    @memset(modules[0 .. n * n], 0);
+    const at = struct {
+        fn set(r: usize, c: usize, v: u2, dim: usize) void {
+            modules[r * dim + c] = v;
+        }
+    }.set;
+
+    // finder patterns + separators (2 = reserved light, 3 = reserved dark)
+    const finder = struct {
+        fn put(r0: usize, c0: usize, dim: usize, s: fn (usize, usize, u2, usize) void) void {
+            var r: i32 = -1;
+            while (r <= 7) : (r += 1) {
+                var c: i32 = -1;
+                while (c <= 7) : (c += 1) {
+                    const rr = @as(i32, @intCast(r0)) + r;
+                    const cc = @as(i32, @intCast(c0)) + c;
+                    if (rr < 0 or cc < 0 or rr >= @as(i32, @intCast(dim)) or cc >= @as(i32, @intCast(dim))) continue;
+                    const border = r == -1 or r == 7 or c == -1 or c == 7;
+                    const ring = r == 0 or r == 6 or c == 0 or c == 6;
+                    const center = r >= 2 and r <= 4 and c >= 2 and c <= 4;
+                    s(@intCast(rr), @intCast(cc), if (border) 2 else if (ring or center) 3 else 2, dim);
+                }
+            }
+        }
+    }.put;
+    finder(0, 0, n, at);
+    finder(0, n - 7, n, at);
+    finder(n - 7, 0, n, at);
+
+    // timing
+    for (8..n - 8) |i| {
+        const v: u2 = if (i % 2 == 0) 3 else 2;
+        at(6, i, v, n);
+        at(i, 6, v, n);
+    }
+
+    // dark module
+    at(n - 8, 8, 3, n);
+
+    // alignment patterns
+    const acs = align_coords[ver];
+    for (acs) |r| {
+        for (acs) |c| {
+            // skip if overlapping finders
+            if ((r == 6 and c == 6) or (r == 6 and c == n - 7) or (r == n - 7 and c == 6)) continue;
+            var dr: i32 = -2;
+            while (dr <= 2) : (dr += 1) {
+                var dc: i32 = -2;
+                while (dc <= 2) : (dc += 1) {
+                    const dark = @abs(dr) == 2 or @abs(dc) == 2 or (dr == 0 and dc == 0);
+                    at(@intCast(@as(i32, r) + dr), @intCast(@as(i32, c) + dc), if (dark) 3 else 2, n);
+                }
+            }
+        }
+    }
+
+    // reserve format info cells (light for now; written after mask)
+    for (0..9) |i| {
+        if (modules[8 * n + i] == 0) at(8, i, 2, n);
+        if (modules[i * n + 8] == 0) at(i, 8, 2, n);
+    }
+    for (n - 8..n) |i| {
+        if (modules[8 * n + i] == 0) at(8, i, 2, n);
+    }
+    for (n - 7..n) |i| {
+        if (modules[i * n + 8] == 0) at(i, 8, 2, n);
+    }
+
+    // version info for v >= 7: 18 bits at (rows n-11..n-9, cols 0..5) and mirror
+    if (ver >= 7) {
+        // version BCH: 6 data bits + 12 check, generator 0x1F25
+        var vbits: u32 = @as(u32, ver) << 12;
+        var rem_v: u32 = vbits;
+        var shift: u5 = 17;
+        while (shift >= 12) : (shift -= 1) {
+            if ((rem_v >> shift) & 1 == 1) rem_v ^= @as(u32, 0x1F25) << (shift - 12);
+        }
+        vbits |= rem_v & 0xFFF;
+        for (0..18) |i| {
+            const bit: u2 = if ((vbits >> @intCast(i)) & 1 == 1) 3 else 2;
+            const r = @as(usize, @intCast(i / 3)) + n - 11;
+            const c = i % 3;
+            at(r, c, bit, n);
+            at(c, r, bit, n);
+        }
+    }
+
+    // data placement: zigzag pairs right→left, skipping col 6
+    var bit_i: usize = 0;
+    var col: i32 = @intCast(n - 1);
+    var upward = true;
+    while (col > 0) {
+        if (col == 6) col -= 1;
+        var row_i: i32 = if (upward) @intCast(n - 1) else 0;
+        while (row_i >= 0 and row_i < @as(i32, @intCast(n))) {
+            const r: usize = @intCast(row_i);
+            for (0..2) |dc| {
+                const c: usize = @intCast(col - @as(i32, @intCast(dc)));
+                if (modules[r * n + c] == 0) {
+                    const bit: u1 = if (bit_i < bit_len) bit_buf[bit_i] else 0;
+                    // mask 0: (r+c) even → invert
+                    const masked = bit ^ @as(u1, @intFromBool((r + c) % 2 == 0));
+                    modules[r * n + c] = masked;
+                    bit_i += 1;
+                }
+            }
+            row_i += if (upward) -1 else 1;
+        }
+        upward = !upward;
+        col -= 2;
+    }
+
+    // format info: level L (01) + mask 0 (000) → 01000, BCH(15,5) gen 0x537, xor 0x5412
+    var fmt: u32 = 0b01000 << 10;
+    var frm: u32 = fmt;
+    var fsh: i32 = 14;
+    while (fsh >= 10) : (fsh -= 1) {
+        if ((frm >> @intCast(fsh)) & 1 == 1) frm ^= @as(u32, 0x537) << @intCast(fsh - 10);
+    }
+    fmt = (fmt | (frm & 0x3FF)) ^ 0x5412;
+
+    // place format bits per spec order (bit 14..0)
+    const fbit = struct {
+        fn get(f: u32, i: usize) u2 {
+            return if ((f >> @intCast(14 - i)) & 1 == 1) 3 else 2;
+        }
+    }.get;
+    // around top-left finder
+    const pos1 = [15][2]usize{
+        .{ 8, 0 }, .{ 8, 1 }, .{ 8, 2 }, .{ 8, 3 }, .{ 8, 4 }, .{ 8, 5 },
+        .{ 8, 7 }, .{ 8, 8 }, .{ 7, 8 }, .{ 5, 8 }, .{ 4, 8 }, .{ 3, 8 },
+        .{ 2, 8 }, .{ 1, 8 }, .{ 0, 8 },
+    };
+    for (pos1, 0..) |p, i| at(p[0], p[1], fbit(fmt, i), n);
+    // other copies: row 8 right side (bits 0..7 reversed tail) and col 8 bottom
+    const pos2a = [8][2]usize{
+        .{ 8, n - 1 }, .{ 8, n - 2 }, .{ 8, n - 3 }, .{ 8, n - 4 },
+        .{ 8, n - 5 }, .{ 8, n - 6 }, .{ 8, n - 7 }, .{ 8, n - 8 },
+    };
+    for (pos2a, 0..) |p, i| at(p[0], p[1], fbit(fmt, i), n);
+    const pos2b = [7][2]usize{
+        .{ n - 7, 8 }, .{ n - 6, 8 }, .{ n - 5, 8 }, .{ n - 4, 8 },
+        .{ n - 3, 8 }, .{ n - 2, 8 }, .{ n - 1, 8 },
+    };
+    for (pos2b, 0..) |p, i| at(p[0], p[1], fbit(fmt, 8 + i), n);
+
+    // SVG: quiet zone 4 modules, white bg, one path of dark modules
+    var out = std.array_list.Managed(u8).init(alloc);
+    const w = out.writer();
+    w.print("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {d} {d}\" shape-rendering=\"crispEdges\">", .{ n + 8, n + 8 }) catch return null;
+    w.print("<rect width=\"100%\" height=\"100%\" fill=\"white\"/><path fill=\"black\" d=\"", .{}) catch return null;
+    for (0..n) |r| {
+        for (0..n) |c| {
+            if (modules[r * n + c] == 1 or modules[r * n + c] == 3) {
+                w.print("M{d} {d}h1v1h-1z", .{ c + 4, r + 4 }) catch return null;
+            }
+        }
+    }
+    w.print("\"/></svg>", .{}) catch return null;
+    return out.toOwnedSlice() catch null;
+}

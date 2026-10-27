@@ -95,3 +95,15 @@ koru/regressions:case(signal two models build) {
   "tags": ["signal-processing", "build"]
 }
 
+
+koru/regressions:case(qr svg smoke) {
+  "file": "qr/tests/svg_smoke.k",
+  "category": ["qr"],
+  "tags": ["svg", "encoder"]
+}
+
+koru/regressions:case(rails signing roundtrip) {
+  "file": "rails/tests/signing_roundtrip.kz",
+  "category": ["rails"],
+  "tags": ["signing", "cookies", "csrf"]
+}
