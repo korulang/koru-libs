@@ -1,0 +1,75 @@
+// @korulang/bcrypt — bcrypt password hashing for Koru
+//
+// A thin lift over Zig std.crypto.pwhash.bcrypt's modular-crypt hasher — the
+// `$2a$`/`$2b$...` digest Rails `has_secure_password` (bcrypt-ruby) writes and
+// `BCrypt::Password.new(digest).is_password?(pw)` reads back. No C library, no
+// vendored code: the stdlib already carries a bcrypt verified against the
+// OpenBSD test vectors, so this package only adapts the surface.
+//
+//   import libs/bcrypt
+//   libs/bcrypt:hash(password: "secret123456", cost: 12): digest |> ...
+//   libs/bcrypt:verify(password: "secret123456", digest: digest): ok |> ...
+//
+// `silently_truncate_password = true` on both paths matches bcrypt-ruby
+// exactly: only the first 72 password bytes feed the cipher (the alternative —
+// HMAC-SHA512 pre-hashing — would produce digests no other bcrypt accepts).
+
+const std = @import("std");
+
+// ============================================================================
+// verify — the read path. A malformed digest is a `false`, not an error:
+// bcrypt-ruby's is_password? rescues every parse failure the same way, so a
+// garbage string in the database means "not this password", never a crash.
+// ============================================================================
+
+~pub tor verify { password: ?string, digest: string } -> bool
+
+~proc verify|zig {
+    // A missing password (absent form field) fails closed — authenticate_by
+    // maps a nil password to a rejected attempt the same way.
+    const pw = password orelse return false;
+    // std's CryptFormatHasher.verify rehashes via strHashInternal — which
+    // always emits "$2b$" — then mem.eqls all 60 chars. A bcrypt-ruby "$2a$"
+    // digest (the spelling has_secure_password writes) would fail on the
+    // version byte alone, so normalize 'a' -> 'b' before delegating. The
+    // algorithms are identical: the only "$2a$" difference was a 2011-era
+    // crypt_blowfish sign bug on >0x7f password bytes that fixed versions
+    // (everything bcrypt-ruby ships) no longer carry.
+    var norm: [std.crypto.pwhash.bcrypt.hash_length]u8 = undefined;
+    var str = digest;
+    if (str.len == std.crypto.pwhash.bcrypt.hash_length and str[2] == 'a') {
+        @memcpy(&norm, str);
+        norm[2] = 'b';
+        str = &norm;
+    }
+    std.crypto.pwhash.bcrypt.strVerify(str, pw, .{
+        .silently_truncate_password = true,
+    }) catch return false;
+    return true;
+}
+
+// ============================================================================
+// hash — the write path. Emits a fresh `$2b$` modular-crypt digest (random
+// 16-byte salt) at 2^cost work. `cost` is bcrypt-ruby's accepted range,
+// 4 (its MIN_COST, used by Rails in test env) through 31; outside that the
+// call is a programming error and asserts loudly — there is no silent clamp.
+// ============================================================================
+
+~pub tor hash { password: string, cost: i32 } -> string
+
+~proc hash|zig {
+    if (cost < 4 or cost > 31) {
+        @panic("bcrypt: cost must be in 4..=31 (bcrypt-ruby's accepted range)");
+    }
+    var buf: [std.crypto.pwhash.bcrypt.hash_length]u8 = undefined;
+    const s = std.crypto.pwhash.bcrypt.strHash(password, .{
+        .params = .{
+            .rounds_log = @intCast(cost),
+            .silently_truncate_password = true,
+        },
+        .encoding = .crypt,
+    }, &buf) catch @panic("bcrypt: strHash failed (buffer too small for a 60-byte digest)");
+    const out = std.heap.page_allocator.alloc(u8, s.len) catch @panic("bcrypt: OOM");
+    @memcpy(out, s);
+    return out;
+}
