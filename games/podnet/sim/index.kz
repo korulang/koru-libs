@@ -1,0 +1,16 @@
+// podnet/sim — the shared racer tick. The same file compiles into the
+// server (arbitration) and the client (prediction). Units are milli:
+// x/y milli-units, a milli-radians, v milli-speed. dt is baked at 1/20.
+
+~pub tor step { x: i32, y: i32, a: i32, v: i32, thrust: i32, turn: i32 } -> { x: i32, y: i32, a: i32, v: i32 }
+~proc step|zig {
+    var nv = v + thrust * 3;
+    if (nv > 120) nv = 120;
+    if (nv < 0) nv = 0;
+    const na = a + turn * 40;
+    const af: f32 = @as(f32, @floatFromInt(na)) / 1000.0;
+    const vf: f32 = @as(f32, @floatFromInt(nv)) / 50.0;
+    const nx = x + @as(i32, @intFromFloat(vf * @cos(af)));
+    const ny = y + @as(i32, @intFromFloat(vf * @sin(af)));
+    return .{ .x = nx, .y = ny, .a = na, .v = nv };
+}

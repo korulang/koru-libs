@@ -1,0 +1,58 @@
+// podnet/wire — our own tiny protocol, fixed little-endian.
+// nmc 1 input = [1, thrust i8, turn i8]            (client -> server)
+// nmc 2 pos   = [2, cn i32, x i32, y i32, a i32, v i32]  (server -> all)
+
+const std = @import("std");
+
+~pub tor input { thrust: i8, turn: i8 } -> string
+~proc input|zig {
+    var buf: [8]u8 = undefined;
+    buf[0] = 1;
+    buf[1] = @bitCast(thrust);
+    buf[2] = @bitCast(turn);
+    const out: []const u8 = buf[0..3];
+    return std.mem.Allocator.dupe(std.heap.page_allocator, u8, out) catch unreachable;
+}
+
+~pub tor input.decode { d: string<*> }
+| input { thrust: i8, turn: i8 }
+| bad
+
+~proc input.decode|zig {
+    if (d.len < 3 or d[0] != 1) return .{ .bad = .{} };
+    return .{ .input = .{ .thrust = @bitCast(d[1]), .turn = @bitCast(d[2]) } };
+}
+
+~pub tor nmc { d: string<*> } -> i32
+~proc nmc|zig {
+    if (d.len < 1) return -1;
+    return @intCast(d[0]);
+}
+
+~pub tor pos { cn: i32, x: i32, y: i32, a: i32, v: i32 } -> string
+~proc pos|zig {
+    var buf: [21]u8 = undefined;
+    buf[0] = 2;
+    std.mem.writeInt(i32, buf[1..5], cn, .little);
+    std.mem.writeInt(i32, buf[5..9], x, .little);
+    std.mem.writeInt(i32, buf[9..13], y, .little);
+    std.mem.writeInt(i32, buf[13..17], a, .little);
+    std.mem.writeInt(i32, buf[17..21], v, .little);
+    const out: []const u8 = buf[0..21];
+    return std.mem.Allocator.dupe(std.heap.page_allocator, u8, out) catch unreachable;
+}
+
+~pub tor pos.decode { d: string<*> }
+| pos { cn: i32, x: i32, y: i32, a: i32, v: i32 }
+| bad
+
+~proc pos.decode|zig {
+    if (d.len < 21 or d[0] != 2) return .{ .bad = .{} };
+    return .{ .pos = .{
+        .cn = std.mem.readInt(i32, d[1..][0..4], .little),
+        .x = std.mem.readInt(i32, d[5..][0..4], .little),
+        .y = std.mem.readInt(i32, d[9..][0..4], .little),
+        .a = std.mem.readInt(i32, d[13..][0..4], .little),
+        .v = std.mem.readInt(i32, d[17..][0..4], .little),
+    } };
+}

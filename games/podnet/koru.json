@@ -1,0 +1,9 @@
+{
+  "name": "podnet",
+  "version": "0.1.0",
+  "paths": {
+    "libs": "../..",
+    "wire": "./wire",
+    "sim": "./sim"
+  }
+}
