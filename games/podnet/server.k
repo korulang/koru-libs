@@ -14,7 +14,7 @@ const {
     MAXP: 8
 }
 
-std/grid:new(players, size: 8) {
+std/grid:new(players, size: 32) {
     used: 0[i32], key: 0[i64], thrust: 0[i32], turn: 0[i32],
     x: 0[i32], y: 0[i32], a: 0[i32], v: 0[i32]
 }
