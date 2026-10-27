@@ -101,13 +101,31 @@ the common case where the binding just falls out of scope.
   danger was inside the raw Zig implementation of the phantom-typed tor
   itself, not in a caller's misuse of the Koru-level API.
 
+## What it does now
+
+- **Async lifecycle** — `connect-start`/`connect-poll`/`socket`/`set-nonblocking`
+  drive a libpq conn on an external event loop: `connect-poll` consumes the
+  `<connecting!>` obligation and re-arms it in the `read`/`write` arms, or
+  settles into `<connected!>`. `conn.close` discharges any non-connected
+  state (the union-obligation grammar `<!connecting|!in_tx|!in_failed_tx>`),
+  so `disconnect` keeps `connected` as its single unambiguous discharge.
+- **Async queries** — `send-query`/`consume-input`/`is-busy`/`get-result`/
+  `flush`. `get-result`'s `done` arm is the terminating null result; pipelined
+  queries answer in send order.
+- **Transactions** — `tx.begin`/`tx.commit`/`tx.rollback`/`tx.query` carry the
+  DESIGN.md phantom machine: commit failure demotes to `<in_failed_tx!>`,
+  which only `tx.rollback` or `conn.close` can discharge.
+- **Parameterized + prepared** — `exec-params`, `prepare`, `exec-prepared` —
+  server-side binding, no interpolated SQL.
+- **Full result accessors** — `result.nrows`/`ncols`/`field-name`/`col`/`getv`
+  (tagged `| some | null` — a real NULL, never the string "NULL")/`error`,
+  plus `conn.error` for conn-level detail.
+
 ## What it explicitly doesn't do (yet)
 
-Transactions, prepared statements, async, pipeline mode, COPY, LISTEN/NOTIFY,
-large objects, connection pooling — all deliberately out of scope for this
-pass; see `DESIGN.md` for the full roadmap. This pass is alignment (make it
-compile against the current language) plus minimal test coverage on the
-existing connect/exec/query/comptime-sql surface only, per the brief.
+Pipeline mode (`PQpipelineMode`/`PQsendPipelineSync`), COPY in either
+direction, LISTEN/NOTIFY, large objects, connection pooling — still out of
+scope; see `DESIGN.md`.
 
 ## Toolchain findings
 

@@ -141,6 +141,397 @@ pub const Result = struct {
 }
 
 // ============================================================================
+// ASYNC SURFACE — the nonblocking half of libpq
+// ============================================================================
+// The sync tors above block the calling thread for the round trip — right
+// for a CLI, wrong for a server that owns thousands of sockets per worker.
+// libpq's nonblocking API exists so the connection's own fd can live on the
+// caller's event loop: `socket` hands the descriptor out, `connect-poll` /
+// `is-busy` say which readiness to wait for, `consume-input` + `get-result`
+// drive the state machine, and `set-nonblocking` makes every send queue
+// instead of stall. A `*Conn<connecting!>` born by `connect-start` settles
+// through `connect-poll` into `connected` — the same phantom transition the
+// sync path performs in one call, spelled out for the reactor.
+
+~pub tor connect-start { conninfo: string }
+| ok *Conn<connecting!>
+| err string
+
+~proc connect-start|zig {
+    const handle = c.PQconnectStart(conninfo.ptr);
+    if (handle == null) {
+        const msg = "out of memory starting connection";
+        return .{ .err = msg };
+    }
+    if (c.PQstatus(handle) == c.CONNECTION_BAD) {
+        const msg = std.mem.span(c.PQerrorMessage(handle));
+        const owned = std.heap.page_allocator.dupe(u8, msg) catch unreachable;
+        c.PQfinish(handle);
+        return .{ .err = owned };
+    }
+    const conn = std.heap.page_allocator.create(Conn) catch unreachable;
+    conn.* = Conn{ .handle = handle };
+    return .{ .ok = conn };
+}
+
+// Step the async connect — consumes the <connecting!> obligation and
+// re-arms it: `read`/`write` hand the conn back still carrying
+// <connecting!> so the next poll can consume it again, `ok` settles into
+// <connected!>, and `failed` frees the handle inside (nothing to poll —
+// the string is all that's left).
+~pub tor connect-poll { conn: *Conn<!connecting> }
+| ok *Conn<connected!>
+| read *Conn<connecting!>
+| write *Conn<connecting!>
+| failed string
+
+~proc connect-poll|zig {
+    switch (c.PQconnectPoll(conn.handle)) {
+        c.PGRES_POLLING_OK => {
+            const settled = std.heap.page_allocator.create(Conn) catch unreachable;
+            settled.* = conn.*;
+            std.heap.page_allocator.destroy(conn);
+            return .{ .ok = settled };
+        },
+        c.PGRES_POLLING_READING => return .{ .read = conn },
+        c.PGRES_POLLING_WRITE => return .{ .write = conn },
+        else => {
+            const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+            const owned = std.heap.page_allocator.dupe(u8, msg) catch unreachable;
+            c.PQfinish(conn.handle);
+            conn.handle = null;
+            std.heap.page_allocator.destroy(conn);
+            return .{ .failed = owned };
+        },
+    }
+}
+
+// Abort a conn in ANY state — a still-connecting socket, a failed-tx conn,
+// whatever `disconnect` cannot take because its obligation is the wrong
+// shape. PQfinish + free; the obligation is discharged.
+~pub tor conn.close { conn: *Conn<!connecting|!in_tx|!in_failed_tx> }
+
+~proc conn.close|zig {
+    if (conn.handle) |h| c.PQfinish(h);
+    std.heap.page_allocator.destroy(conn);
+}
+
+// The descriptor the event loop registers. Same fd for the whole conn's
+// life — libpq may recycle it internally on reconnect, which this client
+// does not do, so the value is stable.
+~pub tor socket { conn: *Conn<*> } -> i32
+
+~proc socket|zig {
+    return @intCast(c.PQsocket(conn.handle));
+}
+
+// Make every send queue instead of stall. Must precede send-query use on
+// an event loop; without it a full socket buffer blocks the caller — the
+// very thing the async surface exists to prevent.
+~pub tor set-nonblocking { conn: *Conn<*> }
+| ok
+| err string
+
+~proc set-nonblocking|zig {
+    if (c.PQsetnonblocking(conn.handle, 1) != 0) {
+        return .{ .err = "connection is closed" };
+    }
+    return .{ .ok = .{} };
+}
+
+// Queue a query without waiting for the socket. libpq returns 0 when the
+// send could not be queued at all — not "not yet sent", so there is no
+// pending state to drain later, just an error to report.
+~pub tor send-query { conn: *Conn<connected>, sql: string }
+| sent
+| err string
+
+~proc send-query|zig {
+    if (c.PQsendQuery(conn.handle, sql.ptr) == 0) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        return .{ .err = msg };
+    }
+    return .{ .sent = .{} };
+}
+
+// Read whatever the socket delivered into libpq's buffers. Call when the
+// fd reports readable; pairs with `is-busy` to know whether a result is
+// actually ready.
+~pub tor consume-input { conn: *Conn<connected> }
+| ok
+| err string
+
+~proc consume-input|zig {
+    if (c.PQconsumeInput(conn.handle) == 0) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        return .{ .err = msg };
+    }
+    return .{ .ok = .{} };
+}
+
+// True while a result is still in flight — get-result would block, so the
+// caller must wait for more input first. The event-loop gate.
+~pub tor is-busy { conn: *Conn<connected> } -> bool
+
+~proc is-busy|zig {
+    return c.PQisBusy(conn.handle) != 0;
+}
+
+// Pop the next completed result — call only when is-busy is false. Every
+// query produces a TERMINATING null result after its last PGresult, so
+// `done` marks the query finished; intermediate `rows`/`empty` arms must
+// still be collected until then, exactly like the sync query's contract.
+// PGresult ordering is per-query, so pipelined queries come back in send
+// order.
+~pub tor get-result { conn: *Conn<connected> }
+| rows *Result<result!>
+| empty
+| done
+| err string
+
+~proc get-result|zig {
+    const res = c.PQgetResult(conn.handle);
+    if (res == null) return .{ .done = .{} };
+    const st = c.PQresultStatus(res);
+    if (st == c.PGRES_FATAL_ERROR or st == c.PGRES_BAD_RESPONSE or st == c.PGRES_NONFATAL_ERROR) {
+        const msg = std.mem.span(c.PQresultErrorMessage(res));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    if (c.PQntuples(res) == 0) {
+        c.PQclear(res);
+        return .{ .empty = .{} };
+    }
+    const result = std.heap.page_allocator.create(Result) catch unreachable;
+    result.* = Result{ .handle = res };
+    return .{ .rows = result };
+}
+
+// Push queued sends toward the socket — returns 1 while bytes remain
+// queued, which is the caller's signal to arm POLLOUT instead of POLLIN.
+~pub tor flush { conn: *Conn<connected> } -> i32
+
+~proc flush|zig {
+    return c.PQflush(conn.handle);
+}
+
+// ============================================================================
+// TRANSACTIONS — the phantom state machine made real
+// ============================================================================
+// `begin` consumes [connected], produces [in_tx]; `commit` consumes
+// [in_tx], produces [connected] — a failed commit demotes the conn to
+// [in_failed_tx], where the ONLY valid move is `rollback`. `rollback`
+// accepts either tx state and always produces [connected] on success.
+// Queries inside a transaction use `tx.query`: the same shape as `query`,
+// but its error arm carries the conn demoted to [in_failed_tx], because a
+// query failure inside a transaction is exactly what puts it there.
+
+~pub tor tx.begin { conn: *Conn<!connected> }
+| ok *Conn<in_tx!>
+| err string
+
+~proc tx.begin|zig {
+    const res = c.PQexec(conn.handle, "BEGIN");
+    if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    c.PQclear(res);
+    const tx = std.heap.page_allocator.create(Conn) catch unreachable;
+    tx.* = conn.*;
+    std.heap.page_allocator.destroy(conn);
+    return .{ .ok = tx };
+}
+
+~pub tor tx.commit { conn: *Conn<!in_tx> }
+| ok *Conn<connected!>
+| err *Conn<in_failed_tx!>
+
+~proc tx.commit|zig {
+    const res = c.PQexec(conn.handle, "COMMIT");
+    if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK) {
+        c.PQclear(res);
+        const failed = std.heap.page_allocator.create(Conn) catch unreachable;
+        failed.* = conn.*;
+        std.heap.page_allocator.destroy(conn);
+        return .{ .err = failed };
+    }
+    c.PQclear(res);
+    const settled = std.heap.page_allocator.create(Conn) catch unreachable;
+    settled.* = conn.*;
+    std.heap.page_allocator.destroy(conn);
+    return .{ .ok = settled };
+}
+
+// Valid from either transaction state — a committed-but-failed conn has
+// nowhere else to go. The rollback itself can still error (dead conn):
+// then the conn is destroyed and the string says why.
+~pub tor tx.rollback { conn: *Conn<*> }
+| ok *Conn<connected!>
+| err string
+
+~proc tx.rollback|zig {
+    const res = c.PQexec(conn.handle, "ROLLBACK");
+    if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    c.PQclear(res);
+    const settled = std.heap.page_allocator.create(Conn) catch unreachable;
+    settled.* = conn.*;
+    std.heap.page_allocator.destroy(conn);
+    return .{ .ok = settled };
+}
+
+// Query inside a transaction. On error the conn comes back demoted — the
+// phantom tag does the bookkeeping `PQtransactionStatus` would otherwise
+// have to be asked for at runtime.
+~pub tor tx.query { conn: *Conn<in_tx>, sql: string }
+| rows *Result<result!>
+| empty
+| err string
+
+~proc tx.query|zig {
+    const res = c.PQexec(conn.handle, sql.ptr);
+    const st = c.PQresultStatus(res);
+    if (st == c.PGRES_FATAL_ERROR or st == c.PGRES_BAD_RESPONSE or st == c.PGRES_NONFATAL_ERROR) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    if (c.PQntuples(res) == 0) {
+        c.PQclear(res);
+        return .{ .empty = .{} };
+    }
+    const result = std.heap.page_allocator.create(Result) catch unreachable;
+    result.* = Result{ .handle = res };
+    return .{ .rows = result };
+}
+
+// ============================================================================
+// PREPARED + PARAMETERIZED — no string-interpolated queries
+// ============================================================================
+// `exec-params` binds values server-side: the SQL text never carries user
+// bytes, so injection is not a sanitization problem, it is a non-problem.
+// `prepare`/`exec-prepared` name a statement once and reuse it.
+
+~pub tor exec-params { conn: *Conn<connected>, sql: string, params: []string }
+| rows *Result<result!>
+| empty
+| err string
+
+~proc exec-params|zig {
+    var vals = std.heap.page_allocator.alloc(?[*:0]const u8, params.len) catch unreachable;
+    defer std.heap.page_allocator.free(vals);
+    for (params, 0..) |p, i| vals[i] = p.ptr;
+    const res = c.PQexecParams(conn.handle, sql.ptr, @intCast(params.len), null, vals.ptr, null, null, 0);
+    if (c.PQresultStatus(res) == c.PGRES_FATAL_ERROR) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    if (c.PQntuples(res) == 0) {
+        c.PQclear(res);
+        return .{ .empty = .{} };
+    }
+    const result = std.heap.page_allocator.create(Result) catch unreachable;
+    result.* = Result{ .handle = res };
+    return .{ .rows = result };
+}
+
+~pub tor prepare { conn: *Conn<connected>, name: string, sql: string }
+| ok
+| err string
+
+~proc prepare|zig {
+    const res = c.PQprepare(conn.handle, name.ptr, sql.ptr, 0, null);
+    if (c.PQresultStatus(res) != c.PGRES_COMMAND_OK) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    c.PQclear(res);
+    return .{ .ok = .{} };
+}
+
+~pub tor exec-prepared { conn: *Conn<connected>, name: string, params: []string }
+| rows *Result<result!>
+| empty
+| err string
+
+~proc exec-prepared|zig {
+    var vals = std.heap.page_allocator.alloc(?[*:0]const u8, params.len) catch unreachable;
+    defer std.heap.page_allocator.free(vals);
+    for (params, 0..) |p, i| vals[i] = p.ptr;
+    const res = c.PQexecPrepared(conn.handle, name.ptr, @intCast(params.len), vals.ptr, null, null, 0);
+    if (c.PQresultStatus(res) == c.PGRES_FATAL_ERROR) {
+        const msg = std.mem.span(c.PQerrorMessage(conn.handle));
+        c.PQclear(res);
+        return .{ .err = msg };
+    }
+    if (c.PQntuples(res) == 0) {
+        c.PQclear(res);
+        return .{ .empty = .{} };
+    }
+    const result = std.heap.page_allocator.create(Result) catch unreachable;
+    result.* = Result{ .handle = res };
+    return .{ .rows = result };
+}
+
+// ============================================================================
+// RESULT ACCESSORS — complete the read side
+// ============================================================================
+
+~pub tor result.ncols { result: *Result<result> } -> usize
+
+~proc result.ncols|zig {
+    return @intCast(c.PQnfields(result.handle));
+}
+
+// Column name by index — the order RowDescription shipped them.
+~pub tor result.field-name { result: *Result<result>, col: usize } -> ?string
+
+~proc result.field-name|zig {
+    const name = c.PQfname(result.handle, @intCast(col));
+    if (name == null) return null;
+    return std.mem.span(name);
+}
+
+// Column value by position — text form, libpq's native representation.
+// Tagged like `result.col`: `null` is a real NULL, never the string "NULL".
+~pub tor result.getv { result: *Result<result>, row: usize, col: usize }
+| some string
+| null
+
+~proc result.getv|zig {
+    if (c.PQgetisnull(result.handle, @intCast(row), @intCast(col)) != 0) return .{ .null = .{} };
+    const v = c.PQgetvalue(result.handle, @intCast(row), @intCast(col));
+    const n = c.PQgetlength(result.handle, @intCast(row), @intCast(col));
+    return .{ .some = v[0..@intCast(n)] };
+}
+
+// The server's own error detail for a failed result — severity, code,
+// message, position — richer than the conn-level error string.
+~pub tor result.error { result: *Result<result> } -> string
+
+~proc result.error|zig {
+    const msg = c.PQresultErrorMessage(result.handle);
+    if (msg == null) return "";
+    return std.mem.span(msg);
+}
+
+// The conn-level error string — valid until the next operation on conn.
+~pub tor conn.error { conn: *Conn<*> } -> string
+
+~proc conn.error|zig {
+    const msg = c.PQerrorMessage(conn.handle);
+    if (msg == null) return "";
+    return std.mem.span(msg);
+}
+
+// ============================================================================
 // Comptime SQL
 // ============================================================================
 
