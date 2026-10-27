@@ -425,6 +425,63 @@ pub fn acceptServerSsl(server: *ServerCtx, fd: c_int, alloc: std.mem.Allocator) 
 // owns retry-on-WANT; a `failed` step leaves the error queue drained.
 pub const AcceptStep = enum { ready, want_read, want_write, failed };
 
+// ── ALPN — RFC 7301 protocol selection inside the TLS handshake ─────────────
+//
+// HTTP/2-over-TLS is negotiated, not inferred: the client lists the
+// protocols it speaks, the server picks one or fails the handshake. A
+// dedicated h2 listener wants h2-or-nothing — a client that never offered
+// it gets ALERT_FATAL rather than an h1 answer it cannot use.
+
+const SSL_TLSEXT_ERR_OK: c_int = 0;
+const SSL_TLSEXT_ERR_ALERT_FATAL: c_int = 2;
+const SSL_TLSEXT_ERR_NOACK: c_int = 3;
+
+fn alpnSelectH2(
+    ssl: ?*c.SSL,
+    out: [*c][*c]const u8,
+    outlen: [*c]u8,
+    in: [*c]const u8,
+    inlen: c_uint,
+    arg: ?*anyopaque,
+) callconv(.c) c_int {
+    _ = ssl;
+    _ = arg;
+    if (out == null or outlen == null or in == null) return SSL_TLSEXT_ERR_ALERT_FATAL;
+    const bytes = in[0..inlen];
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const n = bytes[i];
+        i += 1;
+        if (i + n > bytes.len) break;
+        if (n == 2 and bytes[i] == 'h' and bytes[i + 1] == '2') {
+            out.* = @ptrCast(&ALPN_H2);
+            outlen.* = 2;
+            return SSL_TLSEXT_ERR_OK;
+        }
+        i += n;
+    }
+    // Offered nothing we speak — the handshake fails loudly rather than
+    // answering h1 over a port advertised as h2-only.
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+}
+
+const ALPN_H2 = [2]u8{ 'h', '2' };
+
+// Register the h2-only select callback on a server ctx. A conn accepted
+// through this ctx negotiated "h2" in the handshake — or never completed.
+pub fn setAlpnH2Only(server: *ServerCtx) void {
+    c.SSL_CTX_set_alpn_select_cb(server.ctx, alpnSelectH2, null);
+}
+
+// What the handshake actually negotiated — the wire bytes, no opinion.
+pub fn alpnSelected(ssl: *c.SSL) []const u8 {
+    var data: [*c]const u8 = null;
+    var len: c_uint = 0;
+    c.SSL_get0_alpn_selected(ssl, &data, &len);
+    if (data == null or len == 0) return "";
+    return data[0..len];
+}
+
 pub fn acceptBegin(server: *ServerCtx, fd: c_int, alloc: std.mem.Allocator) SslAcceptResult {
     const ssl_ptr = c.SSL_new(server.ctx);
     if (ssl_ptr == null) {
