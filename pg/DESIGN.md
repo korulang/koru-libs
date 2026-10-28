@@ -104,3 +104,32 @@ docker-VM rig — postgres backends + loopback contention past that.
 Design read: per-worker pool of ~4 conns is the fast shape; single-conn
 understates the driver by ~3.4×. On metal (more cores, real NUMA) the
 curve moves right — pool size should be configurable, not baked.
+
+## Pump suspension design (2026-10-28 — for orisha drive|race)
+
+Precedent: /delay's park machinery (pump.kz ~750-810) — `park_until`
+ms deadline + sorted list + `parkMsUntilDue` in the ring wait. The pg
+wake is fd-READINESS not a deadline — sibling mechanism, not a reuse:
+
+- **Worker pg conn**: `worker.pg: ?*pg.Conn` — one per worker (pool of
+  N later; spike showed ~4/worker is the sweet spot). Registered on the
+  worker's ring as a new cqe class (PG_READ) with the pg conn as
+  userdata — NOT a client ConnState.
+- **Exchange parks on pending**: handler returns a `pending_pg` response
+  variant — pump sends bind.exec (B+E appended to pg.tx, flush once per
+  batch), marks the client conn's exchange suspended-on-pg, pushes it on
+  the pg conn's waiter queue. Client conn's send interest can stay armed
+  (pipelined requests behind it still flow when their results land).
+- **Resume on PG_READ**: pg fd readable → pg:row.next drains → for each
+  waiting exchange the row completes → resume → stage response → arm
+  send. Multiple waiters share one pg roundtrip — that's the batch
+  fan-in the 136K q/s pipeline proves.
+- **Handler contract (the open semantic)**: Response gets a
+  `pending_pg` variant — route declares the query; the row-result
+  completes through a named continuation the route registers. Two-phase:
+  declare → resume-with-row → produce Response. /queries batches N
+  binds; /updates writes; /fortunes needs a fetch-all + sort + template
+  (no suspension shape change).
+- **Ordering**: pipelined requests on one client conn that all suspend —
+  results must stage in request order (the send_plan already handles
+  out-of-order staging per conn? — verify).
