@@ -1,0 +1,229 @@
+// @korulang/pg — native pgwire driver. No libpq, no C object model:
+// the connection owns its recv buffer, rows are zero-copy views into
+// it, and the fd is the caller's to drive (block on it, or register it
+// on an event loop — the codec doesn't care which).
+//
+// Design doc: ./DESIGN.md — spike-proven numbers inline there.
+//
+//   conn = pg:connect(host, port, user, database): c
+//   pg:query(conn, "SELECT ...")          — simple protocol, blocks
+//   pg:row.next(conn)  -> bool            — advance to next DataRow
+//   pg:col.bytes(conn, i) -> string       — view into rx buffer
+//   pg:disconnect(conn)
+
+const std = @import("std");
+const posix = std.posix;
+
+pub const Conn = struct {
+    fd: posix.socket_t,
+    rx: [65536]u8 = undefined,
+    rx_len: usize = 0,      // valid bytes in rx
+    rx_pos: usize = 0,      // parse cursor
+    // current message frame state
+    msg_type: u8 = 0,
+    msg_rem: u32 = 0,       // payload bytes of current msg not yet consumed
+    // current DataRow state
+    row_cols: u16 = 0,      // ncols of the row being read (0 = not in a row)
+    col_i: u16 = 0,
+    // last column view returned by col.bytes — a slice INTO rx
+    col_view: []const u8 = "",
+};
+
+fn put32(a: std.mem.Allocator, b: *std.ArrayList(u8), v: u32) !void {
+    var x: [4]u8 = undefined; std.mem.writeInt(u32, &x, v, .big);
+    try b.appendSlice(a, &x);
+}
+fn put16(a: std.mem.Allocator, b: *std.ArrayList(u8), v: u16) !void {
+    var x: [2]u8 = undefined; std.mem.writeInt(u16, &x, v, .big);
+    try b.appendSlice(a, &x);
+}
+fn frame(a: std.mem.Allocator, b: *std.ArrayList(u8), t: u8, payload: []const u8) !void {
+    try b.append(a, t); try put32(a, b, @intCast(payload.len + 4)); try b.appendSlice(a, payload);
+}
+fn readFull(fd: posix.socket_t, buf: []u8) !void {
+    var n: usize = 0;
+    while (n < buf.len) {
+        const r = try posix.read(fd, buf[n..]);
+        if (r == 0) return error.Eof;
+        n += r;
+    }
+}
+fn sendAll(fd: posix.socket_t, buf: []const u8) !void {
+    var n: usize = 0;
+    while (n < buf.len) n += try posix.send(fd, buf[n..], 0);
+}
+
+// --- surface ------------------------------------------------------------
+
+~pub tor connect { host: string, port: i64, user: string, database: string }
+| ok *Conn<connected!>
+| err string
+
+~proc connect|zig {
+    var gpa = std.heap.page_allocator;
+    const fd = posix.socket(posix.AF.INET, posix.SOCK.STREAM, 0) catch {
+        return .{ .err = "socket failed" };
+    };
+    const host_z = gpa.dupeZ(u8, host) catch unreachable;
+    const port_u16: u16 = @intCast(port);
+    const addr = std.net.Address.parseIp(host_z, port_u16) catch {
+        return .{ .err = "bad host" };
+    };
+    posix.connect(fd, &addr.any, addr.getOsSockLen()) catch {
+        return .{ .err = "connect failed" };
+    };
+    const conn = gpa.create(Conn) catch unreachable;
+    conn.* = Conn{ .fd = fd };
+
+    // startup message: proto 3.0 + user/database pairs
+    var b: std.ArrayList(u8) = .{}; defer b.deinit(gpa);
+    var p: std.ArrayList(u8) = .{}; defer p.deinit(gpa);
+    put32(gpa, &p, 196608) catch unreachable;
+    p.appendSlice(gpa, "user") catch unreachable;
+    p.append(gpa, 0) catch unreachable;
+    p.appendSlice(gpa, user) catch unreachable;
+    p.append(gpa, 0) catch unreachable;
+    p.appendSlice(gpa, "database") catch unreachable;
+    p.append(gpa, 0) catch unreachable;
+    p.appendSlice(gpa, database) catch unreachable;
+    p.append(gpa, 0) catch unreachable;
+    p.append(gpa, 0) catch unreachable;
+    put32(gpa, &b, @intCast(p.items.len + 4)) catch unreachable;
+    b.appendSlice(gpa, p.items) catch unreachable;
+    sendAll(fd, b.items) catch return .{ .err = "startup send failed" };
+
+    // auth + params until ReadyForQuery (trust auth only for now —
+    // md5/scram land next pass; pg-dev runs trust)
+    var hdr: [5]u8 = undefined;
+    var pl_buf: [65536]u8 = undefined;
+    while (true) {
+        readFull(fd, &hdr) catch return .{ .err = "startup read failed" };
+        const len = std.mem.readInt(u32, hdr[1..5], .big) - 4;
+        readFull(fd, pl_buf[0..len]) catch return .{ .err = "startup read failed" };
+        switch (hdr[0]) {
+            'R' => {
+                const code = std.mem.readInt(u32, pl_buf[0..4], .big);
+                if (code != 0) return .{ .err = "auth method unsupported (non-trust)" };
+            },
+            'S', 'K' => {},
+            'Z' => return .{ .ok = conn },
+            'E' => {
+                const msg = gpa.dupe(u8, pl_buf[0..len]) catch unreachable;
+                return .{ .err = msg };
+            },
+            else => {},
+        }
+    }
+}
+
+~pub tor socket { conn: *Conn<*> } -> i32
+
+~proc socket|zig {
+    return @intCast(conn.fd);
+}
+
+~pub tor set-nonblocking { conn: *Conn<*> }
+
+~proc set-nonblocking|zig {
+    const flags = posix.fcntl(conn.fd, posix.F.GETFL, 0) catch return;
+    _ = posix.fcntl(conn.fd, posix.F.SETFL, flags | 1 << 11) catch return; // O_NONBLOCK
+}
+
+~pub tor disconnect { conn: *Conn<!connected> }
+
+~proc disconnect|zig {
+    var b: std.ArrayList(u8) = .{}; defer b.deinit(std.heap.page_allocator);
+    frame(std.heap.page_allocator, &b, 'X', "") catch {};
+    sendAll(conn.fd, b.items) catch {};
+    posix.close(conn.fd);
+    std.heap.page_allocator.destroy(conn);
+}
+
+// Simple-protocol query: sends 'Q'. Result frames are consumed by
+// row.next / col.bytes until ready-for-query state.
+~pub tor query { conn: *Conn<connected>, sql: string }
+| ok i64
+| err string
+
+~proc query|zig {
+    var b: std.ArrayList(u8) = .{}; defer b.deinit(std.heap.page_allocator);
+    const sql_z = std.heap.page_allocator.dupeZ(u8, sql) catch unreachable;
+    defer std.heap.page_allocator.free(sql_z);
+    frame(std.heap.page_allocator, &b, 'Q', sql_z[0 .. sql_z.len + 1]) catch return .{ .err = "oom" };
+    sendAll(conn.fd, b.items) catch return .{ .err = "send failed" };
+    conn.row_cols = 0; conn.msg_rem = 0;
+    return .{ .ok = 0 };
+}
+
+// Advance the conn to the next DataRow. Returns true while a row is in
+// the rx buffer ready for col.bytes; false at CommandComplete/Z/err.
+// Blocking: reads the socket until the next row or stream end.
+~pub tor row.next { conn: *Conn<connected> } -> bool
+
+~proc row.next|zig {
+    while (true) {
+        // if mid-frame, skip to a message boundary
+        while (conn.msg_rem > 0) {
+            if (conn.rx_pos + conn.msg_rem <= conn.rx_len) {
+                conn.rx_pos += conn.msg_rem; conn.msg_rem = 0;
+            } else {
+                const avail = conn.rx_len - conn.rx_pos;
+                conn.rx_pos += avail; conn.msg_rem -= @intCast(avail);
+                conn.rx_len = 0; conn.rx_pos = 0;
+                const n = posix.read(conn.fd, conn.rx[0..]) catch return false;
+                if (n == 0) return false;
+                conn.rx_len = n;
+            }
+        }
+        // need a 5-byte header
+        while (conn.rx_len - conn.rx_pos < 5) {
+            if (conn.rx_pos > 0) {
+                std.mem.copyForwards(u8, conn.rx[0..], conn.rx[conn.rx_pos..conn.rx_len]);
+                conn.rx_len -= conn.rx_pos; conn.rx_pos = 0;
+            }
+            const n = posix.read(conn.fd, conn.rx[conn.rx_len..]) catch return false;
+            if (n == 0) return false;
+            conn.rx_len += n;
+        }
+        const t = conn.rx[conn.rx_pos];
+        const mlen = std.mem.readInt(u32, conn.rx[conn.rx_pos + 1 ..][0..4], .big) - 4;
+        conn.rx_pos += 5;
+        if (t == 'D') {
+            // ensure full frame
+            while (conn.rx_len - conn.rx_pos < mlen) {
+                if (conn.rx_pos > 0) {
+                    std.mem.copyForwards(u8, conn.rx[0..], conn.rx[conn.rx_pos..conn.rx_len]);
+                    conn.rx_len -= conn.rx_pos; conn.rx_pos = 0;
+                }
+                const n = posix.read(conn.fd, conn.rx[conn.rx_len..]) catch return false;
+                if (n == 0) return false;
+                conn.rx_len += n;
+            }
+            conn.msg_type = 'D'; conn.msg_rem = mlen;
+            conn.row_cols = std.mem.readInt(u16, conn.rx[conn.rx_pos..][0..2], .big);
+            conn.rx_pos += 2; conn.msg_rem -= 2; conn.col_i = 0;
+            return true;
+        }
+        if (t == 'C' or t == 'Z' or t == 'E') { conn.msg_rem = mlen; return false; }
+        conn.msg_rem = mlen; // skip T/S/N/etc by the skip loop above
+    }
+}
+
+// View of column `i` in the current row — a slice into the rx buffer,
+// valid until row.next advances. Zero-copy by construction.
+~pub tor col.bytes { conn: *Conn<connected>, i: i64 } -> string
+
+~proc col.bytes|zig {
+    var o = conn.rx_pos;
+    const end = conn.rx_pos + conn.msg_rem;
+    const want: u16 = @intCast(i);
+    var c_i: u16 = 0;
+    while (o < end and c_i <= want) {
+        const fl = std.mem.readInt(i32, conn.rx[o..][0..4], .big); o += 4;
+        if (fl < 0) { if (c_i == want) return ""; continue; }
+        const f = conn.rx[o..][0..@intCast(fl)]; o += @intCast(fl);
+        if (c_i == want) { conn.col_view = f; return f; }
+        c_i += 1;
+    }
+    return "";
+}

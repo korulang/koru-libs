@@ -1,0 +1,10 @@
+{
+  "name": "@korulang/pg",
+  "version": "0.0.1",
+  "description": "Native PostgreSQL wire-protocol driver for Koru — no libpq, event-loop-native, zero-copy rows",
+  "keywords": ["koru", "korulang", "postgresql", "pgwire", "database"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "koru": { "entry": "index.kz", "requires": {} }
+}
