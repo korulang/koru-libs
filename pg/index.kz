@@ -220,6 +220,87 @@ fn skipRem(conn: *Conn) bool {
     }
 }
 
+// --- extended protocol: prepare once, pipeline binds ---------------------
+
+// Parse 'sql' into a named statement on the server. One-shot setup —
+// drains the ParseComplete + ReadyForQuery inside the call.
+~pub tor prepare { conn: *Conn<connected>, name: string, sql: string }
+| ok i64
+| err string
+
+~proc prepare|zig {
+    const a = std.heap.page_allocator;
+    conn.tx.clearRetainingCapacity();
+    var pp: std.ArrayList(u8) = .{}; defer pp.deinit(a);
+    pp.appendSlice(a, name) catch return .{ .err = "oom" };
+    pp.append(a, 0) catch return .{ .err = "oom" };
+    pp.appendSlice(a, sql) catch return .{ .err = "oom" };
+    pp.append(a, 0) catch return .{ .err = "oom" };
+    put16(a, &pp, 0) catch return .{ .err = "oom" };
+    frame(a, &conn.tx, 'P', pp.items) catch return .{ .err = "oom" };
+    frame(a, &conn.tx, 'S', "") catch return .{ .err = "oom" };
+    sendAll(conn.fd, conn.tx.items) catch return .{ .err = "send failed" };
+    // drain until 'Z'
+    while (true) {
+        if (!skipRem(conn)) return .{ .err = "eof" };
+        while (conn.rx_len - conn.rx_pos < 5) {
+            if (conn.rx_pos > 0) {
+                std.mem.copyForwards(u8, conn.rx[0..], conn.rx[conn.rx_pos..conn.rx_len]);
+                conn.rx_len -= conn.rx_pos; conn.rx_pos = 0;
+            }
+            const n = posix.read(conn.fd, conn.rx[conn.rx_len..]) catch return .{ .err = "read failed" };
+            if (n == 0) return .{ .err = "eof" };
+            conn.rx_len += n;
+        }
+        const t = conn.rx[conn.rx_pos];
+        const mlen = std.mem.readInt(u32, conn.rx[conn.rx_pos + 1 ..][0..4], .big) - 4;
+        conn.rx_pos += 5;
+        if (t == 'Z') { conn.msg_rem = mlen; _ = skipRem(conn); return .{ .ok = 0 }; }
+        if (t == 'E') {
+            conn.msg_rem = mlen;
+            // read the error payload for the message
+            _ = skipRem(conn);
+            return .{ .err = "parse failed" };
+        }
+        conn.msg_rem = mlen;
+    }
+}
+
+// Append a Bind+Execute for a prepared statement — does NOT send.
+// One text param per call for now (the world-row queries take one int).
+~pub tor bind.exec { conn: *Conn<connected>, stmt: string, param: string }
+
+~proc bind.exec|zig {
+    const a = std.heap.page_allocator;
+    var bp: std.ArrayList(u8) = .{}; defer bp.deinit(a);
+    bp.append(a, 0) catch return; // portal ""
+    bp.appendSlice(a, stmt) catch return;
+    bp.append(a, 0) catch return;
+    put16(a, &bp, 0) catch return; // param formats: all text
+    put16(a, &bp, 1) catch return; // 1 param
+    put32(a, &bp, @intCast(param.len)) catch return;
+    bp.appendSlice(a, param) catch return;
+    put16(a, &bp, 0) catch return; // result formats: all text
+    frame(a, &conn.tx, 'B', bp.items) catch return;
+    var ep: std.ArrayList(u8) = .{}; defer ep.deinit(a);
+    ep.append(a, 0) catch return;
+    put32(a, &ep, 0) catch return; // row limit 0
+    frame(a, &conn.tx, 'E', ep.items) catch return;
+}
+
+// Append 'S' and flush conn.tx to the socket — one roundtrip for every
+// bind.exec queued since the last send.
+~pub tor send.pending { conn: *Conn<connected> }
+| ok i64
+| err string
+
+~proc send.pending|zig {
+    frame(std.heap.page_allocator, &conn.tx, 'S', "") catch return .{ .err = "oom" };
+    sendAll(conn.fd, conn.tx.items) catch return .{ .err = "send failed" };
+    conn.tx.clearRetainingCapacity();
+    return .{ .ok = 0 };
+}
+
 // View of column `i` in the current row — a slice into the rx buffer,
 // valid until row.next advances. Zero-copy by construction.
 ~pub tor col.bytes { conn: *Conn<connected>, i: i64 } -> string
