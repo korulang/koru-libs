@@ -16,6 +16,7 @@ const posix = std.posix;
 
 pub const Conn = struct {
     fd: posix.socket_t,
+    tx: std.ArrayList(u8) = .{}, // owned send buffer — cleared per send, never realloc'd in the hot path
     rx: [65536]u8 = undefined,
     rx_len: usize = 0,      // valid bytes in rx
     rx_pos: usize = 0,      // parse cursor
@@ -51,6 +52,23 @@ fn readFull(fd: posix.socket_t, buf: []u8) !void {
 fn sendAll(fd: posix.socket_t, buf: []const u8) !void {
     var n: usize = 0;
     while (n < buf.len) n += try posix.send(fd, buf[n..], 0);
+}
+// Drain conn.msg_rem bytes of the current frame — reading as needed.
+// True when the frame is fully past us, false on eof/error.
+fn skipRem(conn: *Conn) bool {
+    while (conn.msg_rem > 0) {
+        if (conn.rx_pos + conn.msg_rem <= conn.rx_len) {
+            conn.rx_pos += conn.msg_rem; conn.msg_rem = 0;
+        } else {
+            const avail = conn.rx_len - conn.rx_pos;
+            conn.rx_pos += avail; conn.msg_rem -= @intCast(avail);
+            conn.rx_len = 0; conn.rx_pos = 0;
+            const n = posix.read(conn.fd, conn.rx[0..]) catch return false;
+            if (n == 0) return false;
+            conn.rx_len = n;
+        }
+    }
+    return true;
 }
 
 // --- surface ------------------------------------------------------------
@@ -146,11 +164,15 @@ fn sendAll(fd: posix.socket_t, buf: []const u8) !void {
 | err string
 
 ~proc query|zig {
-    var b: std.ArrayList(u8) = .{}; defer b.deinit(std.heap.page_allocator);
-    const sql_z = std.heap.page_allocator.dupeZ(u8, sql) catch unreachable;
-    defer std.heap.page_allocator.free(sql_z);
-    frame(std.heap.page_allocator, &b, 'Q', sql_z[0 .. sql_z.len + 1]) catch return .{ .err = "oom" };
-    sendAll(conn.fd, b.items) catch return .{ .err = "send failed" };
+    conn.tx.clearRetainingCapacity();
+    frame(std.heap.page_allocator, &conn.tx, 'Q', "") catch return .{ .err = "oom" };
+    // the 'Q' frame's length covers the sql + terminator — splice them in
+    var x: [4]u8 = undefined;
+    std.mem.writeInt(u32, &x, @intCast(sql.len + 1 + 4), .big);
+    @memcpy(conn.tx.items[1..5], &x);
+    conn.tx.appendSlice(std.heap.page_allocator, sql) catch return .{ .err = "oom" };
+    conn.tx.append(std.heap.page_allocator, 0) catch return .{ .err = "oom" };
+    sendAll(conn.fd, conn.tx.items) catch return .{ .err = "send failed" };
     conn.row_cols = 0; conn.msg_rem = 0;
     return .{ .ok = 0 };
 }
@@ -163,18 +185,7 @@ fn sendAll(fd: posix.socket_t, buf: []const u8) !void {
 ~proc row.next|zig {
     while (true) {
         // if mid-frame, skip to a message boundary
-        while (conn.msg_rem > 0) {
-            if (conn.rx_pos + conn.msg_rem <= conn.rx_len) {
-                conn.rx_pos += conn.msg_rem; conn.msg_rem = 0;
-            } else {
-                const avail = conn.rx_len - conn.rx_pos;
-                conn.rx_pos += avail; conn.msg_rem -= @intCast(avail);
-                conn.rx_len = 0; conn.rx_pos = 0;
-                const n = posix.read(conn.fd, conn.rx[0..]) catch return false;
-                if (n == 0) return false;
-                conn.rx_len = n;
-            }
-        }
+        if (!skipRem(conn)) return false;
         // need a 5-byte header
         while (conn.rx_len - conn.rx_pos < 5) {
             if (conn.rx_pos > 0) {
@@ -204,8 +215,8 @@ fn sendAll(fd: posix.socket_t, buf: []const u8) !void {
             conn.rx_pos += 2; conn.msg_rem -= 2; conn.col_i = 0;
             return true;
         }
-        if (t == 'C' or t == 'Z' or t == 'E') { conn.msg_rem = mlen; return false; }
-        conn.msg_rem = mlen; // skip T/S/N/etc by the skip loop above
+        if (t == 'Z' or t == 'E') { conn.msg_rem = mlen; _ = skipRem(conn); return false; }
+        conn.msg_rem = mlen; // T/S/N/C/etc — skip and keep looking
     }
 }
 
