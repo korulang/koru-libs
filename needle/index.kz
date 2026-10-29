@@ -1,0 +1,167 @@
+// @korulang/needle — on-device speech transcription via libneedle.
+//
+// Wraps the Cactus-Compute engine (libneedle.dylib, ~1.1MB) behind phantom
+// obligation types. The C ABI is already an obligation shape:
+//   needle_load(weights, len)  → engine ready; <0 → needle_last_error()
+//   needle_transcribe(...)     → one-shot PCM → JSON result
+//   needle_stream_transcribe_process/stop → chunked live transcription
+//   needle_reset()             → releases loaded model state
+// Every verb borrows `*Engine<ready>`; transcribing with no engine loaded is
+// a compile error, not a runtime null. `unload` discharges the minted token.
+//
+// Results land in the caller's out-buffer as a JSON C string
+// ({"text","language","ttft_ms","decode_tps"}, + "words" when
+// word_timestamps=1) — the edition hands back that JSON verbatim as
+// `string<std/io:allocated!>`, discharged by `std/io:free`. Field extraction
+// belongs to a caller-side parser (koru/yyjson), not to this seam.
+//
+// PCM is passed as raw little-endian f32 bytes at 16kHz mono (whistle's
+// contract). A typed sample surface can come later; `string` today carries
+// the same bytes without inventing a sample type the toolchain hasn't
+// ruled on.
+//
+//   libs/needle:load(path: "whistle.cact")
+//   | ready eng |> libs/needle:transcribe(eng, pcm: pcm, language: "en")
+//       | ok json |> std/io:print.ln("{{ json:s }}") |> std/io:free(content: json)
+//           |> libs/needle:unload(eng)
+//       | err e |> std/io:print.ln("{{ e:s }}") |> libs/needle:unload(eng)
+//   | err e |> std/io:print.ln("load: {{ e:s }}")
+
+~import std/build
+
+~std/build:requires {
+    exe.addLibraryPath(.{ .cwd_relative = "../vendor" });
+    exe.addRPath(.{ .cwd_relative = "../vendor" });
+    exe.linkSystemLibrary("needle");
+    exe.linkLibC();
+}
+
+const std = @import("std");
+
+extern fn needle_load(data: ?*const anyopaque, len: u64) c_int;
+extern fn needle_transcribe(samples: [*]const f32, count: c_int, language: ?[*:0]const u8, keywords: ?[*:0]const u8, word_timestamps: c_int, out: [*]u8, out_cap: c_int) c_int;
+extern fn needle_stream_transcribe_process(samples: [*]const f32, count: c_int, language: ?[*:0]const u8, keywords: ?[*:0]const u8, out: [*]u8, out_cap: c_int) c_int;
+extern fn needle_stream_transcribe_stop(out: [*]u8, out_cap: c_int) c_int;
+extern fn needle_last_error() [*:0]const u8;
+extern fn needle_reset() void;
+
+// The loaded engine. `weights` stays referenced for the token's life — the
+// ABI gives no indication the load copies, so freeing the source bytes early
+// is an assumption nobody should make.
+pub const Engine = struct {
+    weights: []const u8,
+};
+
+const SAMPLE_RATE = 16000;
+// needle writes ~4KB of JSON per audio second (the python binding's own
+// reserve); floor covers short clips and the stop-tail.
+const OUT_BYTES_PER_SECOND = 4096;
+
+fn lastError() []const u8 {
+    const msg = std.mem.span(needle_last_error());
+    return if (msg.len > 0) msg else "needle: engine error (no message)";
+}
+
+fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
+    if (language.len == 0 or language.len >= buf.len) return null;
+    @memcpy(buf[0..language.len], language);
+    buf[language.len] = 0;
+    return @ptrCast(buf);
+}
+
+// ============================================================================
+// Lifecycle
+// ============================================================================
+
+// Load model weights from a .cact archive — mints the engine token.
+~pub tor load { path: string }
+| ready *Engine<ready!>
+| err string
+
+~proc load|zig {
+    const data = std.fs.cwd().readFileAlloc(koru_allocator(), path, 256 * 1024 * 1024) catch {
+        return .{ .err = "needle: cannot read weights file" };
+    };
+    if (needle_load(data.ptr, data.len) < 0) {
+        koru_allocator().free(data);
+        return .{ .err = lastError() };
+    }
+    const eng = std.heap.page_allocator.create(Engine) catch @panic("needle: OOM");
+    eng.* = .{ .weights = data };
+    return .{ .ready = eng };
+}
+
+// Discharge the engine token. needle_reset releases the loaded model state
+// (the ABI has no narrower unload); the wrapper and weight copy go with it.
+~pub tor unload { eng: *Engine<!ready> }
+~proc unload|zig {
+    needle_reset();
+    koru_allocator().free(eng.weights);
+    std.heap.page_allocator.destroy(eng);
+}
+
+// ============================================================================
+// Transcription — one-shot and streaming
+// ============================================================================
+
+// Transcribe a whole clip: `pcm` is 16kHz mono f32le bytes, `language` is a
+// tag ("en", "de", "fr", "es", "it", "nl", "pl") — empty string detects.
+// `pcm` takes <*>: it copies bytes verbatim, so a caller's `allocated!`
+// buffer feeds it directly (KORU030 rejected the unqualified spelling).
+~pub tor transcribe { eng: *Engine<ready>, pcm: string<*>, language: string }
+| ok string<std/io:allocated!>
+| err string
+
+~proc transcribe|zig {
+    _ = eng;
+    const n = pcm.len / @sizeOf(f32);
+    if (n == 0) return .{ .err = "needle: empty pcm" };
+    const samples = koru_allocator().alloc(f32, n) catch @panic("needle: OOM");
+    defer koru_allocator().free(samples);
+    @memcpy(std.mem.sliceAsBytes(samples), pcm[0 .. n * @sizeOf(f32)]);
+    var lbuf: [8]u8 = undefined;
+    const out_cap = n / SAMPLE_RATE * OUT_BYTES_PER_SECOND + OUT_BYTES_PER_SECOND;
+    const out = koru_allocator().alloc(u8, out_cap) catch @panic("needle: OOM");
+    defer koru_allocator().free(out);
+    const rc = needle_transcribe(samples.ptr, @intCast(n), langPtr(language, &lbuf), null, 0, out.ptr, @intCast(out_cap));
+    if (rc < 0) return .{ .err = lastError() };
+    const used = std.mem.indexOfScalar(u8, out, 0) orelse out_cap;
+    return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
+}
+
+// Push one chunk of a live stream (~1s of 16kHz mono f32le). Each call's JSON
+// carries that chunk's committed text and the unconfirmed tail.
+~pub tor stream.process { eng: *Engine<ready>, pcm: string<*>, language: string }
+| ok string<std/io:allocated!>
+| err string
+
+~proc stream.process|zig {
+    _ = eng;
+    const n = pcm.len / @sizeOf(f32);
+    if (n == 0) return .{ .err = "needle: empty pcm" };
+    const samples = koru_allocator().alloc(f32, n) catch @panic("needle: OOM");
+    defer koru_allocator().free(samples);
+    @memcpy(std.mem.sliceAsBytes(samples), pcm[0 .. n * @sizeOf(f32)]);
+    var lbuf: [8]u8 = undefined;
+    const out = koru_allocator().alloc(u8, n / SAMPLE_RATE * OUT_BYTES_PER_SECOND + OUT_BYTES_PER_SECOND) catch @panic("needle: OOM");
+    defer koru_allocator().free(out);
+    const rc = needle_stream_transcribe_process(samples.ptr, @intCast(n), langPtr(language, &lbuf), null, out.ptr, @intCast(out.len));
+    if (rc < 0) return .{ .err = lastError() };
+    const used = std.mem.indexOfScalar(u8, out, 0) orelse out.len;
+    return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
+}
+
+// Drain the stream's tail — call once after the last process chunk.
+~pub tor stream.stop { eng: *Engine<ready> }
+| ok string<std/io:allocated!>
+| err string
+
+~proc stream.stop|zig {
+    _ = eng;
+    const out = koru_allocator().alloc(u8, 2 * OUT_BYTES_PER_SECOND) catch @panic("needle: OOM");
+    defer koru_allocator().free(out);
+    const rc = needle_stream_transcribe_stop(out.ptr, @intCast(out.len));
+    if (rc < 0) return .{ .err = lastError() };
+    const used = std.mem.indexOfScalar(u8, out, 0) orelse out.len;
+    return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
+}

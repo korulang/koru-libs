@@ -1,0 +1,27 @@
+{
+  "name": "@korulang/needle",
+  "version": "0.0.1",
+  "description": "On-device speech transcription via libneedle (Cactus-Compute), behind phantom obligations",
+  "keywords": ["koru", "korulang", "needle", "whistle", "stt", "speech", "transcription", "phantom-types"],
+  "author": "Koru Contributors",
+  "license": "MIT",
+  "homepage": "https://korulang.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/korulang/koru",
+    "directory": "libs/needle"
+  },
+  "bugs": {
+    "url": "https://github.com/korulang/koru/issues"
+  },
+  "files": [
+    "index.kz",
+    "README.md"
+  ],
+  "koru": {
+    "entry": "index.kz",
+    "requires": {
+      "system": ["needle"]
+    }
+  }
+}
