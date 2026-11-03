@@ -1,0 +1,2 @@
+GET /ua
+user-agent: probe/1.0
