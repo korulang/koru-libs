@@ -50,6 +50,10 @@ pub const Statement = struct {
     // statement token can never dangle on a closed connection. `row` is the
     // stream's state, never a second handle — one token per object.
     conn: *Connection,
+    // Statement lives in conn.stmt_cache — release (`finalize.stmt`,
+    // `next` done/err) resets it for reuse instead of finalizing, which
+    // would leave the cache holding a dangling handle.
+    cached: bool = false,
 };
 
 /// Generic value binder for `{{...}}` interpolation — the transforms emit
@@ -749,9 +753,10 @@ call. For SELECT use rows, not exec.
     code_buf.appendSlice(allocator, ";\n    const c = __sqlite3.c;\n") catch unreachable;
     code_buf.appendSlice(allocator, "    const Result = union(enum) { row: *__sqlite3.Statement, empty: *__sqlite3.Connection, err: struct { conn: *__sqlite3.Connection, code: i32, msg: []const u8 } };\n") catch unreachable;
     code_buf.appendSlice(allocator, "    var stmt_handle: ?*c.sqlite3_stmt = null;\n") catch unreachable;
-    code_buf.appendSlice(allocator, "    const rc = c.sqlite3_prepare_v2(") catch unreachable;
-    code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, ".handle, \"") catch unreachable;
+    // Same stmt_cache spine the `default` transform emits — a site's SQL is
+    // comptime-known here too, so prepare pays once per pooled connection.
+    const wq = code_buf.writer(allocator);
+    wq.print("    const __sql{d}_{d} = \"", .{ flow.location.line, flow.location.column }) catch unreachable;
     // Escape SQL for Zig string
     for (sql_buf.items) |ch| {
         switch (ch) {
@@ -763,7 +768,8 @@ call. For SELECT use rows, not exec.
             else => code_buf.append(allocator, ch) catch unreachable,
         }
     }
-    code_buf.appendSlice(allocator, "\", -1, &stmt_handle, null);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "\";\n") catch unreachable;
+    wq.print("    {s}.cache_mu.lock();\n    if ({s}.stmt_cache.get(__sql{d}_{d})) |cs| {{ stmt_handle = cs; }}\n    {s}.cache_mu.unlock();\n    var rc: c_int = c.SQLITE_OK;\n    if (stmt_handle == null) {{\n        rc = c.sqlite3_prepare_v2({s}.handle, __sql{d}_{d}, -1, &stmt_handle, null);\n        if (rc == c.SQLITE_OK) {{\n            {s}.cache_mu.lock();\n            if ({s}.stmt_cache.get(__sql{d}_{d})) |cs| {{\n                _ = c.sqlite3_finalize(stmt_handle);\n                stmt_handle = cs;\n            }} else {{\n                {s}.stmt_cache.put(@import(\"std\").heap.page_allocator, __sql{d}_{d}, stmt_handle) catch {{}};\n            }}\n            {s}.cache_mu.unlock();\n        }}\n    }}\n", .{ conn_var, conn_var, flow.location.line, flow.location.column, conn_var, conn_var, flow.location.line, flow.location.column, conn_var, conn_var, flow.location.line, flow.location.column, conn_var, flow.location.line, flow.location.column, conn_var }) catch unreachable;
 
     // Check prepare result
     code_buf.appendSlice(allocator, "    if (rc != c.SQLITE_OK) {\n") catch unreachable;
@@ -787,10 +793,10 @@ call. For SELECT use rows, not exec.
     code_buf.appendSlice(allocator, "        const s = @import(\"std\").heap.page_allocator.create(__sqlite3.Statement) catch unreachable;\n") catch unreachable;
     code_buf.appendSlice(allocator, "        s.* = .{ .handle = stmt_handle, .conn = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
-    code_buf.appendSlice(allocator, " };\n") catch unreachable;
+    code_buf.appendSlice(allocator, ", .cached = true };\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .row = s });\n") catch unreachable;
     code_buf.appendSlice(allocator, "    } else if (step_rc == c.SQLITE_DONE) {\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        _ = c.sqlite3_reset(stmt_handle);\n        _ = c.sqlite3_clear_bindings(stmt_handle);\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .empty = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
     code_buf.appendSlice(allocator, " });\n") catch unreachable;
@@ -798,7 +804,7 @@ call. For SELECT use rows, not exec.
     code_buf.appendSlice(allocator, "        const msg = c.sqlite3_errmsg(") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
     code_buf.appendSlice(allocator, ".handle);\n") catch unreachable;
-    code_buf.appendSlice(allocator, "        _ = c.sqlite3_finalize(stmt_handle);\n") catch unreachable;
+    code_buf.appendSlice(allocator, "        _ = c.sqlite3_reset(stmt_handle);\n        _ = c.sqlite3_clear_bindings(stmt_handle);\n") catch unreachable;
     code_buf.appendSlice(allocator, "        break :blk @as(Result, .{ .err = .{ .conn = ") catch unreachable;
     code_buf.appendSlice(allocator, conn_var) catch unreachable;
     code_buf.appendSlice(allocator, ", .code = step_rc, .msg = @import(\"std\").mem.span(msg) } });\n") catch unreachable;
@@ -912,13 +918,23 @@ frees the statement, and hands the connection back.
         return .{ .row = stmt };
     } else if (rc == c.SQLITE_DONE) {
         const conn = stmt.conn;
-        _ = c.sqlite3_finalize(stmt.handle);
+        if (stmt.cached) {
+            _ = c.sqlite3_reset(stmt.handle);
+            _ = c.sqlite3_clear_bindings(stmt.handle);
+        } else {
+            _ = c.sqlite3_finalize(stmt.handle);
+        }
         std.heap.page_allocator.destroy(stmt);
         return .{ .done = conn };
     } else {
         const conn = stmt.conn;
         const msg = c.sqlite3_errmsg(conn.handle);
-        _ = c.sqlite3_finalize(stmt.handle);
+        if (stmt.cached) {
+            _ = c.sqlite3_reset(stmt.handle);
+            _ = c.sqlite3_clear_bindings(stmt.handle);
+        } else {
+            _ = c.sqlite3_finalize(stmt.handle);
+        }
         std.heap.page_allocator.destroy(stmt);
         return .{ .err = .{ .conn = conn, .code = rc, .msg = std.mem.span(msg) } };
     }
@@ -941,7 +957,12 @@ connection back so close-db can still run.
 ~proc finalize.stmt|zig {
     const conn = stmt.conn;
     if (stmt.handle) |h| {
-        _ = c.sqlite3_finalize(h);
+        if (stmt.cached) {
+            _ = c.sqlite3_reset(h);
+            _ = c.sqlite3_clear_bindings(h);
+        } else {
+            _ = c.sqlite3_finalize(h);
+        }
     }
     std.heap.page_allocator.destroy(stmt);
     return conn;
