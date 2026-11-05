@@ -230,6 +230,7 @@ call. For SELECT use rows, not exec.
 ~proc exec|zig {
     var errmsg: [*c]u8 = null;
     const zsql = std.heap.page_allocator.dupeZ(u8, sql) catch unreachable;
+    defer std.heap.page_allocator.free(zsql);
     const rc = c.sqlite3_exec(conn.handle, zsql.ptr, null, null, &errmsg);
     if (rc != c.SQLITE_OK) {
         // errmsg is sqlite-owned and freed below — span it, then dupe before
