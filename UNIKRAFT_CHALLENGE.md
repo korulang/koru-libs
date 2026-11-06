@@ -345,6 +345,27 @@ have missed why it did what it did.
   bounded surface never reaches, named as a bucket rather than padded into
   rows that would all say the same thing. **Corrects the shelf's own inline
   count**: 10 static inlines (6F/4A), not 11 (8F/3A).
+- **[console](unikraft/console/README.md)** — `ukconsole` behind a 3-state
+  ratchet (`idle`/`live`/`retired`), 11 tors, and the first PROVIDER-side
+  lift: the Koru program authors the console device — its `ops` are
+  functions inside `unikraft/console` called *by* the C, not symbols it
+  calls into. **First lift to require the fork**: `uk_console_unregister`
+  and the whole async family are fork-only (7 of 17 symbols in 0.21.0),
+  so the lift extends `unikraft/index.kz` with a `tree` declaration that
+  emits `source:` into the Kraftfile in place of `version: stable` —
+  the `ukvsockdev` warning answered upstream of any lift that needed it.
+  `dev->id` is the state field (`__U16_MAX` ⇒ registered slot ⇒
+  `__U16_MAX`); the asymmetry gate sits on `discard`, which accepts only
+  `<!retired>` — a console's purpose IS registration, so
+  `new(); discard();` is not a program. Mirror proven by four BEHAVIOURAL
+  witnesses on the booted machine (`uk_console_get(id)` returning our
+  pointer; bytes through the mirrored `ops` into the capture trampoline;
+  `id` back to `U16_MAX`; a callback fired through the mirrored
+  `_cb_list`/lock). Subscriptions carry no obligation — the C frees them
+  in `console_async_release_cb` on unregister. One `UK_CRASH` left
+  standing (16-device capacity bound), named. 19 of 26 asserts retired,
+  per site; the use tors gate on `<live>` where the C is looser — stated,
+  not hidden.
 
 #### The rule that keeps the catalog from turning into an argument
 
