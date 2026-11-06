@@ -1,0 +1,463 @@
+// @korulang/unikraft-console — Unikraft's console registry (`ukconsole`), lifted.
+//
+//   import unikraft/console
+//
+// WHAT THIS IS. `lib/ukconsole` is Unikraft's console registry: drivers hand it
+// a `struct uk_console` whose `ops` are the driver's own functions, and the
+// kernel's print/input paths route through whatever is registered. This lift is
+// PROVIDER-SIDE — the Koru program IS the console driver. The handle that flows
+// through the ratchet is a device whose `out`/`in`/`emerg_out` trampolines are
+// functions in this module, called BY the C.
+//
+// THE MACHINE THE C WRITES DOWN. `struct uk_console.id` is the state field:
+// `__U16_MAX` while unregistered, a small slot id once `uk_console_register`
+// assigns one, `__U16_MAX` again after `uk_console_unregister` — and the C
+// asserts it: `unregister` guards `dev->id < UK_CONSOLE_MAX_DEVS`
+// (console.c:388), so calling unregister on a device that was never registered
+// is an assert violation, and `register` debug-asserts the device is not
+// already on the list (console.c:292). Both vanish at
+// `-DCONFIG_LIBUKDEBUG_ENABLE_ASSERT=n`, which is the config this lift builds.
+//
+// THE RATCHET. One device handle, three states, plus the named escapes:
+//
+//     new / new.async   mints <idle!>          (mirror init — no C call)
+//     register          needs <!idle|!retired>  mints <live!>     uk_console_register
+//     write/read/emerg  need <!live>  mint <live!>          *_direct calls
+//     subscribe/pump    need <!live>  mint <live!>          async callback family
+//     unsubscribe       need <!live>  mint <live!>          async_unregister_callback
+//     unregister        needs <!live>           mints <retired!>  uk_console_unregister
+//     discard           needs <!retired>                      free
+//     abandon           needs <!idle>                         free — NAMED ESCAPE
+//     forget            needs <!stuck>                        free — refused-register arm
+//
+// THE ASYMMETRY (pillar 4) SITS ON `discard`. A console device's purpose IS
+// being registered — there is no "acquire, use, release" use-phase to gate on,
+// because registration is the use. So `discard` accepts ONLY <!retired>: a
+// device that was live once and came back down. `new(); discard();` is not a
+// program you can write, and the deliberate drop is the greppable
+// `console:abandon` — "did we build console devices we never registered" is a
+// search, not an audit. `unregister` re-mints <retired!>, not <idle!>, so a
+// device that served and was taken down is freeable; `register` also accepts
+// <!retired> because the C's cycle is genuinely register ⇄ unregister (id
+// returns to __U16_MAX and re-registration is legal).
+//
+// THE USE TORS GATE ON <live>. The C's `*_direct` asserts only
+// `dev && dev->ops` — technically callable on an unregistered device — but the
+// callers of the direct path are the framework and the driver while the device
+// IS registered; I/O outside registration is not a pattern the library exists
+// for. `write`, `read`, `emerg`, `subscribe`, `unsubscribe` and `pump` consume
+// and remint `<live!>`, which keeps the obligation linear — one owner, one
+// exit through `unregister`.
+//
+// SUBSCRIPTIONS CARRY NO OBLIGATION, DELIBERATELY. The callback registry is a
+// resource the C ITSELF tracks: `uk_console_unregister` frees every pending
+// callback through `console_async_release_cb` (console.c:367), so nothing a
+// caller can do leaks. `subscribe` returns no handle — the (handler, cookie,
+// event) triple is the identity the C dedups on — and `unsubscribe`'s -ENOENT
+// is a real branch, not a state. There is nothing for a phantom to say here
+// that the C does not already enforce.
+//
+// FORK-ONLY SURFACE. `uk_console_unregister` and the whole async family
+// (`async_register_callback`, `async_unregister_callback`, `async_in_handle`,
+// `async_out_handle`) exist only in the korulang unikraft fork at 3fdffba8 —
+// against upstream `stable` (0.21.0) `exportsyms.uk` has 7 lines and this
+// lift's ratchet would have no `unregister`. The Kraftfile pins `source:` to
+// the fork; that requirement is a load-bearing fact about this module.
+//
+// THE MIRROR, AND HOW IT IS PROVED. `uk_console_init`/`uk_console_async_init`
+// are `static inline` — NO-symbol, so `new` re-emits them over a mirrored
+// `struct uk_console_async` (the superset; `cons` is its first member, so a
+// `uk_console *` we hand the C is always containerof-safe). The offsets are
+// proven by BEHAVIOUR, not by transcription-faith:
+//
+//   W1  `register` reads `dev->id` through the mirror and requires it to have
+//       become a real slot (< CONFIG_LIBUKCONSOLE_DEVICES_MAXCOUNT, probed),
+//       then calls the EXPORTED `uk_console_get(id)` and requires it to return
+//       our device pointer — the list link, the id field AND the flag
+//       auto-assignment path all had to be right for that lookup to find us.
+//   W2  `write` routes through `ops->out` — the mirror's ops pointer — and the
+//       bytes land in this module's capture trampoline. A wrong `ops` offset
+//       is a wild indirect call, not a silent miss.
+//   W3  `unregister` requires `dev->id == __U16_MAX` through the mirror
+//       afterwards — the second value-witness at a DIFFERENT value than W1.
+//   W4  `pump` dispatches through `_cb_list` and `_cb_list_lock` in
+//       `struct uk_console_async`'s tail — a subscribed counter increments, so
+//       the list head and lock offsets are exercised end to end.
+//
+// `struct uk_console_ops` is wholly ours — we author it, the C only reads it.
+
+// ============================================================================
+// UNIKRAFT C ABI — lib/ukconsole/exportsyms.uk, fork 3fdffba8 (17 lines).
+// The seven stable-0.21.0 lines are the first seven below; the remaining ten
+// are fork-only and are why the image must build against `source:`.
+// ============================================================================
+
+const UkConsole = extern struct { // lib/ukconsole/include/uk/console/driver.h:57
+    id: u16, // 0  — the state field: U16_MAX idle, < MAXDEVS live
+    _pad: [6]u8, // 2
+    ops: ?*const ConsoleOps, // 8
+    name: ?[*:0]const u8, // 16
+    flags: c_int, // 24
+    dclass: c_int, // 28
+    list: ListHead, // 32
+    // --- struct uk_console_async tail (:67) — always allocated, so the
+    // containerof in the async family is valid for every device this lift
+    // makes, sync-flagged or not.
+    cb_list: ListHead, // 48
+    cb_lock: i32, // 64 — uk_spinlock = { volatile int lock }
+};
+
+const ListHead = extern struct { // include/uk/list.h:51
+    next: ?*ListHead,
+    prev: ?*ListHead,
+};
+
+const ConsoleOps = extern struct { // driver.h:44
+    out: ?*const fn (*UkConsole, [*]const u8, usize) callconv(.c) isize,
+    in: ?*const fn (*UkConsole, [*]u8, usize) callconv(.c) isize,
+    emerg_out: ?*const fn (*UkConsole, [*]const u8, usize) callconv(.c) isize,
+};
+
+comptime {
+    if (@sizeOf(ListHead) != 16) @compileError("uk_list_head changed size");
+    if (@sizeOf(ConsoleOps) != 24) @compileError("uk_console_ops changed size");
+    if (@offsetOf(UkConsole, "ops") != 8) @compileError("uk_console.ops moved");
+    if (@offsetOf(UkConsole, "name") != 16) @compileError("uk_console.name moved");
+    if (@offsetOf(UkConsole, "flags") != 24) @compileError("uk_console.flags moved");
+    if (@offsetOf(UkConsole, "dclass") != 28) @compileError("uk_console.dclass moved");
+    if (@offsetOf(UkConsole, "list") != 32) @compileError("uk_console._list moved");
+    if (@offsetOf(UkConsole, "cb_list") != 48) @compileError("uk_console_async._cb_list moved");
+    if (@offsetOf(UkConsole, "cb_lock") != 64) @compileError("uk_console_async._cb_list_lock moved");
+    if (@sizeOf(UkConsole) != 72) @compileError("uk_console_async changed size");
+}
+
+extern fn uk_console_count() u16;
+extern fn uk_console_get(id: u16) ?*UkConsole;
+extern fn uk_console_register(dev: *UkConsole) void;
+extern fn uk_console_unregister(dev: *UkConsole) void;
+extern fn uk_console_out_direct(dev: *UkConsole, buf: [*]const u8, len: usize) isize;
+extern fn uk_console_in_direct(dev: *UkConsole, buf: [*]u8, len: usize) isize;
+extern fn uk_console_emerg_out_direct(dev: *UkConsole, buf: [*]const u8, len: usize) isize;
+extern fn uk_console_async_register_callback(
+    dev: *UkConsole,
+    handler: *const fn (*UkConsole, ?*anyopaque) callconv(.c) void,
+    cookie: ?*anyopaque,
+    event: u32,
+) c_int;
+extern fn uk_console_async_unregister_callback(
+    dev: *UkConsole,
+    handler: *const fn (*UkConsole, ?*anyopaque) callconv(.c) void,
+    cookie: ?*anyopaque,
+    event: u32,
+) c_int;
+extern fn uk_console_async_in_handle(dev: *UkConsole) void;
+extern fn uk_console_async_out_handle(dev: *UkConsole) void;
+
+extern var _uk_alloc_head: ?*anyopaque;
+extern fn malloc(n: usize) ?*anyopaque;
+extern fn free(p: ?*anyopaque) void;
+
+// Flag + event + errno constants (driver.h:50-54, console.h:205-207).
+const FLAG_STDOUT: c_int = 1;
+const FLAG_STDIN: c_int = 2;
+const FLAG_EMERG: c_int = 4;
+const FLAG_ASYNC_TX: c_int = 8;
+const FLAG_ASYNC_RX: c_int = 16;
+const EV_IN: u32 = 1;
+const EV_OUT: u32 = 2;
+const DCLASS_UART: c_int = 2; // enum uk_console_devclass, driver.h:27
+const ID_UNSET: u16 = 0xffff;
+const MAXDEVS: u16 = 16; // CONFIG_LIBUKCONSOLE_DEVICES_MAXCOUNT default
+const CAP: usize = 4096;
+const NAME_CAP: usize = 32;
+
+// ============================================================================
+// THE DEVICE — our backing struct, with the mirrored console FIRST so a
+// `*UkConsole` handed to the C is a `*Device` by address.
+// ============================================================================
+
+const Device = struct {
+    cons: UkConsole, // 0 — the mirrored uk_console_async
+    events_in: u32,
+    events_out: u32,
+    cap_len: usize,
+    cap: [CAP]u8,
+    name_buf: [NAME_CAP]u8,
+};
+
+// The ops table every device this lift makes points at. `out`/`emerg_out`
+// capture into the device's ring so `drain` can hand the bytes back; `in` is
+// absent (NULL) — `uk_console_in_direct` refuses -EIO on it, which is the
+// C's own real branch for a device with no input path.
+var cap_ops = ConsoleOps{
+    .out = capOut,
+    .in = null,
+    .emerg_out = capOut,
+};
+
+fn capOut(dev: *UkConsole, buf: [*]const u8, len: usize) callconv(.c) isize {
+    const d: *Device = @ptrCast(@alignCast(dev));
+    const room = CAP - d.cap_len;
+    const n = if (len < room) len else room;
+    for (0..n) |i| d.cap[d.cap_len + i] = buf[i];
+    d.cap_len += n;
+    return @intCast(n);
+}
+
+fn onEventIn(dev: *UkConsole, cookie: ?*anyopaque) callconv(.c) void {
+    _ = dev;
+    const d: *Device = @ptrCast(@alignCast(cookie orelse return));
+    d.events_in += 1;
+}
+
+fn onEventOut(dev: *UkConsole, cookie: ?*anyopaque) callconv(.c) void {
+    _ = dev;
+    const d: *Device = @ptrCast(@alignCast(cookie orelse return));
+    d.events_out += 1;
+}
+
+fn initCons(d: *Device, name: []const u8, flags: c_int) void {
+    const n = if (name.len < NAME_CAP - 1) name.len else NAME_CAP - 1;
+    for (0..n) |i| d.name_buf[i] = name[i];
+    d.name_buf[n] = 0;
+    d.cons.id = ID_UNSET;
+    d.cons.ops = &cap_ops;
+    d.cons.name = @ptrCast(&d.name_buf);
+    d.cons.flags = flags;
+    d.cons.dclass = DCLASS_UART;
+    // UK_INIT_LIST_HEAD — self-link both heads (init mirror).
+    d.cons.list.next = &d.cons.list;
+    d.cons.list.prev = &d.cons.list;
+    d.cons.cb_list.next = &d.cons.cb_list;
+    d.cons.cb_list.prev = &d.cons.cb_list;
+    d.cons.cb_lock = 0;
+    d.cap_len = 0;
+    d.events_in = 0;
+    d.events_out = 0;
+}
+
+fn allocDevice(name: []const u8, flags: c_int) ?*Device {
+    const mem = malloc(@sizeOf(Device)) orelse return null;
+    const d: *Device = @ptrCast(@alignCast(mem));
+    initCons(d, name, flags);
+    return d;
+}
+
+// ============================================================================
+// QUERIES — no obligation.
+// ============================================================================
+
+~pub tor count { } -> u32
+
+~proc count|zig {
+    return @intCast(uk_console_count());
+}
+
+// ============================================================================
+// ACQUIRE — mints <idle!>.
+// ============================================================================
+
+// Allocate and mirror-init a console device. The ops table is this module's:
+// `out`/`emerg_out` capture into the device's ring (drain reads it back),
+// `in` is absent by construction — the C's own -EIO branch, not a state.
+~pub tor new { name: string }
+| ok *Device<idle!>
+| refused string
+
+~proc new|zig {
+    const d = allocDevice(name, 0) orelse {
+        return .{ .refused = "out of memory allocating the console device" };
+    };
+    return .{ .ok = d };
+}
+
+// Same device with UK_CONSOLE_FLAG_ASYNC_RX|TX set — the flags
+// `uk_console_async_init` asserts on (driver.h:121, retired: the flags are set
+// by construction here) and the flags `subscribe`/`pump` require at run time.
+~pub tor new.async { name: string }
+| ok *Device<idle!>
+| refused string
+
+~proc new.async|zig {
+    const d = allocDevice(name, FLAG_ASYNC_TX | FLAG_ASYNC_RX) orelse {
+        return .{ .refused = "out of memory allocating the console device" };
+    };
+    return .{ .ok = d };
+}
+
+// ============================================================================
+// LIFECYCLE
+// ============================================================================
+
+// uk_console_register. Retires console.c:286-287 (dev && dev->ops — both are
+// by-construction here), console.c:292 (double-register — a debug build check
+// the release build deletes; <live> cannot reach this tor), and is the ONLY
+// mint of <live!>.
+//
+// W1 runs here: the mirrored `id` must have become a real slot AND the
+// exported `uk_console_get` must return this device for it. That one lookup
+// exercises the id field, the _list link and the registry's own indexing.
+~pub tor register { dev: *Device<!idle|!retired> }
+| ok { dev: *Device<live!>, id: u32 }
+| refused { dev: *Device<stuck!>, reason: string }
+
+~proc register|zig {
+    uk_console_register(d_cons(dev));
+    if (d_cons(dev).id >= MAXDEVS) {
+        return .{ .refused = .{ .dev = dev, .reason = "mirror witness W1: dev->id did not become a real slot after uk_console_register" } };
+    }
+    const got = uk_console_get(d_cons(dev).id) orelse {
+        return .{ .refused = .{ .dev = dev, .reason = "mirror witness W1: uk_console_get returned NULL for the assigned slot" } };
+    };
+    if (got != d_cons(dev)) {
+        return .{ .refused = .{ .dev = dev, .reason = "mirror witness W1: uk_console_get returned a different device for our slot" } };
+    }
+    return .{ .ok = .{ .dev = dev, .id = @intCast(d_cons(dev).id) } };
+}
+
+// uk_console_unregister. Retires console.c:387-388 — the C's own ordering
+// rule (`dev->id < UK_CONSOLE_MAX_DEVS`, i.e. "must be registered") — because
+// only <!live> reaches this tor, and <live!> exists only after `register`'s
+// witness passed. Mints <retired!>, not <idle!>: the device served.
+//
+// W3 runs here: id must read back __U16_MAX through the mirror — a different
+// value than W1's live slot, so the offset can't agree by accident.
+~pub tor unregister { dev: *Device<!live> }
+| ok *Device<retired!>
+| refused { dev: *Device<stuck!>, reason: string }
+
+~proc unregister|zig {
+    uk_console_unregister(d_cons(dev));
+    if (d_cons(dev).id != ID_UNSET) {
+        return .{ .refused = .{ .dev = dev, .reason = "mirror witness W3: dev->id did not return to __U16_MAX after uk_console_unregister" } };
+    }
+    return .{ .ok = dev };
+}
+
+// ============================================================================
+// USE — borrows; the C imposes no registration rule on the direct path.
+// ============================================================================
+
+// uk_console_out_direct. Bytes route through ops->out into the capture ring —
+// W2: a wrong ops offset is a wild call, not a silent miss.
+~pub tor write { dev: *Device<!live>, text: string }
+| ok { dev: *Device<live!>, written: u32 }
+| err { dev: *Device<live!>, errno: i32 }
+
+~proc write|zig {
+    const rc = uk_console_out_direct(d_cons(dev), text.ptr, text.len);
+    if (rc < 0) return .{ .err = .{ .dev = dev, .errno = @intCast(rc) } };
+    return .{ .ok = .{ .dev = dev, .written = @intCast(rc) } };
+}
+
+// uk_console_emerg_out_direct — the ISR-safe variant, same capture.
+~pub tor emerg { dev: *Device<!live>, text: string }
+| ok { dev: *Device<live!>, written: u32 }
+| err { dev: *Device<live!>, errno: i32 }
+
+~proc emerg|zig {
+    const rc = uk_console_emerg_out_direct(d_cons(dev), text.ptr, text.len);
+    if (rc < 0) return .{ .err = .{ .dev = dev, .errno = @intCast(rc) } };
+    return .{ .ok = .{ .dev = dev, .written = @intCast(rc) } };
+}
+
+// uk_console_in_direct. `in` is NULL by construction, so the C answers -EIO
+// through its real branch — the refusal a caller gets for a write-only device.
+~pub tor read { dev: *Device<!live> }
+| ok { dev: *Device<live!>, data: string }
+| err { dev: *Device<live!>, errno: i32 }
+
+~proc read|zig {
+    var buf: [256]u8 = undefined;
+    const rc = uk_console_in_direct(d_cons(dev), @ptrCast(&buf), buf.len);
+    if (rc < 0) return .{ .err = .{ .dev = dev, .errno = @intCast(rc) } };
+    return .{ .ok = .{ .dev = dev, .data = buf[0..@intCast(rc)] } };
+}
+
+// The capture ring `out`/`emerg` fill.
+~pub tor drain { dev: *Device<!live> } -> { dev: *Device<live!>, data: string }
+
+~proc drain|zig {
+    const d: *Device = @ptrCast(@alignCast(d_cons(dev)));
+    const n = d.cap_len;
+    d.cap_len = 0;
+    return .{ .dev = dev, .data = d.cap[0..n] };
+}
+
+// ============================================================================
+// ASYNC CALLBACKS — fork-only symbols; no obligation (C tracks the registry).
+// ============================================================================
+
+// uk_console_async_register_callback with this module's event counter. -ENOTSUP
+// when the device lacks the ASYNC flag — a real branch, not a state.
+~pub tor subscribe { dev: *Device<!live>, event: u32 }
+| ok *Device<live!>
+| refused { dev: *Device<live!>, errno: i32 }
+
+~proc subscribe|zig {
+    const d: *Device = @ptrCast(@alignCast(d_cons(dev)));
+    const cb: *const fn (*UkConsole, ?*anyopaque) callconv(.c) void = if (event == EV_OUT) onEventOut else onEventIn;
+    const rc = uk_console_async_register_callback(d_cons(dev), cb, @ptrCast(d), event);
+    if (rc < 0) return .{ .refused = .{ .dev = dev, .errno = @intCast(rc) } };
+    return .{ .ok = dev };
+}
+
+// uk_console_async_unregister_callback — -ENOENT when the triple isn't found.
+~pub tor unsubscribe { dev: *Device<!live>, event: u32 }
+| ok *Device<live!>
+| missing { dev: *Device<live!>, errno: i32 }
+
+~proc unsubscribe|zig {
+    const d: *Device = @ptrCast(@alignCast(d_cons(dev)));
+    const cb: *const fn (*UkConsole, ?*anyopaque) callconv(.c) void = if (event == EV_OUT) onEventOut else onEventIn;
+    const rc = uk_console_async_unregister_callback(d_cons(dev), cb, @ptrCast(d), event);
+    if (rc < 0) return .{ .missing = .{ .dev = dev, .errno = @intCast(rc) } };
+    return .{ .ok = dev };
+}
+
+// uk_console_async_{in,out}_handle — the driver's IRQ-side dispatch. W4:
+// pending subscribers fire through the mirrored _cb_list and _cb_list_lock.
+~pub tor pump { dev: *Device<!live>, event: u32 } -> { dev: *Device<live!>, fired: u32 }
+
+~proc pump|zig {
+    const d: *Device = @ptrCast(@alignCast(d_cons(dev)));
+    if (event == EV_OUT) {
+        const before = d.events_out;
+        uk_console_async_out_handle(d_cons(dev));
+        return .{ .dev = dev, .fired = d.events_out - before };
+    }
+    const before = d.events_in;
+    uk_console_async_in_handle(d_cons(dev));
+    return .{ .dev = dev, .fired = d.events_in - before };
+}
+
+// ============================================================================
+// RELEASE — the asymmetry gate and the named escapes.
+// ============================================================================
+
+// Free a device that WAS live. `discard` accepts only <!retired> — a console's
+// purpose is registration, so `new(); discard();` is not a program.
+~pub tor discard { dev: *Device<!retired> }
+
+~proc discard|zig {
+    free(@ptrCast(dev));
+}
+
+// NAMED ESCAPE — drop a device that was never registered. Greppable, so
+// "did we build console devices we never registered" is a search.
+~pub tor abandon { dev: *Device<!idle> }
+
+~proc abandon|zig {
+    free(@ptrCast(dev));
+}
+
+// Release for the refused-register arm.
+~pub tor forget { dev: *Device<!stuck> }
+
+~proc forget|zig {
+    free(@ptrCast(dev));
+}
+
+fn d_cons(d: *Device) *UkConsole {
+    return &d.cons;
+}
