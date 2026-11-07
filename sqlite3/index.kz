@@ -41,6 +41,15 @@ pub const Connection = struct {
     // wrapper. Only `open.pooled` sets it: check-in keys the idle map by
     // it. "" on a plain `open` connection.
     path: []const u8 = "",
+    // Set while a pass-scoped batch holds BEGIN on this connection —
+    // batch.commit clears it. Only meaningful on pooled conns.
+    batch_tx: bool = false,
+    // Prepared once per conn — BEGIN/COMMIT/ROLLBACK run every dispatch
+    // pass, so they must not pay sqlite3_exec's parse+alloc each time.
+    batch_stmts: ?struct { begin: ?*c.sqlite3_stmt, commit: ?*c.sqlite3_stmt, rollback: ?*c.sqlite3_stmt } = null,
+    // sqlite3_total_changes snapshot at BEGIN — batch.commit compares to
+    // decide COMMIT vs cheap ROLLBACK on write-free passes.
+    batch_changes: i64 = 0,
 };
 
 pub const Statement = struct {
@@ -133,6 +142,11 @@ Afterwards the token names nothing — passing it to another verb is refused.
             _ = c.sqlite3_finalize(e.value_ptr.*.?);
         }
         conn.stmt_cache.deinit(std.heap.page_allocator);
+        if (conn.batch_stmts) |*bs| {
+            if (bs.begin) |s| _ = c.sqlite3_finalize(s);
+            if (bs.commit) |s| _ = c.sqlite3_finalize(s);
+            if (bs.rollback) |s| _ = c.sqlite3_finalize(s);
+        }
         _ = c.sqlite3_close(h);
     }
     if (conn.path.len > 0) std.heap.page_allocator.free(conn.path);
@@ -210,10 +224,124 @@ threadlocal var pool: std.StringHashMapUnmanaged(*Connection) = .{};
             _ = c.sqlite3_finalize(e.value_ptr.*.?);
         }
         conn.stmt_cache.deinit(std.heap.page_allocator);
+        if (conn.batch_stmts) |*bs| {
+            if (bs.begin) |s| _ = c.sqlite3_finalize(s);
+            if (bs.commit) |s| _ = c.sqlite3_finalize(s);
+            if (bs.rollback) |s| _ = c.sqlite3_finalize(s);
+        }
         _ = c.sqlite3_close(h);
     }
     if (conn.path.len > 0) std.heap.page_allocator.free(conn.path);
     std.heap.page_allocator.destroy(conn);
+}
+
+// ============================================================================
+// Pass-scoped batch — one transaction per dispatch pass
+// ============================================================================
+// A pump's pass arms call batch.begin before a pass drains its completions
+// and batch.commit after; every idle pooled connection BEGINs once and
+// COMMITs once, so a pass's writes share a single commit instead of paying
+// one per request. A conn checked out mid-pass is absent from the idle map
+// and simply isn't batched — its statements autocommit as before, which is
+// honest degradation, never wrong batching. The bracket is per-thread: the
+// pool itself is threadlocal, so begin/commit always meet on one thread.
+//
+// `batch.committed` reports whether the last batch.commit actually
+// COMMITted a write — a read-only pass ROLLBACKs its pooled txs and leaves
+// the db version untouched. Pass brackets compose
+// `batch.commit() |> batch.committed()` to learn whether a committed write
+// must invalidate downstream snapshots. Threadlocal like the pool: the
+// commit→committed pair always runs on one thread.
+threadlocal var batch_wrote: bool = false;
+
+~pub tor batch.begin {}
+~proc batch.begin|zig {
+    var it = pool.valueIterator();
+    while (it.next()) |e| {
+        const conn = e.*;
+        const h = conn.handle orelse continue;
+        if (conn.batch_tx) continue;
+        const st = batchStmt(conn, h, .begin) orelse continue;
+        _ = c.sqlite3_reset(st);
+        _ = c.sqlite3_clear_bindings(st);
+        if (c.sqlite3_step(st) == c.SQLITE_DONE) {
+            conn.batch_tx = true;
+            conn.batch_changes = c.sqlite3_total_changes(h);
+        } else {
+            std.debug.print("sqlite3: batch begin refused\n", .{});
+        }
+    }
+}
+
+~pub tor batch.commit {}
+~proc batch.commit|zig {
+    var any_wrote = false;
+    var it = pool.valueIterator();
+    while (it.next()) |e| {
+        const conn = e.*;
+        const h = conn.handle orelse continue;
+        const changes = c.sqlite3_total_changes(h);
+        if (!conn.batch_tx) {
+            // Parked mid-pass without this pass's BEGIN — a conn opened
+            // during the pass autocommits its writes, so the batch COMMIT
+            // never sees them. total_changes still betrays the write:
+            // report it once, then re-baseline so later passes stay quiet.
+            if (changes != conn.batch_changes) {
+                any_wrote = true;
+                conn.batch_changes = changes;
+            }
+            continue;
+        }
+        conn.batch_tx = false;
+        // A pass that only read owes no fsync: total_changes flat means the
+        // tx holds no writes, so ROLLBACK releases it as cheaply as COMMIT
+        // would have — and a real COMMIT still pays its fsync only when
+        // there is something to make durable.
+        const wrote = changes != conn.batch_changes;
+        conn.batch_changes = changes;
+        const kind: BatchKind = if (wrote) .commit else .rollback;
+        const st = batchStmt(conn, h, kind) orelse continue;
+        _ = c.sqlite3_reset(st);
+        _ = c.sqlite3_clear_bindings(st);
+        if (c.sqlite3_step(st) != c.SQLITE_DONE) {
+            std.debug.print("sqlite3: batch {s} failed\n", .{@tagName(kind)});
+        } else if (wrote) {
+            any_wrote = true;
+        }
+    }
+    batch_wrote = any_wrote;
+}
+
+// Whether the last batch.commit COMMITted at least one write. Read it in
+// the same pass bracket, right after commit — the flag is rewritten on
+// every commit call, so a stale true cannot leak into a later pass.
+~pub tor batch.committed {} -> bool
+~proc batch.committed|zig {
+    return batch_wrote;
+}
+
+const BatchKind = enum { begin, commit, rollback };
+
+fn batchStmt(conn: *Connection, h: *c.sqlite3, kind: BatchKind) ?*c.sqlite3_stmt {
+    const sql: [:0]const u8 = switch (kind) {
+        .begin => "BEGIN",
+        .commit => "COMMIT",
+        .rollback => "ROLLBACK",
+    };
+    if (conn.batch_stmts == null) {
+        conn.batch_stmts = .{ .begin = null, .commit = null, .rollback = null };
+    }
+    const slot = switch (kind) {
+        .begin => &conn.batch_stmts.?.begin,
+        .commit => &conn.batch_stmts.?.commit,
+        .rollback => &conn.batch_stmts.?.rollback,
+    };
+    if (slot.* == null) {
+        var st: ?*c.sqlite3_stmt = null;
+        if (c.sqlite3_prepare_v2(h, sql.ptr, -1, &st, null) != c.SQLITE_OK) return null;
+        slot.* = st;
+    }
+    return slot.*;
 }
 
 // ============================================================================
