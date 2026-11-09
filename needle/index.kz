@@ -39,6 +39,8 @@
 const std = @import("std");
 
 extern fn needle_load(data: ?*const anyopaque, len: u64) c_int;
+extern fn needle_init(system: ?[*:0]const u8, tools: ?[*:0]const u8, index: ?[*:0]const u8) c_int;
+extern fn needle_complete(text: ?[*:0]const u8, samples: ?[*]const f32, count: c_int, max_tokens: c_int, out: [*]u8, out_cap: c_int) c_int;
 extern fn needle_transcribe(samples: [*]const f32, count: c_int, language: ?[*:0]const u8, keywords: ?[*:0]const u8, word_timestamps: c_int, out: [*]u8, out_cap: c_int) c_int;
 extern fn needle_stream_transcribe_process(samples: [*]const f32, count: c_int, language: ?[*:0]const u8, keywords: ?[*:0]const u8, out: [*]u8, out_cap: c_int) c_int;
 extern fn needle_stream_transcribe_stop(out: [*]u8, out_cap: c_int) c_int;
@@ -129,6 +131,60 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
     koru_allocator().free(eng.weights);
     if (eng.keywords_buf) |kb| koru_allocator().free(kb);
     std.heap.page_allocator.destroy(eng);
+}
+
+// ============================================================================
+// Needle 3 turns — init/complete (tool-calling and extraction, gen >= 3)
+// ============================================================================
+
+// Prime the loaded engine for Needle 3 turns: `system` is the static
+// prefix text, `tools` a JSON array of tool schemas. Call once after
+// load, before complete. `ok` carries the prefix token count.
+~pub tor prime { eng: *Engine<ready>, system: string, tools: string }
+| ok i64
+| err string
+
+~proc prime|zig {
+    _ = eng;
+    const scap = system.len + 1;
+    const sb = koru_allocator().alloc(u8, scap) catch @panic("needle: OOM");
+    defer koru_allocator().free(sb);
+    @memcpy(sb[0..system.len], system);
+    sb[system.len] = 0;
+    const tcap = tools.len + 1;
+    const tb = koru_allocator().alloc(u8, tcap) catch @panic("needle: OOM");
+    defer koru_allocator().free(tb);
+    @memcpy(tb[0..tools.len], tools);
+    tb[tools.len] = 0;
+    const sp: ?[*:0]const u8 = @ptrCast(sb[0..system.len :0].ptr);
+    const tp: ?[*:0]const u8 = @ptrCast(tb[0..tools.len :0].ptr);
+    const rc = needle_init(sp, tp, null);
+    if (rc < 0) return .{ .err = lastError() };
+    return .{ .ok = rc };
+}
+
+// One Needle 3 turn on text: returns the engine's JSON response verbatim
+// (tool calls / extraction fields). `max_tokens` caps the decode.
+~pub tor complete { eng: *Engine<ready>, text: string, max_tokens: i64 }
+| ok string<std/io:allocated!>
+| err string
+
+~proc complete|zig {
+    _ = eng;
+    const tb = koru_allocator().alloc(u8, text.len + 1) catch @panic("needle: OOM");
+    defer koru_allocator().free(tb);
+    @memcpy(tb[0..text.len], text);
+    tb[text.len] = 0;
+    const tp: ?[*:0]const u8 = @ptrCast(tb[0..text.len :0].ptr);
+    const out = koru_allocator().alloc(u8, 65536) catch @panic("needle: OOM");
+    defer koru_allocator().free(out);
+    const rc = needle_complete(tp, null, 0, @intCast(max_tokens), out.ptr, @intCast(out.len));
+    if (rc < 0) {
+        const used = std.mem.indexOfScalar(u8, out, 0) orelse out.len;
+        return .{ .err = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
+    }
+    const used = std.mem.indexOfScalar(u8, out, 0) orelse out.len;
+    return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
 }
 
 // ============================================================================
