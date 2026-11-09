@@ -47,9 +47,13 @@ extern fn needle_reset() void;
 
 // The loaded engine. `weights` stays referenced for the token's life — the
 // ABI gives no indication the load copies, so freeing the source bytes early
-// is an assumption nobody should make.
+// is an assumption nobody should make. `keywords` is the normalized,
+// sentinel-terminated bias list the C ABI takes per call; `keywords_buf`
+// owns its bytes for unload.
 pub const Engine = struct {
     weights: []const u8,
+    keywords: ?[:0]const u8,
+    keywords_buf: ?[]u8,
 };
 
 const SAMPLE_RATE = 16000;
@@ -74,7 +78,11 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
 // ============================================================================
 
 // Load model weights from a .cact archive — mints the engine token.
-~pub tor load { path: string }
+// `keywords` is an optional path to a bias-word file (one term per line,
+// commas tolerated): the engine normalizes it once and every transcribe
+// call inherits it — Whistle's keyword biasing, ~75% B-WER cut on listed
+// terms. Empty string loads without a bias list.
+~pub tor load { path: string, keywords: string }
 | ready *Engine<ready!>
 | err string
 
@@ -86,8 +94,30 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
         koru_allocator().free(data);
         return .{ .err = lastError() };
     }
+    var kw_z: ?[:0]const u8 = null;
+    var kw_buf: ?[]u8 = null;
+    if (keywords.len > 0) {
+        const raw = std.fs.cwd().readFileAlloc(koru_allocator(), keywords, 1 << 20) catch {
+            koru_allocator().free(data);
+            needle_reset();
+            return .{ .err = "needle: cannot read keywords file" };
+        };
+        var list = std.ArrayList(u8){};
+        var it = std.mem.splitAny(u8, raw, "\n,");
+        while (it.next()) |tok| {
+            const t = std.mem.trim(u8, tok, " \t\r");
+            if (t.len == 0) continue;
+            if (list.items.len > 0) list.append(koru_allocator(), '\n') catch @panic("needle: OOM");
+            list.appendSlice(koru_allocator(), t) catch @panic("needle: OOM");
+        }
+        list.append(koru_allocator(), 0) catch @panic("needle: OOM");
+        const buf = list.toOwnedSlice(koru_allocator()) catch @panic("needle: OOM");
+        kw_z = buf[0 .. buf.len - 1 : 0];
+        kw_buf = buf;
+        koru_allocator().free(raw);
+    }
     const eng = std.heap.page_allocator.create(Engine) catch @panic("needle: OOM");
-    eng.* = .{ .weights = data };
+    eng.* = .{ .weights = data, .keywords = kw_z, .keywords_buf = kw_buf };
     return .{ .ready = eng };
 }
 
@@ -97,6 +127,7 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
 ~proc unload|zig {
     needle_reset();
     koru_allocator().free(eng.weights);
+    if (eng.keywords_buf) |kb| koru_allocator().free(kb);
     std.heap.page_allocator.destroy(eng);
 }
 
@@ -113,7 +144,6 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
 | err string
 
 ~proc transcribe|zig {
-    _ = eng;
     const n = pcm.len / @sizeOf(f32);
     if (n == 0) return .{ .err = "needle: empty pcm" };
     const samples = koru_allocator().alloc(f32, n) catch @panic("needle: OOM");
@@ -123,7 +153,8 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
     const out_cap = n / SAMPLE_RATE * OUT_BYTES_PER_SECOND + OUT_BYTES_PER_SECOND;
     const out = koru_allocator().alloc(u8, out_cap) catch @panic("needle: OOM");
     defer koru_allocator().free(out);
-    const rc = needle_transcribe(samples.ptr, @intCast(n), langPtr(language, &lbuf), null, 0, out.ptr, @intCast(out_cap));
+    const kw: ?[*:0]const u8 = if (eng.keywords) |k| k.ptr else null;
+    const rc = needle_transcribe(samples.ptr, @intCast(n), langPtr(language, &lbuf), kw, 0, out.ptr, @intCast(out_cap));
     if (rc < 0) return .{ .err = lastError() };
     const used = std.mem.indexOfScalar(u8, out, 0) orelse out_cap;
     return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
@@ -136,7 +167,6 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
 | err string
 
 ~proc stream.process|zig {
-    _ = eng;
     const n = pcm.len / @sizeOf(f32);
     if (n == 0) return .{ .err = "needle: empty pcm" };
     const samples = koru_allocator().alloc(f32, n) catch @panic("needle: OOM");
@@ -145,7 +175,8 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
     var lbuf: [8]u8 = undefined;
     const out = koru_allocator().alloc(u8, n / SAMPLE_RATE * OUT_BYTES_PER_SECOND + OUT_BYTES_PER_SECOND) catch @panic("needle: OOM");
     defer koru_allocator().free(out);
-    const rc = needle_stream_transcribe_process(samples.ptr, @intCast(n), langPtr(language, &lbuf), null, out.ptr, @intCast(out.len));
+    const kw: ?[*:0]const u8 = if (eng.keywords) |k| k.ptr else null;
+    const rc = needle_stream_transcribe_process(samples.ptr, @intCast(n), langPtr(language, &lbuf), kw, out.ptr, @intCast(out.len));
     if (rc < 0) return .{ .err = lastError() };
     const used = std.mem.indexOfScalar(u8, out, 0) orelse out.len;
     return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };

@@ -7,7 +7,7 @@
 import libs/needle
 import std/io
 
-libs/needle:load(path: "/Users/larsde/.cache/cactus-needle/whistle/2.0.0/whistle.cact")
+libs/needle:load(path: "/Users/larsde/.cache/cactus-needle/whistle/2.0.0/whistle.cact", keywords: "")
 | ready eng |> std/io:read-file(path: "/tmp/needle_probe.f32")
     | ok pcm |> libs/needle:transcribe(eng, pcm, language: "en")
         | ok json |> std/io:print.ln("transcribe: {{ json:s }}") |> std/io:free(content: json) |> libs/needle:unload(eng)
