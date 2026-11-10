@@ -1,0 +1,492 @@
+// @korulang/fly - Fly.io deployment DSL for Koru
+//
+// Declarative app configs collected at compile time; `koruc <file>.k fly`
+// commands emit fly.toml and drive flyctl. Orphan of the docker package's
+// shape: declarations live in the program, the command walks the AST.
+//
+// DECLARATIVE CONFIG — the body is a JSON object, the same shape
+// requires.system / command.declare already speak:
+//
+//   import koru/fly
+//
+//   koru/fly:config(app: "korulang-debug") {
+//       "region": "ams",
+//       "build": "--build=linux --release=fast",
+//       "http_service": {
+//           "internal_port": 3000,
+//           "force_https": true,
+//           "auto_stop_machines": "stop",
+//           "auto_start_machines": true,
+//           "min_machines_running": 0
+//       },
+//       "vm": [{ "size": "shared-cpu-1x", "memory": "256mb" }]
+//   }
+//
+// JSON objects emit as TOML tables ([http_service]), arrays of objects as
+// arrays of tables ([[vm]]), scalars as key/value. Reserved keys are consumed
+// by the command, not emitted: "region" → primary_region, "dockerfile" →
+// build's dockerfile, "build" (object) → the [build] table, "build" (string)
+// → koruc flags for the rebuild step, "app" → ignored (the argument owns it).
+//
+// Then: koruc main.k            (builds a.out)
+//       koruc main.k fly deploy (emits fly-<app>.toml, runs flyctl)
+//       koruc main.k fly config (emit only)
+
+~import std/deps
+~import std/compiler
+
+// System dependency: Fly CLI must be installed and authenticated
+~std/deps:requires.system {
+    "name": "flyctl",
+    "check": "flyctl version",
+    "brew": "flyctl",
+    "apt": "flyctl",
+    "dnf": "flyctl",
+    "pacman": "flyctl"
+}
+
+// ============================================================================
+// FLY COMMAND - emit config / deploy declared apps
+// ============================================================================
+
+~std/compiler:command.declare {
+    "name": "fly",
+    "description": "Deploy apps declared with fly:config to Fly.io"
+}
+
+~[comptime|command]pub tor fly {
+    program: *const Program,
+    allocator: __koru_std.mem.Allocator,
+    argv: []string,
+}
+
+const std = @import("std");
+
+const FlyConfig = struct {
+    app: []const u8,
+    json_src: []const u8,
+    toml_path: []const u8,
+};
+
+fn stripQuotes(s: []const u8) []const u8 {
+    if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') {
+        return s[1 .. s.len - 1];
+    }
+    return s;
+}
+
+fn argValue(args: anytype, name: []const u8) ?[]const u8 {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg.name, name)) return arg.value;
+    }
+    return null;
+}
+
+fn runChild(allocator: __koru_std.mem.Allocator, argv: []const []const u8) !std.process.Child.RunResult {
+    return std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = argv,
+    });
+}
+
+fn isReserved(key: []const u8) bool {
+    return std.mem.eql(u8, key, "app") or
+        std.mem.eql(u8, key, "region") or
+        std.mem.eql(u8, key, "build") or
+        std.mem.eql(u8, key, "dockerfile");
+}
+
+fn isScalar(v: std.json.Value) bool {
+    return switch (v) {
+        .null, .bool, .integer, .float, .number_string, .string => true,
+        else => false,
+    };
+}
+
+fn isScalarArray(v: std.json.Value) bool {
+    if (v != .array) return false;
+    for (v.array.items) |e| {
+        if (!isScalar(e)) return false;
+    }
+    return true;
+}
+
+fn writeTomlString(file: std.fs.File, s: []const u8) void {
+    file.writeAll("\"") catch {};
+    for (s) |c| {
+        switch (c) {
+            '"' => file.writeAll("\\\"") catch {},
+            '\\' => file.writeAll("\\\\") catch {},
+            '\n' => file.writeAll("\\n") catch {},
+            '\r' => file.writeAll("\\r") catch {},
+            '\t' => file.writeAll("\\t") catch {},
+            else => file.writeAll(&[_]u8{c}) catch {},
+        }
+    }
+    file.writeAll("\"") catch {};
+}
+
+fn writeTomlKey(file: std.fs.File, key: []const u8) void {
+    var bare = key.len > 0;
+    for (key) |c| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+            (c >= '0' and c <= '9') or c == '_' or c == '-';
+        if (!ok) bare = false;
+    }
+    if (bare) {
+        file.writeAll(key) catch {};
+    } else {
+        writeTomlString(file, key);
+    }
+}
+
+fn writeTomlScalar(file: std.fs.File, v: std.json.Value) void {
+    switch (v) {
+        .string => |s| writeTomlString(file, s),
+        .integer => |i| {
+            var buf: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{i}) catch return;
+            file.writeAll(s) catch {};
+        },
+        .float => |f| {
+            var buf: [64]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{f}) catch return;
+            file.writeAll(s) catch {};
+        },
+        .number_string => |s| file.writeAll(s) catch {},
+        .bool => |b| file.writeAll(if (b) "true" else "false") catch {},
+        else => {},
+    }
+}
+
+fn writeTomlArray(file: std.fs.File, elems: []const std.json.Value) void {
+    file.writeAll("[") catch {};
+    for (elems, 0..) |e, i| {
+        if (i > 0) file.writeAll(", ") catch {};
+        writeTomlScalar(file, e);
+    }
+    file.writeAll("]") catch {};
+}
+
+// Emit one table body's members: scalars and scalar-arrays first (TOML wants
+// every key=value before the first sub-table header), then [path.child]
+// objects, then [[path.child]] object arrays.
+fn emitObjectBody(
+    file: std.fs.File,
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    obj: std.json.ObjectMap,
+) void {
+    // pass 1: scalars + scalar arrays
+    var it = obj.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (v == .null) continue;
+        const scalarish = isScalar(v) or isScalarArray(v);
+        if (!scalarish) continue;
+        writeTomlKey(file, key);
+        file.writeAll(" = ") catch {};
+        if (v == .array) writeTomlArray(file, v.array.items) else writeTomlScalar(file, v);
+        file.writeAll("\n") catch {};
+    }
+    // pass 2: objects -> [path.key]
+    it = obj.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (v != .object) continue;
+        if (path.len > 0) {
+            file.writeAll("[") catch {};
+            file.writeAll(path) catch {};
+            file.writeAll(".") catch {};
+        } else {
+            file.writeAll("[") catch {};
+        }
+        writeTomlKey(file, key);
+        file.writeAll("]\n") catch {};
+        emitObjectBody(file, alloc, if (path.len > 0) std.fmt.allocPrint(alloc, "{s}.{s}", .{ path, key }) catch key else key, v.object);
+    }
+    // pass 3: arrays of objects -> [[path.key]]
+    it = obj.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (v != .array) continue;
+        var all_objects = v.array.items.len > 0;
+        for (v.array.items) |e| {
+            if (e != .object) all_objects = false;
+        }
+        if (!all_objects) continue;
+        const child_path = if (path.len > 0) std.fmt.allocPrint(alloc, "{s}.{s}", .{ path, key }) catch key else key;
+        for (v.array.items) |e| {
+            file.writeAll("[[") catch {};
+            file.writeAll(child_path) catch {};
+            file.writeAll("]]\n") catch {};
+            emitObjectBody(file, alloc, child_path, e.object);
+        }
+    }
+}
+
+fn emitConfigToml(file: std.fs.File, alloc: std.mem.Allocator, cfg: FlyConfig) bool {
+    // The Source block carries the inner text — "region": ... with no
+    // enclosing braces. Wrap it so it parses as one JSON object.
+    const inner = std.mem.trim(u8, cfg.json_src, " \t\r\n");
+    const json_text = if (inner.len > 0 and inner[0] != '{')
+        std.fmt.allocPrint(alloc, "{{{s}}}", .{inner}) catch return false
+    else
+        inner;
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, json_text, .{}) catch {
+        std.debug.print("  \x1b[31m✗\x1b[0m fly:config body is not valid JSON\n", .{});
+        return false;
+    };
+    if (parsed.value != .object) {
+        std.debug.print("  \x1b[31m✗\x1b[0m fly:config body must be a JSON object\n", .{});
+        return false;
+    }
+    const root = parsed.value.object;
+
+    // Reserved scalars
+    var region: []const u8 = "ams";
+    var dockerfile: []const u8 = "deploy/Dockerfile";
+    var build_obj: ?std.json.ObjectMap = null;
+    var it = root.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (std.mem.eql(u8, key, "region") and v == .string) region = v.string;
+        if (std.mem.eql(u8, key, "dockerfile") and v == .string) dockerfile = v.string;
+        if (std.mem.eql(u8, key, "build") and v == .object) build_obj = v.object;
+        // "build" as a string is koruc build flags — deploy metadata for the
+        // rebuild step, never fly.toml content. "build" as an object is the
+        // fly.toml [build] table.
+    }
+
+    file.writeAll("app = \"") catch {};
+    file.writeAll(cfg.app) catch {};
+    file.writeAll("\"\nprimary_region = \"") catch {};
+    file.writeAll(region) catch {};
+    file.writeAll("\"\n") catch {};
+
+    // Top-level scalars + scalar arrays (must precede any [table])
+    it = root.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (isReserved(key) or v == .null) continue;
+        const scalarish = isScalar(v) or isScalarArray(v);
+        if (!scalarish) continue;
+        writeTomlKey(file, key);
+        file.writeAll(" = ") catch {};
+        if (v == .array) writeTomlArray(file, v.array.items) else writeTomlScalar(file, v);
+        file.writeAll("\n") catch {};
+    }
+
+    // [build] table: dockerfile plus any members of a "build" object
+    file.writeAll("\n[build]\n") catch {};
+    file.writeAll("  dockerfile = \"") catch {};
+    file.writeAll(dockerfile) catch {};
+    file.writeAll("\"\n") catch {};
+    if (build_obj) |bo| {
+        var bit = bo.iterator();
+        while (bit.next()) |entry| {
+            const key = entry.key_ptr.*;
+            const v = entry.value_ptr.*;
+            if (v == .null or !isScalar(v)) continue;
+            file.writeAll("  ") catch {};
+            writeTomlKey(file, key);
+            file.writeAll(" = ") catch {};
+            writeTomlScalar(file, v);
+            file.writeAll("\n") catch {};
+        }
+    }
+
+    // Remaining members as sections — objects and object-arrays only;
+    // scalars were emitted above.
+    it = root.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const v = entry.value_ptr.*;
+        if (isReserved(key) or v == .null) continue;
+        const scalarish = isScalar(v) or isScalarArray(v);
+        if (scalarish) continue;
+        if (v == .object) {
+            file.writeAll("\n[") catch {};
+            file.writeAll(key) catch {};
+            file.writeAll("]\n") catch {};
+            emitObjectBody(file, alloc, key, v.object);
+        } else if (v == .array) {
+            var all_objects = v.array.items.len > 0;
+            for (v.array.items) |e| {
+                if (e != .object) all_objects = false;
+            }
+            if (!all_objects) continue;
+            for (v.array.items) |e| {
+                file.writeAll("\n[[") catch {};
+                writeTomlKey(file, key);
+                file.writeAll("]]\n") catch {};
+                emitObjectBody(file, alloc, key, e.object);
+            }
+        }
+    }
+    return true;
+}
+
+~proc fly|zig {
+    var subcommand: []const u8 = "deploy";
+    var passthrough = std.ArrayListUnmanaged([]const u8){};
+    defer passthrough.deinit(allocator);
+    if (argv.len > 0) {
+        subcommand = argv[0];
+        for (argv[1..]) |a| {
+            passthrough.append(allocator, a) catch {};
+        }
+    }
+
+    if (!std.mem.eql(u8, subcommand, "deploy") and
+        !std.mem.eql(u8, subcommand, "config") and
+        !std.mem.eql(u8, subcommand, "toml")) {
+        std.debug.print("Usage: koruc <file>.k fly deploy [flyctl args...]\n", .{});
+        std.debug.print("       koruc <file>.k fly config   (emit fly.toml only)\n", .{});
+        return;
+    }
+
+    // Collect fly:config declarations from the AST
+    var configs = std.ArrayListUnmanaged(FlyConfig){};
+    defer configs.deinit(allocator);
+
+    for (program.items) |item| {
+        if (item != .flow) continue;
+        const flow = item.flow;
+        const inv = flow.inv();
+        const path = inv.path;
+        var is_config = false;
+        const segs = path.segments;
+        if (segs.len == 1 and std.mem.eql(u8, segs[0], "config")) {
+            if (path.module_qualifier) |mq| {
+                is_config = std.mem.eql(u8, mq, "koru.fly") or
+                    std.mem.eql(u8, mq, "fly") or
+                    std.mem.eql(u8, mq, "koru/fly");
+            }
+        }
+        if (!is_config) continue;
+
+        // app: named arg, or the bare punning arg — `config(korulang-debug)`
+        // arrives as had_explicit_label=false with the expression text as its
+        // name. The Source body reports name="source", so it can't be picked.
+        var app = argValue(inv.args, "app");
+        if (app == null) {
+            for (inv.args) |a| {
+                if (!a.had_explicit_label and !std.mem.eql(u8, a.name, "source")) {
+                    app = a.value;
+                    break;
+                }
+            }
+        }
+        const app_s = app orelse {
+            std.debug.print("fly:config missing required arg 'app'\n", .{});
+            continue;
+        };
+        const json_src = argValue(inv.args, "source") orelse "";
+        if (json_src.len == 0) {
+            std.debug.print("fly:config requires a JSON object body\n", .{});
+            continue;
+        }
+
+        configs.append(allocator, .{
+            .app = stripQuotes(app_s),
+            .json_src = json_src,
+            .toml_path = "",
+        }) catch {
+            std.debug.print("Out of memory collecting fly:config\n", .{});
+            return;
+        };
+    }
+
+    if (configs.items.len == 0) {
+        std.debug.print("No fly:config declarations found.\n", .{});
+        std.debug.print("Use: koru/fly:config(app: \"myapp\") {{ \"region\": \"ams\", ... }}\n", .{});
+        return;
+    }
+
+    // Emit one fly-<app>.toml per declaration
+    for (configs.items) |*cfg| {
+        const toml_path = std.fmt.allocPrint(allocator, "fly-{s}.toml", .{cfg.app}) catch continue;
+        // intentionally not freed — cfg.toml_path carries it into the deploy pass
+
+        const file = std.fs.cwd().createFile(toml_path, .{}) catch |err| {
+            std.debug.print("  \x1b[31m✗\x1b[0m failed to create {s}: {}\n", .{ toml_path, err });
+            continue;
+        };
+        const ok = emitConfigToml(file, allocator, cfg.*);
+        file.close();
+        if (!ok) {
+            std.fs.cwd().deleteFile(toml_path) catch {};
+            allocator.free(toml_path);
+            continue;
+        }
+
+        std.debug.print("  \x1b[32m✓\x1b[0m wrote {s}\n", .{toml_path});
+        cfg.toml_path = toml_path;
+    }
+
+    if (std.mem.eql(u8, subcommand, "config") or std.mem.eql(u8, subcommand, "toml")) return;
+
+    // Deploy ships the artifact the tree produced — a.out must already exist.
+    // Building is `koruc <file>.k`'s job; the command replaces normal
+    // compilation, so it cannot recursively build itself.
+    std.fs.cwd().access("a.out", .{}) catch {
+        std.debug.print("  \x1b[31m✗\x1b[0m a.out not found — build first: koruc <file>.k\n", .{});
+        return;
+    };
+
+    for (configs.items) |cfg| {
+        if (cfg.toml_path.len == 0) continue;
+
+        var argv_buf = std.ArrayListUnmanaged([]const u8){};
+        defer argv_buf.deinit(allocator);
+        argv_buf.append(allocator, "fly") catch continue;
+        argv_buf.append(allocator, "deploy") catch continue;
+        argv_buf.append(allocator, "--config") catch continue;
+        argv_buf.append(allocator, cfg.toml_path) catch continue;
+        argv_buf.append(allocator, "--remote-only") catch continue;
+        for (passthrough.items) |a| argv_buf.append(allocator, a) catch {};
+
+        std.debug.print("  deploying {s}...\n", .{cfg.app});
+        const result = runChild(allocator, argv_buf.items) catch |err| {
+            std.debug.print("  \x1b[31m✗\x1b[0m fly deploy failed to start: {}\n", .{err});
+            continue;
+        };
+        defer allocator.free(result.stdout);
+        defer allocator.free(result.stderr);
+
+        if (result.stdout.len > 0) std.debug.print("{s}", .{result.stdout});
+        if (result.stderr.len > 0) std.debug.print("{s}", .{result.stderr});
+        const deploy_ok = std.meta.activeTag(result.term) == .Exited and
+            result.term.Exited == 0;
+        if (deploy_ok) {
+            std.debug.print("  \x1b[32m✓\x1b[0m deployed {s}\n", .{cfg.app});
+            // The emitted toml is a per-deploy artifact — the koru/fly:config
+            // declaration is the source of truth. On failure it stays on
+            // disk: it is the exact config flyctl rejected.
+            std.fs.cwd().deleteFile(cfg.toml_path) catch {};
+        } else {
+            std.debug.print("  \x1b[31m✗\x1b[0m fly deploy failed\n", .{});
+            std.debug.print("  (kept {s} for inspection)\n", .{cfg.toml_path});
+        }
+    }
+
+    for (configs.items) |cfg| {
+        if (cfg.toml_path.len > 0) allocator.free(cfg.toml_path);
+    }
+}
+
+// ============================================================================
+// Declarative Config (compile-time, collected by the fly command)
+// ============================================================================
+
+~[comptime|norun]pub tor config { app: Expression, source: Source }
+
+~proc config|zig {
+    // Void tor - collected during AST walking by the fly command
+}
