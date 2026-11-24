@@ -104,6 +104,7 @@ pub const Request = struct {
     prompt: string,
     system: ?string,
     max_tokens: ?i32,
+    url: ?string,
     allocator: ?std.mem.Allocator
 } -> *Request<built!>
 
@@ -125,7 +126,7 @@ pub const Request = struct {
     writeJsonEscaped(w, prompt) catch unreachable;
     w.writeAll("\"}]}") catch unreachable;
 
-    return makeRequest(alloc, "https://api.openai.com/v1/chat/completions", buf.toOwnedSlice(alloc) catch unreachable);
+    return makeRequest(alloc, url orelse "https://api.openai.com/v1/chat/completions", buf.toOwnedSlice(alloc) catch unreachable);
 }
 
 // Discharge the request's `built!` obligation. Frees the JSON body and the

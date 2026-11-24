@@ -196,6 +196,7 @@ pub const Header = struct {
     url: string,
     body: string,
     headers: []const Header,
+    timeout_ms: ?i32,
     allocator: ?std.mem.Allocator
 }
 | ok *Response<open!>
@@ -215,6 +216,9 @@ pub const Header = struct {
     _ = c.curl_easy_setopt(handle, c.CURLOPT_POST, @as(c_long, 1));
     _ = c.curl_easy_setopt(handle, c.CURLOPT_POSTFIELDS, body.ptr);
     _ = c.curl_easy_setopt(handle, c.CURLOPT_POSTFIELDSIZE, @as(c_long, @intCast(body.len)));
+    if (timeout_ms) |ms| {
+        _ = c.curl_easy_setopt(handle, c.CURLOPT_TIMEOUT_MS, @as(c_long, ms));
+    }
 
     // Build header list
     var header_list: ?*c.curl_slist = null;
