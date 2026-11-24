@@ -149,7 +149,7 @@ fn makeRequest(alloc: std.mem.Allocator, url: []const u8, body: []const u8) *Req
 // the caller still owes the `koru/curl:close`. They dupe every returned byte
 // out of the response body, so the result survives that close.
 
-~pub tor parse.anthropic { resp: *koru/curl:Response<koru/curl:open> }
+~pub tor parse.anthropic { resp: *koru/curl:Response<open> }
 | ok GenerateResult
 | err Error
 
@@ -185,7 +185,7 @@ fn makeRequest(alloc: std.mem.Allocator, url: []const u8, body: []const u8) *Req
     } };
 }
 
-~pub tor parse.openai { resp: *koru/curl:Response<koru/curl:open> }
+~pub tor parse.openai { resp: *koru/curl:Response<open> }
 | ok GenerateResult
 | err Error
 
