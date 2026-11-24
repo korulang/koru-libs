@@ -69,6 +69,16 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
     return @ptrCast(buf);
 }
 
+// keywords is arbitrary length (a vocabulary list) — allocate a sentinel
+// copy; caller frees after the FFI call. NULL keywords = engine default.
+fn kwPtr(allocator: std.mem.Allocator, keywords: ?[]const u8) ?[*:0]u8 {
+    const kw = keywords orelse return null;
+    if (kw.len == 0) return null;
+    const buf = allocator.allocSentinel(u8, kw.len, 0) catch return null;
+    @memcpy(buf[0..kw.len], kw);
+    return buf.ptr;
+}
+
 // ============================================================================
 // Lifecycle
 // ============================================================================
@@ -108,7 +118,7 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
 // tag ("en", "de", "fr", "es", "it", "nl", "pl") — empty string detects.
 // `pcm` takes <*>: it copies bytes verbatim, so a caller's `allocated!`
 // buffer feeds it directly (KORU030 rejected the unqualified spelling).
-~pub tor transcribe { eng: *Engine<ready>, pcm: string<*>, language: string }
+~pub tor transcribe { eng: *Engine<ready>, pcm: string<*>, language: string, keywords: ?string }
 | ok string<std/io:allocated!>
 | err string
 
@@ -123,7 +133,10 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
     const out_cap = n / SAMPLE_RATE * OUT_BYTES_PER_SECOND + OUT_BYTES_PER_SECOND;
     const out = koru_allocator().alloc(u8, out_cap) catch @panic("needle: OOM");
     defer koru_allocator().free(out);
-    const rc = needle_transcribe(samples.ptr, @intCast(n), langPtr(language, &lbuf), null, 0, out.ptr, @intCast(out_cap));
+    const kwalloc = koru_allocator();
+    const kw = kwPtr(kwalloc, keywords);
+    defer if (kw) |k| kwalloc.free(k);
+    const rc = needle_transcribe(samples.ptr, @intCast(n), langPtr(language, &lbuf), kw, 0, out.ptr, @intCast(out_cap));
     if (rc < 0) return .{ .err = lastError() };
     const used = std.mem.indexOfScalar(u8, out, 0) orelse out_cap;
     return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
@@ -131,7 +144,7 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
 
 // Push one chunk of a live stream (~1s of 16kHz mono f32le). Each call's JSON
 // carries that chunk's committed text and the unconfirmed tail.
-~pub tor stream.process { eng: *Engine<ready>, pcm: string<*>, language: string }
+~pub tor stream.process { eng: *Engine<ready>, pcm: string<*>, language: string, keywords: ?string }
 | ok string<std/io:allocated!>
 | err string
 
@@ -145,7 +158,10 @@ fn langPtr(language: []const u8, buf: *[8]u8) ?[*:0]const u8 {
     var lbuf: [8]u8 = undefined;
     const out = koru_allocator().alloc(u8, n / SAMPLE_RATE * OUT_BYTES_PER_SECOND + OUT_BYTES_PER_SECOND) catch @panic("needle: OOM");
     defer koru_allocator().free(out);
-    const rc = needle_stream_transcribe_process(samples.ptr, @intCast(n), langPtr(language, &lbuf), null, out.ptr, @intCast(out.len));
+    const kwalloc = koru_allocator();
+    const kw = kwPtr(kwalloc, keywords);
+    defer if (kw) |k| kwalloc.free(k);
+    const rc = needle_stream_transcribe_process(samples.ptr, @intCast(n), langPtr(language, &lbuf), kw, out.ptr, @intCast(out.len));
     if (rc < 0) return .{ .err = lastError() };
     const used = std.mem.indexOfScalar(u8, out, 0) orelse out.len;
     return .{ .ok = koru_allocator().dupe(u8, out[0..used]) catch @panic("needle: OOM") };
