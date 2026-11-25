@@ -133,3 +133,29 @@ wake is fd-READINESS not a deadline — sibling mechanism, not a reuse:
 - **Ordering**: pipelined requests on one client conn that all suspend —
   results must stage in request order (the send_plan already handles
   out-of-order staging per conn? — verify).
+
+## Pump suspension — concrete integration points (drive|race, pump.kz)
+
+- Userdata scheme: `URING_ACCEPT = maxInt(u64)` (line ~118), siblings at
+  -1/-2/-3; conn cqes are `@intFromPtr(st) | tag` with `cqeConn` masking
+  `ud & ~3` (line ~6242), TAG_SEND=1 TAG_POLL=2.
+- New class: `const URING_PG: u64 = URING_ACCEPT - 4;` — armed as a
+  multishot recv (or poll_add) on `worker.pg.fd`. handleCqe (line ~6386):
+  `if (ud == $mod.URING_PG) { w.pgReadCqe(); return; }` before the
+  cqeConn decode.
+- Worker field: `pg: ?*pg.Conn` + `pg_waiters` (queue of suspended
+  exchanges). Conn imported into pump.kz — pg is koru-libs, pump lives
+  in orisha: the pump's zig embeds the pg struct directly or calls
+  through a thin seam (decide: orisha can't import koru-libs modules
+  into .kz zig code — the pg codec must live where the pump sees it;
+  option: re-declare the conn as a pump-local type sharing the codec,
+  or pg exposes extern fns the pump calls).
+- dispatchH1 (line ~6570): after answer(), a `pending_pg` response
+  branch: queue bind.exec on pg.tx (one flush per dispatch batch),
+  push exchange onto pg_waiters, return consumed without staging.
+- pgReadCqe: drain row.next; each DataRow resumes the front waiter
+  (order = bind order, single in-flight batch keeps pairing trivial),
+  stage its response, arm send. When waiters empty, pg armed-read
+  can drop to poll-level.
+- Batch fan-in: requests arriving while pg tx holds queued binds share
+  the same roundtrip — the 136K q/s shape, inside the server.

@@ -274,6 +274,21 @@ pub const Header = struct {
 }
 
 // ============================================================================
+// Response accessors — borrows; `close` still discharges
+// ============================================================================
+
+// The transfer's HTTP status. A transport refusal (4xx/5xx) is a different
+// failure than a silent model, and until this accessor existed the two were
+// indistinguishable from koru side: an SSE-fed error body yields zero deltas
+// and reads identically to an empty reply (measured 2026-10-19: OpenRouter
+// 400 "reasoning is mandatory" produced ten 0-byte "empty" strikes).
+~pub tor status { resp: *Response<open> } -> i32
+
+~proc status|zig {
+    return resp.status;
+}
+
+// ============================================================================
 // Close (discharges obligation)
 // ============================================================================
 
